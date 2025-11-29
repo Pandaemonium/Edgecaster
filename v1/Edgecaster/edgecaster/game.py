@@ -8,6 +8,7 @@ from edgecaster.state.actors import Actor, Stats
 from edgecaster import mapgen
 from edgecaster.patterns.activation import project_vertices, damage_from_vertices
 from edgecaster.patterns import builder
+from edgecaster.character import Character, default_character
 
 Move = Tuple[int, int]
 
@@ -82,12 +83,14 @@ class LevelState:
     up_stairs: Optional[Tuple[int, int]] = None
     down_stairs: Optional[Tuple[int, int]] = None
     hover_vertex: Optional[int] = None  # for renderer hinting
+    spotted: set = None  # seen actors
 
 
 class Game:
-    def __init__(self, cfg: config.GameConfig, rng) -> None:
+    def __init__(self, cfg: config.GameConfig, rng, character: Character | None = None) -> None:
         self.cfg = cfg
         self.rng = rng
+        self.character = character or default_character()
         self.log = MessageLog()
         self.place_range = cfg.place_range
 
@@ -100,12 +103,13 @@ class Game:
 
         # spawn player
         px, py = self.levels[0].world.entry
+        stats = self._build_player_stats()
         player = Actor(
             actor_id=self._new_id(),
-            name="Edgecaster",
+            name=self.character.name or "Edgecaster",
             pos=(px, py),
             faction="player",
-            stats=Stats(hp=30, max_hp=30, mana=100, max_mana=100),
+            stats=stats,
         )
         self.player_id = player.actor_id
         self.levels[0].actors[player.actor_id] = player
@@ -114,6 +118,13 @@ class Game:
         self.log.add("Imps lurk nearby. Move with arrows/WASD. F: activate rune. ESC to exit.")
 
         self._update_fov(self.levels[0])
+
+    def _build_player_stats(self) -> Stats:
+        con = self.character.stats.get("con", 0)
+        res = self.character.stats.get("res", 0)
+        base_hp = 20 + con * 6
+        base_mana = 50 + res * 12
+        return Stats(hp=base_hp, max_hp=base_hp, mana=base_mana, max_mana=base_mana)
 
     # --- helpers ---
 
@@ -139,6 +150,7 @@ class Game:
             need_fov=True,
             up_stairs=world.up_stairs,
             down_stairs=world.down_stairs,
+            spotted=set(),
         )
 
     def _spawn_enemies(self, level: LevelState, count: int) -> None:
@@ -313,6 +325,8 @@ class Game:
             gen = builder.BranchGenerator(angle_deg=22.0, length_factor=0.45)
         elif kind == "extend":
             gen = builder.ExtendGenerator()
+        elif kind == "zigzag":
+            gen = builder.ZigzagGenerator(parts=6, amplitude_factor=0.2)
         else:
             self.log.add("Unknown fractal op.")
             return
@@ -430,8 +444,6 @@ class Game:
             target = (ax + dx, ay + dy)
             if level.world.in_bounds(*target) and level.world.is_walkable(*target) and not self._actor_at(level, target):
                 actor.pos = target
-                if level.world.get_tile(*target).visible:
-                    self.log.add(f"{actor.name} shuffles to {actor.pos}.")
         self._schedule(level, self.cfg.action_time_fast, lambda aid=actor_id, lvl=level: self._monster_act(lvl, aid))
 
     # --- pattern activation ---
@@ -583,6 +595,11 @@ class Game:
                     if tile:
                         tile.visible = True
                         tile.explored = True
+                    actor = self._actor_at(level, (x, y))
+                    if actor and actor.actor_id not in level.spotted:
+                        level.spotted.add(actor.actor_id)
+                        if actor.actor_id != self.player_id:
+                            self.log.add(f"You spot a {actor.name}.")
         level.need_fov = False
 
     # --- exposed for renderer ---

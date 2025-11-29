@@ -1,7 +1,7 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
-from typing import Tuple, List, Dict, Tuple
+from typing import Tuple, List, Dict
 
 from edgecaster.game import Game
 from edgecaster.state.actors import Actor
@@ -45,17 +45,7 @@ class AsciiRenderer:
         self.mana_color = (90, 160, 255)
         self.bar_bg = (40, 40, 60)
         self.ability_bar_height = 72
-        self.abilities: List[Ability] = [
-            Ability("Place", 1, "place"),
-            Ability("Subdivide", 2, "subdivide"),
-            Ability("Koch", 3, "koch"),
-            Ability("Branch", 4, "branch"),
-            Ability("Extend", 5, "extend"),
-            Ability("Activate R", 6, "activate_all"),
-            Ability("Activate N", 7, "activate_seed"),
-            Ability("Reset", 8, "reset"),
-            Ability("Meditate", 9, "meditate"),
-        ]
+        self.abilities: List[Ability] = []
         self.current_ability_index = 0
         self.target_cursor = (0, 0)
         self.aim_action: str | None = None
@@ -245,20 +235,27 @@ class AsciiRenderer:
     def draw_status(self, game: Game) -> None:
         player = game.actors[game.player_id]
         x = 8
-        y = 6
+        y = 24
         bar_w = 200
         bar_h = 12
         pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
         hp_ratio = 0 if player.stats.max_hp == 0 else player.stats.hp / player.stats.max_hp
         pygame.draw.rect(self.surface, self.hp_color, pygame.Rect(x, y, int(bar_w * hp_ratio), bar_h))
         hp_text = self.small_font.render(f"HP {player.stats.hp}/{player.stats.max_hp}", True, self.fg)
-        self.surface.blit(hp_text, (x + 4, y - 14))
-        y += bar_h + 10
+        self.surface.blit(hp_text, (x + 4, y - 18))
+        y += bar_h + 16
         pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
         mp_ratio = 0 if player.stats.max_mana == 0 else player.stats.mana / player.stats.max_mana
         pygame.draw.rect(self.surface, self.mana_color, pygame.Rect(x, y, int(bar_w * mp_ratio), bar_h))
         mp_text = self.small_font.render(f"Mana {player.stats.mana}/{player.stats.max_mana}", True, self.fg)
-        self.surface.blit(mp_text, (x + 4, y - 14))
+        self.surface.blit(mp_text, (x + 4, y - 18))
+        # stats under bars
+        y += bar_h + 12
+        if hasattr(game, "character") and game.character:
+            stats = game.character.stats
+            line = f"CON {stats.get('con',0)}  AGI {stats.get('agi',0)}  INT {stats.get('int',0)}  RES {stats.get('res',0)}"
+            stats_text = self.small_font.render(line, True, self.fg)
+            self.surface.blit(stats_text, (x, y))
 
     def draw_log(self, game: Game) -> None:
         start_y = self.height - self.ability_bar_height - 120
@@ -297,13 +294,23 @@ class AsciiRenderer:
             if ability.hotkey:
                 label = f"{ability.hotkey}:{label}"
             text = self.small_font.render(label, True, self.fg)
-            self.surface.blit(text, (rect.x + (rect.w - text.get_width()) // 2, rect.y + (rect.h - text.get_height()) // 2))
+            text_x = rect.x + (rect.w - text.get_width()) // 2
+            text_y = rect.y + 2
+            self.surface.blit(text, (text_x, text_y))
+            # icon area below text
+            icon_top = text_y + text.get_height() + 4
+            icon_height = rect.bottom - icon_top - 4
+            icon_height = max(12, icon_height)
+            icon_rect = pygame.Rect(rect.x + 6, icon_top, rect.w - 12, icon_height)
+            self._draw_ability_icon(icon_rect, ability.action)
             x += box_w + gap
 
     def render(self, game: Game) -> None:
         clock = pygame.time.Clock()
         running = True
         self.target_cursor = game.actors[game.player_id].pos
+        if not self.abilities:
+            self._build_abilities(game)
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -475,6 +482,9 @@ class AsciiRenderer:
         elif action == "extend":
             self.aim_action = None
             game.queue_player_fractal("extend")
+        elif action == "zigzag":
+            self.aim_action = None
+            game.queue_player_fractal("zigzag")
         elif action == "activate_all":
             self.aim_action = "activate_all"
             self._update_hover(game, pygame.mouse.get_pos())
@@ -555,5 +565,120 @@ class AsciiRenderer:
             int(c1[1] + (c2[1] - c1[1]) * t),
             int(c1[2] + (c2[2] - c1[2]) * t),
         )
+
+    def _build_abilities(self, game: Game) -> None:
+        # build ability list based on character choices
+        char = getattr(game, "character", None)
+        generator_choice = "koch"
+        illuminator_choice = "radius"
+        if char:
+            generator_choice = char.generator
+            illuminator_choice = char.illuminator
+
+        abilities: List[Ability] = []
+        hotkey = 1
+
+        def add(name: str, action: str):
+            nonlocal hotkey
+            abilities.append(Ability(name, hotkey, action))
+            hotkey += 1
+
+        add("Place", "place")
+        add("Subdivide", "subdivide")
+        add("Extend", "extend")
+        # generator-specific
+        gen_label = {"koch": "Koch", "branch": "Branch", "zigzag": "Zigzag"}.get(generator_choice, generator_choice)
+        gen_action = generator_choice if generator_choice in ("koch", "branch", "zigzag") else None
+        if gen_action:
+            add(gen_label, gen_action)
+
+        # illuminator choice
+        if illuminator_choice == "radius":
+            add("Activate R", "activate_all")
+        elif illuminator_choice == "neighbors":
+            add("Activate N", "activate_seed")
+        else:
+            add("Activate R", "activate_all")
+            add("Activate N", "activate_seed")
+
+        add("Reset", "reset")
+        add("Meditate", "meditate")
+
+        self.abilities = abilities
+
+    def _draw_ability_icon(self, rect: pygame.Rect, action: str) -> None:
+        pad = 2
+        surf = pygame.Surface((max(8, rect.w - 2 * pad), max(8, rect.h - 2 * pad)), pygame.SRCALPHA)
+        w, h = surf.get_size()
+
+        def to_px(x: float, y: float) -> Tuple[int, int]:
+            return (int(x * w), int(y * h))
+
+        def draw_vertices(points, strong_idx=None):
+            for i, (x, y) in enumerate(points):
+                pos = to_px(x, y)
+                if strong_idx is not None and i == strong_idx:
+                    pygame.draw.circle(surf, (255, 230, 120), pos, 3)
+                else:
+                    pygame.draw.circle(surf, (200, 240, 255), pos, 2)
+
+        def draw_lines(points, segs, color=(180, 230, 255)):
+            for a, b in segs:
+                pygame.draw.aaline(surf, color, to_px(*points[a]), to_px(*points[b]))
+
+        verts = []
+        segs = []
+        extra = None
+
+        if action == "place":
+            verts = [(0.15, 0.5), (0.85, 0.5)]
+            segs = [(0, 1)]
+            extra = {"strong": [1]}
+        elif action == "subdivide":
+            verts = [(0.1, 0.5), (0.35, 0.5), (0.65, 0.5), (0.9, 0.5)]
+            segs = [(0, 1), (1, 2), (2, 3)]
+        elif action == "extend":
+            verts = [(0.15, 0.55), (0.45, 0.55), (0.55, 0.45), (0.85, 0.45)]
+            segs = [(0, 1), (2, 3)]
+        elif action == "koch":
+            verts = [(0.1, 0.7), (0.5, 0.2), (0.9, 0.7)]
+            segs = [(0, 1), (1, 2)]
+        elif action == "branch":
+            verts = [(0.1, 0.6), (0.5, 0.6), (0.9, 0.35), (0.9, 0.85)]
+            segs = [(0, 1), (1, 2), (1, 3)]
+            extra = {"strong": [1]}
+        elif action == "zigzag":
+            verts = [(0.1, 0.65), (0.3, 0.35), (0.5, 0.65), (0.7, 0.35), (0.9, 0.65)]
+            segs = [(0, 1), (1, 2), (2, 3), (3, 4)]
+        elif action == "activate_all":
+            verts = [(0.25, 0.5), (0.75, 0.5), (0.5, 0.25), (0.5, 0.75)]
+            segs = [(0, 1), (2, 3)]
+            extra = {"circle": True}
+        elif action == "activate_seed":
+            verts = [(0.5, 0.5), (0.2, 0.5), (0.8, 0.5), (0.5, 0.2), (0.5, 0.8)]
+            segs = [(1, 0), (0, 2), (3, 0), (0, 4)]
+            extra = {"strong": [0], "boxes": list(range(1, len(verts)))}
+        elif action == "reset":
+            pygame.draw.line(surf, (200, 140, 140), (4, h // 2), (w - 4, h // 2), 2)
+            pygame.draw.line(surf, (200, 140, 140), (4, h // 2 + 6), (w - 4, h // 2 + 6), 2)
+        elif action == "meditate":
+            pygame.draw.circle(surf, (180, 200, 255), (w // 2, h // 2), max(4, w // 3), width=2)
+            pygame.draw.circle(surf, (120, 180, 255), (w // 2, h // 2), max(2, w // 6))
+
+        if verts:
+            draw_lines(verts, segs)
+            if extra and extra.get("circle"):
+                pygame.draw.circle(surf, (120, 200, 255), (w // 2, h // 2), int(min(w, h) * 0.4), width=2)
+            strong = extra.get("strong") if extra else []
+            draw_vertices(verts, strong_idx=strong[0] if strong else None)
+            if extra and extra.get("boxes"):
+                for idx in extra["boxes"]:
+                    if 0 <= idx < len(verts):
+                        p = to_px(*verts[idx])
+                        box_size = max(6, min(w, h) // 4)
+                        rect_box = pygame.Rect(p[0] - box_size // 2, p[1] - box_size // 2, box_size, box_size)
+                        pygame.draw.rect(surf, (180, 220, 255), rect_box, 1)
+
+        self.surface.blit(surf, rect.topleft)
     def teardown(self) -> None:
         pygame.quit()

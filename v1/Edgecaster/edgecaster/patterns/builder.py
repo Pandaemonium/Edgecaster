@@ -134,6 +134,47 @@ class BranchGenerator(GeneratorBase):
 
 
 @dataclass
+class ZigzagGenerator(GeneratorBase):
+    parts: int = 6
+    amplitude_factor: float = 0.2
+
+    def __init__(self, parts: int = 6, amplitude_factor: float = 0.2) -> None:
+        super().__init__(name="Zigzag")
+        self.parts = max(2, parts)
+        self.amplitude_factor = amplitude_factor
+
+    def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
+        out: List[Segment] = []
+        for seg in segments:
+            ax, ay = seg.a
+            bx, by = seg.b
+            dx = bx - ax
+            dy = by - ay
+            length = math.hypot(dx, dy)
+            if length == 0:
+                out.append(seg)
+                continue
+            nx, ny = -dy / length, dx / length
+            amp = self.amplitude_factor * length
+            points: List[Vec2] = []
+            for i in range(self.parts + 1):
+                t = i / self.parts
+                x = ax + dx * t
+                y = ay + dy * t
+                if 0 < i < self.parts:
+                    sign = 1 if (i % 2 == 1) else -1
+                    x += nx * amp * sign
+                    y += ny * amp * sign
+                points.append((x, y))
+            c = seg.color
+            for i in range(self.parts):
+                out.append(Segment(points[i], points[i + 1], c, seg.weight))
+                if len(out) >= max_segments:
+                    return out[:max_segments]
+        return out
+
+
+@dataclass
 class JitterGenerator(GeneratorBase):
     magnitude_factor: float = 0.1
 
