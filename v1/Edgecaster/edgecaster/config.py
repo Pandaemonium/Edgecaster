@@ -6,8 +6,8 @@ default_seed = 12345
 
 @dataclass
 class GameConfig:
-    view_width: int = 1024
-    view_height: int = 768
+    view_width: int = 1280
+    view_height: int = 900
     tile_size: int = 24
     world_width: int = 40
     world_height: int = 24

@@ -399,7 +399,6 @@ class Game:
             return
         actor.pos = (nx, ny)
         if actor_id == self.player_id:
-            self.log.add(f"You move to {actor.pos}.")
             level.need_fov = True
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:

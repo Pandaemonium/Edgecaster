@@ -1,7 +1,7 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Tuple
 
 from edgecaster.game import Game
 from edgecaster.state.actors import Actor
@@ -22,10 +22,14 @@ class AsciiRenderer:
         pygame.init()
         self.width = width
         self.height = height
+        self.base_tile = tile
+        self.zoom = 1.0
         self.tile = tile
+        self.origin_x = 0
+        self.origin_y = 0
         self.surface = pygame.display.set_mode((width, height))
         pygame.display.set_caption("Edgecaster (ASCII prototype)")
-        self.font = pygame.font.SysFont("consolas", tile)
+        self.font = pygame.font.SysFont("consolas", self.base_tile)
         self.small_font = pygame.font.SysFont("consolas", 16)
         self.bg = (10, 10, 20)
         self.fg = (220, 230, 240)
@@ -34,6 +38,9 @@ class AsciiRenderer:
         self.monster_color = (255, 120, 120)
         self.rune_color = (90, 200, 255)
         self.pattern_color = (80, 180, 240)
+        self.pattern_color_end = (180, 255, 220)
+        self.edge_width_base = 1
+        self.vertex_base_radius = 2
         self.hp_color = (200, 80, 80)
         self.mana_color = (90, 160, 255)
         self.bar_bg = (40, 40, 60)
@@ -54,6 +61,11 @@ class AsciiRenderer:
         self.aim_action: str | None = None
         self.hover_vertex: int | None = None
         self.hover_neighbors: List[int] = []
+        # pattern layers
+        self.edges_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        self.verts_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        # cached glow sprites: key = (radius_px, color_tuple)
+        self.glow_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
 
     def draw_world(self, world: World) -> None:
         self.surface.fill(self.bg)
@@ -65,8 +77,8 @@ class AsciiRenderer:
                 color = self.fg if tile.visible else self.dim
                 ch = tile.glyph
                 text = self.font.render(ch, True, color)
-                px = x * self.tile
-                py = y * self.tile
+                px = x * self.tile + self.origin_x
+                py = y * self.tile + self.origin_y
                 if px >= self.width or py >= self.height:
                     continue
                 self.surface.blit(text, (px, py))
@@ -87,35 +99,70 @@ class AsciiRenderer:
             if not tile or not tile.visible:
                 continue
             glyph, color = self._actor_visual(actor)
-            px = x * self.tile
-            py = y * self.tile
+            px = x * self.tile + self.origin_x
+            py = y * self.tile + self.origin_y
             if px >= self.width or py >= self.height:
                 continue
             text = self.font.render(glyph, True, color)
             self.surface.blit(text, (px, py))
 
     def draw_pattern_overlay(self, game: Game) -> None:
+        self.edges_surface.fill((0, 0, 0, 0))
+        self.verts_surface.fill((0, 0, 0, 0))
         if not game.pattern.vertices:
             return
         origin = game.pattern_anchor
         if origin is None:
             return
         verts = project_vertices(game.pattern, origin)
+        # density-based sizing
+        count = len(verts)
+        if count > 400:
+            v_radius = max(1, int(self.vertex_base_radius * self.zoom * 0.5))
+        elif count > 150:
+            v_radius = max(1, int(self.vertex_base_radius * self.zoom * 0.75))
+        else:
+            v_radius = max(1, int(self.vertex_base_radius * self.zoom))
+        v_radius = max(1, v_radius)
+
+        # edges with gradient, thicker AA line (no halo)
         for e in game.pattern.edges:
             try:
                 a = verts[e.a]
                 b = verts[e.b]
             except IndexError:
                 continue
-            ax = int(a[0] * self.tile + self.tile * 0.5)
-            ay = int(a[1] * self.tile + self.tile * 0.5)
-            bx = int(b[0] * self.tile + self.tile * 0.5)
-            by = int(b[1] * self.tile + self.tile * 0.5)
-            pygame.draw.line(self.surface, self.pattern_color, (ax, ay), (bx, by), 1)
+            ax = a[0] * self.tile + self.tile * 0.5 + self.origin_x
+            ay = a[1] * self.tile + self.tile * 0.5 + self.origin_y
+            bx = b[0] * self.tile + self.tile * 0.5 + self.origin_x
+            by = b[1] * self.tile + self.tile * 0.5 + self.origin_y
+            dx = bx - ax
+            dy = by - ay
+            dist = max(1.0, math.hypot(dx, dy))
+            steps = max(4, int(dist / (self.tile * 0.75)))
+            for i in range(steps):
+                t0 = i / steps
+                t1 = (i + 1) / steps
+                x0 = ax + dx * t0
+                y0 = ay + dy * t0
+                x1 = ax + dx * t1
+                y1 = ay + dy * t1
+                col = self._lerp_color(self.pattern_color, self.pattern_color_end, (t0 + t1) * 0.5)
+                core_col = (*col, 220)
+                pygame.draw.line(self.edges_surface, core_col, (x0, y0), (x1, y1), width=self.edge_width_base)
+                pygame.draw.aaline(self.edges_surface, core_col, (x0, y0), (x1, y1))
+
+        # vertices with glow sprites
+        base_sprite = self._get_glow_sprite(v_radius, self.pattern_color)
         for vx, vy in verts:
-            px = int(vx * self.tile + self.tile * 0.5)
-            py = int(vy * self.tile + self.tile * 0.5)
-            pygame.draw.circle(self.surface, self.pattern_color, (px, py), max(2, self.tile // 6))
+            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            rect = base_sprite.get_rect(center=(px, py))
+            self.verts_surface.blit(base_sprite, rect)
+
+        # composite layers
+        self.surface.blit(self.edges_surface, (0, 0))
+        self.surface.blit(self.verts_surface, (0, 0))
 
     def draw_aim_overlay(self, game: Game) -> None:
         if self.aim_action not in ("activate_all", "activate_seed"):
@@ -129,24 +176,23 @@ class AsciiRenderer:
         if self.aim_action == "activate_all":
             radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
             center = verts[self.hover_vertex]
-            cx = int(center[0] * self.tile + self.tile * 0.5)
-            cy = int(center[1] * self.tile + self.tile * 0.5)
+            cx = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
             r2 = radius * radius
             for v in verts:
                 dx = v[0] - center[0]
                 dy = v[1] - center[1]
                 if dx * dx + dy * dy <= r2:
-                    px = int(v[0] * self.tile + self.tile * 0.5)
-                    py = int(v[1] * self.tile + self.tile * 0.5)
+                    px = int(v[0] * self.tile + self.tile * 0.5 + self.origin_x)
+                    py = int(v[1] * self.tile + self.tile * 0.5 + self.origin_y)
                     pygame.draw.circle(self.surface, (200, 240, 255), (px, py), max(3, self.tile // 5))
         else:  # activate_seed
             center = verts[self.hover_vertex]
-            px = int(center[0] * self.tile + self.tile * 0.5)
-            py = int(center[1] * self.tile + self.tile * 0.5)
+            px = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
             targets = [self.hover_vertex] + [idx for idx in self.hover_neighbors if idx is not None]
-            # unique, preserve order
             seen = set()
             ordered_targets = []
             for idx in targets:
@@ -158,13 +204,13 @@ class AsciiRenderer:
                 if idx < 0 or idx >= len(verts):
                     continue
                 vx, vy = verts[idx]
-                px = int(vx * self.tile + self.tile * 0.5)
-                py = int(vy * self.tile + self.tile * 0.5)
+                px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+                py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
                 color = (200, 220, 255) if idx != self.hover_vertex else (255, 230, 120)
                 pygame.draw.circle(self.surface, color, (px, py), max(3, self.tile // 5))
                 tx = int(round(vx))
                 ty = int(round(vy))
-                rect = pygame.Rect(tx * self.tile, ty * self.tile, self.tile, self.tile)
+                rect = pygame.Rect(tx * self.tile + self.origin_x, ty * self.tile + self.origin_y, self.tile, self.tile)
                 pygame.draw.rect(self.surface, color, rect, 1)
 
     def draw_activation_overlay(self, game: Game) -> None:
@@ -179,9 +225,11 @@ class AsciiRenderer:
             tile = world.get_tile(tx, ty)
             if tile is None or not tile.visible:
                 continue
-            px = int(vx * self.tile + self.tile * 0.5)
-            py = int(vy * self.tile + self.tile * 0.5)
-            pygame.draw.circle(self.surface, self.rune_color, (px, py), max(2, self.tile // 5))
+            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            # small pop using glow sprite
+            sprite = self._get_glow_sprite(max(3, self.tile // 8), self.rune_color)
+            self.surface.blit(sprite, sprite.get_rect(center=(px, py)))
 
     def draw_target_cursor(self, game: Game) -> None:
         if not game.awaiting_terminus:
@@ -213,7 +261,7 @@ class AsciiRenderer:
         self.surface.blit(mp_text, (x + 4, y - 14))
 
     def draw_log(self, game: Game) -> None:
-        start_y = game.world.height * self.tile + 8
+        start_y = self.height - self.ability_bar_height - 120
         lines = game.log.tail(5)
         y = start_y
         for line in lines:
@@ -272,6 +320,8 @@ class AsciiRenderer:
                     self._handle_click(game, event.pos)
                 elif event.type == pygame.MOUSEMOTION:
                     self._update_hover(game, event.pos)
+                elif event.type == pygame.MOUSEWHEEL:
+                    self._change_zoom(event.y)
 
             # continuous hover update if no motion event (keep in sync)
             if self.aim_action:
@@ -380,8 +430,8 @@ class AsciiRenderer:
                         self._trigger_action(game, ability.action)
                 return
 
-        tx = mx // self.tile
-        ty = my // self.tile
+        tx = int((mx - self.origin_x) // self.tile)
+        ty = int((my - self.origin_y) // self.tile)
         if not game.world.in_bounds(tx, ty):
             return
         if game.awaiting_terminus:
@@ -447,13 +497,63 @@ class AsciiRenderer:
             self.hover_neighbors = []
             return
         mx, my = mouse_pos
-        wx = mx / self.tile
-        wy = my / self.tile
+        wx = (mx - self.origin_x) / self.tile
+        wy = (my - self.origin_y) / self.tile
         idx = game.nearest_vertex((wx, wy))
         self.hover_vertex = idx
         if idx is not None and self.aim_action == "activate_seed":
             self.hover_neighbors = game.neighbor_set_depth(idx, game.cfg.activate_neighbor_depth)
         else:
             self.hover_neighbors = []
+
+    def _change_zoom(self, delta_steps: int) -> None:
+        # delta_steps: mouse wheel y (positive zoom in)
+        mouse_pos = pygame.mouse.get_pos()
+        mx, my = mouse_pos
+        # world position under cursor before zoom
+        wx = (mx - self.origin_x) / self.tile
+        wy = (my - self.origin_y) / self.tile
+
+        new_zoom = self.zoom + delta_steps * 0.1
+        new_zoom = max(0.6, min(2.0, new_zoom))
+        if abs(new_zoom - self.zoom) < 1e-3:
+            return
+        self.zoom = new_zoom
+        self.tile = max(8, int(self.base_tile * self.zoom))
+        # refresh surfaces (fonts stay constant size)
+        self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # adjust origin so world point under cursor stays under cursor
+        self.origin_x = mx - wx * self.tile
+        self.origin_y = my - wy * self.tile
+
+    def _get_glow_sprite(self, radius: int, color: Tuple[int, int, int]) -> pygame.Surface:
+        key = (radius, color)
+        cached = self.glow_cache.get(key)
+        if cached is not None:
+            return cached
+        size = max(4, radius * 4)
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        cx = cy = size // 2
+        # softer, smaller halo
+        for r, alpha in (
+            (int(radius * 1.4), 40),
+            (radius, 130),
+            (int(radius * 0.65), 220),
+        ):
+            if r <= 0:
+                continue
+            col = (*color, alpha)
+            pygame.draw.circle(surf, col, (cx, cy), r)
+        self.glow_cache[key] = surf
+        return surf
+
+    def _lerp_color(self, c1: Tuple[int, int, int], c2: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
+        t = max(0.0, min(1.0, t))
+        return (
+            int(c1[0] + (c2[0] - c1[0]) * t),
+            int(c1[1] + (c2[1] - c1[1]) * t),
+            int(c1[2] + (c2[2] - c1[2]) * t),
+        )
     def teardown(self) -> None:
         pygame.quit()
