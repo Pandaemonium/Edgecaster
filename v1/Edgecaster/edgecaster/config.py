@@ -21,4 +21,5 @@ class GameConfig:
     pattern_damage_per_vertex: int = 1
     pattern_damage_cap: int = 5
     pattern_overlay_ttl: int = 15  # ticks
-    place_range: float = 5.0       # Euclidean tiles
+    place_range: float = 8.0       # Euclidean tiles
+    activate_neighbor_depth: int = 2  # depth for Activate N (seed + N-hop neighbors)

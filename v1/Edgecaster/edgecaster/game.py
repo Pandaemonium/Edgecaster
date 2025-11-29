@@ -81,6 +81,7 @@ class LevelState:
     need_fov: bool
     up_stairs: Optional[Tuple[int, int]] = None
     down_stairs: Optional[Tuple[int, int]] = None
+    hover_vertex: Optional[int] = None  # for renderer hinting
 
 
 class Game:
@@ -199,6 +200,59 @@ class Game:
     def _player(self) -> Actor:
         return self._level().actors[self.player_id]
 
+    def projected_vertices(self) -> List[Tuple[float, float]]:
+        lvl = self._level()
+        if lvl.pattern_anchor is None:
+            return []
+        return project_vertices(lvl.pattern, lvl.pattern_anchor)
+
+    def nearest_vertex(self, world_pos: Tuple[float, float]) -> Optional[int]:
+        verts = self.projected_vertices()
+        if not verts:
+            return None
+        wx, wy = world_pos
+        best_idx = None
+        best_d2 = 1e18
+        for i, (vx, vy) in enumerate(verts):
+            dx = vx - wx
+            dy = vy - wy
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_idx = i
+        return best_idx
+
+    def neighbors_of(self, idx: int) -> List[int]:
+        lvl = self._level()
+        adj: Dict[int, List[int]] = {}
+        for e in lvl.pattern.edges:
+            adj.setdefault(e.a, []).append(e.b)
+            adj.setdefault(e.b, []).append(e.a)
+        return adj.get(idx, [])
+
+    def neighbor_set_depth(self, seed: int, depth: int) -> List[int]:
+        """Return unique vertices within depth hops (including seed)."""
+        if depth <= 0:
+            return [seed]
+        visited = {seed}
+        frontier = {seed}
+        lvl = self._level()
+        adj: Dict[int, List[int]] = {}
+        for e in lvl.pattern.edges:
+            adj.setdefault(e.a, []).append(e.b)
+            adj.setdefault(e.b, []).append(e.a)
+        for _ in range(depth):
+            new_frontier = set()
+            for node in frontier:
+                for n in adj.get(node, []):
+                    if n not in visited:
+                        visited.add(n)
+                        new_frontier.add(n)
+            if not new_frontier:
+                break
+            frontier = new_frontier
+        return list(visited)
+
     # --- placement ---
 
     def begin_place_mode(self) -> None:
@@ -235,14 +289,14 @@ class Game:
         self._handle_move_or_attack(lvl, self.player_id, dx, dy)
         self._advance_time(lvl, self.cfg.action_time_fast)
 
-    def queue_player_activate(self) -> None:
+    def queue_player_activate(self, target_vertex: Optional[int]) -> None:
         lvl = self._level()
-        self._activate_pattern_all(lvl)
+        self._activate_pattern_all(lvl, target_vertex)
         self._advance_time(lvl, self.cfg.action_time_fast)
 
-    def queue_player_activate_seed(self) -> None:
+    def queue_player_activate_seed(self, target_vertex: Optional[int]) -> None:
         lvl = self._level()
-        self._activate_pattern_seed_neighbors(lvl)
+        self._activate_pattern_seed_neighbors(lvl, target_vertex)
         self._advance_time(lvl, self.cfg.action_time_fast)
 
     def queue_player_fractal(self, kind: str) -> None:
@@ -386,7 +440,7 @@ class Game:
     def _activation_origin(self, level: LevelState) -> Optional[Tuple[int, int]]:
         return level.pattern_anchor
 
-    def _activate_pattern_all(self, level: LevelState) -> None:
+    def _activate_pattern_all(self, level: LevelState, target_vertex: Optional[int]) -> None:
         if not level.pattern.vertices:
             self.log.add("No pattern defined.")
             return
@@ -395,19 +449,38 @@ class Game:
             self.log.add("Pattern has no anchor.")
             return
         world_vertices = project_vertices(level.pattern, origin)
-        level.activation_points = world_vertices
-        level.activation_ttl = self.cfg.pattern_overlay_ttl
-
+        if target_vertex is None or target_vertex < 0 or target_vertex >= len(world_vertices):
+            self.log.add("Select a vertex to target the circle.")
+            return
+        center = world_vertices[target_vertex]
         dmg_radius = self.cfg.pattern_damage_radius
         per_vertex = self.cfg.pattern_damage_per_vertex
         cap = self.cfg.pattern_damage_cap
-        mana_cost = len(world_vertices)
+
+        # pick vertices in radius
+        active_vertices = []
+        r2 = dmg_radius * dmg_radius
+        for v in world_vertices:
+            dx = v[0] - center[0]
+            dy = v[1] - center[1]
+            if dx * dx + dy * dy <= r2:
+                active_vertices.append(v)
+
+        mana_cost = len(active_vertices)
         player = self._player()
+        if mana_cost == 0:
+            self.log.add("No vertices in range of the target.")
+            return
         if player.stats.mana < mana_cost:
             self.log.add(f"Not enough mana ({player.stats.mana}/{mana_cost}).")
             return
         player.stats.mana -= mana_cost
         player.stats.clamp()
+
+        level.activation_points = active_vertices
+        level.activation_ttl = self.cfg.pattern_overlay_ttl
+
+        total_vertices = len(active_vertices)
         hits = 0
         for actor in list(level.actors.values()):
             if not actor.alive:
@@ -417,17 +490,34 @@ class Game:
             tile = level.world.get_tile(*actor.pos)
             if tile is None or not tile.visible:
                 continue
-            dmg = damage_from_vertices(world_vertices, actor.pos, dmg_radius, per_vertex, cap)
-            if dmg > 0:
-                hits += 1
-                actor.stats.hp -= dmg
-                self.log.add(f"Your rune sears {actor.name} for {dmg}.")
-                if actor.stats.hp <= 0:
-                    self.log.add(f"{actor.name} is annihilated.")
+            # tile square center distance to circle, approximate coverage factor
+            ax = actor.pos[0] + 0.5
+            ay = actor.pos[1] + 0.5
+            dx = ax - center[0]
+            dy = ay - center[1]
+            dist = (dx * dx + dy * dy) ** 0.5
+            half_diag = 0.7071
+            if dist <= dmg_radius - half_diag:
+                coverage = 1.0
+            elif dist >= dmg_radius + half_diag:
+                coverage = 0.0
+            else:
+                span = (dmg_radius + half_diag) - (dmg_radius - half_diag)
+                coverage = max(0.0, min(1.0, 1 - (dist - (dmg_radius - half_diag)) / span))
+            if coverage <= 0:
+                continue
+            dmg = int(per_vertex * total_vertices * coverage)
+            if dmg <= 0:
+                continue
+            hits += 1
+            actor.stats.hp -= dmg
+            self.log.add(f"Your rune sears {actor.name} for {dmg}.")
+            if actor.stats.hp <= 0:
+                self.log.add(f"{actor.name} is annihilated.")
         if hits == 0:
             self.log.add("Your rune fizzles; no foes in its reach.")
 
-    def _activate_pattern_seed_neighbors(self, level: LevelState) -> None:
+    def _activate_pattern_seed_neighbors(self, level: LevelState, target_vertex: Optional[int]) -> None:
         if not level.pattern.vertices:
             self.log.add("No pattern defined.")
             return
@@ -439,25 +529,16 @@ class Game:
         if not world_vertices:
             self.log.add("No vertices to activate.")
             return
-        px, py = origin
-        seed_idx = min(
-            range(len(world_vertices)),
-            key=lambda i: (world_vertices[i][0] - px) ** 2 + (world_vertices[i][1] - py) ** 2,
-        )
-        adjacency: Dict[int, List[int]] = {}
-        for e in level.pattern.edges:
-            adjacency.setdefault(e.a, []).append(e.b)
-            adjacency.setdefault(e.b, []).append(e.a)
-        active_indices = {seed_idx}
-        for n in adjacency.get(seed_idx, []):
-            active_indices.add(n)
-        active_vertices = [world_vertices[i] for i in active_indices]
+        if target_vertex is None or target_vertex < 0 or target_vertex >= len(world_vertices):
+            self.log.add("Select a vertex to target.")
+            return
+
+        seed_idx = target_vertex
+        active_indices = set(self.neighbor_set_depth(seed_idx, self.cfg.activate_neighbor_depth))
+        active_vertices = [world_vertices[i] for i in active_indices if 0 <= i < len(world_vertices)]
         level.activation_points = active_vertices
         level.activation_ttl = self.cfg.pattern_overlay_ttl
 
-        dmg_radius = self.cfg.pattern_damage_radius
-        per_vertex = self.cfg.pattern_damage_per_vertex
-        cap = self.cfg.pattern_damage_cap
         mana_cost = len(active_vertices)
         player = self._player()
         if player.stats.mana < mana_cost:
@@ -465,22 +546,20 @@ class Game:
             return
         player.stats.mana -= mana_cost
         player.stats.clamp()
+
+        per_vertex = self.cfg.pattern_damage_per_vertex
         hits = 0
-        for actor in list(level.actors.values()):
-            if not actor.alive:
-                continue
-            if actor.actor_id == self.player_id or actor.faction == "player":
-                continue
-            tile = level.world.get_tile(*actor.pos)
-            if tile is None or not tile.visible:
-                continue
-            dmg = damage_from_vertices(active_vertices, actor.pos, dmg_radius, per_vertex, cap)
-            if dmg > 0:
+        # damage enemies in tiles containing active vertices
+        for ax, ay in active_vertices:
+            tile_x = int(round(ax))
+            tile_y = int(round(ay))
+            target_actor = self._actor_at(level, (tile_x, tile_y))
+            if target_actor and target_actor.actor_id != self.player_id and target_actor.faction != "player":
+                target_actor.stats.hp -= per_vertex
                 hits += 1
-                actor.stats.hp -= dmg
-                self.log.add(f"Your focused rune bites {actor.name} for {dmg}.")
-                if actor.stats.hp <= 0:
-                    self.log.add(f"{actor.name} crumbles.")
+                self.log.add(f"Your focus bites {target_actor.name} for {per_vertex}.")
+                if target_actor.stats.hp <= 0:
+                    self.log.add(f"{target_actor.name} crumbles.")
         if hits == 0:
             self.log.add("Your focus fizzles; no foes in reach.")
 
@@ -544,6 +623,10 @@ class Game:
     @property
     def awaiting_terminus(self) -> bool:
         return self._level().awaiting_terminus
+
+    @awaiting_terminus.setter
+    def awaiting_terminus(self, value: bool) -> None:
+        self._level().awaiting_terminus = value
 
     def set_target_cursor(self, pos: Tuple[int, int]) -> None:
         # helper for renderer if needed

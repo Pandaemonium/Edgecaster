@@ -56,10 +56,28 @@ class Pattern:
 
     @classmethod
     def from_segments(cls, segments: List[Segment]) -> "Pattern":
-        """Create a pattern from raw segments; vertices are not deduped."""
+        """Create a pattern from raw segments; vertices are deduped by position."""
         pattern = cls()
+        index_by_pos: Dict[Tuple[float, float], int] = {}
+
+        def key(pos: Vec2, ndigits: int = 6) -> Tuple[float, float]:
+            return (round(pos[0], ndigits), round(pos[1], ndigits))
+
         for seg in segments:
-            a_idx = pattern.add_vertex(seg.a, color=seg.color)
-            b_idx = pattern.add_vertex(seg.b, color=seg.color)
+            ka = key(seg.a)
+            kb = key(seg.b)
+            if ka in index_by_pos:
+                a_idx = index_by_pos[ka]
+            else:
+                a_idx = pattern.add_vertex(seg.a, color=seg.color)
+                index_by_pos[ka] = a_idx
+
+            if kb in index_by_pos:
+                b_idx = index_by_pos[kb]
+            else:
+                b_idx = pattern.add_vertex(seg.b, color=seg.color)
+                index_by_pos[kb] = b_idx
+
             pattern.add_edge(a_idx, b_idx, color=seg.color, weight=seg.weight)
+
         return pattern

@@ -1,5 +1,6 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
+import math
 from typing import Tuple, List
 
 from edgecaster.game import Game
@@ -50,6 +51,9 @@ class AsciiRenderer:
         ]
         self.current_ability_index = 0
         self.target_cursor = (0, 0)
+        self.aim_action: str | None = None
+        self.hover_vertex: int | None = None
+        self.hover_neighbors: List[int] = []
 
     def draw_world(self, world: World) -> None:
         self.surface.fill(self.bg)
@@ -112,6 +116,56 @@ class AsciiRenderer:
             px = int(vx * self.tile + self.tile * 0.5)
             py = int(vy * self.tile + self.tile * 0.5)
             pygame.draw.circle(self.surface, self.pattern_color, (px, py), max(2, self.tile // 6))
+
+    def draw_aim_overlay(self, game: Game) -> None:
+        if self.aim_action not in ("activate_all", "activate_seed"):
+            return
+        origin = game.pattern_anchor
+        if origin is None or not game.pattern.vertices:
+            return
+        verts = project_vertices(game.pattern, origin)
+        if self.hover_vertex is None or self.hover_vertex >= len(verts):
+            return
+        if self.aim_action == "activate_all":
+            radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
+            center = verts[self.hover_vertex]
+            cx = int(center[0] * self.tile + self.tile * 0.5)
+            cy = int(center[1] * self.tile + self.tile * 0.5)
+            pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
+            r2 = radius * radius
+            for v in verts:
+                dx = v[0] - center[0]
+                dy = v[1] - center[1]
+                if dx * dx + dy * dy <= r2:
+                    px = int(v[0] * self.tile + self.tile * 0.5)
+                    py = int(v[1] * self.tile + self.tile * 0.5)
+                    pygame.draw.circle(self.surface, (200, 240, 255), (px, py), max(3, self.tile // 5))
+        else:  # activate_seed
+            center = verts[self.hover_vertex]
+            px = int(center[0] * self.tile + self.tile * 0.5)
+            py = int(center[1] * self.tile + self.tile * 0.5)
+            pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
+            targets = [self.hover_vertex] + [idx for idx in self.hover_neighbors if idx is not None]
+            # unique, preserve order
+            seen = set()
+            ordered_targets = []
+            for idx in targets:
+                if idx is None or idx in seen:
+                    continue
+                seen.add(idx)
+                ordered_targets.append(idx)
+            for idx in ordered_targets:
+                if idx < 0 or idx >= len(verts):
+                    continue
+                vx, vy = verts[idx]
+                px = int(vx * self.tile + self.tile * 0.5)
+                py = int(vy * self.tile + self.tile * 0.5)
+                color = (200, 220, 255) if idx != self.hover_vertex else (255, 230, 120)
+                pygame.draw.circle(self.surface, color, (px, py), max(3, self.tile // 5))
+                tx = int(round(vx))
+                ty = int(round(vy))
+                rect = pygame.Rect(tx * self.tile, ty * self.tile, self.tile, self.tile)
+                pygame.draw.rect(self.surface, color, rect, 1)
 
     def draw_activation_overlay(self, game: Game) -> None:
         if not game.activation_points or game.activation_ttl <= 0:
@@ -216,10 +270,17 @@ class AsciiRenderer:
                         self._handle_input(game, event.key)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._handle_click(game, event.pos)
+                elif event.type == pygame.MOUSEMOTION:
+                    self._update_hover(game, event.pos)
+
+            # continuous hover update if no motion event (keep in sync)
+            if self.aim_action:
+                self._update_hover(game, pygame.mouse.get_pos())
 
             self.draw_world(game.world)
             self.draw_pattern_overlay(game)
             self.draw_activation_overlay(game)
+            self.draw_aim_overlay(game)
             self.draw_actors(game.world, game.all_actors_current())
             self.draw_target_cursor(game)
             self.draw_status(game)
@@ -238,6 +299,18 @@ class AsciiRenderer:
             pygame.K_s: (0, 1),
             pygame.K_a: (-1, 0),
             pygame.K_d: (1, 0),
+            pygame.K_q: (-1, -1),
+            pygame.K_e: (1, -1),
+            pygame.K_z: (-1, 1),
+            pygame.K_c: (1, 1),
+            pygame.K_KP1: (-1, 1),
+            pygame.K_KP2: (0, 1),
+            pygame.K_KP3: (1, 1),
+            pygame.K_KP4: (-1, 0),
+            pygame.K_KP6: (1, 0),
+            pygame.K_KP7: (-1, -1),
+            pygame.K_KP8: (0, -1),
+            pygame.K_KP9: (1, -1),
         }
         if game.awaiting_terminus:
             if key in mapping:
@@ -250,6 +323,15 @@ class AsciiRenderer:
                 game.try_place_terminus(self.target_cursor)
             return
 
+        if self.aim_action in ("activate_all", "activate_seed") and key in (pygame.K_RETURN, pygame.K_SPACE):
+            target_idx = self._current_hover_vertex(game)
+            if self.aim_action == "activate_all":
+                game.queue_player_activate(target_idx)
+            else:
+                game.queue_player_activate_seed(target_idx)
+            self.aim_action = None
+            return
+
         if pygame.K_1 <= key <= pygame.K_9:
             hk = key - pygame.K_0
             for idx, ability in enumerate(self.abilities):
@@ -258,8 +340,14 @@ class AsciiRenderer:
                     if ability.action == "place":
                         self.target_cursor = game.actors[game.player_id].pos
                         game.begin_place_mode()
+                        self.aim_action = None
                     else:
-                        self._trigger_action(game, ability.action)
+                        if ability.action in ("activate_all", "activate_seed"):
+                            self.aim_action = ability.action
+                        else:
+                            self.aim_action = None
+                        if ability.action not in ("activate_all", "activate_seed"):
+                            self._trigger_action(game, ability.action)
                     return
 
         if key in mapping:
@@ -282,8 +370,14 @@ class AsciiRenderer:
                 if ability.action == "place":
                     self.target_cursor = game.actors[game.player_id].pos
                     game.begin_place_mode()
+                    self.aim_action = None
                 else:
-                    self._trigger_action(game, ability.action)
+                    if ability.action in ("activate_all", "activate_seed"):
+                        self.aim_action = ability.action
+                    else:
+                        self.aim_action = None
+                    if ability.action not in ("activate_all", "activate_seed"):
+                        self._trigger_action(game, ability.action)
                 return
 
         tx = mx // self.tile
@@ -294,13 +388,21 @@ class AsciiRenderer:
             self.target_cursor = (tx, ty)
             game.try_place_terminus((tx, ty))
         else:
-            px, py = game.actors[game.player_id].pos
-            dx = tx - px
-            dy = ty - py
-            if tx == px and ty == py:
-                game.use_stairs()
-            elif abs(dx) + abs(dy) == 1:
-                game.queue_player_move((dx, dy))
+            if self.aim_action in ("activate_all", "activate_seed"):
+                target_idx = self._current_hover_vertex(game)
+                if self.aim_action == "activate_all":
+                    game.queue_player_activate(target_idx)
+                else:
+                    game.queue_player_activate_seed(target_idx)
+                self.aim_action = None
+            else:
+                px, py = game.actors[game.player_id].pos
+                dx = tx - px
+                dy = ty - py
+                if tx == px and ty == py:
+                    game.use_stairs()
+                elif max(abs(dx), abs(dy)) == 1:
+                    game.queue_player_move((int(dx), int(dy)))
 
     def _trigger_current(self, game: Game) -> None:
         ability = self.abilities[self.current_ability_index]
@@ -310,22 +412,48 @@ class AsciiRenderer:
         if action == "place":
             self.target_cursor = game.actors[game.player_id].pos
             game.begin_place_mode()
+            self.aim_action = None
         elif action == "subdivide":
+            self.aim_action = None
             game.queue_player_fractal("subdivide")
         elif action == "koch":
+            self.aim_action = None
             game.queue_player_fractal("koch")
         elif action == "branch":
+            self.aim_action = None
             game.queue_player_fractal("branch")
         elif action == "extend":
+            self.aim_action = None
             game.queue_player_fractal("extend")
         elif action == "activate_all":
-            game.queue_player_activate()
+            self.aim_action = "activate_all"
+            self._update_hover(game, pygame.mouse.get_pos())
         elif action == "activate_seed":
-            game.queue_player_activate_seed()
+            self.aim_action = "activate_seed"
+            self._update_hover(game, pygame.mouse.get_pos())
         elif action == "reset":
+            self.aim_action = None
             game.reset_pattern()
         elif action == "meditate":
+            self.aim_action = None
             game.queue_meditate()
 
+    def _current_hover_vertex(self, game: Game) -> int | None:
+        return self.hover_vertex
+
+    def _update_hover(self, game: Game, mouse_pos: Tuple[int, int]) -> None:
+        if self.aim_action not in ("activate_all", "activate_seed"):
+            self.hover_vertex = None
+            self.hover_neighbors = []
+            return
+        mx, my = mouse_pos
+        wx = mx / self.tile
+        wy = my / self.tile
+        idx = game.nearest_vertex((wx, wy))
+        self.hover_vertex = idx
+        if idx is not None and self.aim_action == "activate_seed":
+            self.hover_neighbors = game.neighbor_set_depth(idx, game.cfg.activate_neighbor_depth)
+        else:
+            self.hover_neighbors = []
     def teardown(self) -> None:
         pygame.quit()
