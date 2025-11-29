@@ -1,0 +1,34 @@
+from dataclasses import dataclass, field
+from typing import Dict, Tuple
+
+Pos = Tuple[int, int]
+
+
+@dataclass
+class Stats:
+    hp: int = 5
+    max_hp: int = 5
+    mana: int = 0
+    max_mana: int = 0
+
+    @property
+    def alive(self) -> bool:
+        return self.hp > 0
+
+    def clamp(self) -> None:
+        self.hp = max(0, min(self.hp, self.max_hp))
+        self.mana = max(0, min(self.mana, self.max_mana))
+
+
+@dataclass
+class Actor:
+    actor_id: str
+    name: str
+    pos: Pos
+    faction: str = "neutral"
+    stats: Stats = field(default_factory=Stats)
+    tags: Dict[str, int] = field(default_factory=dict)
+
+    @property
+    def alive(self) -> bool:
+        return self.stats.alive

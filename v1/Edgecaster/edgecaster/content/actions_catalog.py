@@ -1,0 +1,2 @@
+"""Action definitions placeholder."""
+actions = []

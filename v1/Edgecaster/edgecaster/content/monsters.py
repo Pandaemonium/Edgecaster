@@ -1,0 +1,2 @@
+"""Monster data placeholder."""
+monsters = []

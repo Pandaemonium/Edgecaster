@@ -1,0 +1,2 @@
+"""Item data placeholder."""
+items = []

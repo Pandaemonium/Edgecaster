@@ -1,0 +1,2 @@
+"""Faction data placeholder."""
+factions = []
