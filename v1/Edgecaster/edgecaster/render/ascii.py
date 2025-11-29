@@ -364,6 +364,7 @@ class AsciiRenderer:
             pygame.K_KP2: (0, 1),
             pygame.K_KP3: (1, 1),
             pygame.K_KP4: (-1, 0),
+            pygame.K_KP5: (0, 0),
             pygame.K_KP6: (1, 0),
             pygame.K_KP7: (-1, -1),
             pygame.K_KP8: (0, -1),
