@@ -172,6 +172,9 @@ class Game:
                 "neighbor_depth": {"values": [1, 2, 3], "thresholds": [0, 3, 6], "stat": "res", "label": "Depth"},
                 "damage": {"values": [1, 2, 3], "thresholds": [0, 4, 8], "stat": "res", "label": "Damage"},
             },
+            "custom": {
+                "amplitude": {"values": [1.0, 0.9, 0.8, 0.7], "thresholds": [0, 1, 2, 3], "stat": "int", "label": "Scale"},
+            },
         }
 
     def _init_param_state(self) -> Dict[Tuple[str, str], int]:
@@ -185,6 +188,9 @@ class Game:
         """Set all params to the highest tier allowed by current stats (for auto-max radii/neighbor depth)."""
         for action, params in self.param_defs.items():
             for key in params:
+                if action == "custom" and key == "amplitude":
+                    # keep custom amplitude at user choice (default 1.0)
+                    continue
                 allowed = self._allowed_index(action, key)
                 if allowed < 0:
                     allowed = 0
@@ -193,6 +199,24 @@ class Game:
     def _xp_needed_for_level(self, level: int) -> int:
         """XP needed to go from this level to the next."""
         return max(1, self.cfg.xp_base + self.cfg.xp_per_level * (level - 1))
+
+    def _coherence_limit(self) -> int:
+        """How many vertices can be stably handled; scales with INT."""
+        intellect = self.character.stats.get("int", 0)
+        return 50 + intellect * 50
+
+    def _strength_limit(self) -> int:
+        """How many activated vertices can be driven at once; scales with RES."""
+        res = self.character.stats.get("res", 0)
+        return 40 + res * 40
+
+    def _fizzle_roll(self, over: int, limit: int) -> bool:
+        """Return True if activation should fizzle (probability increases with overage)."""
+        if over <= 0:
+            return False
+        # success chance = limit / (limit + over); failure chance grows with overage
+        fail_chance = over / (limit + over)
+        return self.rng.random() < fail_chance
 
     def _grant_xp(self, amount: int) -> None:
         if amount <= 0:
@@ -587,6 +611,12 @@ class Game:
             parts = self._param_value("zigzag", "parts")
             amp = self._param_value("zigzag", "amp")
             gen = builder.ZigzagGenerator(parts=parts, amplitude_factor=amp)
+        elif kind == "custom":
+            if not self.character.custom_pattern or len(self.character.custom_pattern) < 2:
+                self.log.add("No custom pattern saved.")
+                return
+            amp = self._param_value("custom", "amplitude")
+            gen = builder.CustomPolyGenerator(self.character.custom_pattern, amplitude=amp)
         else:
             self.log.add("Unknown fractal op.")
             return
@@ -722,6 +752,11 @@ class Game:
             self.log.add("Pattern has no anchor.")
             return
         world_vertices = project_vertices(level.pattern, origin)
+        # coherence check: overall pattern size vs INT
+        coh_limit = self._coherence_limit()
+        if len(world_vertices) > coh_limit and self._fizzle_roll(len(world_vertices) - coh_limit, coh_limit):
+            self.log.add("This pattern strains your mind.")
+            return
         if target_vertex is None or target_vertex < 0 or target_vertex >= len(world_vertices):
             self.log.add("Select a vertex to target the circle.")
             return
@@ -738,6 +773,10 @@ class Game:
             dy = v[1] - center[1]
             if dx * dx + dy * dy <= r2:
                 active_vertices.append(v)
+        str_limit = self._strength_limit()
+        if len(active_vertices) > str_limit and self._fizzle_roll(len(active_vertices) - str_limit, str_limit):
+            self.log.add("You strain to channel that many vertices at once and lose focus.")
+            return
 
         mana_cost = len(active_vertices)
         player = self._player()
@@ -808,6 +847,11 @@ class Game:
             return
 
         seed_idx = target_vertex
+        # coherence check: overall pattern size vs INT
+        coh_limit = self._coherence_limit()
+        if len(world_vertices) > coh_limit and self._fizzle_roll(len(world_vertices) - coh_limit, coh_limit):
+            self.log.add("Your pattern destabilizes; the activation slips away.")
+            return
         depth = self._param_value("activate_seed", "neighbor_depth")
         active_indices = set(self.neighbor_set_depth(seed_idx, depth))
         active_vertices = [world_vertices[i] for i in active_indices if 0 <= i < len(world_vertices)]
@@ -816,6 +860,10 @@ class Game:
 
         mana_cost = len(active_vertices)
         player = self._player()
+        str_limit = self._strength_limit()
+        if len(active_vertices) > str_limit and self._fizzle_roll(len(active_vertices) - str_limit, str_limit):
+            self.log.add("This weave challenges your focus.")
+            return
         if player.stats.mana < mana_cost:
             self.log.add(f"Not enough mana ({player.stats.mana}/{mana_cost}).")
             return

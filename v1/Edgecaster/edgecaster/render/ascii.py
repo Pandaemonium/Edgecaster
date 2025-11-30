@@ -32,7 +32,8 @@ class AsciiRenderer:
         self.origin_y = 0
         self.surface = pygame.display.set_mode((width, height))
         pygame.display.set_caption("Edgecaster (ASCII prototype)")
-        self.font = pygame.font.SysFont("consolas", self.base_tile)
+        self.font = pygame.font.SysFont("consolas", self.base_tile)  # UI font (fixed)
+        self.map_font = pygame.font.SysFont("consolas", self.tile)  # map glyphs, scales with zoom
         self.small_font = pygame.font.SysFont("consolas", 16)
         self.bg = (10, 10, 20)
         self.fg = (220, 230, 240)
@@ -85,7 +86,7 @@ class AsciiRenderer:
                     continue
                 color = self.fg if tile.visible else self.dim
                 ch = tile.glyph
-                text = self.font.render(ch, True, color)
+                text = self.map_font.render(ch, True, color)
                 px = x * self.tile + self.origin_x
                 py = y * self.tile + self.origin_y
                 if px >= self.width or py >= self.height:
@@ -112,7 +113,7 @@ class AsciiRenderer:
             py = y * self.tile + self.origin_y
             if px >= self.width or py >= self.height:
                 continue
-            text = self.font.render(glyph, True, color)
+            text = self.map_font.render(glyph, True, color)
             self.surface.blit(text, (px, py))
 
     def draw_pattern_overlay(self, game: Game) -> None:
@@ -182,11 +183,52 @@ class AsciiRenderer:
         verts = project_vertices(game.pattern, origin)
         if self.hover_vertex is None or self.hover_vertex >= len(verts):
             return
+        # precompute strength fail chance and damage map for preview
+        dmg_map: Dict[Tuple[int, int], int] = {}
+        fail_text: str | None = None
+        pulse_alpha = lambda: int(80 + 60 * abs(((pygame.time.get_ticks() / 600.0) % 2) - 1))
         if self.aim_action == "activate_all":
             try:
                 radius = game.get_param_value("activate_all", "radius")
+                dmg_per_vertex = game.get_param_value("activate_all", "damage")
             except Exception:
                 radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
+                dmg_per_vertex = 1
+            center = verts[self.hover_vertex]
+            # strength fail preview
+            try:
+                str_limit = game._strength_limit()
+                r2 = radius * radius
+                active_vertices = [v for v in verts if (v[0]-center[0])**2 + (v[1]-center[1])**2 <= r2]
+                over = max(0, len(active_vertices) - str_limit)
+                if len(active_vertices) > str_limit:
+                    fail_text = f"{len(active_vertices)}/{str_limit} Fail~{int(over/(str_limit+over)*100)}%"
+                else:
+                    fail_text = f"{len(active_vertices)}/{str_limit}"
+            except Exception:
+                active_vertices = []
+            # damage aggregation per tile (mirror game logic)
+            r2 = radius * radius
+            if not active_vertices:
+                active_vertices = [v for v in verts if (v[0]-center[0])**2 + (v[1]-center[1])**2 <= r2]
+            for v in active_vertices:
+                tx = int(round(v[0]))
+                ty = int(round(v[1]))
+                dx = (tx + 0.5) - center[0]
+                dy = (ty + 0.5) - center[1]
+                dist = math.hypot(dx, dy)
+                half_diag = 0.7071
+                if dist <= radius - half_diag:
+                    coverage = 1.0
+                elif dist >= radius + half_diag:
+                    coverage = 0.0
+                else:
+                    span = (radius + half_diag) - (radius - half_diag)
+                    coverage = max(0.0, min(1.0, 1 - (dist - (radius - half_diag)) / span))
+                dmg = int(dmg_per_vertex * len(active_vertices) * coverage)
+                if dmg <= 0:
+                    continue
+                dmg_map[(tx, ty)] = dmg_map.get((tx, ty), 0) + dmg
             center = verts[self.hover_vertex]
             cx = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
             cy = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
@@ -224,8 +266,54 @@ class AsciiRenderer:
                 ty = int(round(vy))
                 rect = pygame.Rect(tx * self.tile + self.origin_x, ty * self.tile + self.origin_y, self.tile, self.tile)
                 pygame.draw.rect(self.surface, color, rect, 1)
+            # damage/strength preview
+            try:
+                dmg_per_vertex = game.get_param_value("activate_seed", "damage")
+            except Exception:
+                dmg_per_vertex = 1
+            strength_vertices = ordered_targets
+            try:
+                str_limit = game._strength_limit()
+                over = max(0, len(strength_vertices) - str_limit)
+                if len(strength_vertices) > str_limit:
+                    fail_text = f"{len(strength_vertices)}/{str_limit} Fail~{int(over/(str_limit+over)*100)}%"
+                else:
+                    fail_text = f"{len(strength_vertices)}/{str_limit}"
+            except Exception:
+                pass
+            for idx in strength_vertices:
+                if idx < 0 or idx >= len(verts):
+                    continue
+                tx = int(round(verts[idx][0]))
+                ty = int(round(verts[idx][1]))
+                dmg_map[(tx, ty)] = dmg_map.get((tx, ty), 0) + dmg_per_vertex
+        # render previews with 2s triangle-wave fade
+        t = pygame.time.get_ticks()
+        phase = (t % 2000) / 2000.0
+        fade = 1.0 - abs(phase * 2 - 1)  # triangle 0..1..0 over 2s
+        alpha = int(80 + 120 * fade)
+        dmg_font = pygame.font.SysFont("consolas", max(16, int(self.tile * 0.7)))
+        for (tx, ty), dmg in dmg_map.items():
+            px = tx * self.tile + self.origin_x + self.tile // 2
+            py = ty * self.tile + self.origin_y + self.tile // 2
+            dmg_surf = dmg_font.render(str(dmg), True, (255, 160, 160))
+            surf = pygame.Surface((dmg_surf.get_width(), dmg_surf.get_height()), pygame.SRCALPHA)
+            surf.blit(dmg_surf, (0, 0))
+            surf.set_alpha(alpha)
+            self.surface.blit(surf, (px - dmg_surf.get_width() // 2, py - self.tile // 2 - dmg_surf.get_height()))
+        if fail_text:
+            # show near hover target
+            vx, vy = verts[self.hover_vertex]
+            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            txt = self.small_font.render(fail_text, True, (255, 180, 140))
+            surf = pygame.Surface((txt.get_width(), txt.get_height()), pygame.SRCALPHA)
+            surf.blit(txt, (0, 0))
+            surf.set_alpha(alpha)
+            self.surface.blit(surf, (px - txt.get_width() // 2, py - self.tile - txt.get_height()))
 
     def draw_activation_overlay(self, game: Game) -> None:
+        """Post-activation visuals only (no text)."""
         if not game.activation_points or game.activation_ttl <= 0:
             return
         world = game.world
@@ -239,7 +327,6 @@ class AsciiRenderer:
                 continue
             px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
             py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
-            # small pop using glow sprite
             sprite = self._get_glow_sprite(max(3, self.tile // 8), self.rune_color)
             self.surface.blit(sprite, sprite.get_rect(center=(px, py)))
 
@@ -253,6 +340,21 @@ class AsciiRenderer:
         py = ty * self.tile
         rect = pygame.Rect(px, py, self.tile, self.tile)
         pygame.draw.rect(self.surface, (255, 255, 120), rect, 2)
+
+    def draw_place_overlay(self, game: Game) -> None:
+        """Subtle pulsing circle showing placement range when selecting a terminus."""
+        if not game.awaiting_terminus:
+            return
+        player = game.actors[game.player_id]
+        cx = player.pos[0] * self.tile + self.tile * 0.5 + self.origin_x
+        cy = player.pos[1] * self.tile + self.tile * 0.5 + self.origin_y
+        radius = game.place_range * self.tile
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 350.0)
+        alpha = int(25 + 30 * pulse)
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        color = (120, 200, 255, alpha)
+        pygame.draw.circle(overlay, color, (int(cx), int(cy)), int(radius), width=2)
+        self.surface.blit(overlay, (0, 0))
 
     def draw_status(self, game: Game) -> None:
         player = game.actors[game.player_id]
@@ -290,6 +392,16 @@ class AsciiRenderer:
             line = f"CON {stats.get('con',0)}  AGI {stats.get('agi',0)}  INT {stats.get('int',0)}  RES {stats.get('res',0)}"
             stats_text = self.small_font.render(line, True, self.fg)
             self.surface.blit(stats_text, (x, y))
+            # coherence info
+            verts_count = len(game.pattern.vertices) if hasattr(game, "pattern") else 0
+            coh_limit = game._coherence_limit()
+            over = max(0, verts_count - coh_limit)
+            fail_chance = 0.0 if verts_count <= coh_limit else over / (coh_limit + over)
+            y += 18
+            coh_text = self.small_font.render(
+                f"Vertices {verts_count}/{coh_limit}  Fail~{int(fail_chance*100)}%", True, self.fg
+            )
+            self.surface.blit(coh_text, (x, y))
 
     def draw_log(self, game: Game) -> None:
         start_y = self.height - self.ability_bar_height - 120
@@ -451,6 +563,7 @@ class AsciiRenderer:
 
                 self.draw_world(game.world)
                 self.draw_pattern_overlay(game)
+                self.draw_place_overlay(game)
                 self.draw_activation_overlay(game)
                 self.draw_aim_overlay(game)
                 self.draw_actors(game.world, game.all_actors_current())
@@ -682,6 +795,9 @@ class AsciiRenderer:
         elif action == "zigzag":
             self.aim_action = None
             game.queue_player_fractal("zigzag")
+        elif action == "custom":
+            self.aim_action = None
+            game.queue_player_fractal("custom")
         elif action == "activate_all":
             self.aim_action = "activate_all"
             self._update_hover(game, pygame.mouse.get_pos())
@@ -723,7 +839,7 @@ class AsciiRenderer:
         wy = (my - self.origin_y) / self.tile
 
         new_zoom = self.zoom + delta_steps * 0.1
-        new_zoom = max(0.6, min(2.0, new_zoom))
+        new_zoom = max(0.3, min(6.0, new_zoom))
         if abs(new_zoom - self.zoom) < 1e-3:
             return
         self.zoom = new_zoom
@@ -731,6 +847,8 @@ class AsciiRenderer:
         # refresh surfaces (fonts stay constant size)
         self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # map font scales with zoom; UI fonts remain constant
+        self.map_font = pygame.font.SysFont("consolas", max(8, int(self.tile)))
         # adjust origin so world point under cursor stays under cursor
         self.origin_x = mx - wx * self.tile
         self.origin_y = my - wy * self.tile
@@ -797,8 +915,8 @@ class AsciiRenderer:
         add("Extend", "extend")
         # generator-specific (all unlocked)
         for g in gens_ordered:
-            gen_label = {"koch": "Koch", "branch": "Branch", "zigzag": "Zigzag"}.get(g, g)
-            if g in ("koch", "branch", "zigzag"):
+            gen_label = {"koch": "Koch", "branch": "Branch", "zigzag": "Zigzag", "custom": "Custom"}.get(g, g)
+            if g in ("koch", "branch", "zigzag", "custom"):
                 add(gen_label, g)
 
         # illuminator choice
@@ -864,8 +982,9 @@ class AsciiRenderer:
                 verts.append((x, 0.5))
             segs = [(i, i + 1) for i in range(len(verts) - 1)]
         elif action == "extend":
-            verts = [(0.15, 0.55), (0.45, 0.55), (0.55, 0.45), (0.85, 0.45)]
-            segs = [(0, 1), (2, 3)]
+            verts = [(0.1, 0.6), (0.5, 0.6), (0.9, 0.6)]
+            segs = [(0, 1), (1, 2)]
+            extra = {"dotted": [(0, 1)]}
         elif action == "koch":
             height = g("koch", "height", 0.25)
             flip = g("koch", "flip", False)
@@ -920,6 +1039,46 @@ class AsciiRenderer:
                 verts.append((x, y))
                 if i > 0:
                     segs.append((i - 1, i))
+        elif action == "custom":
+            pts = getattr(game.character, "custom_pattern", None) if hasattr(game, "character") else None
+            amp = 1.0
+            try:
+                amp = game.get_param_value("custom", "amplitude")
+            except Exception:
+                pass
+            if pts and len(pts) >= 2:
+                # normalize and scale uniformly to fit while preserving aspect
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                width = max(1e-5, max_x - min_x)
+                height = max(1e-5, max_y - min_y)
+                # apply amplitude scaling only to lateral (Y) span
+                height *= amp
+                norm = []
+                for x, y in pts:
+                    nx = (x - min_x) / width
+                    ny = (y - min_y) / height
+                    norm.append((nx, ny))
+                # scale uniformly to available box with padding
+                pad = 0.12
+                avail = 1.0 - 2 * pad
+                # preserve aspect
+                aspect = width / height if height > 0 else 1.0
+                if aspect >= 1:
+                    sx = avail
+                    sy = avail / aspect
+                else:
+                    sx = avail * aspect
+                    sy = avail
+                ox = (1.0 - sx) * 0.5
+                oy = (1.0 - sy) * 0.5
+                verts = [(ox + p[0] * sx, oy + (1 - p[1]) * sy) for p in norm]
+                segs = [(i, i + 1) for i in range(len(verts) - 1)]
+            else:
+                verts = [(0.15, 0.5), (0.85, 0.5)]
+                segs = [(0, 1)]
         elif action == "activate_all":
             radius = g("activate_all", "radius", 1.5)
             verts = [(0.25, 0.5), (0.75, 0.5), (0.5, 0.25), (0.5, 0.75)]
@@ -947,7 +1106,25 @@ class AsciiRenderer:
             pygame.draw.circle(surf, (120, 180, 255), (w // 2, h // 2), max(2, w // 6))
 
         if verts:
-            draw_lines(verts, segs)
+            # dotted segments if requested
+            dotted = extra.get("dotted", []) if extra else []
+            for a, b in segs:
+                if (a, b) in dotted or (b, a) in dotted:
+                    ax, ay = verts[a]
+                    bx, by = verts[b]
+                    steps = 6
+                    for i in range(steps):
+                        if i % 2 == 1:
+                            continue
+                        t0 = i / steps
+                        t1 = (i + 1) / steps
+                        px0 = ax + (bx - ax) * t0
+                        py0 = ay + (by - ay) * t0
+                        px1 = ax + (bx - ax) * t1
+                        py1 = ay + (by - ay) * t1
+                        pygame.draw.aaline(surf, (180, 230, 255), to_px(px0, py0), to_px(px1, py1))
+                else:
+                    pygame.draw.aaline(surf, (180, 230, 255), to_px(*verts[a]), to_px(*verts[b]))
             if extra and extra.get("circle"):
                 rad_norm = extra.get("radius", 1.5) if extra else 1.5
                 max_rad_norm = 4.0

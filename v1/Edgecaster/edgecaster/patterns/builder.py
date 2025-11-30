@@ -249,6 +249,60 @@ class ExtendGenerator(GeneratorBase):
         return out
 
 
+@dataclass
+class CustomPolyGenerator(GeneratorBase):
+    """Apply a user-drawn polyline normalized to the base segment, with optional amplitude scaling."""
+
+    points: List[Vec2]
+    amplitude: float = 1.0
+
+    def __init__(self, points: List[Vec2], amplitude: float = 1.0) -> None:
+        super().__init__(name="CustomPoly")
+        self.points = points
+        self.amplitude = amplitude
+
+    def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
+        out: List[Segment] = []
+        if not self.points or len(self.points) < 2:
+            return segments
+        base_dx = self.points[-1][0] - self.points[0][0]
+        base_dy = self.points[-1][1] - self.points[0][1]
+        base_len = math.hypot(base_dx, base_dy)
+        if base_len <= 0:
+            return segments
+        for seg in segments:
+            ax, ay = seg.a
+            bx, by = seg.b
+            dx = bx - ax
+            dy = by - ay
+            seg_len = math.hypot(dx, dy)
+            if seg_len == 0:
+                out.append(seg)
+                continue
+            # directional basis
+            dir_x = dx / seg_len
+            dir_y = dy / seg_len
+            perp_x = -dir_y
+            perp_y = dir_x
+
+            def map_point(px: float, py: float) -> Vec2:
+                # normalize relative to base first point
+                rel_x = (px - self.points[0][0]) / base_len
+                rel_y = ((py - self.points[0][1]) / base_len) * self.amplitude  # amplitude only on lateral (Y) component
+                wx = ax + rel_x * dx + rel_y * perp_x * seg_len
+                wy = ay + rel_y * perp_y * seg_len + rel_x * dy
+                return (wx, wy)
+
+            c = seg.color
+            for i in range(len(self.points) - 1):
+                pa = map_point(self.points[i][0], self.points[i][1])
+                pb = map_point(self.points[i + 1][0], self.points[i + 1][1])
+                out.append(Segment(pa, pb, c, seg.weight))
+                if len(out) >= max_segments:
+                    return out[:max_segments]
+        return out
+
+
 def cleanup_duplicates(segments: List[Segment], ndigits: int = 9) -> List[Segment]:
     """Remove exact duplicate oriented segments."""
     if not segments:
