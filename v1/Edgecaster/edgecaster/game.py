@@ -85,11 +85,24 @@ class LevelState:
 
 
 class Game:
-    def __init__(self, cfg: config.GameConfig, rng) -> None:
+    def __init__(
+        self,
+        cfg: config.GameConfig,
+        rng,
+        player_name: str = "Edgecaster",
+        player_class: str = "Kochbender",
+    ) -> None:
         self.cfg = cfg
         self.rng = rng
         self.log = MessageLog()
         self.place_range = cfg.place_range
+        # Urgent message system: blocks normal input until acknowledged.
+        self.urgent_message: str | None = None
+        self.urgent_resolved: bool = True
+
+        # character meta
+        self.player_name = player_name or "Edgecaster"
+        self.player_class = player_class or "Kochbender"
 
         self.levels: Dict[int, LevelState] = {}
         self.current_level = 0
@@ -102,18 +115,23 @@ class Game:
         px, py = self.levels[0].world.entry
         player = Actor(
             actor_id=self._new_id(),
-            name="Edgecaster",
+            name=self.player_name,
             pos=(px, py),
             faction="player",
             stats=Stats(hp=30, max_hp=30, mana=100, max_mana=100),
         )
         self.player_id = player.actor_id
         self.levels[0].actors[player.actor_id] = player
+
         # enemies
         self._spawn_enemies(self.levels[0], count=4)
+
+        # intro messages
+        self.log.add(f"Welcome, {self.player_name} the {self.player_class}.")
         self.log.add("Imps lurk nearby. Move with arrows/WASD. F: activate rune. ESC to exit.")
 
         self._update_fov(self.levels[0])
+
 
     # --- helpers ---
 
@@ -121,6 +139,13 @@ class Game:
         aid = f"act{self._next_id}"
         self._next_id += 1
         return aid
+        
+    def set_urgent(self, text: str) -> None:
+        """Display an urgent message that must be acknowledged with SPACE."""
+        self.urgent_message = text
+        self.urgent_resolved = False
+        # You can tweak this string to taste.
+        self.log.add(f"{text}  (press SPACE)")
 
     def _make_level(self, level_idx: int, up_pos: Optional[Tuple[int, int]]) -> LevelState:
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
@@ -199,6 +224,15 @@ class Game:
 
     def _player(self) -> Actor:
         return self._level().actors[self.player_id]
+    @property
+    def player_alive(self) -> bool:
+        """True if the player is still present and has positive HP."""
+        lvl = self._level()
+        if self.player_id not in lvl.actors:
+            return False
+        return lvl.actors[self.player_id].stats.hp > 0
+
+
 
     def projected_vertices(self) -> List[Tuple[float, float]]:
         lvl = self._level()
@@ -289,6 +323,11 @@ class Game:
         self._handle_move_or_attack(lvl, self.player_id, dx, dy)
         self._advance_time(lvl, self.cfg.action_time_fast)
 
+    def queue_player_wait(self) -> None:
+        """Spend a turn doing nothing (useful for letting effects tick or luring enemies)."""
+        lvl = self._level()
+        self._advance_time(lvl, self.cfg.action_time_fast)
+    
     def queue_player_activate(self, target_vertex: Optional[int]) -> None:
         lvl = self._level()
         self._activate_pattern_all(lvl, target_vertex)
@@ -411,7 +450,12 @@ class Game:
         else:
             self.log.add(f"{attacker.name} hits you for {dmg}.")
         if defender.stats.hp <= 0:
-            self.log.add(f"{defender.name} dies.")
+            if defender.actor_id == self.player_id:
+                self.set_urgent("You unravel...")
+            else:
+                self.log.add(f"{defender.name} dies.")
+
+
 
     def _monster_act(self, level: LevelState, actor_id: str) -> None:
         actor = level.actors.get(actor_id)

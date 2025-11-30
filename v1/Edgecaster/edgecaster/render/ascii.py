@@ -289,6 +289,14 @@ class AsciiRenderer:
             pygame.display.flip()
             clock.tick(60)
 
+            # If the player is dead and any urgent message has been acknowledged,
+            # leave the dungeon loop so the scene manager can take over.
+            if hasattr(game, "player_alive") and not game.player_alive:
+                if not getattr(game, "urgent_message", None) or getattr(game, "urgent_resolved", True):
+                    running = False
+
+
+
     def _handle_input(self, game: Game, key: int) -> None:
         mapping = {
             pygame.K_UP: (0, -1),
@@ -312,6 +320,14 @@ class AsciiRenderer:
             pygame.K_KP8: (0, -1),
             pygame.K_KP9: (1, -1),
         }
+        
+        # If an urgent message is active, ignore all input except SPACE to acknowledge.
+        if getattr(game, "urgent_message", None) and not getattr(game, "urgent_resolved", True):
+            if key == pygame.K_SPACE:
+                game.urgent_resolved = True
+            return
+
+        
         if game.awaiting_terminus:
             if key in mapping:
                 tx, ty = self.target_cursor
@@ -349,6 +365,9 @@ class AsciiRenderer:
                         if ability.action not in ("activate_all", "activate_seed"):
                             self._trigger_action(game, ability.action)
                     return
+        if key == pygame.K_KP5:
+            game.queue_player_wait()
+            return
 
         if key in mapping:
             game.queue_player_move(mapping[key])
