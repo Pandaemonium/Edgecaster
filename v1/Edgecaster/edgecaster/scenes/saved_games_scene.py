@@ -28,9 +28,8 @@ class SavedGamesScene(Scene):
 
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_ESCAPE,):
-                        # Back to main menu
-                        from .main_menu import MainMenuScene
-                        manager.set_scene(MainMenuScene())
+                        # Pop this sub-scene, return to whatever was underneath (main menu)
+                        manager.pop_scene()
                         return
 
                     if event.key in (pygame.K_UP, pygame.K_w, pygame.K_DOWN, pygame.K_s):
@@ -38,9 +37,8 @@ class SavedGamesScene(Scene):
                         selected_idx = 0
 
                     if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        # Only option is Back
-                        from .main_menu import MainMenuScene
-                        manager.set_scene(MainMenuScene())
+                        # Only option is Back: pop and resume previous scene
+                        manager.pop_scene()
                         return
 
             # -------- DRAW --------

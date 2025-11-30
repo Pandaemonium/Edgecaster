@@ -10,16 +10,19 @@ from .base import Scene
 class OptionsScene(Scene):
     """Dummy options menu with a couple of toggles to test hierarchy."""
 
+    def __init__(self) -> None:
+        # Remember which option was selected last time
+        self.selected_idx = 0
+
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         renderer = manager.renderer
         surface = renderer.surface
         clock = pygame.time.Clock()
 
         # Use the *shared* options dict from the manager
-        toggles = manager.options
-        toggle_keys = list(toggles.keys())
-        selected_idx = 0
-        
+        toggles: Dict[str, bool] = manager.options
+        toggle_keys: List[str] = list(toggles.keys())
+
         running = True
         while running:
             for event in pygame.event.get():
@@ -29,26 +32,24 @@ class OptionsScene(Scene):
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        from .main_menu import MainMenuScene
-                        manager.set_scene(MainMenuScene())
+                        # Pop this sub-scene, resume underlying menu (main menu)
+                        manager.pop_scene()
                         return
 
                     if event.key in (pygame.K_UP, pygame.K_w):
-                        selected_idx = (selected_idx - 1) % (len(toggles) + 1)
+                        self.selected_idx = (self.selected_idx - 1) % (len(toggles) + 1)
                     elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        selected_idx = (selected_idx + 1) % (len(toggles) + 1)
+                        self.selected_idx = (self.selected_idx + 1) % (len(toggles) + 1)
 
                     # Toggle with left/right or enter (if on a toggle)
                     elif event.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_RETURN, pygame.K_SPACE):
-                        if selected_idx < len(toggles):
-                            key = toggle_keys[selected_idx]
+                        if self.selected_idx < len(toggles):
+                            key = toggle_keys[self.selected_idx]
                             toggles[key] = not toggles[key]   # writes back into manager.options
                         else:
-                            # Back selected
-                            from .main_menu import MainMenuScene
-                            manager.set_scene(MainMenuScene())
+                            # Back selected: pop and resume previous scene
+                            manager.pop_scene()
                             return
-
 
             # -------- DRAW --------
             surface.fill(renderer.bg)
@@ -62,7 +63,7 @@ class OptionsScene(Scene):
             y = 150
             for i, key in enumerate(toggle_keys):
                 val = toggles[key]
-                selected = (i == selected_idx)
+                selected = (i == self.selected_idx)
                 color = renderer.player_color if selected else renderer.fg
                 prefix = "▶ " if selected else "  "
                 status = "ON" if val else "OFF"
@@ -72,7 +73,7 @@ class OptionsScene(Scene):
                 y += text.get_height() + 10
 
             # Back option
-            selected = (selected_idx == len(toggles))
+            selected = (self.selected_idx == len(toggles))
             color = renderer.player_color if selected else renderer.fg
             prefix = "▶ " if selected else "  "
             back_text = renderer.font.render(prefix + "Back to Main Menu", True, color)
