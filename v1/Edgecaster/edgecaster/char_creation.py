@@ -1,7 +1,27 @@
 import pygame
 from typing import List, Tuple
+from typing import Optional
 
 from edgecaster.character import Character, default_character
+
+
+# --- Character classes & descriptions (from the old scene) ---
+
+CHAR_CLASSES: List[str] = [
+    "Kochbender",
+    "Automoton",
+    "Strange Attractor",
+    "Weaver",
+]
+
+CLASS_DESCRIPTIONS = {
+    "Kochbender": "Who commands the icy lash of runes carved infinitely sharp? Who obeys?",
+    "Automoton": "A common misconception that machines cannot perform magic. Quite the contrary.",
+    "Strange Attractor": "Cursed to dance among weird energies, or they among her.",
+    "Weaver": "Everyone wears clothing, but few make their own. So too with destiny.",
+}
+
+DEFAULT_NAME = "Pandaemonium"
 
 
 class CharCreation:
@@ -16,69 +36,169 @@ class CharCreation:
         self.bg = (12, 12, 20)
         self.fg = (220, 230, 240)
         self.sel = (255, 230, 120)
+
         self.running = True
-        self.fields = ["name", "generator", "illuminator", "con", "agi", "int", "res", "done"]
+
+        # Fields in the order they appear visually:
+        self.fields = [
+            "name",
+            "generator",
+            "illuminator",
+            "con",
+            "agi",
+            "int",
+            "res",
+            "class",
+            "done",
+        ]
         self.idx = 0
+
         self.generators = ["custom", "koch", "branch", "zigzag"]
         self.illuminators = ["radius", "neighbors"]
+
         self.char = default_character()
 
-    def run(self) -> Character:
+        # Safeguards in case default_character is missing attributes
+        if not hasattr(self.char, "name") or self.char.name is None:
+            self.char.name = DEFAULT_NAME
+        elif self.char.name == "":
+            self.char.name = DEFAULT_NAME
+
+        if not hasattr(self.char, "generator"):
+            self.char.generator = "koch"
+        if not hasattr(self.char, "illuminator"):
+            self.char.illuminator = "radius"
+        if not hasattr(self.char, "stats"):
+            self.char.stats = {"con": 0, "agi": 0, "int": 0, "res": 0}
+        if not hasattr(self.char, "point_pool"):
+            self.char.point_pool = 10
+
+        # Class selection state
+        self.class_idx = 0
+        self.char_class = CHAR_CLASSES[self.class_idx]
+
+    def run(self) -> Optional[Character]:
         clock = pygame.time.Clock()
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
-                    return self.char
+                    return None
+
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_RETURN:
-                        self.running = False
-                        break
+                    # ESC: bail out, keep default char
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
-                        break
+                        return None
+
+                    # ENTER: either advance to next field, or confirm on "done"
+                    if event.key == pygame.K_RETURN:
+                        current = self.fields[self.idx]
+
+                        # leaving name field via Enter: restore default if blank
+                        if current == "name" and not self.char.name.strip():
+                            self.char.name = DEFAULT_NAME
+
+                        if current == "done":
+                            self.running = False
+                            break
+                        else:
+                            # move to next field
+                            self.idx = (self.idx + 1) % len(self.fields)
+                            continue
+
+                    # Otherwise, normal key handling
                     self.handle_key(event.key)
+
             self.draw()
             pygame.display.flip()
             clock.tick(60)
+
+        # Attach the chosen class to the character before returning
+        setattr(self.char, "char_class", self.char_class)
         return self.char
 
     def handle_key(self, key: int) -> None:
+        # Move between fields
         if key in (pygame.K_DOWN, pygame.K_TAB):
+            current = self.fields[self.idx]
+            # leaving name field via Down/Tab: restore default if blank
+            if current == "name" and not self.char.name.strip():
+                self.char.name = DEFAULT_NAME
             self.idx = (self.idx + 1) % len(self.fields)
             return
+
         if key == pygame.K_UP:
+            current = self.fields[self.idx]
+            # leaving name field via Up: restore default if blank
+            if current == "name" and not self.char.name.strip():
+                self.char.name = DEFAULT_NAME
             self.idx = (self.idx - 1) % len(self.fields)
             return
 
         field = self.fields[self.idx]
+
+        # --- Name input ---
         if field == "name":
             if key == pygame.K_BACKSPACE:
-                self.char.name = self.char.name[:-1]
+                # If we're still on the default name, wipe it in one go
+                if self.char.name == DEFAULT_NAME:
+                    self.char.name = ""
+                else:
+                    self.char.name = self.char.name[:-1]
             elif 32 <= key <= 126:
-                self.char.name += chr(key)
+                # Produce a character, respecting Shift / Caps Lock
+                ch = chr(key)
+                mods = pygame.key.get_mods()
+                if mods & (pygame.KMOD_SHIFT | pygame.KMOD_CAPS):
+                    ch = ch.upper()
+                # If we're on the untouched default name, start fresh
+                if self.char.name == DEFAULT_NAME:
+                    self.char.name = ""
+                self.char.name += ch
             return
+
+        # --- Generator selection ---
         if field == "generator":
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
                 delta = 1 if key == pygame.K_RIGHT else -1
-                idx = self.generators.index(self.char.generator)
+                try:
+                    idx = self.generators.index(self.char.generator)
+                except ValueError:
+                    idx = 0
+                    self.char.generator = self.generators[0]
                 self.char.generator = self.generators[(idx + delta) % len(self.generators)]
             if key == pygame.K_d and self.char.generator == "custom":
                 self.char.custom_pattern = self.draw_custom_pattern()
             return
+
+        # --- Illuminator selection ---
         if field == "illuminator":
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
                 delta = 1 if key == pygame.K_RIGHT else -1
-                idx = self.illuminators.index(self.char.illuminator)
+                try:
+                    idx = self.illuminators.index(self.char.illuminator)
+                except ValueError:
+                    idx = 0
+                    self.char.illuminator = self.illuminators[0]
                 self.char.illuminator = self.illuminators[(idx + delta) % len(self.illuminators)]
             return
+
+        # --- Stat adjustments ---
         if field in ("con", "agi", "int", "res"):
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
                 self.adjust_stat(field, 1 if key == pygame.K_RIGHT else -1)
             return
 
+        # --- Class selection ---
+        if field == "class":
+            if key in (pygame.K_LEFT, pygame.K_RIGHT):
+                delta = 1 if key == pygame.K_RIGHT else -1
+                self.class_idx = (self.class_idx + delta) % len(CHAR_CLASSES)
+                self.char_class = CHAR_CLASSES[self.class_idx]
+            return
+
     def adjust_stat(self, stat: str, delta: int) -> None:
-        # simple point buy with pool
         current = self.char.stats.get(stat, 0)
         if delta > 0 and self.char.point_pool <= 0:
             return
@@ -91,20 +211,95 @@ class CharCreation:
     def draw(self) -> None:
         self.surface.fill(self.bg)
         y = 60
+
+        # Title
         self.draw_title("Character Creation", y)
         y += 50
-        self.draw_field("Name", self.char.name, y, selected=self.fields[self.idx] == "name")
+
+        # Name – no more "Edgecaster", just current name
+        self.draw_field(
+            "Name",
+            self.char.name,
+            y,
+            selected=self.fields[self.idx] == "name",
+        )
         y += 40
+
+        # Generator
         gen_label = self.char.generator
         if self.char.generator == "custom":
             gen_label = "custom (press D to draw; 4 verts, X0-10, Y-5..5)"
-        self.draw_field("Generator", gen_label, y, selected=self.fields[self.idx] == "generator")
+        self.draw_field(
+            "Generator",
+            gen_label,
+            y,
+            selected=self.fields[self.idx] == "generator",
+        )
         y += 40
-        self.draw_field("Illuminator", self.char.illuminator, y, selected=self.fields[self.idx] == "illuminator")
+
+        # Illuminator
+        self.draw_field(
+            "Illuminator",
+            self.char.illuminator,
+            y,
+            selected=self.fields[self.idx] == "illuminator",
+        )
         y += 50
+
+        # Stats
         self.draw_stats(y)
-        y += 150
-        self.draw_field("Press Enter to start (Esc=default)", "", y, selected=self.fields[self.idx] == "done")
+        # This y is approximate; draw_stats uses its own local y.
+        # Then push the class selector a bit further down.
+        y += 190  # slightly larger than before for more spacing
+
+        # Class selection & description
+        y = self.draw_class_section(y)
+        y += 30
+
+        # Footer ("done" field)
+        self.draw_field(
+            "Press Enter to start (Esc=quit)",
+            "",
+            y,
+            selected=self.fields[self.idx] == "done",
+        )
+
+    def draw_class_section(self, y: int) -> int:
+        """Draw the class selector + wrapped description."""
+        selected = self.fields[self.idx] == "class"
+
+        # Display selected class
+        self.draw_field("Class", self.char_class, y, selected=selected)
+        y += 36
+
+        desc = CLASS_DESCRIPTIONS.get(self.char_class, "")
+        if not desc:
+            return y
+
+        # simple word wrap
+        max_width = self.width - 160
+        dx = 100
+        words = desc.split()
+        line_words: List[str] = []
+
+        while words:
+            word = words.pop(0)
+            test_line = (" ".join(line_words + [word])).strip()
+            surf = self.font.render(test_line, True, (180, 190, 210))
+            if surf.get_width() > max_width and line_words:
+                line_surf = self.font.render(" ".join(line_words), True, (180, 190, 210))
+                self.surface.blit(line_surf, (dx, y))
+                y += 26
+                line_words = [word]
+            else:
+                line_words.append(word)
+
+        if line_words:
+            line_surf = self.font.render(" ".join(line_words), True, (180, 190, 210))
+            self.surface.blit(line_surf, (dx, y))
+            y += 26
+
+        return y
 
     def draw_custom_pattern(self) -> list | None:
         """
@@ -173,10 +368,20 @@ class CharCreation:
             # grid
             for xi in range(0, 11):
                 px = origin[0] + xi * scale
-                pygame.draw.line(self.surface, (60, 60, 90), (px, origin[1] - 5 * scale), (px, origin[1] + 5 * scale))
+                pygame.draw.line(
+                    self.surface,
+                    (60, 60, 90),
+                    (px, origin[1] - 5 * scale),
+                    (px, origin[1] + 5 * scale),
+                )
             for yi in range(-5, 6):
                 py = origin[1] + yi * scale
-                pygame.draw.line(self.surface, (60, 60, 90), (origin[0], py), (origin[0] + 10 * scale, py))
+                pygame.draw.line(
+                    self.surface,
+                    (60, 60, 90),
+                    (origin[0], py),
+                    (origin[0] + 10 * scale, py),
+                )
 
             def draw_point(pt, color, radius=6):
                 px = int(origin[0] + pt[0] * scale)
@@ -205,16 +410,34 @@ class CharCreation:
 
             # buttons
             btn_w, btn_h = 140, 34
-            take_btn = pygame.Rect(self.width - btn_w - 60, self.height - btn_h - 30, btn_w, btn_h)
+            take_btn = pygame.Rect(
+                self.width - btn_w - 60, self.height - btn_h - 30, btn_w, btn_h
+            )
             redo_btn = pygame.Rect(60, self.height - btn_h - 30, btn_w, btn_h)
-            pygame.draw.rect(self.surface, (30, 90, 40) if done_ready else (40, 40, 40), take_btn)
-            pygame.draw.rect(self.surface, (80, 150, 90) if done_ready else (90, 90, 90), take_btn, 2)
+            pygame.draw.rect(
+                self.surface, (30, 90, 40) if done_ready else (40, 40, 40), take_btn
+            )
+            pygame.draw.rect(
+                self.surface, (80, 150, 90) if done_ready else (90, 90, 90), take_btn, 2
+            )
             pygame.draw.rect(self.surface, (90, 40, 40), redo_btn)
             pygame.draw.rect(self.surface, (150, 90, 90), redo_btn, 2)
             ttxt = self.font.render("Take Power", True, (220, 240, 220))
             rtxt = self.font.render("Redo", True, (240, 220, 220))
-            self.surface.blit(ttxt, (take_btn.centerx - ttxt.get_width() // 2, take_btn.centery - ttxt.get_height() // 2))
-            self.surface.blit(rtxt, (redo_btn.centerx - rtxt.get_width() // 2, redo_btn.centery - rtxt.get_height() // 2))
+            self.surface.blit(
+                ttxt,
+                (
+                    take_btn.centerx - ttxt.get_width() // 2,
+                    take_btn.centery - ttxt.get_height() // 2,
+                ),
+            )
+            self.surface.blit(
+                rtxt,
+                (
+                    redo_btn.centerx - rtxt.get_width() // 2,
+                    redo_btn.centery - rtxt.get_height() // 2,
+                ),
+            )
 
             pygame.display.flip()
             clock.tick(60)
@@ -229,10 +452,17 @@ class CharCreation:
         self.surface.blit(text, (80, y))
 
     def draw_stats(self, y: int) -> None:
-        label = self.big.render(f"Stats (Points left: {self.char.point_pool})", True, self.fg)
+        label = self.big.render(
+            f"Stats (Points left: {self.char.point_pool})", True, self.fg
+        )
         self.surface.blit(label, (80, y))
         y += 36
-        for key, lbl in (("con", "Constitution"), ("agi", "Agility"), ("int", "Intelligence"), ("res", "Resonance")):
+        for key, lbl in (
+            ("con", "Constitution"),
+            ("agi", "Agility"),
+            ("int", "Intelligence"),
+            ("res", "Resonance"),
+        ):
             selected = self.fields[self.idx] == key
             col = self.sel if selected else self.fg
             val = self.char.stats.get(key, 0)
@@ -241,8 +471,8 @@ class CharCreation:
             y += 32
 
 
-def run_character_creation(cfg) -> Character:
+def run_character_creation(cfg) -> Optional[Character]:
     screen = CharCreation(cfg.view_width, cfg.view_height)
     char = screen.run()
-    pygame.display.quit()
+    # Do NOT pygame.display.quit() here; we’re keeping the window alive.
     return char

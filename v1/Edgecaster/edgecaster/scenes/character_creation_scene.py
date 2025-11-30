@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+from .base import Scene
+from edgecaster.char_creation import run_character_creation
+from edgecaster.character import Character
+
+from .dungeon import DungeonScene  # forward reference via import inside or here
+
+
+class CharacterCreationScene(Scene):
+    """Scene that runs the character creation UI and then transitions to the dungeon."""
+
+    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        cfg = manager.cfg
+
+        # This opens its own Pygame window (from char_creation.py),
+        # lets the player tweak stats, etc., and returns a Character.
+        char: Character = run_character_creation(cfg)
+            
+        if char is None:
+            # player closed the char-creation window -> quit the whole game
+            manager.set_scene(None)
+            return
+        # If you someday want Esc to mean "quit the game from char creation",
+        # you could detect that here, but right now run_character_creation
+        # always returns a Character.
+        manager.character = char
+
+        # Next: dungeon
+        manager.set_scene(DungeonScene())

@@ -87,30 +87,23 @@ class LevelState:
     spotted: set = None  # seen actors
 
 
+
 class Game:
-    def __init__(
-        self,
-        cfg: config.GameConfig,
-        rng,
-        player_name: str = "Edgecaster",
-        player_class: str = "Kochbender",
-    ) -> None:
+    def __init__(self, cfg: config.GameConfig, rng, character: Character | None = None) -> None:
         self.cfg = cfg
         self.rng = rng
-        self.character = character or default_character()
         self.log = MessageLog()
         self.place_range = cfg.place_range
-        # Urgent message system: blocks normal input until acknowledged.
-        self.urgent_message: str | None = None
-        self.urgent_resolved: bool = True
 
-        # character meta
-        self.player_name = player_name or "Edgecaster"
-        self.player_class = player_class or "Kochbender"
+        # character info
+        self.character: Character = character or default_character()
+        # XP / parameter defs based on character stats
         self.param_defs = self._init_param_defs()
         self.param_state = self._init_param_state()
-        self._recalc_param_state_max()
+        # generators the player "knows" for NPC rewards etc.
         self.unlocked_generators: List[str] = [self.character.generator]
+        # start with params auto-maxed given current stats
+        self._recalc_param_state_max()
 
         self.levels: Dict[int, LevelState] = {}
         self.current_level = 0
@@ -121,36 +114,32 @@ class Game:
 
         # spawn player
         px, py = self.levels[0].world.entry
-        stats = self._build_player_stats()
+        player_name = self.character.name or "Edgecaster"
+        player_stats = self._build_player_stats()
         player = Actor(
             actor_id=self._new_id(),
-            name=self.character.name or "Edgecaster",
+            name=player_name,
             pos=(px, py),
             faction="player",
-            stats=stats,
+            stats=player_stats,
         )
+
         self.player_id = player.actor_id
         self.levels[0].actors[player.actor_id] = player
 
         # enemies
         self._spawn_enemies(self.levels[0], count=4)
 
-        # intro messages
-
+        # optional little intro flourish (you can tweak or remove)
         import datetime
         year = datetime.date.today().year
         leap = (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0))
-
-        if leap:
-            leapyearmessage="It's a leap year. Be careful!"
-        else:
-            leapyearmessage="It's not a leap year."
-        self.log.add(f"Welcome, {self.player_name} the {self.player_class}. " + leapyearmessage)
-        # npc(s)
-        self._spawn_npcs(self.levels[0], count=1)
+        leap_msg = "It's a leap year. Be careful!" if leap else "It's not a leap year."
+        self.log.add(f"Welcome, {player_name}. {leap_msg}")
         self.log.add("Imps lurk nearby. Move with arrows/WASD. F: activate rune. ESC to exit.")
 
         self._update_fov(self.levels[0])
+
 
     def _build_player_stats(self) -> Stats:
         con = self.character.stats.get("con", 0)
@@ -267,7 +256,7 @@ class Game:
         player.stats.max_mana += mana_gain
         player.stats.hp = player.stats.max_hp
         player.stats.mana = player.stats.max_mana
-        self.log.add(f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)")
+        self.set_urgent(f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)")
 
     # --- helpers ---
 

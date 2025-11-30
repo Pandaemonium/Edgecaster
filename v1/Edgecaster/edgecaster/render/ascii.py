@@ -76,6 +76,7 @@ class AsciiRenderer:
         self.glow_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
         self.abilities_signature = None
         self.ability_page = 0
+        self.quit_requested = False
 
     def draw_world(self, world: World) -> None:
         self.surface.fill(self.bg)
@@ -359,15 +360,50 @@ class AsciiRenderer:
     def draw_status(self, game: Game) -> None:
         player = game.actors[game.player_id]
         x = 8
-        y = 24
+
+        # Shift the whole HUD down just a little (was y = 40)
+        y = 48
+
         bar_w = 200
         bar_h = 12
+
+        # --- Header: name, class, level ---
+        char = getattr(game, "character", None)
+        if char:
+            name = char.name or "Edgecaster"
+            char_class = getattr(char, "char_class", None)
+        else:
+            name = getattr(player, "name", "Edgecaster")
+            char_class = None
+
+        lvl = getattr(player.stats, "level", 1)
+        if char_class:
+            header_line = f"{name} the {char_class} (Lv {lvl})"
+        else:
+            header_line = f"{name} (Lv {lvl})"
+
+        header_text = self.small_font.render(header_line, True, self.fg)
+
+        # Raise header slightly (was y - 24)
+        header_y = y - 40
+        self.surface.blit(header_text, (x, header_y))
+
+
+        # --- HP bar ---
         pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
         hp_ratio = 0 if player.stats.max_hp == 0 else player.stats.hp / player.stats.max_hp
-        pygame.draw.rect(self.surface, self.hp_color, pygame.Rect(x, y, int(bar_w * hp_ratio), bar_h))
-        hp_text = self.small_font.render(f"HP {player.stats.hp}/{player.stats.max_hp}", True, self.fg)
+        pygame.draw.rect(
+            self.surface,
+            self.hp_color,
+            pygame.Rect(x, y, int(bar_w * hp_ratio), bar_h),
+        )
+        hp_text = self.small_font.render(
+            f"HP {player.stats.hp}/{player.stats.max_hp}", True, self.fg
+        )
+        # Put the HP label just above its bar
         self.surface.blit(hp_text, (x + 4, y - 18))
-        # xp to the right of HP
+
+        # --- XP bar (to the right of HP) ---
         xp_x = x + bar_w + 20
         xp_y = y
         xp_needed = max(1, getattr(player.stats, "xp_to_next", 1))
@@ -375,23 +411,48 @@ class AsciiRenderer:
         lvl = getattr(player.stats, "level", 1)
         xp_ratio = max(0, min(1, xp_cur / xp_needed))
         xp_w = 180
-        pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(xp_x, xp_y, xp_w, bar_h))
-        pygame.draw.rect(self.surface, (120, 200, 120), pygame.Rect(xp_x, xp_y, int(xp_w * xp_ratio), bar_h))
-        xp_text = self.small_font.render(f"XP {xp_cur}/{xp_needed} (Lv {lvl})", True, self.fg)
+        pygame.draw.rect(
+            self.surface,
+            self.bar_bg,
+            pygame.Rect(xp_x, xp_y, xp_w, bar_h),
+        )
+        pygame.draw.rect(
+            self.surface,
+            (120, 200, 120),
+            pygame.Rect(xp_x, xp_y, int(xp_w * xp_ratio), bar_h),
+        )
+        xp_text = self.small_font.render(
+            f"XP {xp_cur}/{xp_needed} (Lv {lvl})", True, self.fg
+        )
         self.surface.blit(xp_text, (xp_x + 4, xp_y - 18))
+
+        # --- Mana bar below HP ---
         y += bar_h + 16
         pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
         mp_ratio = 0 if player.stats.max_mana == 0 else player.stats.mana / player.stats.max_mana
-        pygame.draw.rect(self.surface, self.mana_color, pygame.Rect(x, y, int(bar_w * mp_ratio), bar_h))
-        mp_text = self.small_font.render(f"Mana {player.stats.mana}/{player.stats.max_mana}", True, self.fg)
+        pygame.draw.rect(
+            self.surface,
+            self.mana_color,
+            pygame.Rect(x, y, int(bar_w * mp_ratio), bar_h),
+        )
+        mp_text = self.small_font.render(
+            f"Mana {player.stats.mana}/{player.stats.max_mana}", True, self.fg
+        )
         self.surface.blit(mp_text, (x + 4, y - 18))
-        # stats under bars
+
+        # --- Character stats & coherence under bars ---
         y += bar_h + 12
         if hasattr(game, "character") and game.character:
             stats = game.character.stats
-            line = f"CON {stats.get('con',0)}  AGI {stats.get('agi',0)}  INT {stats.get('int',0)}  RES {stats.get('res',0)}"
+            line = (
+                f"CON {stats.get('con',0)}  "
+                f"AGI {stats.get('agi',0)}  "
+                f"INT {stats.get('int',0)}  "
+                f"RES {stats.get('res',0)}"
+            )
             stats_text = self.small_font.render(line, True, self.fg)
             self.surface.blit(stats_text, (x, y))
+
             # coherence info
             verts_count = len(game.pattern.vertices) if hasattr(game, "pattern") else 0
             coh_limit = game._coherence_limit()
@@ -399,9 +460,12 @@ class AsciiRenderer:
             fail_chance = 0.0 if verts_count <= coh_limit else over / (coh_limit + over)
             y += 18
             coh_text = self.small_font.render(
-                f"Vertices {verts_count}/{coh_limit}  Fail~{int(fail_chance*100)}%", True, self.fg
+                f"Vertices {verts_count}/{coh_limit}  Fail~{int(fail_chance*100)}%",
+                True,
+                self.fg,
             )
             self.surface.blit(coh_text, (x, y))
+
 
     def draw_log(self, game: Game) -> None:
         start_y = self.height - self.ability_bar_height - 120
@@ -522,6 +586,7 @@ class AsciiRenderer:
     def render(self, game: Game) -> None:
         clock = pygame.time.Clock()
         running = True
+        self.quit_requested = False
         self.target_cursor = game.actors[game.player_id].pos
         gen_list = tuple(getattr(game, "unlocked_generators", [getattr(game.character, "generator", "koch")]))
         illum_sig = getattr(game.character, "illuminator", "radius")

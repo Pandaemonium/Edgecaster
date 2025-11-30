@@ -1,39 +1,29 @@
 from __future__ import annotations
 
-from .base import Scene, CharacterInfo
-
+from .base import Scene
 from edgecaster.game import Game
 
 
 class DungeonScene(Scene):
-    """The main roguelike dungeon run."""
+    """The main roguelike dungeon scene."""
 
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        if manager.character is None:
-            # Shouldn't happen, but be defensive.
-            manager.character = CharacterInfo(name="Edgecaster", char_class="Kochbender")
-
-        char = manager.character
         cfg = manager.cfg
         rng = manager.rng
         renderer = manager.renderer
+        char = manager.character
 
-        game = Game(
-            cfg,
-            rng,
-            player_name=char.name,
-            player_class=char.char_class,
-        )
+        # Construct the game using the chosen character
+        game = Game(cfg, rng, character=char)
 
-        # This call owns its own loop (QUIT/ESC leave the loop).
+        # Use the shared renderer; do NOT tear it down here
         renderer.render(game)
 
-        # After the dungeon run, decide what comes next.
+        # Decide what comes next:
         if not game.player_alive:
-            # Player died: go back to character creation.
-            from .character_creation import CharacterCreationScene
+            # After death, go back to character creation
+            from .character_creation_scene import CharacterCreationScene
             manager.set_scene(CharacterCreationScene())
         else:
-            # Later you can branch to a world map or victory screen here.
+            # Later, you could branch to a world-map scene, etc.
             manager.set_scene(None)
-
