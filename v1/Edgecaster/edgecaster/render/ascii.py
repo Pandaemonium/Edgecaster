@@ -77,6 +77,8 @@ class AsciiRenderer:
         self.abilities_signature = None
         self.ability_page = 0
         self.quit_requested = False
+        self.pause_requested = False   # NEW: used by DungeonScene to decide on pause
+
 
     def draw_world(self, world: World) -> None:
         self.surface.fill(self.bg)
@@ -607,7 +609,9 @@ class AsciiRenderer:
                         elif self.config_open:
                             self.config_open = False
                         else:
-                            running = False
+                            # Normal ESC in the dungeon: request pause
+                            self.pause_requested = True
+                            self.quit_requested = True   # ensure the loop exits
                     else:
                         self._handle_input(game, event.key)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -643,6 +647,15 @@ class AsciiRenderer:
                     self.draw_dialog_overlay()
                 pygame.display.flip()
                 clock.tick(60)
+            # If some input handler requested that we quit the dungeon loop
+            # (e.g. to open the inventory), honor that here.
+            if self.quit_requested:
+                running = False
+                continue
+            # If something (like pause) requested we leave the dungeon loop, do so.
+            if self.quit_requested or getattr(self, "pause_requested", False):
+                running = False
+                continue
 
             # If the player is dead and any urgent message has been acknowledged,
             # leave the dungeon loop so the scene manager can take over.
@@ -720,6 +733,17 @@ class AsciiRenderer:
         if getattr(game, "urgent_message", None) and not getattr(game, "urgent_resolved", True):
             if key == pygame.K_SPACE:
                 game.urgent_resolved = True
+            return
+            
+        # --- Inventory toggle (dungeon-level) ---
+        # Press 'i' to open the inventory. We mark a flag on the Game and
+        # request that the dungeon render loop exit. The DungeonScene will
+        # see this and push the InventoryScene on the scene stack.
+        if key == pygame.K_i:
+            # Avoid opening inventory while in place/aim modes, etc.
+            if not game.awaiting_terminus and self.aim_action is None:
+                setattr(game, "inventory_requested", True)
+                self.quit_requested = True
             return
 
         

@@ -13,6 +13,10 @@ from .options_scene import OptionsScene
 class MainMenuScene(Scene):
     """Top-level main menu that can launch other scenes."""
 
+    def __init__(self) -> None:
+        # Remember where the cursor is between visits
+        self.selected_idx = 0
+
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         renderer = manager.renderer
         surface = renderer.surface
@@ -24,12 +28,12 @@ class MainMenuScene(Scene):
             "Options",
             "Quit",
         ]
-        selected_idx = 0
 
         running = True
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    # Clear stack / quit game
                     manager.set_scene(None)
                     return
 
@@ -40,20 +44,23 @@ class MainMenuScene(Scene):
                         return
 
                     if event.key in (pygame.K_UP, pygame.K_w):
-                        selected_idx = (selected_idx - 1) % len(options)
+                        self.selected_idx = (self.selected_idx - 1) % len(options)
                     elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        selected_idx = (selected_idx + 1) % len(options)
+                        self.selected_idx = (self.selected_idx + 1) % len(options)
 
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        choice = options[selected_idx]
+                        choice = options[self.selected_idx]
                         if choice == "New Game":
+                            # Hard switch into character creation
                             manager.set_scene(CharacterCreationScene())
                             return
                         elif choice == "Load Game":
-                            manager.set_scene(SavedGamesScene())
+                            # Treat Saved Games as a sub-scene: overlay on stack
+                            manager.push_scene(SavedGamesScene())
                             return
                         elif choice == "Options":
-                            manager.set_scene(OptionsScene())
+                            # Treat Options as a sub-scene: overlay on stack
+                            manager.push_scene(OptionsScene())
                             return
                         elif choice == "Quit":
                             manager.set_scene(None)
@@ -62,17 +69,7 @@ class MainMenuScene(Scene):
             # -------- DRAW --------
             surface.fill(renderer.bg)
 
-            # Title / banner (swap this out for sicker ASCII whenever)
-            title_lines = [
-                r"    ______    ______    ______   ______   ______   ______  ",
-                r"   / ____/   / ____/   / ____/  / ____/  / ____/  / ____/  ",
-                r"  / /__     / /__     / /_     / /_     / /      /___ \    ",
-                r" / __/     / __/     / __/    / __/    / /___   ____/ /    ",
-                r"/_/      /_/       /_/      /_/      \____/   /_____/     ",
-                r"",
-                r"              A fractal roguelike experiment              ",
-            ]
-            
+            # ASCII art banner
             ascii_art = r"""
                                                /\                                
                                               /  \                               
@@ -107,18 +104,19 @@ class MainMenuScene(Scene):
                                 /_/____\/____\_\                                      
             """
 
-
             y = 80
             for line in ascii_art.splitlines():
+                if not line.strip():
+                    y += renderer.font.get_height()
+                    continue
                 surf = renderer.font.render(line, True, renderer.fg)
                 surface.blit(surf, ((renderer.width - surf.get_width()) // 2, y))
                 y += renderer.font.get_height()
 
-
             # Menu options
             y -= 340
             for idx, opt in enumerate(options):
-                selected = (idx == selected_idx)
+                selected = (idx == self.selected_idx)
                 color = renderer.player_color if selected else renderer.fg
                 prefix = "▶ " if selected else "  "
                 text = renderer.font.render(prefix + opt, True, color)
