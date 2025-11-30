@@ -9,6 +9,7 @@ from edgecaster import mapgen
 from edgecaster.patterns.activation import project_vertices, damage_from_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
+from edgecaster.content import npcs
 
 Move = Tuple[int, int]
 
@@ -93,6 +94,10 @@ class Game:
         self.character = character or default_character()
         self.log = MessageLog()
         self.place_range = cfg.place_range
+        self.param_defs = self._init_param_defs()
+        self.param_state = self._init_param_state()
+        self._recalc_param_state_max()
+        self.unlocked_generators: List[str] = [self.character.generator]
 
         self.levels: Dict[int, LevelState] = {}
         self.current_level = 0
@@ -115,6 +120,8 @@ class Game:
         self.levels[0].actors[player.actor_id] = player
         # enemies
         self._spawn_enemies(self.levels[0], count=4)
+        # npc(s)
+        self._spawn_npcs(self.levels[0], count=1)
         self.log.add("Imps lurk nearby. Move with arrows/WASD. F: activate rune. ESC to exit.")
 
         self._update_fov(self.levels[0])
@@ -124,7 +131,93 @@ class Game:
         res = self.character.stats.get("res", 0)
         base_hp = 20 + con * 6
         base_mana = 50 + res * 12
-        return Stats(hp=base_hp, max_hp=base_hp, mana=base_mana, max_mana=base_mana)
+        return Stats(
+            hp=base_hp,
+            max_hp=base_hp,
+            mana=base_mana,
+            max_mana=base_mana,
+            xp=0,
+            level=1,
+            xp_to_next=self._xp_needed_for_level(1),
+        )
+
+    def _init_param_defs(self) -> Dict[str, Dict[str, dict]]:
+        # thresholds correspond to minimum stat to unlock the value at same index
+        return {
+            "branch": {
+                "angle": {
+                    "values": [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90],
+                    "thresholds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                    "stat": "int",
+                    "label": "Angle",
+                },
+                "count": {"values": [2, 3, 4, 5], "thresholds": [0, 3, 5, 7], "stat": "int", "label": "Branches"},
+            },
+            "koch": {
+                "height": {"values": [0.25, 0.4, 0.6], "thresholds": [0, 3, 6], "stat": "int", "label": "Amplitude"},
+                "flip": {"values": [False, True], "thresholds": [0, 5], "stat": "int", "label": "Mirror"},
+            },
+            "subdivide": {
+                "parts": {"values": [2, 3, 4, 5, 6], "thresholds": [0, 2, 4, 6, 8], "stat": "int", "label": "Segments"},
+            },
+            "zigzag": {
+                "parts": {"values": [4, 6, 8, 10], "thresholds": [0, 2, 4, 6], "stat": "int", "label": "Segments"},
+                "amp": {"values": [0.1, 0.2, 0.3], "thresholds": [0, 3, 6], "stat": "int", "label": "Amplitude"},
+            },
+            "activate_all": {
+                "radius": {"values": [0.5, 1.0, 1.5, 2.0, 3.0, 4.0], "thresholds": [0, 1, 2, 3, 5, 8], "stat": "res", "label": "Radius"},
+                "damage": {"values": [1, 2, 3], "thresholds": [0, 4, 8], "stat": "res", "label": "Damage"},
+            },
+            "activate_seed": {
+                "neighbor_depth": {"values": [1, 2, 3], "thresholds": [0, 3, 6], "stat": "res", "label": "Depth"},
+                "damage": {"values": [1, 2, 3], "thresholds": [0, 4, 8], "stat": "res", "label": "Damage"},
+            },
+        }
+
+    def _init_param_state(self) -> Dict[Tuple[str, str], int]:
+        state: Dict[Tuple[str, str], int] = {}
+        for action, params in self.param_defs.items():
+            for key in params:
+                state[(action, key)] = 0
+        return state
+
+    def _recalc_param_state_max(self) -> None:
+        """Set all params to the highest tier allowed by current stats (for auto-max radii/neighbor depth)."""
+        for action, params in self.param_defs.items():
+            for key in params:
+                allowed = self._allowed_index(action, key)
+                if allowed < 0:
+                    allowed = 0
+                self.param_state[(action, key)] = allowed
+
+    def _xp_needed_for_level(self, level: int) -> int:
+        """XP needed to go from this level to the next."""
+        return max(1, self.cfg.xp_base + self.cfg.xp_per_level * (level - 1))
+
+    def _grant_xp(self, amount: int) -> None:
+        if amount <= 0:
+            return
+        player = self._player()
+        stats = player.stats
+        stats.xp += amount
+        while stats.xp_to_next > 0 and stats.xp >= stats.xp_to_next:
+            stats.xp -= stats.xp_to_next
+            stats.level += 1
+            stats.xp_to_next = self._xp_needed_for_level(stats.level)
+            self._on_level_up(player)
+            # stats may have changed; refresh parameter caps
+            self._recalc_param_state_max()
+
+    def _on_level_up(self, player: Actor) -> None:
+        con = self.character.stats.get("con", 0)
+        res = self.character.stats.get("res", 0)
+        hp_gain = 5 + con * 2
+        mana_gain = 5 + res * 2
+        player.stats.max_hp += hp_gain
+        player.stats.max_mana += mana_gain
+        player.stats.hp = player.stats.max_hp
+        player.stats.mana = player.stats.max_mana
+        self.log.add(f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)")
 
     # --- helpers ---
 
@@ -165,9 +258,45 @@ class Game:
             if self._actor_at(level, (x, y)):
                 continue
             aid = self._new_id()
-            level.actors[aid] = Actor(aid, "Imp", (x, y), faction="hostile", stats=Stats(hp=5, max_hp=5))
+            level.actors[aid] = Actor(
+                aid,
+                "Imp",
+                (x, y),
+                faction="hostile",
+                stats=Stats(hp=5, max_hp=5),
+                tags={"xp": self.cfg.xp_per_imp},
+            )
             self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
             spawned += 1
+
+    def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
+        if count <= 0:
+            return
+        placed = 0
+        attempts = 0
+        defs = list(npcs.NPC_DEFS.items())
+        while placed < count and attempts < 100 and defs:
+            attempts += 1
+            npc_id, npc_data = defs[min(placed, len(defs) - 1)]
+            # place near entry if possible
+            ex, ey = level.world.entry
+            x = max(1, min(level.world.width - 2, ex + (placed * 2)))
+            y = max(1, min(level.world.height - 2, ey + 1))
+            if not level.world.is_walkable(x, y) or self._actor_at(level, (x, y)):
+                continue
+            aid = self._new_id()
+            actor = Actor(
+                actor_id=aid,
+                name=npc_data.get("name", "NPC"),
+                pos=(x, y),
+                faction="npc",
+                stats=Stats(hp=1, max_hp=1),
+                tags={"npc_id": npc_id},
+                disposition=npc_data.get("base_disposition", 0),
+                affiliations=tuple(npc_data.get("factions", [])),
+            )
+            level.actors[aid] = actor
+            placed += 1
 
     # --- scheduling ---
 
@@ -265,6 +394,86 @@ class Game:
             frontier = new_frontier
         return list(visited)
 
+    # --- param helpers ---
+
+    def _stat_value(self, stat: str) -> int:
+        return int(self.character.stats.get(stat, 0))
+
+    def _allowed_index(self, action: str, key: str) -> int:
+        spec = self.param_defs[action][key]
+        thresholds = spec["thresholds"]
+        stat_val = self._stat_value(spec["stat"])
+        allowed = -1
+        for i, thr in enumerate(thresholds):
+            if stat_val >= thr:
+                allowed = i
+        return allowed
+
+    def _param_value(self, action: str, key: str):
+        idx = self.param_state.get((action, key), 0)
+        values = self.param_defs[action][key]["values"]
+        idx = max(0, min(idx, len(values) - 1))
+        return values[idx]
+
+    def adjust_param(self, action: str, key: str, delta: int) -> Tuple[bool, str]:
+        spec = self.param_defs.get(action, {}).get(key)
+        if not spec:
+            return False, "Unknown parameter"
+        values = spec["values"]
+        allowed = self._allowed_index(action, key)
+        cur_idx = self.param_state.get((action, key), 0)
+        new_idx = cur_idx + delta
+        new_idx = max(0, min(new_idx, len(values) - 1))
+        if new_idx > allowed:
+            need = spec["thresholds"][new_idx]
+            return False, f"Requires {spec['stat'].upper()} {need}"
+        if new_idx == cur_idx:
+            return False, ""
+        self.param_state[(action, key)] = new_idx
+        return True, ""
+
+    def param_view(self, action: str) -> List[dict]:
+        result = []
+        params = self.param_defs.get(action, {})
+        for key, spec in params.items():
+            if action == "activate_all" and key == "damage":
+                # damage scales automatically with resonance; hide from UI
+                continue
+            cur_idx = self.param_state.get((action, key), 0)
+            allowed = self._allowed_index(action, key)
+            value = spec["values"][cur_idx]
+            label = spec.get("label", key)
+            blocked = cur_idx >= allowed and cur_idx == len(spec["values"]) - 1
+            # next requirement
+            next_req = ""
+            next_idx = cur_idx + 1
+            if next_idx < len(spec["values"]):
+                need = spec["thresholds"][next_idx]
+                if self._stat_value(spec["stat"]) < need:
+                    next_req = f"{spec['stat'].upper()} {need}"
+            result.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "value": value,
+                    "allowed_idx": allowed,
+                    "current_idx": cur_idx,
+                    "next_req": next_req,
+                }
+            )
+        return result
+
+    def get_param_value(self, action: str, key: str):
+        if action == "activate_all" and key == "damage":
+            spec = self.param_defs.get(action, {}).get(key)
+            if not spec:
+                return self._param_value(action, key)
+            allowed = self._allowed_index(action, key)
+            values = spec["values"]
+            allowed = max(0, min(allowed, len(values) - 1))
+            return values[allowed]
+        return self._param_value(action, key)
+
     # --- placement ---
 
     def begin_place_mode(self) -> None:
@@ -311,6 +520,50 @@ class Game:
         self._activate_pattern_seed_neighbors(lvl, target_vertex)
         self._advance_time(lvl, self.cfg.action_time_fast)
 
+    # --- interaction / NPCs ---
+
+    def _adjacent_npc(self) -> Optional[Actor]:
+        lvl = self._level()
+        px, py = self._player().pos
+        for actor in lvl.actors.values():
+            if actor.faction == "npc" and actor.alive:
+                ax, ay = actor.pos
+                if max(abs(ax - px), abs(ay - py)) == 1:
+                    return actor
+        return None
+
+    def talk_start(self):
+        """Return dialogue info if an adjacent NPC exists."""
+        npc = self._adjacent_npc()
+        if not npc:
+            self.log.add("No one nearby to talk to.")
+            return None
+        npc_id = npc.tags.get("npc_id")
+        data = npcs.NPC_DEFS.get(npc_id, {})
+        lines = data.get("dialogue", [f"{npc.name} waits patiently."])
+        # Offer a generator you don't already have
+        all_gens = ["koch", "branch", "zigzag"]
+        owned = set(self.unlocked_generators)
+        choices = [g for g in all_gens if g not in owned]
+        if not choices:
+            choices = []
+            lines = lines + ["You already know every pattern I can teach."]
+        return {"npc_id": npc_id, "name": npc.name, "lines": lines, "choices": choices}
+
+    def talk_complete(self, npc_id: str | None, choice: Optional[str]) -> str:
+        """Apply the selected reward, return a summary line."""
+        if not choice:
+            return "You end the conversation."
+        all_gens = {"koch", "branch", "zigzag"}
+        if choice not in all_gens:
+            return "That knowledge eludes you."
+        if choice in self.unlocked_generators:
+            return f"You already know {choice.title()}."
+        # teach new generator (replaces primary generator selection)
+        self.unlocked_generators.append(choice)
+        self.character.generator = choice
+        return f"{choice.title()} added to your repertoire."
+
     def queue_player_fractal(self, kind: str) -> None:
         lvl = self._level()
         if not lvl.pattern.vertices:
@@ -318,15 +571,22 @@ class Game:
             return
         segs = lvl.pattern.to_segments()
         if kind == "subdivide":
-            gen = builder.SubdivideGenerator(parts=3)
+            parts = self._param_value("subdivide", "parts")
+            gen = builder.SubdivideGenerator(parts=parts)
         elif kind == "koch":
-            gen = builder.KochGenerator(height_factor=0.35)
+            height = self._param_value("koch", "height")
+            flip = self._param_value("koch", "flip")
+            gen = builder.KochGenerator(height_factor=height, flip=flip)
         elif kind == "branch":
-            gen = builder.BranchGenerator(angle_deg=22.0, length_factor=0.45)
+            angle = self._param_value("branch", "angle")
+            count = self._param_value("branch", "count")
+            gen = builder.BranchGenerator(angle_deg=angle, length_factor=0.45, branch_count=count)
         elif kind == "extend":
             gen = builder.ExtendGenerator()
         elif kind == "zigzag":
-            gen = builder.ZigzagGenerator(parts=6, amplitude_factor=0.2)
+            parts = self._param_value("zigzag", "parts")
+            amp = self._param_value("zigzag", "amp")
+            gen = builder.ZigzagGenerator(parts=parts, amplitude_factor=amp)
         else:
             self.log.add("Unknown fractal op.")
             return
@@ -425,6 +685,8 @@ class Game:
             self.log.add(f"{attacker.name} hits you for {dmg}.")
         if defender.stats.hp <= 0:
             self.log.add(f"{defender.name} dies.")
+            if attacker.actor_id == self.player_id:
+                self._on_enemy_killed(defender)
 
     def _monster_act(self, level: LevelState, actor_id: str) -> None:
         actor = level.actors.get(actor_id)
@@ -464,8 +726,8 @@ class Game:
             self.log.add("Select a vertex to target the circle.")
             return
         center = world_vertices[target_vertex]
-        dmg_radius = self.cfg.pattern_damage_radius
-        per_vertex = self.cfg.pattern_damage_per_vertex
+        dmg_radius = self.get_param_value("activate_all", "radius")
+        per_vertex = self.get_param_value("activate_all", "damage")
         cap = self.cfg.pattern_damage_cap
 
         # pick vertices in radius
@@ -525,6 +787,7 @@ class Game:
             self.log.add(f"Your rune sears {actor.name} for {dmg}.")
             if actor.stats.hp <= 0:
                 self.log.add(f"{actor.name} is annihilated.")
+                self._on_enemy_killed(actor)
         if hits == 0:
             self.log.add("Your rune fizzles; no foes in its reach.")
 
@@ -545,7 +808,8 @@ class Game:
             return
 
         seed_idx = target_vertex
-        active_indices = set(self.neighbor_set_depth(seed_idx, self.cfg.activate_neighbor_depth))
+        depth = self._param_value("activate_seed", "neighbor_depth")
+        active_indices = set(self.neighbor_set_depth(seed_idx, depth))
         active_vertices = [world_vertices[i] for i in active_indices if 0 <= i < len(world_vertices)]
         level.activation_points = active_vertices
         level.activation_ttl = self.cfg.pattern_overlay_ttl
@@ -558,7 +822,7 @@ class Game:
         player.stats.mana -= mana_cost
         player.stats.clamp()
 
-        per_vertex = self.cfg.pattern_damage_per_vertex
+        per_vertex = self._param_value("activate_seed", "damage")
         hits = 0
         # damage enemies in tiles containing active vertices
         for ax, ay in active_vertices:
@@ -571,10 +835,20 @@ class Game:
                 self.log.add(f"Your focus bites {target_actor.name} for {per_vertex}.")
                 if target_actor.stats.hp <= 0:
                     self.log.add(f"{target_actor.name} crumbles.")
+                    self._on_enemy_killed(target_actor)
         if hits == 0:
             self.log.add("Your focus fizzles; no foes in reach.")
 
     # --- FOV ---
+
+    def _on_enemy_killed(self, enemy: Actor) -> None:
+        if enemy.faction != "hostile":
+            return
+        if enemy.tags.get("_xp_awarded"):
+            return
+        enemy.tags["_xp_awarded"] = 1
+        xp_gain = enemy.tags.get("xp", self.cfg.xp_per_imp) if enemy.tags else self.cfg.xp_per_imp
+        self._grant_xp(xp_gain)
 
     def _update_fov(self, level: LevelState, radius: int = 8) -> None:
         if self.player_id not in level.actors:
