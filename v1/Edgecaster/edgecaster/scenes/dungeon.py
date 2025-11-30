@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .base import Scene, CharacterInfo
+from .base import Scene
+from edgecaster.character import Character
 
 from edgecaster.game import Game
 
@@ -11,7 +12,8 @@ class DungeonScene(Scene):
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         if manager.character is None:
             # Shouldn't happen, but be defensive.
-            manager.character = CharacterInfo(name="Edgecaster", char_class="Kochbender")
+            from edgecaster.character import default_character
+            manager.character = default_character()
 
         char = manager.character
         cfg = manager.cfg
@@ -21,8 +23,7 @@ class DungeonScene(Scene):
         game = Game(
             cfg,
             rng,
-            player_name=char.name,
-            player_class=char.char_class,
+            character=char,
         )
 
         # This call owns its own loop (QUIT/ESC leave the loop).
@@ -36,4 +37,3 @@ class DungeonScene(Scene):
         else:
             # Later you can branch to a world map or victory screen here.
             manager.set_scene(None)
-

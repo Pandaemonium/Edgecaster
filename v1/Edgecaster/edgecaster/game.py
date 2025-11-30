@@ -92,11 +92,11 @@ class Game:
         self,
         cfg: config.GameConfig,
         rng,
-        player_name: str = "Edgecaster",
-        player_class: str = "Kochbender",
+        character: Character | None = None,
     ) -> None:
         self.cfg = cfg
         self.rng = rng
+        # build character state (use provided, else defaults)
         self.character = character or default_character()
         self.log = MessageLog()
         self.place_range = cfg.place_range
@@ -105,8 +105,9 @@ class Game:
         self.urgent_resolved: bool = True
 
         # character meta
-        self.player_name = player_name or "Edgecaster"
-        self.player_class = player_class or "Kochbender"
+        self.player_name = self.character.name or "Edgecaster"
+        # support optional class attribute on Character; fallback label otherwise
+        self.player_class = getattr(self.character, "player_class", "Edgecaster")
         self.param_defs = self._init_param_defs()
         self.param_state = self._init_param_state()
         self._recalc_param_state_max()

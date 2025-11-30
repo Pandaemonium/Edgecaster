@@ -1,14 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
-@dataclass
-class CharacterInfo:
-    name: str
-    char_class: str
-
-
 class Scene:
     """Abstract base for all scenes."""
 

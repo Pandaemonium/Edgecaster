@@ -17,11 +17,19 @@ class CharCreation:
         self.fg = (220, 230, 240)
         self.sel = (255, 230, 120)
         self.running = True
-        self.fields = ["name", "generator", "illuminator", "con", "agi", "int", "res", "done"]
+        self.fields = ["name", "class", "generator", "illuminator", "con", "agi", "int", "res", "done"]
         self.idx = 0
         self.generators = ["custom", "koch", "branch", "zigzag"]
         self.illuminators = ["radius", "neighbors"]
+        self.classes = ["Kochbender", "Automoton", "Strange Attractor", "Weaver"]
+        self.class_presets = {
+            "Kochbender": {"generator": "koch", "illuminator": "radius", "stats": {"con": 3, "agi": 2, "int": 3, "res": 3}},
+            "Automoton": {"generator": "branch", "illuminator": "neighbors", "stats": {"con": 4, "agi": 2, "int": 2, "res": 3}},
+            "Strange Attractor": {"generator": "zigzag", "illuminator": "radius", "stats": {"con": 2, "agi": 3, "int": 3, "res": 3}},
+            "Weaver": {"generator": "custom", "illuminator": "neighbors", "stats": {"con": 3, "agi": 3, "int": 3, "res": 2}},
+        }
         self.char = default_character()
+        self.char.player_class = self.classes[0]
 
     def run(self) -> Character:
         clock = pygame.time.Clock()
@@ -57,6 +65,13 @@ class CharCreation:
                 self.char.name = self.char.name[:-1]
             elif 32 <= key <= 126:
                 self.char.name += chr(key)
+            return
+        if field == "class":
+            if key in (pygame.K_LEFT, pygame.K_RIGHT):
+                delta = 1 if key == pygame.K_RIGHT else -1
+                idx = self.classes.index(getattr(self.char, "player_class", self.classes[0]))
+                new_class = self.classes[(idx + delta) % len(self.classes)]
+                self.apply_class_preset(new_class)
             return
         if field == "generator":
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
@@ -94,6 +109,8 @@ class CharCreation:
         self.draw_title("Character Creation", y)
         y += 50
         self.draw_field("Name", self.char.name, y, selected=self.fields[self.idx] == "name")
+        y += 40
+        self.draw_field("Class", getattr(self.char, "player_class", self.classes[0]), y, selected=self.fields[self.idx] == "class")
         y += 40
         gen_label = self.char.generator
         if self.char.generator == "custom":
@@ -240,9 +257,20 @@ class CharCreation:
             self.surface.blit(surf, (100, y))
             y += 32
 
+    def apply_class_preset(self, cls: str) -> None:
+        preset = self.class_presets.get(cls)
+        if not preset:
+            return
+        self.char.player_class = cls
+        self.char.generator = preset.get("generator", self.char.generator)
+        self.char.illuminator = preset.get("illuminator", self.char.illuminator)
+        stats = preset.get("stats", {})
+        # reset stats to preset values and restore point pool
+        self.char.stats = dict(stats)
+        self.char.point_pool = 4
+
 
 def run_character_creation(cfg) -> Character:
     screen = CharCreation(cfg.view_width, cfg.view_height)
     char = screen.run()
-    pygame.display.quit()
     return char

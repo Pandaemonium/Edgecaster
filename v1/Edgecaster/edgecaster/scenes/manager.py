@@ -5,8 +5,9 @@ from typing import Optional
 from edgecaster import config
 from edgecaster.rng import new_rng
 from edgecaster.render.ascii import AsciiRenderer
+from edgecaster.character import Character
 
-from .base import Scene, CharacterInfo
+from .base import Scene
 from .character_creation import CharacterCreationScene
 
 
@@ -19,7 +20,7 @@ class SceneManager:
         # One RNG stream for the whole run.
         self.rng = new_rng(cfg.seed)
 
-        self.character: Optional[CharacterInfo] = None
+        self.character: Optional[Character] = None
         self.current_scene: Optional[Scene] = CharacterCreationScene()
 
     def run(self) -> None:
