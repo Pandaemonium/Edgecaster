@@ -1,7 +1,7 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 
 from edgecaster.game import Game
 from edgecaster.state.actors import Actor
@@ -15,6 +15,9 @@ class Ability:
         self.hotkey = hotkey  # 1-based numeric
         self.action = action
         self.rect: pygame.Rect | None = None
+        self.gear_rect: pygame.Rect | None = None
+        self.plus_rect: pygame.Rect | None = None
+        self.minus_rect: pygame.Rect | None = None
 
 
 class AsciiRenderer:
@@ -22,38 +25,57 @@ class AsciiRenderer:
         pygame.init()
         self.width = width
         self.height = height
+        self.base_tile = tile
+        self.zoom = 1.0
         self.tile = tile
+        self.origin_x = 0
+        self.origin_y = 0
         self.surface = pygame.display.set_mode((width, height))
         pygame.display.set_caption("Edgecaster (ASCII prototype)")
-        self.font = pygame.font.SysFont("consolas", tile)
+        self.font = pygame.font.SysFont("consolas", self.base_tile)  # UI font (fixed)
+        self.map_font = pygame.font.SysFont("consolas", self.tile)  # map glyphs, scales with zoom
         self.small_font = pygame.font.SysFont("consolas", 16)
         self.bg = (10, 10, 20)
         self.fg = (220, 230, 240)
         self.dim = (120, 130, 150)
+        self.sel = (255, 230, 120)
         self.player_color = (255, 210, 80)
         self.monster_color = (255, 120, 120)
         self.rune_color = (90, 200, 255)
         self.pattern_color = (80, 180, 240)
+        self.pattern_color_end = (180, 255, 220)
+        self.edge_width_base = 1
+        self.vertex_base_radius = 2
         self.hp_color = (200, 80, 80)
         self.mana_color = (90, 160, 255)
         self.bar_bg = (40, 40, 60)
         self.ability_bar_height = 72
-        self.abilities: List[Ability] = [
-            Ability("Place", 1, "place"),
-            Ability("Subdivide", 2, "subdivide"),
-            Ability("Koch", 3, "koch"),
-            Ability("Branch", 4, "branch"),
-            Ability("Extend", 5, "extend"),
-            Ability("Activate R", 6, "activate_all"),
-            Ability("Activate N", 7, "activate_seed"),
-            Ability("Reset", 8, "reset"),
-            Ability("Meditate", 9, "meditate"),
-        ]
+        self.abilities: List[Ability] = []
         self.current_ability_index = 0
         self.target_cursor = (0, 0)
         self.aim_action: str | None = None
         self.hover_vertex: int | None = None
         self.hover_neighbors: List[int] = []
+        self.config_open = False
+        self.config_action: str | None = None
+        self.config_selection: int = 0
+        # dialogue state
+        self.dialog_open = False
+        self.dialog_options: List[str] = []
+        self.dialog_selection: int = 0
+        self.dialog_lines: List[str] = []
+        self.dialog_npc_id: str | None = None
+        # transient flash message
+        self.flash_text: str | None = None
+        self.flash_color: Tuple[int, int, int] = (255, 120, 120)
+        self.flash_until_ms: int = 0
+        # pattern layers
+        self.edges_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        self.verts_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        # cached glow sprites: key = (radius_px, color_tuple)
+        self.glow_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
+        self.abilities_signature = None
+        self.ability_page = 0
 
     def draw_world(self, world: World) -> None:
         self.surface.fill(self.bg)
@@ -64,9 +86,9 @@ class AsciiRenderer:
                     continue
                 color = self.fg if tile.visible else self.dim
                 ch = tile.glyph
-                text = self.font.render(ch, True, color)
-                px = x * self.tile
-                py = y * self.tile
+                text = self.map_font.render(ch, True, color)
+                px = x * self.tile + self.origin_x
+                py = y * self.tile + self.origin_y
                 if px >= self.width or py >= self.height:
                     continue
                 self.surface.blit(text, (px, py))
@@ -87,35 +109,70 @@ class AsciiRenderer:
             if not tile or not tile.visible:
                 continue
             glyph, color = self._actor_visual(actor)
-            px = x * self.tile
-            py = y * self.tile
+            px = x * self.tile + self.origin_x
+            py = y * self.tile + self.origin_y
             if px >= self.width or py >= self.height:
                 continue
-            text = self.font.render(glyph, True, color)
+            text = self.map_font.render(glyph, True, color)
             self.surface.blit(text, (px, py))
 
     def draw_pattern_overlay(self, game: Game) -> None:
+        self.edges_surface.fill((0, 0, 0, 0))
+        self.verts_surface.fill((0, 0, 0, 0))
         if not game.pattern.vertices:
             return
         origin = game.pattern_anchor
         if origin is None:
             return
         verts = project_vertices(game.pattern, origin)
+        # density-based sizing
+        count = len(verts)
+        if count > 400:
+            v_radius = max(1, int(self.vertex_base_radius * self.zoom * 0.5))
+        elif count > 150:
+            v_radius = max(1, int(self.vertex_base_radius * self.zoom * 0.75))
+        else:
+            v_radius = max(1, int(self.vertex_base_radius * self.zoom))
+        v_radius = max(1, v_radius)
+
+        # edges with gradient, thicker AA line (no halo)
         for e in game.pattern.edges:
             try:
                 a = verts[e.a]
                 b = verts[e.b]
             except IndexError:
                 continue
-            ax = int(a[0] * self.tile + self.tile * 0.5)
-            ay = int(a[1] * self.tile + self.tile * 0.5)
-            bx = int(b[0] * self.tile + self.tile * 0.5)
-            by = int(b[1] * self.tile + self.tile * 0.5)
-            pygame.draw.line(self.surface, self.pattern_color, (ax, ay), (bx, by), 1)
+            ax = a[0] * self.tile + self.tile * 0.5 + self.origin_x
+            ay = a[1] * self.tile + self.tile * 0.5 + self.origin_y
+            bx = b[0] * self.tile + self.tile * 0.5 + self.origin_x
+            by = b[1] * self.tile + self.tile * 0.5 + self.origin_y
+            dx = bx - ax
+            dy = by - ay
+            dist = max(1.0, math.hypot(dx, dy))
+            steps = max(4, int(dist / (self.tile * 0.75)))
+            for i in range(steps):
+                t0 = i / steps
+                t1 = (i + 1) / steps
+                x0 = ax + dx * t0
+                y0 = ay + dy * t0
+                x1 = ax + dx * t1
+                y1 = ay + dy * t1
+                col = self._lerp_color(self.pattern_color, self.pattern_color_end, (t0 + t1) * 0.5)
+                core_col = (*col, 220)
+                pygame.draw.line(self.edges_surface, core_col, (x0, y0), (x1, y1), width=self.edge_width_base)
+                pygame.draw.aaline(self.edges_surface, core_col, (x0, y0), (x1, y1))
+
+        # vertices with glow sprites
+        base_sprite = self._get_glow_sprite(v_radius, self.pattern_color)
         for vx, vy in verts:
-            px = int(vx * self.tile + self.tile * 0.5)
-            py = int(vy * self.tile + self.tile * 0.5)
-            pygame.draw.circle(self.surface, self.pattern_color, (px, py), max(2, self.tile // 6))
+            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            rect = base_sprite.get_rect(center=(px, py))
+            self.verts_surface.blit(base_sprite, rect)
+
+        # composite layers
+        self.surface.blit(self.edges_surface, (0, 0))
+        self.surface.blit(self.verts_surface, (0, 0))
 
     def draw_aim_overlay(self, game: Game) -> None:
         if self.aim_action not in ("activate_all", "activate_seed"):
@@ -126,27 +183,70 @@ class AsciiRenderer:
         verts = project_vertices(game.pattern, origin)
         if self.hover_vertex is None or self.hover_vertex >= len(verts):
             return
+        # precompute strength fail chance and damage map for preview
+        dmg_map: Dict[Tuple[int, int], int] = {}
+        fail_text: str | None = None
+        pulse_alpha = lambda: int(80 + 60 * abs(((pygame.time.get_ticks() / 600.0) % 2) - 1))
         if self.aim_action == "activate_all":
-            radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
+            try:
+                radius = game.get_param_value("activate_all", "radius")
+                dmg_per_vertex = game.get_param_value("activate_all", "damage")
+            except Exception:
+                radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
+                dmg_per_vertex = 1
             center = verts[self.hover_vertex]
-            cx = int(center[0] * self.tile + self.tile * 0.5)
-            cy = int(center[1] * self.tile + self.tile * 0.5)
+            # strength fail preview
+            try:
+                str_limit = game._strength_limit()
+                r2 = radius * radius
+                active_vertices = [v for v in verts if (v[0]-center[0])**2 + (v[1]-center[1])**2 <= r2]
+                over = max(0, len(active_vertices) - str_limit)
+                if len(active_vertices) > str_limit:
+                    fail_text = f"{len(active_vertices)}/{str_limit} Fail~{int(over/(str_limit+over)*100)}%"
+                else:
+                    fail_text = f"{len(active_vertices)}/{str_limit}"
+            except Exception:
+                active_vertices = []
+            # damage aggregation per tile (mirror game logic)
+            r2 = radius * radius
+            if not active_vertices:
+                active_vertices = [v for v in verts if (v[0]-center[0])**2 + (v[1]-center[1])**2 <= r2]
+            for v in active_vertices:
+                tx = int(round(v[0]))
+                ty = int(round(v[1]))
+                dx = (tx + 0.5) - center[0]
+                dy = (ty + 0.5) - center[1]
+                dist = math.hypot(dx, dy)
+                half_diag = 0.7071
+                if dist <= radius - half_diag:
+                    coverage = 1.0
+                elif dist >= radius + half_diag:
+                    coverage = 0.0
+                else:
+                    span = (radius + half_diag) - (radius - half_diag)
+                    coverage = max(0.0, min(1.0, 1 - (dist - (radius - half_diag)) / span))
+                dmg = int(dmg_per_vertex * len(active_vertices) * coverage)
+                if dmg <= 0:
+                    continue
+                dmg_map[(tx, ty)] = dmg_map.get((tx, ty), 0) + dmg
+            center = verts[self.hover_vertex]
+            cx = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
             r2 = radius * radius
             for v in verts:
                 dx = v[0] - center[0]
                 dy = v[1] - center[1]
                 if dx * dx + dy * dy <= r2:
-                    px = int(v[0] * self.tile + self.tile * 0.5)
-                    py = int(v[1] * self.tile + self.tile * 0.5)
+                    px = int(v[0] * self.tile + self.tile * 0.5 + self.origin_x)
+                    py = int(v[1] * self.tile + self.tile * 0.5 + self.origin_y)
                     pygame.draw.circle(self.surface, (200, 240, 255), (px, py), max(3, self.tile // 5))
         else:  # activate_seed
             center = verts[self.hover_vertex]
-            px = int(center[0] * self.tile + self.tile * 0.5)
-            py = int(center[1] * self.tile + self.tile * 0.5)
+            px = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
             targets = [self.hover_vertex] + [idx for idx in self.hover_neighbors if idx is not None]
-            # unique, preserve order
             seen = set()
             ordered_targets = []
             for idx in targets:
@@ -158,16 +258,62 @@ class AsciiRenderer:
                 if idx < 0 or idx >= len(verts):
                     continue
                 vx, vy = verts[idx]
-                px = int(vx * self.tile + self.tile * 0.5)
-                py = int(vy * self.tile + self.tile * 0.5)
+                px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+                py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
                 color = (200, 220, 255) if idx != self.hover_vertex else (255, 230, 120)
                 pygame.draw.circle(self.surface, color, (px, py), max(3, self.tile // 5))
                 tx = int(round(vx))
                 ty = int(round(vy))
-                rect = pygame.Rect(tx * self.tile, ty * self.tile, self.tile, self.tile)
+                rect = pygame.Rect(tx * self.tile + self.origin_x, ty * self.tile + self.origin_y, self.tile, self.tile)
                 pygame.draw.rect(self.surface, color, rect, 1)
+            # damage/strength preview
+            try:
+                dmg_per_vertex = game.get_param_value("activate_seed", "damage")
+            except Exception:
+                dmg_per_vertex = 1
+            strength_vertices = ordered_targets
+            try:
+                str_limit = game._strength_limit()
+                over = max(0, len(strength_vertices) - str_limit)
+                if len(strength_vertices) > str_limit:
+                    fail_text = f"{len(strength_vertices)}/{str_limit} Fail~{int(over/(str_limit+over)*100)}%"
+                else:
+                    fail_text = f"{len(strength_vertices)}/{str_limit}"
+            except Exception:
+                pass
+            for idx in strength_vertices:
+                if idx < 0 or idx >= len(verts):
+                    continue
+                tx = int(round(verts[idx][0]))
+                ty = int(round(verts[idx][1]))
+                dmg_map[(tx, ty)] = dmg_map.get((tx, ty), 0) + dmg_per_vertex
+        # render previews with 2s triangle-wave fade
+        t = pygame.time.get_ticks()
+        phase = (t % 2000) / 2000.0
+        fade = 1.0 - abs(phase * 2 - 1)  # triangle 0..1..0 over 2s
+        alpha = int(80 + 120 * fade)
+        dmg_font = pygame.font.SysFont("consolas", max(16, int(self.tile * 0.7)))
+        for (tx, ty), dmg in dmg_map.items():
+            px = tx * self.tile + self.origin_x + self.tile // 2
+            py = ty * self.tile + self.origin_y + self.tile // 2
+            dmg_surf = dmg_font.render(str(dmg), True, (255, 160, 160))
+            surf = pygame.Surface((dmg_surf.get_width(), dmg_surf.get_height()), pygame.SRCALPHA)
+            surf.blit(dmg_surf, (0, 0))
+            surf.set_alpha(alpha)
+            self.surface.blit(surf, (px - dmg_surf.get_width() // 2, py - self.tile // 2 - dmg_surf.get_height()))
+        if fail_text:
+            # show near hover target
+            vx, vy = verts[self.hover_vertex]
+            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            txt = self.small_font.render(fail_text, True, (255, 180, 140))
+            surf = pygame.Surface((txt.get_width(), txt.get_height()), pygame.SRCALPHA)
+            surf.blit(txt, (0, 0))
+            surf.set_alpha(alpha)
+            self.surface.blit(surf, (px - txt.get_width() // 2, py - self.tile - txt.get_height()))
 
     def draw_activation_overlay(self, game: Game) -> None:
+        """Post-activation visuals only (no text)."""
         if not game.activation_points or game.activation_ttl <= 0:
             return
         world = game.world
@@ -179,9 +325,10 @@ class AsciiRenderer:
             tile = world.get_tile(tx, ty)
             if tile is None or not tile.visible:
                 continue
-            px = int(vx * self.tile + self.tile * 0.5)
-            py = int(vy * self.tile + self.tile * 0.5)
-            pygame.draw.circle(self.surface, self.rune_color, (px, py), max(2, self.tile // 5))
+            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            sprite = self._get_glow_sprite(max(3, self.tile // 8), self.rune_color)
+            self.surface.blit(sprite, sprite.get_rect(center=(px, py)))
 
     def draw_target_cursor(self, game: Game) -> None:
         if not game.awaiting_terminus:
@@ -194,26 +341,70 @@ class AsciiRenderer:
         rect = pygame.Rect(px, py, self.tile, self.tile)
         pygame.draw.rect(self.surface, (255, 255, 120), rect, 2)
 
+    def draw_place_overlay(self, game: Game) -> None:
+        """Subtle pulsing circle showing placement range when selecting a terminus."""
+        if not game.awaiting_terminus:
+            return
+        player = game.actors[game.player_id]
+        cx = player.pos[0] * self.tile + self.tile * 0.5 + self.origin_x
+        cy = player.pos[1] * self.tile + self.tile * 0.5 + self.origin_y
+        radius = game.place_range * self.tile
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 350.0)
+        alpha = int(25 + 30 * pulse)
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        color = (120, 200, 255, alpha)
+        pygame.draw.circle(overlay, color, (int(cx), int(cy)), int(radius), width=2)
+        self.surface.blit(overlay, (0, 0))
+
     def draw_status(self, game: Game) -> None:
         player = game.actors[game.player_id]
         x = 8
-        y = 6
+        y = 24
         bar_w = 200
         bar_h = 12
         pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
         hp_ratio = 0 if player.stats.max_hp == 0 else player.stats.hp / player.stats.max_hp
         pygame.draw.rect(self.surface, self.hp_color, pygame.Rect(x, y, int(bar_w * hp_ratio), bar_h))
         hp_text = self.small_font.render(f"HP {player.stats.hp}/{player.stats.max_hp}", True, self.fg)
-        self.surface.blit(hp_text, (x + 4, y - 14))
-        y += bar_h + 10
+        self.surface.blit(hp_text, (x + 4, y - 18))
+        # xp to the right of HP
+        xp_x = x + bar_w + 20
+        xp_y = y
+        xp_needed = max(1, getattr(player.stats, "xp_to_next", 1))
+        xp_cur = getattr(player.stats, "xp", 0)
+        lvl = getattr(player.stats, "level", 1)
+        xp_ratio = max(0, min(1, xp_cur / xp_needed))
+        xp_w = 180
+        pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(xp_x, xp_y, xp_w, bar_h))
+        pygame.draw.rect(self.surface, (120, 200, 120), pygame.Rect(xp_x, xp_y, int(xp_w * xp_ratio), bar_h))
+        xp_text = self.small_font.render(f"XP {xp_cur}/{xp_needed} (Lv {lvl})", True, self.fg)
+        self.surface.blit(xp_text, (xp_x + 4, xp_y - 18))
+        y += bar_h + 16
         pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
         mp_ratio = 0 if player.stats.max_mana == 0 else player.stats.mana / player.stats.max_mana
         pygame.draw.rect(self.surface, self.mana_color, pygame.Rect(x, y, int(bar_w * mp_ratio), bar_h))
         mp_text = self.small_font.render(f"Mana {player.stats.mana}/{player.stats.max_mana}", True, self.fg)
-        self.surface.blit(mp_text, (x + 4, y - 14))
+        self.surface.blit(mp_text, (x + 4, y - 18))
+        # stats under bars
+        y += bar_h + 12
+        if hasattr(game, "character") and game.character:
+            stats = game.character.stats
+            line = f"CON {stats.get('con',0)}  AGI {stats.get('agi',0)}  INT {stats.get('int',0)}  RES {stats.get('res',0)}"
+            stats_text = self.small_font.render(line, True, self.fg)
+            self.surface.blit(stats_text, (x, y))
+            # coherence info
+            verts_count = len(game.pattern.vertices) if hasattr(game, "pattern") else 0
+            coh_limit = game._coherence_limit()
+            over = max(0, verts_count - coh_limit)
+            fail_chance = 0.0 if verts_count <= coh_limit else over / (coh_limit + over)
+            y += 18
+            coh_text = self.small_font.render(
+                f"Vertices {verts_count}/{coh_limit}  Fail~{int(fail_chance*100)}%", True, self.fg
+            )
+            self.surface.blit(coh_text, (x, y))
 
     def draw_log(self, game: Game) -> None:
-        start_y = game.world.height * self.tile + 8
+        start_y = self.height - self.ability_bar_height - 120
         lines = game.log.tail(5)
         y = start_y
         for line in lines:
@@ -225,19 +416,49 @@ class AsciiRenderer:
         self.surface.blit(tick_text, (self.width - tick_text.get_width() - 8, start_y))
         self.surface.blit(level_text, (self.width - level_text.get_width() - 8, start_y + 18))
 
-    def draw_ability_bar(self) -> None:
+    def draw_ability_bar(self, game: Game) -> None:
         bar_rect = pygame.Rect(0, self.height - self.ability_bar_height, self.width, self.ability_bar_height)
         pygame.draw.rect(self.surface, (15, 15, 28), bar_rect)
-        margin = 8
+        items_per_page = 12
+        for ab in self.abilities:
+            ab.rect = ab.gear_rect = ab.plus_rect = ab.minus_rect = None
+        total_pages = max(1, (len(self.abilities) + items_per_page - 1) // items_per_page)
+        self.ability_page = max(0, min(self.ability_page, total_pages - 1))
+        start_idx = self.ability_page * items_per_page
+        end_idx = min(len(self.abilities), start_idx + items_per_page)
+        subset = self.abilities[start_idx:end_idx]
+
+        margin = 32
         gap = 6
-        n = len(self.abilities)
+        n = max(1, len(subset))
         avail_w = self.width - 2 * margin
         box_w = (avail_w - gap * (n - 1)) / n
         x = margin
-        for idx, ability in enumerate(self.abilities):
+        self.page_prev_rect = None
+        self.page_next_rect = None
+        if total_pages > 1:
+            btn_h = 24
+            self.page_prev_rect = pygame.Rect(4, bar_rect.top + (bar_rect.height - btn_h) // 2, 22, btn_h)
+            self.page_next_rect = pygame.Rect(self.width - 26, bar_rect.top + (bar_rect.height - btn_h) // 2, 22, btn_h)
+            pygame.draw.rect(self.surface, (35, 35, 60), self.page_prev_rect)
+            pygame.draw.rect(self.surface, (150, 150, 190), self.page_prev_rect, 2)
+            pygame.draw.polygon(
+                self.surface, (200, 200, 230), [(self.page_prev_rect.centerx + 4, self.page_prev_rect.top + 6), (self.page_prev_rect.centerx - 4, self.page_prev_rect.centery), (self.page_prev_rect.centerx + 4, self.page_prev_rect.bottom - 6)]
+            )
+            pygame.draw.rect(self.surface, (35, 35, 60), self.page_next_rect)
+            pygame.draw.rect(self.surface, (150, 150, 190), self.page_next_rect, 2)
+            pygame.draw.polygon(
+                self.surface, (200, 200, 230), [(self.page_next_rect.centerx - 4, self.page_next_rect.top + 6), (self.page_next_rect.centerx + 4, self.page_next_rect.centery), (self.page_next_rect.centerx - 4, self.page_next_rect.bottom - 6)]
+            )
+
+        for idx_global, ability in enumerate(subset, start=start_idx):
             rect = pygame.Rect(int(x), bar_rect.top + 8, int(box_w), bar_rect.height - 16)
             ability.rect = rect
-            if idx == self.current_ability_index:
+            ability.plus_rect = None
+            ability.minus_rect = None
+            ability.gear_rect = None
+
+            if idx_global == self.current_ability_index:
                 border = (255, 255, 180)
                 fill = (45, 45, 70)
             else:
@@ -245,49 +466,117 @@ class AsciiRenderer:
                 fill = (25, 25, 45)
             pygame.draw.rect(self.surface, fill, rect)
             pygame.draw.rect(self.surface, border, rect, 2)
+
             label = ability.name
+            if ability.action == "activate_all":
+                try:
+                    radius = game.get_param_value("activate_all", "radius")
+                    label = f"Activate R ({radius})"
+                except Exception:
+                    label = "Activate R"
             if ability.hotkey:
                 label = f"{ability.hotkey}:{label}"
             text = self.small_font.render(label, True, self.fg)
-            self.surface.blit(text, (rect.x + (rect.w - text.get_width()) // 2, rect.y + (rect.h - text.get_height()) // 2))
+            text_x = rect.x + (rect.w - text.get_width()) // 2
+            text_y = rect.y + 2
+            self.surface.blit(text, (text_x, text_y))
+            # icon area below text
+            icon_top = text_y + text.get_height() + 4
+            icon_height = rect.bottom - icon_top - 4
+            icon_height = max(12, icon_height)
+            icon_rect = pygame.Rect(rect.x + 6, icon_top, rect.w - 12, icon_height)
+            self._draw_ability_icon(icon_rect, ability.action, game)
+
+            if ability.action == "activate_all":
+                box_size = 14
+                ability.minus_rect = pygame.Rect(rect.x + 4, rect.centery - box_size // 2, box_size, box_size)
+                ability.plus_rect = pygame.Rect(rect.right - box_size - 4, rect.centery - box_size // 2, box_size, box_size)
+                pygame.draw.rect(self.surface, (90, 120, 160), ability.minus_rect, 1)
+                pygame.draw.rect(self.surface, (90, 120, 160), ability.plus_rect, 1)
+                minus_txt = self.small_font.render("-", True, self.fg)
+                plus_txt = self.small_font.render("+", True, self.fg)
+                self.surface.blit(minus_txt, minus_txt.get_rect(center=ability.minus_rect.center))
+                self.surface.blit(plus_txt, plus_txt.get_rect(center=ability.plus_rect.center))
+            else:
+                # tiny gear
+                gear_size = 14
+                ability.gear_rect = pygame.Rect(rect.right - gear_size - 4, rect.top + 4, gear_size, gear_size)
+                pygame.draw.rect(self.surface, (120, 120, 160), ability.gear_rect, width=1)
+                pygame.draw.circle(
+                    self.surface,
+                    (200, 200, 220),
+                    (ability.gear_rect.centerx, ability.gear_rect.centery),
+                    ability.gear_rect.width // 3,
+                    width=1,
+                )
             x += box_w + gap
+
+        # flash message
+        now_ms = pygame.time.get_ticks()
+        if self.flash_text and now_ms < self.flash_until_ms:
+            msg = self.small_font.render(self.flash_text, True, self.flash_color)
+            self.surface.blit(msg, (bar_rect.centerx - msg.get_width() // 2, bar_rect.top - msg.get_height() - 4))
+        elif self.flash_text:
+            self.flash_text = None
 
     def render(self, game: Game) -> None:
         clock = pygame.time.Clock()
         running = True
         self.target_cursor = game.actors[game.player_id].pos
+        gen_list = tuple(getattr(game, "unlocked_generators", [getattr(game.character, "generator", "koch")]))
+        illum_sig = getattr(game.character, "illuminator", "radius")
+        if self.abilities_signature != (gen_list, illum_sig) or not self.abilities:
+            self._build_abilities(game)
+            self.abilities_signature = (gen_list, illum_sig)
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        if game.awaiting_terminus:
+                        if self.dialog_open:
+                            self.dialog_open = False
+                        elif game.awaiting_terminus:
                             game.awaiting_terminus = False
+                        elif self.config_open:
+                            self.config_open = False
                         else:
                             running = False
                     else:
                         self._handle_input(game, event.key)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    self._handle_click(game, event.pos)
+                    if self.config_open and self.config_action:
+                        # clicking outside just closes
+                        self.config_open = False
+                    elif self.dialog_open:
+                        self.dialog_open = False
+                    else:
+                        self._handle_click(game, event.pos)
                 elif event.type == pygame.MOUSEMOTION:
                     self._update_hover(game, event.pos)
+                elif event.type == pygame.MOUSEWHEEL:
+                    self._change_zoom(event.y)
 
-            # continuous hover update if no motion event (keep in sync)
-            if self.aim_action:
-                self._update_hover(game, pygame.mouse.get_pos())
+                # continuous hover update if no motion event (keep in sync)
+                if self.aim_action:
+                    self._update_hover(game, pygame.mouse.get_pos())
 
-            self.draw_world(game.world)
-            self.draw_pattern_overlay(game)
-            self.draw_activation_overlay(game)
-            self.draw_aim_overlay(game)
-            self.draw_actors(game.world, game.all_actors_current())
-            self.draw_target_cursor(game)
-            self.draw_status(game)
-            self.draw_log(game)
-            self.draw_ability_bar()
-            pygame.display.flip()
-            clock.tick(60)
+                self.draw_world(game.world)
+                self.draw_pattern_overlay(game)
+                self.draw_place_overlay(game)
+                self.draw_activation_overlay(game)
+                self.draw_aim_overlay(game)
+                self.draw_actors(game.world, game.all_actors_current())
+                self.draw_target_cursor(game)
+                self.draw_status(game)
+                self.draw_log(game)
+                self.draw_ability_bar(game)
+                if self.config_open and self.config_action:
+                    self.draw_config_overlay(game)
+                if self.dialog_open:
+                    self.draw_dialog_overlay()
+                pygame.display.flip()
+                clock.tick(60)
 
             # If the player is dead and any urgent message has been acknowledged,
             # leave the dungeon loop so the scene manager can take over.
@@ -298,6 +587,45 @@ class AsciiRenderer:
 
 
     def _handle_input(self, game: Game, key: int) -> None:
+        if self.dialog_open:
+            if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
+                if key == pygame.K_RETURN and self.dialog_options:
+                    choice = self.dialog_options[self.dialog_selection]
+                    msg = game.talk_complete(self.dialog_npc_id, choice)
+                    game.log.add(msg)
+                    # force ability rebuild to reflect new generator unlock
+                    self._build_abilities(game)
+                    gen_list = tuple(getattr(game, "unlocked_generators", [getattr(game.character, "generator", "koch")]))
+                    illum_sig = getattr(game.character, "illuminator", "radius")
+                    self.abilities_signature = (gen_list, illum_sig)
+                self.dialog_open = False
+                return
+            if key == pygame.K_UP and self.dialog_options:
+                self.dialog_selection = (self.dialog_selection - 1) % len(self.dialog_options)
+                return
+            if key == pygame.K_DOWN and self.dialog_options:
+                self.dialog_selection = (self.dialog_selection + 1) % len(self.dialog_options)
+                return
+
+        if self.config_open and self.config_action:
+            params = game.param_view(self.config_action)
+            if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
+                self.config_open = False
+                return
+            if key == pygame.K_UP:
+                self.config_selection = (self.config_selection - 1) % max(1, len(params))
+                return
+            if key == pygame.K_DOWN:
+                self.config_selection = (self.config_selection + 1) % max(1, len(params))
+                return
+            if key in (pygame.K_LEFT, pygame.K_RIGHT):
+                if params:
+                    param_key = params[self.config_selection]["key"]
+                    delta = 1 if key == pygame.K_RIGHT else -1
+                    changed, msg = game.adjust_param(self.config_action, param_key, delta)
+                    # we could show msg if needed
+                return
+
         mapping = {
             pygame.K_UP: (0, -1),
             pygame.K_DOWN: (0, 1),
@@ -315,6 +643,7 @@ class AsciiRenderer:
             pygame.K_KP2: (0, 1),
             pygame.K_KP3: (1, 1),
             pygame.K_KP4: (-1, 0),
+            pygame.K_KP5: (0, 0),
             pygame.K_KP6: (1, 0),
             pygame.K_KP7: (-1, -1),
             pygame.K_KP8: (0, -1),
@@ -369,6 +698,16 @@ class AsciiRenderer:
             game.queue_player_wait()
             return
 
+        if key == pygame.K_t:
+            dlg = game.talk_start()
+            if dlg:
+                self.dialog_open = True
+                self.dialog_options = dlg.get("choices", [])
+                self.dialog_selection = 0
+                self.dialog_lines = dlg.get("lines", [])
+                self.dialog_npc_id = dlg.get("npc_id")
+            return
+
         if key in mapping:
             game.queue_player_move(mapping[key])
             return
@@ -382,11 +721,39 @@ class AsciiRenderer:
             self._trigger_current(game)
 
     def _handle_click(self, game: Game, pos) -> None:
+        if self.dialog_open:
+            return
         mx, my = pos
+        # page arrows
+        if hasattr(self, "page_prev_rect") and self.page_prev_rect and self.page_prev_rect.collidepoint(mx, my):
+            if self.ability_page > 0:
+                self.ability_page -= 1
+            return
+        if hasattr(self, "page_next_rect") and self.page_next_rect and self.page_next_rect.collidepoint(mx, my):
+            items_per_page = 12
+            total_pages = max(1, (len(self.abilities) + items_per_page - 1) // items_per_page)
+            if self.ability_page < total_pages - 1:
+                self.ability_page += 1
+            return
+
         for idx, ability in enumerate(self.abilities):
             if ability.rect and ability.rect.collidepoint(mx, my):
                 self.current_ability_index = idx
-                if ability.action == "place":
+                if ability.plus_rect and ability.plus_rect.collidepoint(mx, my):
+                    changed, msg = game.adjust_param("activate_all", "radius", 1)
+                    if not changed and msg:
+                        self._set_flash(msg)
+                    self.abilities_signature = None
+                    return
+                if ability.minus_rect and ability.minus_rect.collidepoint(mx, my):
+                    changed, _ = game.adjust_param("activate_all", "radius", -1)
+                    self.abilities_signature = None
+                    return
+                if ability.gear_rect and ability.gear_rect.collidepoint(mx, my):
+                    self.config_open = True
+                    self.config_action = ability.action
+                    self.config_selection = 0
+                elif ability.action == "place":
                     self.target_cursor = game.actors[game.player_id].pos
                     game.begin_place_mode()
                     self.aim_action = None
@@ -399,8 +766,8 @@ class AsciiRenderer:
                         self._trigger_action(game, ability.action)
                 return
 
-        tx = mx // self.tile
-        ty = my // self.tile
+        tx = int((mx - self.origin_x) // self.tile)
+        ty = int((my - self.origin_y) // self.tile)
         if not game.world.in_bounds(tx, ty):
             return
         if game.awaiting_terminus:
@@ -444,6 +811,12 @@ class AsciiRenderer:
         elif action == "extend":
             self.aim_action = None
             game.queue_player_fractal("extend")
+        elif action == "zigzag":
+            self.aim_action = None
+            game.queue_player_fractal("zigzag")
+        elif action == "custom":
+            self.aim_action = None
+            game.queue_player_fractal("custom")
         elif action == "activate_all":
             self.aim_action = "activate_all"
             self._update_hover(game, pygame.mouse.get_pos())
@@ -466,13 +839,433 @@ class AsciiRenderer:
             self.hover_neighbors = []
             return
         mx, my = mouse_pos
-        wx = mx / self.tile
-        wy = my / self.tile
+        wx = (mx - self.origin_x) / self.tile
+        wy = (my - self.origin_y) / self.tile
         idx = game.nearest_vertex((wx, wy))
         self.hover_vertex = idx
         if idx is not None and self.aim_action == "activate_seed":
-            self.hover_neighbors = game.neighbor_set_depth(idx, game.cfg.activate_neighbor_depth)
+            depth = game.get_param_value("activate_seed", "neighbor_depth")
+            self.hover_neighbors = game.neighbor_set_depth(idx, depth)
         else:
             self.hover_neighbors = []
+
+    def _change_zoom(self, delta_steps: int) -> None:
+        # delta_steps: mouse wheel y (positive zoom in)
+        mouse_pos = pygame.mouse.get_pos()
+        mx, my = mouse_pos
+        # world position under cursor before zoom
+        wx = (mx - self.origin_x) / self.tile
+        wy = (my - self.origin_y) / self.tile
+
+        new_zoom = self.zoom + delta_steps * 0.1
+        new_zoom = max(0.3, min(6.0, new_zoom))
+        if abs(new_zoom - self.zoom) < 1e-3:
+            return
+        self.zoom = new_zoom
+        self.tile = max(8, int(self.base_tile * self.zoom))
+        # refresh surfaces (fonts stay constant size)
+        self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # map font scales with zoom; UI fonts remain constant
+        self.map_font = pygame.font.SysFont("consolas", max(8, int(self.tile)))
+        # adjust origin so world point under cursor stays under cursor
+        self.origin_x = mx - wx * self.tile
+        self.origin_y = my - wy * self.tile
+
+    def _get_glow_sprite(self, radius: int, color: Tuple[int, int, int]) -> pygame.Surface:
+        key = (radius, color)
+        cached = self.glow_cache.get(key)
+        if cached is not None:
+            return cached
+        size = max(4, radius * 4)
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        cx = cy = size // 2
+        # softer, smaller halo
+        for r, alpha in (
+            (int(radius * 1.4), 40),
+            (radius, 130),
+            (int(radius * 0.65), 220),
+        ):
+            if r <= 0:
+                continue
+            col = (*color, alpha)
+            pygame.draw.circle(surf, col, (cx, cy), r)
+        self.glow_cache[key] = surf
+        return surf
+
+    def _lerp_color(self, c1: Tuple[int, int, int], c2: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
+        t = max(0.0, min(1.0, t))
+        return (
+            int(c1[0] + (c2[0] - c1[0]) * t),
+            int(c1[1] + (c2[1] - c1[1]) * t),
+            int(c1[2] + (c2[2] - c1[2]) * t),
+        )
+
+    def _build_abilities(self, game: Game) -> None:
+        # build ability list based on character choices
+        char = getattr(game, "character", None)
+        generator_choice = "koch"
+        illuminator_choice = "radius"
+        if char:
+            generator_choice = char.generator
+            illuminator_choice = char.illuminator
+        unlocked = getattr(game, "unlocked_generators", [generator_choice])
+        # keep order but de-dupe
+        seen = set()
+        gens_ordered = []
+        for g in unlocked:
+            if g in seen:
+                continue
+            seen.add(g)
+            gens_ordered.append(g)
+        if generator_choice not in seen:
+            gens_ordered.insert(0, generator_choice)
+
+        abilities: List[Ability] = []
+        hotkey = 1
+
+        def add(name: str, action: str):
+            nonlocal hotkey
+            abilities.append(Ability(name, hotkey, action))
+            hotkey += 1
+
+        add("Place", "place")
+        add("Subdivide", "subdivide")
+        add("Extend", "extend")
+        # generator-specific (all unlocked)
+        for g in gens_ordered:
+            gen_label = {"koch": "Koch", "branch": "Branch", "zigzag": "Zigzag", "custom": "Custom"}.get(g, g)
+            if g in ("koch", "branch", "zigzag", "custom"):
+                add(gen_label, g)
+
+        # illuminator choice
+        if illuminator_choice == "radius":
+            add("Activate R", "activate_all")
+        elif illuminator_choice == "neighbors":
+            add("Activate N", "activate_seed")
+        else:
+            add("Activate R", "activate_all")
+            add("Activate N", "activate_seed")
+
+        add("Reset", "reset")
+        add("Meditate", "meditate")
+
+        self.abilities = abilities
+        self.ability_page = 0
+
+    def _render_action_icon(
+        self, action: str, game: Game, size: Tuple[int, int], overrides: Dict[str, object] | None = None
+    ) -> pygame.Surface:
+        """Render a tiny illustrative icon for an action, respecting current params and optional overrides."""
+        pad = 2
+        surf = pygame.Surface((max(8, size[0] - 2 * pad), max(8, size[1] - 2 * pad)), pygame.SRCALPHA)
+        w, h = surf.get_size()
+
+        def to_px(x: float, y: float) -> Tuple[int, int]:
+            return (int(x * w), int(y * h))
+
+        def draw_vertices(points, strong_idx=None):
+            for i, (x, y) in enumerate(points):
+                pos = to_px(x, y)
+                if strong_idx is not None and i == strong_idx:
+                    pygame.draw.circle(surf, (255, 230, 120), pos, 3)
+                else:
+                    pygame.draw.circle(surf, (200, 240, 255), pos, 2)
+
+        def draw_lines(points, segs, color=(180, 230, 255)):
+            for a, b in segs:
+                pygame.draw.aaline(surf, color, to_px(*points[a]), to_px(*points[b]))
+
+        verts = []
+        segs = []
+        extra = None
+
+        def g(action_key: str, key: str, default):
+            if overrides and key in overrides:
+                return overrides[key]
+            try:
+                return game.get_param_value(action_key, key)
+            except Exception:
+                return default
+
+        if action == "place":
+            verts = [(0.15, 0.5), (0.85, 0.5)]
+            segs = [(0, 1)]
+            extra = {"strong": [1]}
+        elif action == "subdivide":
+            parts = g("subdivide", "parts", 3)
+            step = 1.0 / max(1, parts)
+            verts = []
+            for i in range(parts + 1):
+                x = 0.1 + 0.8 * i * step
+                verts.append((x, 0.5))
+            segs = [(i, i + 1) for i in range(len(verts) - 1)]
+        elif action == "extend":
+            verts = [(0.1, 0.6), (0.5, 0.6), (0.9, 0.6)]
+            segs = [(0, 1), (1, 2)]
+            extra = {"dotted": [(0, 1)]}
+        elif action == "koch":
+            height = g("koch", "height", 0.25)
+            flip = g("koch", "flip", False)
+            length = 0.8
+            base_y = 0.55
+            # clamp amplitude so both chiralities stay visible inside the icon
+            amp = height * length
+            margin = 0.08
+            max_amp = max(0.05, min(base_y - margin, 1.0 - margin - base_y))
+            if amp > max_amp:
+                amp = max_amp
+            ax, ay = 0.1, base_y
+            bx, by = ax + length, base_y
+            p1 = (ax + length / 3.0, base_y)
+            p3 = (ax + 2.0 * length / 3.0, base_y)
+            # match on-board orientation: non-mirrored shows peak upward on screen
+            dy = amp if not flip else -amp
+            peak = ((p1[0] + p3[0]) * 0.5, base_y + dy)
+            verts = [
+                (ax, ay),
+                p1,
+                peak,
+                p3,
+                (bx, by),
+            ]
+            segs = [(0, 1), (1, 2), (2, 3), (3, 4)]
+        elif action == "branch":
+            angle = g("branch", "angle", 45)
+            count = g("branch", "count", 3)
+            verts = [(0.15, 0.6), (0.5, 0.6)]
+            segs = [(0, 1)]
+            spread = math.radians(angle)
+            base_ang = 0
+            length = 0.35
+            for i in range(count):
+                t = 0 if count == 1 else i / (count - 1)
+                ang = base_ang - spread + 2 * spread * t
+                vx = verts[1][0] + length * math.cos(ang)
+                vy = verts[1][1] - length * math.sin(ang)
+                verts.append((vx, vy))
+                segs.append((1, len(verts) - 1))
+            extra = {"strong": [1]}
+        elif action == "zigzag":
+            parts = g("zigzag", "parts", 5)
+            amp = g("zigzag", "amp", 0.2)
+            verts = []
+            segs = []
+            for i in range(parts + 1):
+                t = i / parts
+                x = 0.1 + 0.8 * t
+                y = 0.55 + ((-1) ** i) * amp * 0.6
+                verts.append((x, y))
+                if i > 0:
+                    segs.append((i - 1, i))
+        elif action == "custom":
+            pts = getattr(game.character, "custom_pattern", None) if hasattr(game, "character") else None
+            amp = 1.0
+            try:
+                amp = game.get_param_value("custom", "amplitude")
+            except Exception:
+                pass
+            if pts and len(pts) >= 2:
+                # normalize and scale uniformly to fit while preserving aspect
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                width = max(1e-5, max_x - min_x)
+                height = max(1e-5, max_y - min_y)
+                # apply amplitude scaling only to lateral (Y) span
+                height *= amp
+                norm = []
+                for x, y in pts:
+                    nx = (x - min_x) / width
+                    ny = (y - min_y) / height
+                    norm.append((nx, ny))
+                # scale uniformly to available box with padding
+                pad = 0.12
+                avail = 1.0 - 2 * pad
+                # preserve aspect
+                aspect = width / height if height > 0 else 1.0
+                if aspect >= 1:
+                    sx = avail
+                    sy = avail / aspect
+                else:
+                    sx = avail * aspect
+                    sy = avail
+                ox = (1.0 - sx) * 0.5
+                oy = (1.0 - sy) * 0.5
+                verts = [(ox + p[0] * sx, oy + (1 - p[1]) * sy) for p in norm]
+                segs = [(i, i + 1) for i in range(len(verts) - 1)]
+            else:
+                verts = [(0.15, 0.5), (0.85, 0.5)]
+                segs = [(0, 1)]
+        elif action == "activate_all":
+            radius = g("activate_all", "radius", 1.5)
+            verts = [(0.25, 0.5), (0.75, 0.5), (0.5, 0.25), (0.5, 0.75)]
+            segs = []
+            extra = {"circle": True, "radius": radius}
+        elif action == "activate_seed":
+            depth = g("activate_seed", "neighbor_depth", 1)
+            verts = [(0.5, 0.5)]
+            # simple plus-shape neighbors; add additional ring if depth >1
+            offsets = [( -0.25, 0), (0.25, 0), (0, -0.25), (0, 0.25)]
+            for dx, dy in offsets:
+                verts.append((0.5 + dx, 0.5 + dy))
+            if depth >= 2:
+                far = 0.45
+                offsets2 = [(-far, 0), (far, 0), (0, -far), (0, far)]
+                for dx, dy in offsets2:
+                    verts.append((0.5 + dx, 0.5 + dy))
+            segs = []
+            extra = {"strong": [0], "boxes": list(range(1, len(verts)))}
+        elif action == "reset":
+            pygame.draw.line(surf, (200, 140, 140), (4, h // 2), (w - 4, h // 2), 2)
+            pygame.draw.line(surf, (200, 140, 140), (4, h // 2 + 6), (w - 4, h // 2 + 6), 2)
+        elif action == "meditate":
+            pygame.draw.circle(surf, (180, 200, 255), (w // 2, h // 2), max(4, w // 3), width=2)
+            pygame.draw.circle(surf, (120, 180, 255), (w // 2, h // 2), max(2, w // 6))
+
+        if verts:
+            # dotted segments if requested
+            dotted = extra.get("dotted", []) if extra else []
+            for a, b in segs:
+                if (a, b) in dotted or (b, a) in dotted:
+                    ax, ay = verts[a]
+                    bx, by = verts[b]
+                    steps = 6
+                    for i in range(steps):
+                        if i % 2 == 1:
+                            continue
+                        t0 = i / steps
+                        t1 = (i + 1) / steps
+                        px0 = ax + (bx - ax) * t0
+                        py0 = ay + (by - ay) * t0
+                        px1 = ax + (bx - ax) * t1
+                        py1 = ay + (by - ay) * t1
+                        pygame.draw.aaline(surf, (180, 230, 255), to_px(px0, py0), to_px(px1, py1))
+                else:
+                    pygame.draw.aaline(surf, (180, 230, 255), to_px(*verts[a]), to_px(*verts[b]))
+            if extra and extra.get("circle"):
+                rad_norm = extra.get("radius", 1.5) if extra else 1.5
+                max_rad_norm = 4.0
+                rfrac = min(1.0, rad_norm / max_rad_norm)
+                radius_px = int(min(w, h) * (0.15 + 0.25 * rfrac))
+                pygame.draw.circle(surf, (120, 200, 255), (w // 2, h // 2), radius_px, width=2)
+            strong = extra.get("strong") if extra else []
+            draw_vertices(verts, strong_idx=strong[0] if strong else None)
+            if extra and extra.get("boxes"):
+                for idx in extra["boxes"]:
+                    if 0 <= idx < len(verts):
+                        p = to_px(*verts[idx])
+                        box_size = max(6, min(w, h) // 4)
+                        rect_box = pygame.Rect(p[0] - box_size // 2, p[1] - box_size // 2, box_size, box_size)
+                        pygame.draw.rect(surf, (180, 220, 255), rect_box, 1)
+
+        return surf
+
+    def _draw_ability_icon(self, rect: pygame.Rect, action: str, game: Game) -> None:
+        surf = self._render_action_icon(action, game, (rect.w, rect.h))
+        self.surface.blit(surf, rect.topleft)
+
     def teardown(self) -> None:
         pygame.quit()
+
+    def draw_config_overlay(self, game: Game) -> None:
+        if not self.config_action:
+            return
+        params = game.param_view(self.config_action)
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        row_heights = []
+        for p in params:
+            if self.config_action == "koch" and p["key"] == "flip":
+                row_heights.append(80)
+            else:
+                row_heights.append(36)
+        panel_w = int(self.width * 0.5)
+        panel_h = min(int(self.height * 0.9), int(80 + sum(row_heights) + 20))
+        panel_x = (self.width - panel_w) // 2
+        panel_y = (self.height - panel_h) // 2
+        pygame.draw.rect(overlay, (20, 20, 40, 230), pygame.Rect(panel_x, panel_y, panel_w, panel_h))
+        pygame.draw.rect(overlay, (200, 200, 240, 240), pygame.Rect(panel_x, panel_y, panel_w, panel_h), 2)
+        title = self.big_label(f"Configure {self.config_action}")
+        overlay.blit(title, (panel_x + 16, panel_y + 12))
+        y = panel_y + 50
+        for i, p in enumerate(params):
+            sel = (i == self.config_selection)
+            col = self.sel if sel else self.fg
+            # custom render for Koch mirror flag
+            if self.config_action == "koch" and p["key"] == "flip":
+                label = self.font.render("Mirror", True, col)
+                overlay.blit(label, (panel_x + 20, y))
+                icon_size = 48
+                icon_gap = 14
+                icon_y = y + label.get_height() + 6
+                height_val = game.get_param_value("koch", "height")
+                allowed_idx = p.get("allowed_idx", 0)
+                cur_idx = p.get("current_idx", 0)
+                total_icons_w = 2 * icon_size + icon_gap
+                start_x = panel_x + 20
+                for idx_val, flip_val in enumerate((False, True)):
+                    icon = self._render_action_icon(
+                        "koch", game, (icon_size, icon_size), overrides={"height": height_val, "flip": flip_val}
+                    )
+                    box = pygame.Rect(start_x + idx_val * (icon_size + icon_gap), icon_y, icon_size, icon_size)
+                    overlay.blit(icon, box.topleft)
+                    border = self.sel if idx_val == cur_idx else (160, 170, 200)
+                    if allowed_idx < idx_val:
+                        border = (140, 90, 90)
+                    pygame.draw.rect(overlay, border, box, 2)
+                if p["next_req"]:
+                    req_text = self.small_font.render(f"Next: {p['next_req']}", True, (255, 120, 120))
+                    overlay.blit(
+                        req_text,
+                        (start_x + total_icons_w + 18, icon_y + icon_size // 2 - req_text.get_height() // 2),
+                    )
+                y += icon_size + label.get_height() + 20
+                continue
+
+            line = f"{p['label']}: {p['value']}"
+            text = self.font.render(line, True, col)
+            overlay.blit(text, (panel_x + 20, y))
+            if p["next_req"]:
+                req_text = self.small_font.render(f"Next: {p['next_req']}", True, (255, 120, 120))
+                overlay.blit(req_text, (panel_x + panel_w - req_text.get_width() - 20, y + 4))
+            y += 36
+        hint = self.small_font.render("Left/Right adjust, Up/Down select, Enter/Esc close", True, self.fg)
+        overlay.blit(hint, (panel_x + 16, panel_y + panel_h - 30))
+        self.surface.blit(overlay, (0, 0))
+
+    def big_label(self, text: str) -> pygame.Surface:
+        return pygame.font.SysFont("consolas", 24, bold=True).render(text, True, self.fg)
+
+    def draw_dialog_overlay(self) -> None:
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        panel_w = int(self.width * 0.55)
+        panel_h = 200
+        panel_x = (self.width - panel_w) // 2
+        panel_y = (self.height - panel_h) // 2
+        pygame.draw.rect(overlay, (25, 25, 45, 230), pygame.Rect(panel_x, panel_y, panel_w, panel_h))
+        pygame.draw.rect(overlay, (200, 200, 230, 240), pygame.Rect(panel_x, panel_y, panel_w, panel_h), 2)
+        y = panel_y + 12
+        for line in self.dialog_lines:
+            txt = self.font.render(line, True, self.fg)
+            overlay.blit(txt, (panel_x + 12, y))
+            y += txt.get_height() + 4
+        if self.dialog_options:
+            y += 8
+            for idx, opt in enumerate(self.dialog_options):
+                sel = (idx == self.dialog_selection)
+                col = self.sel if sel else self.fg
+                bullet = "> " if sel else "  "
+                txt = self.font.render(f"{bullet}{opt.title()}", True, col)
+                overlay.blit(txt, (panel_x + 20, y))
+                y += txt.get_height() + 4
+        hint = self.small_font.render("Up/Down choose, Enter confirm, Esc close", True, self.fg)
+        overlay.blit(hint, (panel_x + 12, panel_y + panel_h - 26))
+        self.surface.blit(overlay, (0, 0))
+
+    def _set_flash(self, text: str, color: Tuple[int, int, int] = (255, 120, 120), duration_ms: int = 2000) -> None:
+        self.flash_text = text
+        self.flash_color = color
+        self.flash_until_ms = pygame.time.get_ticks() + duration_ms

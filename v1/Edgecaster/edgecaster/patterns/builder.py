@@ -51,10 +51,12 @@ class SubdivideGenerator(GeneratorBase):
 @dataclass
 class KochGenerator(GeneratorBase):
     height_factor: float = 0.25
+    flip: bool = False
 
-    def __init__(self, height_factor: float = 0.25) -> None:
+    def __init__(self, height_factor: float = 0.25, flip: bool = False) -> None:
         super().__init__(name="Koch-like")
         self.height_factor = height_factor
+        self.flip = flip
 
     def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
         out: List[Segment] = []
@@ -70,6 +72,8 @@ class KochGenerator(GeneratorBase):
             p1 = (ax + dx / 3.0, ay + dy / 3.0)
             p3 = (ax + 2.0 * dx / 3.0, ay + 2.0 * dy / 3.0)
             nx, ny = -dy / length, dx / length
+            if self.flip:
+                nx, ny = -nx, -ny
             height = self.height_factor * length
             peak = ((p1[0] + p3[0]) / 2.0 + nx * height, (p1[1] + p3[1]) / 2.0 + ny * height)
             c = seg.color
@@ -90,11 +94,13 @@ class KochGenerator(GeneratorBase):
 class BranchGenerator(GeneratorBase):
     angle_deg: float = 30.0
     length_factor: float = 0.6
+    branch_count: int = 2
 
-    def __init__(self, angle_deg: float = 30.0, length_factor: float = 0.6) -> None:
+    def __init__(self, angle_deg: float = 30.0, length_factor: float = 0.6, branch_count: int = 2) -> None:
         super().__init__(name="Branch")
         self.angle_deg = angle_deg
         self.length_factor = length_factor
+        self.branch_count = max(2, branch_count)
 
     def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
         out: List[Segment] = []
@@ -111,25 +117,76 @@ class BranchGenerator(GeneratorBase):
             my = (ay + by) / 2.0
             ux, uy = dx / length, dy / length
             base_angle = math.atan2(uy, ux)
-            theta = math.radians(self.angle_deg)
+            spread = math.radians(self.angle_deg)
             b_len = self.length_factor * length
-            left_angle = base_angle + theta
-            right_angle = base_angle - theta
-            lx = mx + b_len * math.cos(left_angle)
-            ly = my + b_len * math.sin(left_angle)
-            rx = mx + b_len * math.cos(right_angle)
-            ry = my + b_len * math.sin(right_angle)
+            branches = []
+            if self.branch_count == 2:
+                angles = [base_angle + spread, base_angle - spread]
+            else:
+                angles = []
+                for i in range(self.branch_count):
+                    t = 0 if self.branch_count == 1 else i / (self.branch_count - 1)
+                    ang = base_angle - spread + spread * 2 * t
+                    angles.append(ang)
+            for ang in angles:
+                branches.append(
+                    (
+                        mx + b_len * math.cos(ang),
+                        my + b_len * math.sin(ang),
+                    )
+                )
             c = seg.color
             out.extend(
                 [
                     Segment((ax, ay), (mx, my), c, seg.weight),
                     Segment((mx, my), (bx, by), c, seg.weight),
-                    Segment((mx, my), (lx, ly), c, seg.weight),
-                    Segment((mx, my), (rx, ry), c, seg.weight),
                 ]
             )
+            for (bxp, byp) in branches:
+                out.append(Segment((mx, my), (bxp, byp), c, seg.weight))
             if len(out) >= max_segments:
                 return out[:max_segments]
+        return out
+
+
+@dataclass
+class ZigzagGenerator(GeneratorBase):
+    parts: int = 6
+    amplitude_factor: float = 0.2
+
+    def __init__(self, parts: int = 6, amplitude_factor: float = 0.2) -> None:
+        super().__init__(name="Zigzag")
+        self.parts = max(2, parts)
+        self.amplitude_factor = amplitude_factor
+
+    def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
+        out: List[Segment] = []
+        for seg in segments:
+            ax, ay = seg.a
+            bx, by = seg.b
+            dx = bx - ax
+            dy = by - ay
+            length = math.hypot(dx, dy)
+            if length == 0:
+                out.append(seg)
+                continue
+            nx, ny = -dy / length, dx / length
+            amp = self.amplitude_factor * length
+            points: List[Vec2] = []
+            for i in range(self.parts + 1):
+                t = i / self.parts
+                x = ax + dx * t
+                y = ay + dy * t
+                if 0 < i < self.parts:
+                    sign = 1 if (i % 2 == 1) else -1
+                    x += nx * amp * sign
+                    y += ny * amp * sign
+                points.append((x, y))
+            c = seg.color
+            for i in range(self.parts):
+                out.append(Segment(points[i], points[i + 1], c, seg.weight))
+                if len(out) >= max_segments:
+                    return out[:max_segments]
         return out
 
 
@@ -189,6 +246,60 @@ class ExtendGenerator(GeneratorBase):
             out.append(Segment(na, nb, seg.color, seg.weight))
             if len(out) >= max_segments:
                 return out[:max_segments]
+        return out
+
+
+@dataclass
+class CustomPolyGenerator(GeneratorBase):
+    """Apply a user-drawn polyline normalized to the base segment, with optional amplitude scaling."""
+
+    points: List[Vec2]
+    amplitude: float = 1.0
+
+    def __init__(self, points: List[Vec2], amplitude: float = 1.0) -> None:
+        super().__init__(name="CustomPoly")
+        self.points = points
+        self.amplitude = amplitude
+
+    def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
+        out: List[Segment] = []
+        if not self.points or len(self.points) < 2:
+            return segments
+        base_dx = self.points[-1][0] - self.points[0][0]
+        base_dy = self.points[-1][1] - self.points[0][1]
+        base_len = math.hypot(base_dx, base_dy)
+        if base_len <= 0:
+            return segments
+        for seg in segments:
+            ax, ay = seg.a
+            bx, by = seg.b
+            dx = bx - ax
+            dy = by - ay
+            seg_len = math.hypot(dx, dy)
+            if seg_len == 0:
+                out.append(seg)
+                continue
+            # directional basis
+            dir_x = dx / seg_len
+            dir_y = dy / seg_len
+            perp_x = -dir_y
+            perp_y = dir_x
+
+            def map_point(px: float, py: float) -> Vec2:
+                # normalize relative to base first point
+                rel_x = (px - self.points[0][0]) / base_len
+                rel_y = ((py - self.points[0][1]) / base_len) * self.amplitude  # amplitude only on lateral (Y) component
+                wx = ax + rel_x * dx + rel_y * perp_x * seg_len
+                wy = ay + rel_y * perp_y * seg_len + rel_x * dy
+                return (wx, wy)
+
+            c = seg.color
+            for i in range(len(self.points) - 1):
+                pa = map_point(self.points[i][0], self.points[i][1])
+                pb = map_point(self.points[i + 1][0], self.points[i + 1][1])
+                out.append(Segment(pa, pb, c, seg.weight))
+                if len(out) >= max_segments:
+                    return out[:max_segments]
         return out
 
 
