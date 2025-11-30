@@ -18,9 +18,11 @@ class CharacterCreationScene(Scene):
         char: Character = run_character_creation(cfg)
             
         if char is None:
-            # player closed the char-creation window -> quit the whole game
-            manager.set_scene(None)
+            # Return to main menu instead of quitting the game
+            from .main_menu import MainMenuScene
+            manager.set_scene(MainMenuScene())
             return
+
         # If you someday want Esc to mean "quit the game from char creation",
         # you could detect that here, but right now run_character_creation
         # always returns a Character.

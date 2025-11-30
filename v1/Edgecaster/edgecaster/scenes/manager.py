@@ -9,6 +9,7 @@ from edgecaster.character import Character, default_character
 
 from .base import Scene
 from .character_creation_scene import CharacterCreationScene
+from .main_menu import MainMenuScene
 
 
 class SceneManager:
@@ -23,7 +24,14 @@ class SceneManager:
         self.character: Character = default_character()
 
         # Start in character creation scene
-        self.current_scene: Optional[Scene] = CharacterCreationScene()
+        self.current_scene: Optional[Scene] = MainMenuScene()
+        
+        self.options = {
+            "Music": True,
+            "Sound": True,
+            "Fullscreen": False,
+            "Vicious dog trigger warning": False
+        }
 
     def run(self) -> None:
         """Run scenes until there are none left."""
