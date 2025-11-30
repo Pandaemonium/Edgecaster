@@ -476,7 +476,8 @@ class AsciiRenderer:
             self.surface.blit(text, (8, y))
             y += text.get_height() + 2
         tick_text = self.small_font.render(f"Tick: {game.current_tick}", True, self.fg)
-        level_text = self.small_font.render(f"Level: {game.level_index}", True, self.fg)
+        zx, zy, zz = getattr(game, "zone", (0, 0, game.level_index))
+        level_text = self.small_font.render(f"Zone ({zx},{zy}) Depth {zz}", True, self.fg)
         self.surface.blit(tick_text, (self.width - tick_text.get_width() - 8, start_y))
         self.surface.blit(level_text, (self.width - level_text.get_width() - 8, start_y + 18))
 

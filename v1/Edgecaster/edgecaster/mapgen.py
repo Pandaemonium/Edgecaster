@@ -1,4 +1,6 @@
 from typing import Tuple, Optional
+import math
+
 from edgecaster.state.world import World
 
 Room = Tuple[int, int, int, int]  # x, y, w, h
@@ -100,3 +102,150 @@ def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) 
             tile.glyph = ">"
             tile.walkable = True
             world.down_stairs = down_c
+
+
+class FractalField:
+    """Simple Mandelbrot-based field for height/biome sampling."""
+
+    def __init__(self, scale: float = 0.012, offset: Tuple[float, float] = (-0.75, 0.0), iterations: int = 48):
+        self.scale = scale
+        self.offset = offset
+        self.iterations = iterations
+
+    def sample(self, wx: float, wy: float) -> float:
+        """Return height in 0..1 from Mandelbrot escape time."""
+        cx = wx * self.scale + self.offset[0]
+        cy = wy * self.scale + self.offset[1]
+        zx = 0.0
+        zy = 0.0
+        it = 0
+        while zx * zx + zy * zy <= 4.0 and it < self.iterations:
+            xt = zx * zx - zy * zy + cx
+            zy = 2 * zx * zy + cy
+            zx = xt
+            it += 1
+        if it >= self.iterations:
+            return 0.0  # inside set -> treat as lowland/sea-level
+        mod = math.sqrt(zx * zx + zy * zy)
+        smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
+        return max(0.0, min(1.0, smooth / self.iterations))
+
+
+def _hash01(x: int, y: int) -> float:
+    h = (x * 73856093) ^ (y * 19349663)
+    h &= 0xFFFFFFFF
+    return (h % 1000) / 1000.0
+
+
+def generate_fractal_overworld(
+    world: World, field: FractalField, coord: Tuple[int, int, int], rng, up_pos: Optional[Tuple[int, int]] = None
+) -> None:
+    """Fractal-driven overworld: Mandelbrot height -> terrain."""
+    zx, zy, _ = coord
+    w, h = world.width, world.height
+    cx0 = zx * w
+    cy0 = zy * h
+
+    for y in range(h):
+        for x in range(w):
+            wx = cx0 + x
+            wy = cy0 + y
+            height = field.sample(wx, wy)
+            noise = _hash01(int(wx), int(wy))
+            tile = world.tiles[y][x]
+            if height < 0.24:
+                tile.glyph = "~"
+                tile.walkable = False
+            elif height < 0.32:
+                tile.glyph = ","
+                tile.walkable = True
+            elif height < 0.72:
+                tile.glyph = "."
+                tile.walkable = True
+                if 0.5 < height < 0.7 and noise < 0.08:
+                    tile.glyph = "T"
+                    tile.walkable = False
+            elif height < 0.88:
+                tile.glyph = "^"
+                tile.walkable = True
+            else:
+                tile.glyph = "#"
+                tile.walkable = False
+
+    # entry: use up_pos if provided, else nearest walkable to center
+    if up_pos and world.in_bounds(*up_pos) and world.is_walkable(*up_pos):
+        world.entry = up_pos
+    else:
+        cx, cy = w // 2, h // 2
+        world.entry = (cx, cy)
+        if not world.is_walkable(cx, cy):
+            found = None
+            radius = 1
+            while radius < max(w, h) and not found:
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        tx, ty = cx + dx, cy + dy
+                        if not world.in_bounds(tx, ty):
+                            continue
+                        if world.is_walkable(tx, ty):
+                            found = (tx, ty)
+                            break
+                    if found:
+                        break
+                radius += 1
+            if found:
+                world.entry = found
+
+    # down stairs near center on walkable tile
+    for radius in range(0, max(w, h)):
+        placed = False
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                tx = w // 2 + dx
+                ty = h // 2 + dy
+                if not world.in_bounds(tx, ty):
+                    continue
+                if not world.is_walkable(tx, ty):
+                    continue
+                tile = world.get_tile(tx, ty)
+                if tile:
+                    tile.glyph = ">"
+                    world.down_stairs = (tx, ty)
+                    placed = True
+                    break
+            if placed:
+                break
+        if placed:
+            break
+
+
+def generate_overworld(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) -> None:
+    """Open, walkable overworld slice with light scatter of obstacles."""
+    # start as open grass
+    for y in range(world.height):
+        for x in range(world.width):
+            tile = world.tiles[y][x]
+            tile.walkable = True
+            tile.glyph = "."
+    # sprinkle obstacles
+    for y in range(1, world.height - 1):
+        for x in range(1, world.width - 1):
+            if rng.random() < 0.05:
+                tile = world.tiles[y][x]
+                tile.walkable = False
+                tile.glyph = "#"
+    # entry
+    if up_pos:
+        world.entry = up_pos
+    else:
+        world.entry = (world.width // 2, world.height // 2)
+    # put a single down stair somewhere central-ish
+    sx = world.width // 2 + rng.randint(-3, 3)
+    sy = world.height // 2 + rng.randint(-3, 3)
+    sx = max(1, min(world.width - 2, sx))
+    sy = max(1, min(world.height - 2, sy))
+    tile = world.get_tile(sx, sy)
+    if tile:
+        tile.glyph = ">"
+        tile.walkable = True
+        world.down_stairs = (sx, sy)

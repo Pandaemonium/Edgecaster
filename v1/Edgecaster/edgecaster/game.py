@@ -85,6 +85,7 @@ class LevelState:
     down_stairs: Optional[Tuple[int, int]] = None
     hover_vertex: Optional[int] = None  # for renderer hinting
     spotted: set = None  # seen actors
+    coord: Tuple[int, int, int] = (0, 0, 0)  # (x, y, depth)
 
 
 
@@ -104,16 +105,19 @@ class Game:
         self.unlocked_generators: List[str] = [self.character.generator]
         # start with params auto-maxed given current stats
         self._recalc_param_state_max()
+        # fractal field for overworld generation
+        self.fractal_field = mapgen.FractalField()
 
-        self.levels: Dict[int, LevelState] = {}
-        self.current_level = 0
+        # zones keyed by (x, y, depth)
+        self.levels: Dict[Tuple[int, int, int], LevelState] = {}
+        self.zone_coord: Tuple[int, int, int] = (0, 0, 0)
         self._next_id = 0
 
-        # create level 0
-        self.levels[0] = self._make_level(level_idx=0, up_pos=None)
+        # create starting zone
+        self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
 
         # spawn player
-        px, py = self.levels[0].world.entry
+        px, py = self._level().world.entry
         player_name = self.character.name or "Edgecaster"
         player_stats = self._build_player_stats()
         player = Actor(
@@ -125,10 +129,10 @@ class Game:
         )
 
         self.player_id = player.actor_id
-        self.levels[0].actors[player.actor_id] = player
+        self._level().actors[player.actor_id] = player
 
         # enemies
-        self._spawn_enemies(self.levels[0], count=4)
+        self._spawn_enemies(self._level(), count=4)
 
         # optional little intro flourish (you can tweak or remove)
         import datetime
@@ -138,7 +142,7 @@ class Game:
         self.log.add(f"Welcome, {player_name}. {leap_msg}")
         self.log.add("Imps lurk nearby. Move with arrows/WASD. F: activate rune. ESC to exit.")
 
-        self._update_fov(self.levels[0])
+        self._update_fov(self._level())
 
 
     def _build_player_stats(self) -> Stats:
@@ -272,10 +276,14 @@ class Game:
         # You can tweak this string to taste.
         self.log.add(f"{text}  (press SPACE)")
 
-    def _make_level(self, level_idx: int, up_pos: Optional[Tuple[int, int]]) -> LevelState:
+    def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
+        x, y, depth = coord
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
-        mapgen.generate_basic(world, self.rng, up_pos=up_pos)
-        return LevelState(
+        if depth == 0:
+            mapgen.generate_fractal_overworld(world, self.fractal_field, coord, self.rng, up_pos=up_pos)
+        else:
+            mapgen.generate_basic(world, self.rng, up_pos=up_pos)
+        lvl = LevelState(
             world=world,
             actors={},
             events=[],
@@ -290,7 +298,12 @@ class Game:
             up_stairs=world.up_stairs,
             down_stairs=world.down_stairs,
             spotted=set(),
+            coord=coord,
         )
+        # mentor on starting overworld tile
+        if coord == (0, 0, 0):
+            self._spawn_mentor(lvl)
+        return lvl
 
     def _spawn_enemies(self, level: LevelState, count: int) -> None:
         spawned = 0
@@ -314,6 +327,33 @@ class Game:
             )
             self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
             spawned += 1
+
+    def _spawn_mentor(self, level: LevelState) -> None:
+        """Place mentor NPC near entry if available."""
+        entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
+        x, y = entry
+        offsets = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (-2, 0), (0, 2), (0, -2)]
+        for dx, dy in offsets:
+            tx, ty = x + dx, y + dy
+            if not level.world.in_bounds(tx, ty):
+                continue
+            if not level.world.is_walkable(tx, ty):
+                continue
+            if self._actor_at(level, (tx, ty)):
+                continue
+            aid = self._new_id()
+            mentor = Actor(
+                actor_id=aid,
+                name="Mentor",
+                pos=(tx, ty),
+                faction="npc",
+                stats=Stats(hp=1, max_hp=1),
+                tags={"npc_id": "mentor"},
+                disposition=10,
+                affiliations=("edgecasters",),
+            )
+            level.actors[aid] = mentor
+            break
 
     def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
         if count <= 0:
@@ -375,6 +415,12 @@ class Game:
     def _all_actors(self, level: LevelState) -> List[Actor]:
         return [a for a in level.actors.values() if a.alive]
 
+    def _get_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]] = None) -> LevelState:
+        if coord not in self.levels:
+            self.levels[coord] = self._make_zone(coord, up_pos=up_pos)
+            self._spawn_enemies(self.levels[coord], count=4)
+        return self.levels[coord]
+
     def all_actors_current(self) -> List[Actor]:
         """Alive actors on the current level."""
         return self._all_actors(self._level())
@@ -382,7 +428,7 @@ class Game:
     # --- player helpers ---
 
     def _level(self) -> LevelState:
-        return self.levels[self.current_level]
+        return self.levels[self.zone_coord]
 
     def _player(self) -> Actor:
         return self._level().actors[self.player_id]
@@ -691,30 +737,28 @@ class Game:
         tile = lvl.world.get_tile(*player.pos)
         if tile is None:
             return
+        cx, cy, cz = self.zone_coord
         if tile.glyph == ">":
-            target_level = self.current_level + 1
+            target_coord = (cx, cy, cz + 1)
             up_pos = player.pos
-            if target_level not in self.levels:
-                self.levels[target_level] = self._make_level(target_level, up_pos=up_pos)
-                self._spawn_enemies(self.levels[target_level], count=4)
+            dest_level = self._get_zone(target_coord, up_pos=up_pos)
             # move player
             del lvl.actors[self.player_id]
-            dest_level = self.levels[target_level]
             dest_pos = dest_level.up_stairs or dest_level.world.entry
             player.pos = dest_pos
             dest_level.actors[self.player_id] = player
-            self.current_level = target_level
-            self.log.add(f"You descend to level {self.current_level}.")
+            self.zone_coord = target_coord
+            self.log.add(f"You descend to depth {self.zone_coord[2]}.")
             self._update_fov(dest_level)
-        elif tile.glyph == "<" and self.current_level > 0:
-            target_level = self.current_level - 1
+        elif tile.glyph == "<" and cz > 0:
+            target_coord = (cx, cy, cz - 1)
+            dest_level = self._get_zone(target_coord, up_pos=None)
             del lvl.actors[self.player_id]
-            dest_level = self.levels[target_level]
             dest_pos = dest_level.down_stairs or dest_level.world.entry
             player.pos = dest_pos
             dest_level.actors[self.player_id] = player
-            self.current_level = target_level
-            self.log.add(f"You ascend to level {self.current_level}.")
+            self.zone_coord = target_coord
+            self.log.add(f"You ascend to depth {self.zone_coord[2]}.")
             self._update_fov(dest_level)
 
     # --- movement & combat ---
@@ -727,6 +771,9 @@ class Game:
         nx = x + dx
         ny = y + dy
         if not level.world.in_bounds(nx, ny):
+            # only player can transition zones
+            if actor_id == self.player_id:
+                self._transition_edge(actor, dx, dy)
             return
         # stair use is explicit, so only move/attack here
         target = self._actor_at(level, (nx, ny))
@@ -757,6 +804,30 @@ class Game:
                 self.log.add(f"{defender.name} dies.")
                 if attacker.actor_id == self.player_id:
                     self._on_enemy_killed(defender)
+
+    def _transition_edge(self, actor: Actor, dx: int, dy: int) -> None:
+        """Move the player across zone boundaries."""
+        level = self._level()
+        w, h = level.world.width, level.world.height
+        x, y = actor.pos
+        nx = x + dx
+        ny = y + dy
+        zx, zy, zz = self.zone_coord
+        dzx = 1 if nx >= w else -1 if nx < 0 else 0
+        dzy = 1 if ny >= h else -1 if ny < 0 else 0
+        if dzx == 0 and dzy == 0:
+            return
+        dest_coord = (zx + dzx, zy + dzy, zz)
+        dest_x = 0 if nx >= w else (w - 1 if nx < 0 else nx)
+        dest_y = 0 if ny >= h else (h - 1 if ny < 0 else ny)
+        dest_level = self._get_zone(dest_coord, up_pos=None)
+        # move actor
+        del level.actors[self.player_id]
+        actor.pos = (dest_x, dest_y)
+        dest_level.actors[self.player_id] = actor
+        self.zone_coord = dest_coord
+        self.log.add(f"You travel to zone {dest_coord[0]},{dest_coord[1]} (depth {dest_coord[2]}).")
+        self._update_fov(dest_level)
 
 
 
@@ -998,7 +1069,11 @@ class Game:
 
     @property
     def level_index(self) -> int:
-        return self.current_level
+        return self.zone_coord[2]
+
+    @property
+    def zone(self) -> Tuple[int, int, int]:
+        return self.zone_coord
 
     @property
     def awaiting_terminus(self) -> bool:
