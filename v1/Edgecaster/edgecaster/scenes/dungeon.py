@@ -22,8 +22,8 @@ class DungeonScene(Scene):
         # Decide what comes next:
         if not game.player_alive:
             # After death, go back to character creation
-            from .character_creation_scene import CharacterCreationScene
-            manager.set_scene(CharacterCreationScene())
+            from .main_menu import MainMenuScene
+            manager.set_scene(MainMenuScene())
         else:
             # Later, you could branch to a world-map scene, etc.
             manager.set_scene(None)
