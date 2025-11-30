@@ -9,15 +9,15 @@ from .base import Scene, CharacterInfo
 
 CHAR_CLASSES: List[str] = [
     "Kochbender",
-    "Sierpinski Caster",
+    "Automoton",
     "Strange Attractor",
     "Weaver",
 ]
 CLASS_DESCRIPTIONS = {
-    "Kochbender": "Fractal line mage. Bends and subdivides runes into sharp, angular spell patterns.",
-    "Sierpinski Caster": "Cellular automaton hexer. Grows lace-like beams and cascading triangular fields.",
-    "Strange Attractor": "Orb dancer. Commands chaotic, orbiting projectiles that swirl unpredictably.",
-    "Weaver": "Spatial crafter. Weaves recursive carpets and mazes to control terrain and enemy movement.",
+    "Kochbender": "Who commands the icy lash of runes carved infinitely sharp? Who obeys?",
+    "Automoton": "A common misconception that machines cannot perform magic. Quite the contrary.",
+    "Strange Attractor": "Cursed to dance among weird energies, or they among her.",
+    "Weaver": "Everyone wears clothing, but few make their own. So too with destiny.",
 }
 
 class CharacterCreationScene(Scene):

@@ -127,7 +127,16 @@ class Game:
         self._spawn_enemies(self.levels[0], count=4)
 
         # intro messages
-        self.log.add(f"Welcome, {self.player_name} the {self.player_class}.")
+
+        import datetime
+        year = datetime.date.today().year
+        leap = (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0))
+
+        if leap:
+            leapyearmessage="It's a leap year. Be careful!"
+        else:
+            leapyearmessage="It's not a leap year."
+        self.log.add(f"Welcome, {self.player_name} the {self.player_class}. " + leapyearmessage)
         self.log.add("Imps lurk nearby. Move with arrows/WASD. F: activate rune. ESC to exit.")
 
         self._update_fov(self.levels[0])
