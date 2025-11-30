@@ -1,16 +1,23 @@
-# Edgecaster (prototype)
+# Edgecaster
 
-Turn-based roguelike prototype with fractal runes and an ASCII pygame renderer.
+Turn-based roguelike where you weave fractal runes and ignite them. ASCII-style renderer (pygame-ce), scene system, and a full character creator (stats + custom fractal).
+
+## Premise & goals (short)
+- You are the last Patterncaster; ancient seals failed and demons infiltrate the nations.
+- Travel the world, remake seals, and push back demonic influence.
+- Fractal-first magic: draw/transform runes, then activate them for varied effects.
+- Factions + reputation (Caves of Qud vibe); mix of handcrafted and procgen NPCs and lairs; open-world aspirations.
 
 ## Project layout
-- `v1/Edgecaster/edgecaster/`: game package (game loop, renderer, fractal builders, mapgen, state).
+- `v1/Edgecaster/edgecaster/`: game package (game loop, renderer, patterns, mapgen, scenes).
 - `v1/Edgecaster/requirements.txt`: dependencies (pygame-ce).
-- `fractal_lab.py`: standalone fractal editor from earlier prototyping (not wired into the game package yet).
+- `fractal_lab.py`: early standalone fractal lab (reference only).
 
 ## Prerequisites
 - Python 3.10+ recommended.
-- Install dependencies:
+- Install deps (from repo root):
   ```bash
+  cd v1/Edgecaster
   pip uninstall -y pygame  # optional, to avoid conflicts
   pip install -r requirements.txt
   ```
@@ -21,23 +28,33 @@ From `v1/Edgecaster`:
 python -m edgecaster.main
 ```
 
-## Controls (current slice)
-- Movement: arrows / WASD (10 ticks).
-- Place terminus: ability 1 (click button or press `1`), then click a tile or move cursor (arrows) and Enter/Space. Range 5; resolves as a slow action (5 ticks).
-- Fractal ops: abilities 2–5 (subdivide, koch, branch, extend) — 10 ticks each.
-- Activate rune: ability 6 (all vertices) or 7 (seed + neighbors), or `F`. Costs 1 mana per vertex; 10 ticks.
-- Reset rune: ability 8.
-- Meditate: ability 9 (+10 mana, 100 ticks).
+## Current features
+- Scene manager (character creation → dungeon; death returns you to creation).
+- Character creation with classes (presets for generator/illuminator/stats) and full point-buy + custom fractal drawing.
+- Fractal system: place terminus (range 8), apply generators (subdivide/koch/branch/zigzag/custom/extend), activate radius or neighbors, reset, meditate.
+- Stats & gating: INT/RES gate param tiers; coherence/strength fizzles when overloading patterns/activations; XP/level ups boost HP/MP.
+- Zoomable ASCII renderer; ability bar with icons; hover previews for activation damage/fail%; pulsing placement range.
+- Stairs up/down with level indicator; enemies (imps) with spotting log; wait action on numpad 5.
+
+## Controls (current)
+- Movement: arrows / WASD / numpad (diagonals). Numpad 5 = wait.
+- Zoom: mouse wheel (cursor-centered; map glyphs scale, UI text fixed).
+- Place terminus: ability 1 or `1`; click/keys to choose tile; slow 5 ticks; range 8; pulsing ring shown.
+- Fractal ops: abilities on the bar (subdivide, koch, branch, zigzag, extend, custom). ~10 ticks.
+- Activate: radius or neighbors (button or hotkey). Costs 1 mana per vertex; previews damage/fail on hover; time at click.
+- Reset rune: button.
+- Meditate: restores mana (100 ticks).
 - Stairs: stand on `<` or `>` and press `.`/`>` or `,`/`<`, or click your tile while on stairs.
-- ESC: cancel targeting or exit.
+- ESC: cancel targeting/dialog, or exit.
 
 ## Notes
-- Runes are anchored to the tile where you placed the terminus; they stay on that level when you change floors.
-- Each level stores its own monsters/runes. HUD shows tick count and level index (upper-right), HP/Mana bars (top-left), and ability bar (bottom).
+- Runes are anchored to the tile where you placed the terminus; they stay on that level.
+- Each level stores its own monsters/runes; HUD shows tick/level, HP/MP/XP/stats, coherence info, ability bar.
 
-## TODO ideas
-- Range indicator during placement.
-- Enemy HP bars and more AI behaviors.
-- More fractal generators and pattern selection.
-- Save/load and seed controls.
+## Contributing (short)
+- Use feature branches; open PRs against `main`.
+- Python 3.10+, prefer keeping pygame-ce pinned from `requirements.txt`.
+- Run `python -m edgecaster.main` as a smoke test before PRs.
+- Keep the outer `Edgecaster/` repo ignored; work in `v1/Edgecaster`.
 
+See `CONTRIBUTING.md`, `ARCHITECTURE.md`, and `CHANGELOG.md` for more detail.
