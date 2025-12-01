@@ -10,6 +10,7 @@ from edgecaster.character import Character, default_character
 from .base import Scene
 from .character_creation_scene import CharacterCreationScene
 from .main_menu import MainMenuScene
+from .world_map_scene import WorldMapScene
 
 
 class SceneManager:
@@ -27,7 +28,7 @@ class SceneManager:
     def __init__(self, cfg: config.GameConfig, renderer: AsciiRenderer) -> None:
         self.cfg = cfg
         self.renderer = renderer
-        self.rng = new_rng(cfg.seed)
+        self.rng_factory = lambda seed=None: new_rng(seed if seed is not None else None)
 
         # Last-chosen character (default until player customizes one)
         self.character: Character = default_character()
@@ -39,6 +40,8 @@ class SceneManager:
             "Fullscreen": False,
             "Vicious dog trigger warning": False,
         }
+        # Keep a handle to the currently running Game (set by DungeonScene)
+        self.current_game = None
 
         # New: stack of scenes, top is active
         self.scene_stack: List[Scene] = []

@@ -1,5 +1,6 @@
 from typing import Tuple, Optional
 import math
+import random
 
 from edgecaster.state.world import World
 
@@ -107,10 +108,34 @@ def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) 
 class FractalField:
     """Simple Mandelbrot-based field for height/biome sampling."""
 
-    def __init__(self, scale: float = 0.012, offset: Tuple[float, float] = (-0.75, 0.0), iterations: int = 48):
+    def __init__(
+        self,
+        scale: float = 0.012,
+        offset: Tuple[float, float] = (-0.75, 0.0),
+        iterations: int = 48,
+        seed: Optional[int] = None,
+    ):
         self.scale = scale
         self.offset = offset
         self.iterations = iterations
+        self.seed = seed
+        self._rng = random.Random(seed)
+        # jitter the offset/scale slightly per seed to diversify runs
+        self.offset = (
+            self.offset[0] + self._rng.uniform(-0.2, 0.2),
+            self.offset[1] + self._rng.uniform(-0.2, 0.2),
+        )
+        self.scale = self.scale * (0.9 + self._rng.random() * 0.2)
+
+        # secondary constants for moisture/pattern sampling
+        self.moisture_c = complex(
+            self._rng.uniform(-0.6, 0.6),
+            self._rng.uniform(-0.6, 0.6),
+        )
+        self.pattern_c = complex(
+            self._rng.uniform(-0.4, 0.4),
+            self._rng.uniform(-0.4, 0.4),
+        )
 
     def sample(self, wx: float, wy: float) -> float:
         """Return height in 0..1 from Mandelbrot escape time."""
@@ -130,6 +155,35 @@ class FractalField:
         smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
         return max(0.0, min(1.0, smooth / self.iterations))
 
+    def _julia(self, wx: float, wy: float, c: complex, iters: int = 32) -> float:
+        """Basic Julia escape fraction 0..1."""
+        zx = wx * self.scale
+        zy = wy * self.scale
+        it = 0
+        while zx * zx + zy * zy <= 4.0 and it < iters:
+            xt = zx * zx - zy * zy + c.real
+            zy = 2 * zx * zy + c.imag
+            zx = xt
+            it += 1
+        if it >= iters:
+            return 0.0
+        mod = math.sqrt(zx * zx + zy * zy)
+        smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
+        return max(0.0, min(1.0, smooth / iters))
+
+    def sample_full(self, wx: float, wy: float) -> dict:
+        """Return a dict of fields for a world coordinate."""
+        height = self.sample(wx, wy)
+        moisture = self._julia(wx, wy, self.moisture_c, iters=28)
+        pattern = self._julia(wx, wy, self.pattern_c, iters=36)
+        corruption = _hash01(int(wx * 13), int(wy * 17))  # simple static mask for now
+        return {
+            "height": height,
+            "moisture": moisture,
+            "pattern": pattern,
+            "corruption": corruption,
+        }
+
 
 def _hash01(x: int, y: int) -> float:
     h = (x * 73856093) ^ (y * 19349663)
@@ -137,10 +191,35 @@ def _hash01(x: int, y: int) -> float:
     return (h % 1000) / 1000.0
 
 
+def _classify_tile(fields: dict, noise: float) -> Tuple[str, bool]:
+    """Return glyph, walkable based on height/moisture and a dash of noise."""
+    h = fields["height"]
+    m = fields["moisture"]
+    # Broad strokes: low = water, mid = shore/plains/forest, high = hills/mountains.
+    if h < 0.16:
+        return "~", False  # deep water
+    if h < 0.24:
+        return ",", True  # shallow/shore
+    if h < 0.68:
+        # lowlands
+        if m > 0.64:
+            # lush/forested; mostly walkable, with sparse blockers
+            return ("T", noise > 0.015)
+        if m < 0.28:
+            # drier scrub/steppe
+            return ("." if noise > 0.05 else ",", True)
+        return ".", True
+    if h < 0.82:
+        # hills, lightly obstructive
+        return ("^", noise > 0.05)
+    # high mountains: still mostly passable to keep openness
+    return ("#", noise > 0.35)
+
+
 def generate_fractal_overworld(
     world: World, field: FractalField, coord: Tuple[int, int, int], rng, up_pos: Optional[Tuple[int, int]] = None
 ) -> None:
-    """Fractal-driven overworld: Mandelbrot height -> terrain."""
+    """Fractal-driven overworld using height/moisture fields with lighter obstruction."""
     zx, zy, _ = coord
     w, h = world.width, world.height
     cx0 = zx * w
@@ -150,27 +229,12 @@ def generate_fractal_overworld(
         for x in range(w):
             wx = cx0 + x
             wy = cy0 + y
-            height = field.sample(wx, wy)
+            fields = field.sample_full(wx, wy)
             noise = _hash01(int(wx), int(wy))
+            glyph, walkable = _classify_tile(fields, noise)
             tile = world.tiles[y][x]
-            if height < 0.24:
-                tile.glyph = "~"
-                tile.walkable = False
-            elif height < 0.32:
-                tile.glyph = ","
-                tile.walkable = True
-            elif height < 0.72:
-                tile.glyph = "."
-                tile.walkable = True
-                if 0.5 < height < 0.7 and noise < 0.08:
-                    tile.glyph = "T"
-                    tile.walkable = False
-            elif height < 0.88:
-                tile.glyph = "^"
-                tile.walkable = True
-            else:
-                tile.glyph = "#"
-                tile.walkable = False
+            tile.glyph = glyph
+            tile.walkable = walkable
 
     # entry: use up_pos if provided, else nearest walkable to center
     if up_pos and world.in_bounds(*up_pos) and world.is_walkable(*up_pos):

@@ -60,6 +60,16 @@ class OptionsScene(Scene):
                 ((renderer.width - title_text.get_width()) // 2, 80),
             )
 
+            # World seed display (read-only)
+            seed_val = None
+            if getattr(manager, "current_game", None):
+                seed_val = getattr(manager.current_game, "fractal_seed", None)
+            if seed_val is None and getattr(manager, "character", None):
+                seed_val = getattr(manager.character, "seed", None)
+            seed_line = f"World Seed: {seed_val if seed_val is not None else 'random'}"
+            seed_text = renderer.small_font.render(seed_line, True, renderer.fg)
+            surface.blit(seed_text, (renderer.width // 2 - 180, 130))
+
             y = 150
             for i, key in enumerate(toggle_keys):
                 val = toggles[key]

@@ -25,7 +25,7 @@ DEFAULT_NAME = "Pandaemonium"
 
 
 class CharCreation:
-    def __init__(self, width: int, height: int) -> None:
+    def __init__(self, width: int, height: int, cfg=None) -> None:
         pygame.init()
         self.width = width
         self.height = height
@@ -38,17 +38,20 @@ class CharCreation:
         self.sel = (255, 230, 120)
 
         self.running = True
+        self.click_targets = {}  # name -> Rect
 
         # Fields in the order they appear visually:
         self.fields = [
             "name",
+            "class",
             "generator",
             "illuminator",
+            "seed_mode",
+            "seed_value",
             "con",
             "agi",
             "int",
             "res",
-            "class",
             "done",
         ]
         self.idx = 0
@@ -57,6 +60,12 @@ class CharCreation:
         self.illuminators = ["radius", "neighbors"]
 
         self.char = default_character()
+        # seed handling
+        self.seed_mode = "fixed"
+        default_seed = getattr(cfg, "seed", None) if cfg else None
+        if default_seed is None:
+            default_seed = getattr(self.char, "seed", None)
+        self.seed_text = str(default_seed) if default_seed is not None else ""
 
         # Safeguards in case default_character is missing attributes
         if not hasattr(self.char, "name") or self.char.name is None:
@@ -84,6 +93,8 @@ class CharCreation:
                 if event.type == pygame.QUIT:
                     self.running = False
                     return None
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self.handle_click(event.pos)
 
                 if event.type == pygame.KEYDOWN:
                     # ESC: bail out, keep default char
@@ -100,6 +111,16 @@ class CharCreation:
                             self.char.name = DEFAULT_NAME
 
                         if current == "done":
+                            # apply seed selection before exiting
+                            if self.seed_mode == "random":
+                                self.char.use_random_seed = True
+                                self.char.seed = None
+                            else:
+                                self.char.use_random_seed = False
+                                try:
+                                    self.char.seed = int(self.seed_text)
+                                except ValueError:
+                                    self.char.seed = None
                             self.running = False
                             break
                         else:
@@ -116,6 +137,7 @@ class CharCreation:
 
         # Attach the chosen class to the character before returning
         setattr(self.char, "char_class", self.char_class)
+        setattr(self.char, "player_class", self.char_class)
         return self.char
 
     def handle_key(self, key: int) -> None:
@@ -158,6 +180,22 @@ class CharCreation:
                 self.char.name += ch
             return
 
+        # --- Seed mode / value ---
+        if field == "seed_mode":
+            if key in (pygame.K_LEFT, pygame.K_RIGHT):
+                self.seed_mode = "random" if self.seed_mode == "fixed" else "fixed"
+            return
+        if field == "seed_value":
+            if self.seed_mode != "fixed":
+                return
+            if key == pygame.K_BACKSPACE:
+                self.seed_text = self.seed_text[:-1]
+            elif key == pygame.K_MINUS and not self.seed_text:
+                self.seed_text = "-"
+            elif 48 <= key <= 57:  # digits
+                self.seed_text += chr(key)
+            return
+
         # --- Generator selection ---
         if field == "generator":
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
@@ -189,7 +227,6 @@ class CharCreation:
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
                 self.adjust_stat(field, 1 if key == pygame.K_RIGHT else -1)
             return
-
         # --- Class selection ---
         if field == "class":
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
@@ -225,6 +262,15 @@ class CharCreation:
         )
         y += 40
 
+        # Class selection
+        self.draw_field(
+            "Class",
+            self.char_class,
+            y,
+            selected=self.fields[self.idx] == "class",
+        )
+        y += 36
+
         # Generator
         gen_label = self.char.generator
         if self.char.generator == "custom":
@@ -244,15 +290,18 @@ class CharCreation:
             y,
             selected=self.fields[self.idx] == "illuminator",
         )
-        y += 50
+        y += 40
+
+        # Seed mode/value with text box
+        seed_sel = self.fields[self.idx] in ("seed_mode", "seed_value")
+        y = self.draw_seed_controls(y, selected=seed_sel)
 
         # Stats
         self.draw_stats(y)
         # This y is approximate; draw_stats uses its own local y.
-        # Then push the class selector a bit further down.
         y += 190  # slightly larger than before for more spacing
 
-        # Class selection & description
+        # Class description
         y = self.draw_class_section(y)
         y += 30
 
@@ -469,6 +518,62 @@ class CharCreation:
             surf = self.font.render(f"{lbl}: {val}", True, col)
             self.surface.blit(surf, (100, y))
             y += 32
+
+    def draw_seed_controls(self, y: int, selected: bool) -> int:
+        """Draw seed fixed/random radios and an input box."""
+        self.click_targets.clear()
+        label = self.big.render("World Seed", True, self.fg)
+        self.surface.blit(label, (80, y))
+        y += 32
+
+        # radio buttons
+        def radio(x, y, checked):
+            pygame.draw.circle(self.surface, self.fg, (x, y), 10, 2)
+            if checked:
+                pygame.draw.circle(self.surface, self.sel, (x, y), 6)
+
+        fixed_y = y + 4
+        random_y = y + 36
+        radio_x = 100
+        radio(radio_x, fixed_y, self.seed_mode == "fixed")
+        self.click_targets["seed_fixed"] = pygame.Rect(radio_x - 12, fixed_y - 12, 24, 24)
+        txt = self.font.render("Fixed seed:", True, self.sel if self.seed_mode == "fixed" else self.fg)
+        self.surface.blit(txt, (radio_x + 18, fixed_y - 12))
+
+        # input box
+        box_rect = pygame.Rect(radio_x + 140, fixed_y - 18, 280, 32)
+        self.click_targets["seed_box"] = box_rect
+        pygame.draw.rect(self.surface, (40, 40, 60), box_rect, border_radius=4)
+        pygame.draw.rect(self.surface, self.sel if selected and self.seed_mode == "fixed" else self.fg, box_rect, 2, border_radius=4)
+        shown = self.seed_text if self.seed_mode == "fixed" else ""
+        if shown == "":
+            shown = "enter number"
+        text_col = self.sel if (selected and self.seed_mode == "fixed") else self.fg
+        txt_val = self.font.render(shown, True, text_col)
+        self.surface.blit(txt_val, (box_rect.x + 8, box_rect.y + 6))
+
+        # random option
+        radio(radio_x, random_y, self.seed_mode == "random")
+        self.click_targets["seed_random"] = pygame.Rect(radio_x - 12, random_y - 12, 24, 24)
+        rtxt = self.font.render("Random seed each run", True, self.sel if self.seed_mode == "random" else self.fg)
+        self.surface.blit(rtxt, (radio_x + 18, random_y - 12))
+
+        return y + 64
+
+    def handle_click(self, pos: tuple[int, int]) -> None:
+        """Mouse support to focus seed entry / radios."""
+        if "seed_fixed" in self.click_targets and self.click_targets["seed_fixed"].collidepoint(pos):
+            self.seed_mode = "fixed"
+            self.idx = self.fields.index("seed_value")
+            return
+        if "seed_random" in self.click_targets and self.click_targets["seed_random"].collidepoint(pos):
+            self.seed_mode = "random"
+            self.idx = self.fields.index("seed_mode")
+            return
+        if "seed_box" in self.click_targets and self.click_targets["seed_box"].collidepoint(pos):
+            self.seed_mode = "fixed"
+            self.idx = self.fields.index("seed_value")
+            return
 
 
 def run_character_creation(cfg) -> Optional[Character]:

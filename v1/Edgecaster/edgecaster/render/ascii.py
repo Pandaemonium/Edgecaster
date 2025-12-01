@@ -82,12 +82,25 @@ class AsciiRenderer:
 
     def draw_world(self, world: World) -> None:
         self.surface.fill(self.bg)
+        palette = {
+            "~": (90, 130, 255),   # water
+            ",": (190, 170, 120),  # shore
+            ".": (140, 200, 140),  # grass
+            "T": (60, 140, 80),    # trees
+            "^": (170, 140, 100),  # hills
+            "#": (180, 180, 190),  # mountains/walls
+        }
         for y in range(world.height):
             for x in range(world.width):
                 tile = world.tiles[y][x]
                 if not tile.explored and not tile.visible:
                     continue
-                color = self.fg if tile.visible else self.dim
+                base_col = palette.get(tile.glyph, self.fg)
+                if tile.visible:
+                    color = base_col
+                else:
+                    # dim the color for explored but not visible
+                    color = tuple(max(0, int(c * 0.5)) for c in base_col)
                 ch = tile.glyph
                 text = self.map_font.render(ch, True, color)
                 px = x * self.tile + self.origin_x
@@ -461,11 +474,10 @@ class AsciiRenderer:
             over = max(0, verts_count - coh_limit)
             fail_chance = 0.0 if verts_count <= coh_limit else over / (coh_limit + over)
             y += 18
-            coh_text = self.small_font.render(
-                f"Vertices {verts_count}/{coh_limit}  Fail~{int(fail_chance*100)}%",
-                True,
-                self.fg,
-            )
+            label = f"Vertices {verts_count}/{coh_limit}"
+            if over > 0:
+                label += f"  Fail~{int(fail_chance*100)}%"
+            coh_text = self.small_font.render(label, True, self.fg)
             self.surface.blit(coh_text, (x, y))
 
 
@@ -800,6 +812,13 @@ class AsciiRenderer:
 
         if key in mapping:
             game.queue_player_move(mapping[key])
+            return
+        if key in (pygame.K_COMMA, pygame.K_LESS):
+            # open world map if on overworld (depth 0) and not on stairs
+            tile = game.world.get_tile(*game.actors[game.player_id].pos)
+            if tile and tile.glyph not in ("<", ">") and game.zone[2] == 0:
+                game.map_requested = True
+                self.quit_requested = True
             return
         if key == pygame.K_f:
             self._trigger_action(game, "activate_all")

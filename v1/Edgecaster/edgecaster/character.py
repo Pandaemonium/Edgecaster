@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict
+from edgecaster import config
 
 
 @dataclass
@@ -10,6 +11,9 @@ class Character:
     stats: Dict[str, int]  # con, agi, int, res
     point_pool: int = 0
     custom_pattern: list | None = None  # optional list of points defining a custom generator
+    player_class: str | None = None
+    seed: int | None = None
+    use_random_seed: bool = False
 
 
 def default_character() -> Character:
@@ -21,4 +25,7 @@ def default_character() -> Character:
         stats=stats,
         point_pool=4,
         custom_pattern=None,
+        player_class=None,
+        seed=config.default_seed,
+        use_random_seed=False,
     )

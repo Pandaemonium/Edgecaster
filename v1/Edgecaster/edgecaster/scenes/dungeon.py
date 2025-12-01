@@ -17,15 +17,22 @@ class DungeonScene(Scene):
         from .inventory_scene import InventoryScene
 
         cfg = manager.cfg
-        rng = manager.rng
         renderer = manager.renderer
         char = manager.character
 
         # Lazily construct the game the first time this scene runs
         if self.game is None:
+            seed = None
+            if hasattr(char, "use_random_seed") and char.use_random_seed:
+                seed = None  # random
+            else:
+                seed = getattr(char, "seed", None) or getattr(cfg, "seed", None)
+            rng = manager.rng_factory(seed)
             self.game = Game(cfg, rng, character=char)
 
         game = self.game
+        # expose to manager for options display
+        manager.current_game = game
 
         # Clear flags before rendering
         renderer.quit_requested = False
@@ -58,6 +65,14 @@ class DungeonScene(Scene):
             manager.push_scene(PauseMenuScene())
             return
 
-        # 4) Otherwise, the loop ended for some external reason (like quitting)
+        # 4) World map requested → replace with world map scene (keep game instance)
+        if getattr(game, "map_requested", False):
+            game.map_requested = False
+            from .world_map_scene import WorldMapScene
+            manager.replace_scene(WorldMapScene(game, span=16))
+            return
+
+        # 5) Otherwise, the loop ended for some external reason (like quitting)
         self.game = None
+        manager.current_game = None
         manager.set_scene(None)

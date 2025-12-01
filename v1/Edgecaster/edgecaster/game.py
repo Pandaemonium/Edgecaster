@@ -106,7 +106,14 @@ class Game:
         # start with params auto-maxed given current stats
         self._recalc_param_state_max()
         # fractal field for overworld generation
-        self.fractal_field = mapgen.FractalField()
+        # seed: use character seed if provided, else derive from rng
+        if getattr(self.character, "use_random_seed", False):
+            self.fractal_seed = self.rng.randint(0, 10**9)
+        else:
+            self.fractal_seed = getattr(self.character, "seed", None) or getattr(cfg, "seed", None)
+        self.fractal_field = mapgen.FractalField(seed=self.fractal_seed)
+        # flags
+        self.map_requested = False
 
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}

@@ -10,4 +10,6 @@ debug.log
 dist/
 build/
 *.egg-info/
-#Edgecaster/
+Edgecaster/
+v1/Edgecaster/map_samples/
+v1/Edgecaster/tools/
