@@ -813,13 +813,19 @@ class AsciiRenderer:
         if key in mapping:
             game.queue_player_move(mapping[key])
             return
-        if key in (pygame.K_COMMA, pygame.K_LESS):
-            # open world map if on overworld (depth 0) and not on stairs
+        if key in (pygame.K_COMMA, pygame.K_LESS, pygame.K_m):
+            # Try to open world map if we're NOT standing on stairs.
+            # If we *are* standing on stairs, fall through so the stairs
+            # handler below can process the key instead.
             tile = game.world.get_tile(*game.actors[game.player_id].pos)
-            if tile and tile.glyph not in ("<", ">") and game.zone[2] == 0:
+            if tile and tile.glyph not in ("<", ">"):
+                # Allow map access from overworld and dungeon alike; your
+                # friend can decide later if they want to gate by depth.
                 game.map_requested = True
                 self.quit_requested = True
-            return
+                return
+            # If we're on stairs, do NOT return here; let the stairs code run.
+
         if key == pygame.K_f:
             self._trigger_action(game, "activate_all")
             return
