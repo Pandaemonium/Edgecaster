@@ -1,7 +1,9 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
+import random
 from typing import Tuple, List, Dict
+
 
 from edgecaster.game import Game
 from edgecaster.state.actors import Actor
@@ -72,12 +74,45 @@ class AsciiRenderer:
         # pattern layers
         self.edges_surface = pygame.Surface((width, height), pygame.SRCALPHA)
         self.verts_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        # Lorenz attractor overlay
+        self.lorenz_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        self.lorenz_points: List[Tuple[float, float, float]] = []
+        self.lorenz_sigma = 10.0
+        self.lorenz_rho = 28.0
+        self.lorenz_beta = 8.0 / 3.0
+        self.lorenz_dt = 0.01
+        self.lorenz_steps_per_frame = 5   # how many Euler steps per frame
+        self.lorenz_scale = 0.18          # maps x,y to tile offsets
+        self.lorenz_radius_tiles = 7      # max aura radius in tiles
+        # cached glow sprites: key = (radius_px, col
+
         # cached glow sprites: key = (radius_px, color_tuple)
         self.glow_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
         self.abilities_signature = None
         self.ability_page = 0
         self.quit_requested = False
         self.pause_requested = False   # NEW: used by DungeonScene to decide on pause
+        self.lorenz_center_x: float | None = None
+        self.lorenz_center_y: float | None = None
+        self.lorenz_follow = 0.25  # 0 = frozen, 1 = glued to player
+        # Phase-space view center (for how we frame the attractor itself)
+        self.lorenz_view_cx = 0.0
+        self.lorenz_view_cy = 0.0
+        self.lorenz_view_initialized = False
+        self.lorenz_view_smoothing = 0.15  # how fast we chase the cloud's centroid
+        # Afterimage: a semi-transparent black surface to slowly fade old butterflies
+        self.lorenz_fade_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        # RGBA: (0, 0, 0, alpha). Higher alpha = faster fade.
+        self.lorenz_fade_surface.fill((0, 0, 0, 30))
+        # Short history of recent projected positions for tapered trails.
+        # Each entry = one frame's list of (cx_px, cy_px, z)
+        self.lorenz_trail_frames: list[list[tuple[int, int, float]]] = []
+        self.lorenz_trail_max_frames = 3  # keep trails very short
+        # Remember which game tick we last captured a frame for, so trails
+        # represent *turns* rather than raw render frames.
+        self.lorenz_last_tick: int | None = None
+
+
 
 
     def draw_world(self, world: World) -> None:
@@ -108,6 +143,190 @@ class AsciiRenderer:
                 if px >= self.width or py >= self.height:
                     continue
                 self.surface.blit(text, (px, py))
+
+    def _init_lorenz_points(self) -> None:
+        """Initialize Lorenz attractor particles around the origin.
+
+        We keep them in continuous 3D space and project x/y onto tiles
+        around the player each frame.
+        """
+        if self.lorenz_points:
+            return
+        # Start a cloud of points near the classic Lorenz initial condition.
+        for _ in range(2):
+            x = 0.1 * (random.random() - 0.5)
+            y = 1.0 + 0.1 * (random.random() - 0.5)
+            z = 1.05 + 0.1 * (random.random() - 0.5)
+            self.lorenz_points.append((x, y, z))
+
+    def _step_lorenz(self) -> None:
+        """Advance all Lorenz points a few small timesteps."""
+        if not self.lorenz_points:
+            return
+        pts: List[Tuple[float, float, float]] = []
+        for (x, y, z) in self.lorenz_points:
+            for _ in range(self.lorenz_steps_per_frame):
+                dx = self.lorenz_sigma * (y - x)
+                dy = x * (self.lorenz_rho - z) - y
+                dz = x * y - self.lorenz_beta * z
+                x += dx * self.lorenz_dt
+                y += dy * self.lorenz_dt
+                z += dz * self.lorenz_dt
+            pts.append((x, y, z))
+        self.lorenz_points = pts
+
+    def draw_lorenz_overlay(self, game: Game) -> None:
+        """Draw Lorenz 'butterflies' with short, tapered afterimage trails."""
+        
+        
+        # If the game just re-seeded the storm (stairs / teleport), wipe trails.
+        if getattr(game, "lorenz_reset_trails", False):
+            self.lorenz_surface.fill((0, 0, 0, 0))
+            self.lorenz_trail_frames.clear()
+            self.lorenz_last_tick = None
+            game.lorenz_reset_trails = False
+        # OPTIONAL: only Strange Attractors get the storm
+        if not getattr(game, "has_lorenz_aura", False):
+            # Clear trails if we swap to a non-storm character
+            self.lorenz_surface.fill((0, 0, 0, 0))
+            self.lorenz_trail_frames.clear()
+            return
+
+        # Get points from the game, not from the renderer.
+        points = getattr(game, "lorenz_points", None)
+        if not points:
+            # No new points; clear any old trails
+            self.lorenz_surface.fill((0, 0, 0, 0))
+            self.lorenz_trail_frames.clear()
+            return
+
+        # Clear previous frame; we redraw trails from history each time
+        self.lorenz_surface.fill((0, 0, 0, 0))
+
+        # Fallback to the player position if the game didn't set a center yet.
+        player = game.actors[game.player_id]
+        px_tile, py_tile = player.pos
+        center_x = getattr(game, "lorenz_center_x", float(px_tile))
+        center_y = getattr(game, "lorenz_center_y", float(py_tile))
+
+        # --- “camera” for the attractor: project (x, z) with a rotation ---
+        angle = math.radians(30.0)  # tweak until it looks nice
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+
+        # Keep (ux, uy, z) so we can color by z
+        points_2d: List[Tuple[float, float, float]] = []
+        z_min = float("inf")
+        z_max = float("-inf")
+
+        for (x, y, z) in points:
+            # Take the (x, z) plane
+            u = x
+            v = z
+
+            # Rotate
+            ux = cos_a * u - sin_a * v
+            uy = sin_a * u + cos_a * v
+
+            points_2d.append((ux, uy, z))
+            if z < z_min:
+                z_min = z
+            if z > z_max:
+                z_max = z
+
+        if not points_2d:
+            return
+
+        # Avoid divide-by-zero if z-range collapses
+        if z_max <= z_min:
+            z_max = z_min + 1e-6
+
+        # --- “natural” Lorenz center: between the wings ---
+        # Use x0 = 0 and z_mid as the middle of the z-band.
+        z_mid = 0.5 * (z_min + z_max)
+        x0 = 0.0
+
+        # Project this (x0, z_mid) point into (ux, uy) space
+        natural_ux = cos_a * x0 - sin_a * z_mid
+        natural_uy = sin_a * x0 + cos_a * z_mid
+
+        base_radius_px = max(2, int(self.tile * 0.3))
+
+        def color_for_z(z: float) -> Tuple[int, int, int]:
+            """Interpolate red -> amber -> yellow along z (RGB only)."""
+            t = (z - z_min) / (z_max - z_min)
+            t = max(0.0, min(1.0, t))
+
+            low = (255, 80, 60)      # reddish
+            mid = (255, 180, 80)     # amber
+            high = (255, 255, 120)   # yellow
+
+            if t < 0.5:
+                u = t / 0.5
+                r = int(low[0] + (mid[0] - low[0]) * u)
+                g = int(low[1] + (mid[1] - low[1]) * u)
+                b = int(low[2] + (mid[2] - low[2]) * u)
+            else:
+                u = (t - 0.5) / 0.5
+                r = int(mid[0] + (high[0] - mid[0]) * u)
+                g = int(mid[1] + (high[1] - mid[1]) * u)
+                b = int(mid[2] + (high[2] - mid[2]) * u)
+            return (r, g, b)
+
+        # Project current butterflies into screen pixel space
+        frame_points: List[Tuple[int, int, float]] = []
+
+        for (ux, uy, z) in points_2d:
+            # Offset relative to the fixed natural center in phase space
+            rel_x = ux - natural_ux
+            rel_y = uy - natural_uy
+
+            dx = rel_x * self.lorenz_scale
+            dy = rel_y * self.lorenz_scale
+
+            if abs(dx) > self.lorenz_radius_tiles or abs(dy) > self.lorenz_radius_tiles:
+                continue
+
+            tx = int(round(center_x + dx))
+            ty = int(round(center_y + dy))
+            if not game.world.in_bounds(tx, ty):
+                continue
+
+            px = tx * self.tile + self.origin_x
+            py = ty * self.tile + self.origin_y
+            if px < 0 or py < 0 or px >= self.width or py >= self.height:
+                continue
+
+            frame_points.append((px, py, z))
+
+        if not frame_points:
+            self.lorenz_trail_frames.clear()
+            return
+
+        # Push the newest frame; keep only a handful for a short trail
+        max_trail = 5
+        self.lorenz_trail_frames.append(frame_points)
+        if len(self.lorenz_trail_frames) > max_trail:
+            self.lorenz_trail_frames.pop(0)
+
+        # Draw from oldest (faintest, smallest) to newest (brightest, biggest)
+        for i, frame in enumerate(self.lorenz_trail_frames):
+            age = (i + 1) / len(self.lorenz_trail_frames)  # older → smaller / dimmer
+            radius_px = max(1, int(base_radius_px * (1.0 - 0.6 * age)))
+            alpha = int(255 * (1.0 - 0.7 * age))  # fade out with age
+            for (px, py, z) in frame:
+                r, g, b = color_for_z(z)
+                color = (r, g, b, alpha)
+                pygame.draw.circle(self.lorenz_surface, color, (px, py), radius_px)
+
+        # Finally, blit the Lorenz layer over the main surface
+        self.surface.blit(self.lorenz_surface, (0, 0))
+
+
+
+
+
+
 
     def _actor_visual(self, actor: Actor) -> Tuple[str, Tuple[int, int, int]]:
         if actor.faction == "player":
@@ -644,6 +863,8 @@ class AsciiRenderer:
                     self._update_hover(game, pygame.mouse.get_pos())
 
                 self.draw_world(game.world)
+                self.draw_lorenz_overlay(game)
+
                 self.draw_pattern_overlay(game)
                 self.draw_place_overlay(game)
                 self.draw_activation_overlay(game)
