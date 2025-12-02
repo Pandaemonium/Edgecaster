@@ -43,6 +43,9 @@ class WorldMapScene(Scene):
                     manager.set_scene(None)
                     return
                 if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_F11:
+                        renderer.toggle_fullscreen()
+                        continue
                     if event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE, pygame.K_LESS, pygame.K_COMMA, pygame.K_PERIOD, pygame.K_GREATER):
                         running = False
                         break
@@ -99,8 +102,17 @@ class WorldMapScene(Scene):
             cached = self.game.world_map_cache
             if cached.get("key") == size_key:
                 return cached["surface"]
+        # If background render is running, show placeholder
+        if getattr(self.game, "world_map_rendering", False):
+            surf = pygame.Surface((min(640, renderer.width - 32), min(480, renderer.height - 32)))
+            surf.fill((10, 10, 20))
+            msg = renderer.big_label("Generating world map...")
+            surf.blit(msg, ((surf.get_width() - msg.get_width()) // 2, (surf.get_height() - msg.get_height()) // 2))
+            return surf
+        # Otherwise, render synchronously and cache
         surf, view = self._render_overmap(renderer)
         self.game.world_map_cache = {"surface": surf, "view": view, "key": size_key}
+        self.game.world_map_ready = True
         return surf
 
     def _render_overmap(self, renderer) -> tuple[pygame.Surface, tuple[float, float, float, float]]:

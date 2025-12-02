@@ -28,16 +28,14 @@ class SavedGamesScene(Scene):
 
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_ESCAPE,):
-                        # Pop this sub-scene, return to whatever was underneath (main menu)
                         manager.pop_scene()
                         return
-
+                    if event.key == pygame.K_F11:
+                        renderer.toggle_fullscreen()
+                        continue
                     if event.key in (pygame.K_UP, pygame.K_w, pygame.K_DOWN, pygame.K_s):
-                        # Only one option, but keep structure for future extension
                         selected_idx = 0
-
                     if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        # Only option is Back: pop and resume previous scene
                         manager.pop_scene()
                         return
 

@@ -35,6 +35,7 @@ class AsciiRenderer:
         self.surface_flags = pygame.RESIZABLE
         # render surface at native resolution; display may be larger in fullscreen
         self.surface = pygame.Surface((width, height))
+        self.fullscreen = False
         self.display = pygame.display.set_mode((width, height), self.surface_flags)
         self.lb_off = (0, 0)  # letterbox offset when centering
         self.lb_scale = 1.0   # letterbox scale factor
@@ -131,6 +132,18 @@ class AsciiRenderer:
 
     def present(self) -> None:
         self._present()
+
+    def toggle_fullscreen(self) -> None:
+        flags = self.display.get_flags()
+        if flags & pygame.FULLSCREEN:
+            self.display = pygame.display.set_mode((self.width, self.height), self.surface_flags)
+            self.fullscreen = False
+        else:
+            self.display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            self.fullscreen = True
+
+    def is_fullscreen(self) -> bool:
+        return self.fullscreen
 
 
 
@@ -949,11 +962,7 @@ class AsciiRenderer:
                             self.pause_requested = True
                             self.quit_requested = True   # ensure the loop exits
                     elif event.key == pygame.K_F11:
-                        flags = self.display.get_flags()
-                        if flags & pygame.FULLSCREEN:
-                            self.display = pygame.display.set_mode((self.width, self.height), self.surface_flags)
-                        else:
-                            self.display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                        self.toggle_fullscreen()
                     else:
                         # Urgent messages consume input except confirm
                         if self._urgent_active(game):

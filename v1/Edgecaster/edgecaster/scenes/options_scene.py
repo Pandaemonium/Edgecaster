@@ -35,6 +35,9 @@ class OptionsScene(Scene):
                         # Pop this sub-scene, resume underlying menu (main menu)
                         manager.pop_scene()
                         return
+                    if event.key == pygame.K_F11:
+                        renderer.toggle_fullscreen()
+                        continue
 
                     if event.key in (pygame.K_UP, pygame.K_w):
                         self.selected_idx = (self.selected_idx - 1) % (len(toggles) + 1)

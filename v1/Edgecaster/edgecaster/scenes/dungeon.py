@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from .base import Scene
 from edgecaster.game import Game
 
@@ -29,6 +31,32 @@ class DungeonScene(Scene):
                 seed = getattr(char, "seed", None) or getattr(cfg, "seed", None)
             rng = manager.rng_factory(seed)
             self.game = Game(cfg, rng, character=char)
+            # Precompute world map cache in the background
+            if not getattr(self.game, "world_map_thread_started", False):
+                self.game.world_map_thread_started = True
+                self.game.world_map_rendering = True
+
+                def worker(game_ref: Game, width: int, height: int) -> None:
+                    try:
+                        from .world_map_scene import WorldMapScene
+
+                        wm = WorldMapScene(game_ref, span=16)
+                        # stub renderer with width/height only
+                        class Stub:
+                            def __init__(self, w, h) -> None:
+                                self.width = w
+                                self.height = h
+
+                        stub = Stub(width, height)
+                        surf, view = wm._render_overmap(stub)
+                        game_ref.world_map_cache = {"surface": surf, "view": view, "key": (width, height, wm.span)}
+                        game_ref.world_map_ready = True
+                    except Exception:
+                        game_ref.world_map_ready = False
+                    finally:
+                        game_ref.world_map_rendering = False
+
+                threading.Thread(target=worker, args=(self.game, renderer.width, renderer.height), daemon=True).start()
 
         game = self.game
         # expose to manager for options display

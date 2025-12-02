@@ -118,6 +118,9 @@ class Game:
         # world map render cache (surface + view window)
         self.world_map_cache = None
         self.world_map_c: complex | None = None
+        self.world_map_rendering = False
+        self.world_map_ready = False
+        self.world_map_thread_started = False
         # flags
         self.map_requested = False
 

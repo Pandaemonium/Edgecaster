@@ -15,7 +15,11 @@ class CharacterCreationScene(Scene):
 
         # This opens its own Pygame window (from char_creation.py),
         # lets the player tweak stats, etc., and returns a Character.
-        char: Character = run_character_creation(cfg)
+        # Honor fullscreen state from the current renderer
+        full = False
+        if hasattr(manager, "renderer") and hasattr(manager.renderer, "is_fullscreen"):
+            full = manager.renderer.is_fullscreen()
+        char: Character = run_character_creation(cfg, fullscreen=full)
             
         if char is None:
             # Return to main menu instead of quitting the game

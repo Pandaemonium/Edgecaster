@@ -25,11 +25,12 @@ DEFAULT_NAME = "Pandaemonium"
 
 
 class CharCreation:
-    def __init__(self, width: int, height: int, cfg=None) -> None:
+    def __init__(self, width: int, height: int, cfg=None, fullscreen: bool = False) -> None:
         pygame.init()
         self.width = width
         self.height = height
-        self.surface = pygame.display.set_mode((width, height))
+        flags = pygame.FULLSCREEN if fullscreen else 0
+        self.surface = pygame.display.set_mode((width, height), flags)
         pygame.display.set_caption("Edgecaster - Character Creation")
         self.font = pygame.font.SysFont("consolas", 22)
         self.big = pygame.font.SysFont("consolas", 28, bold=True)
@@ -576,8 +577,8 @@ class CharCreation:
             return
 
 
-def run_character_creation(cfg) -> Optional[Character]:
-    screen = CharCreation(cfg.view_width, cfg.view_height)
+def run_character_creation(cfg, fullscreen: bool = False) -> Optional[Character]:
+    screen = CharCreation(cfg.view_width, cfg.view_height, fullscreen=fullscreen)
     char = screen.run()
     # Do NOT pygame.display.quit() here; we’re keeping the window alive.
     return char
