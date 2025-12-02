@@ -1,99 +1,267 @@
 from __future__ import annotations
 
-from typing import List
+import csv
+import math
+import os
+import random
+from typing import Optional, Tuple
 
 import pygame
 
+from edgecaster import mapgen
 from .base import Scene
-from edgecaster.game import Game
 
 
 class WorldMapScene(Scene):
-    """Placeholder world map scene.
+    """World map overlay with Julia-based relief."""
 
-    Shows a simple menu and hands control back to the dungeon with
-    the same Game instance. Real map rendering can be plugged in later.
-    """
+    GOOD_C = [
+        complex(-0.40, 0.60),
+        complex(-0.70, 0.30),
+        complex(0.285, 0.01),
+        complex(-0.20, 0.65),
+        complex(-0.80, 0.156),
+        complex(-0.835, -0.2321),
+        complex(-0.70176, -0.3842),
+        complex(-0.75, 0.11),
+    ]
+    _c_path_cache: Optional[list[complex]] = None
 
-    def __init__(self, game: Game, span: int = 16) -> None:
-        # Keep a reference to the current Game so we can resume the same run.
+    def __init__(self, game, span: int = 16) -> None:
         self.game = game
-        self.span = span  # reserved for whatever your friend wants to do later
+        self.span = span
+        self._cached: dict[tuple[int | None], pygame.Surface] = {}
 
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        # Local import to avoid circular dependency at module import time
-        from .dungeon import DungeonScene
-
         renderer = manager.renderer
-        surface = renderer.surface
         clock = pygame.time.Clock()
-
-        # Expose game so options / other overlays can still see it if needed
-        manager.current_game = self.game
-
-        # Dummy shell: one “do nothing” option and one “return” option
-        options: List[str] = [
-            "(insert world map logic here)",
-            "Return to the dungeon",
-        ]
-        selected_idx = 1  # default cursor on “Return to the dungeon”
-
         running = True
+
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    # Closing the window kills the whole game, as usual.
                     manager.set_scene(None)
                     return
-
                 if event.type == pygame.KEYDOWN:
-                    # Esc / M: go back to the dungeon
-                    if event.key in (pygame.K_ESCAPE, pygame.K_COMMA):
-                        ds = DungeonScene()
-                        ds.game = self.game      # reuse existing Game
-                        manager.replace_scene(ds)
-                        return
+                    if event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE, pygame.K_LESS, pygame.K_COMMA, pygame.K_PERIOD, pygame.K_GREATER):
+                        running = False
+                        break
 
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        selected_idx = (selected_idx - 1) % len(options)
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        selected_idx = (selected_idx + 1) % len(options)
-                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        choice = options[selected_idx]
-                        if choice == "Return to the dungeon":
-                            ds = DungeonScene()
-                            ds.game = self.game
-                            manager.replace_scene(ds)
-                            return
-                        # The placeholder option doesn’t do anything yet.
+            # Draw map
+            surf = renderer.surface
+            surf.fill(renderer.bg)
+            map_surface = self._build_cached_surface(renderer)
+            ox = (renderer.width - map_surface.get_width()) // 2
+            oy = (renderer.height - map_surface.get_height()) // 2
+            surf.blit(map_surface, (ox, oy))
 
-            # -------- DRAW --------
-            surface.fill(renderer.bg)
+            # marker for player
+            px, py = self._player_world_pos()
+            marker = self._world_to_map(px, py, map_surface.get_size())
+            pygame.draw.circle(surf, (255, 230, 120), (ox + marker[0], oy + marker[1]), 4)
 
-            title = renderer.font.render("World Map (placeholder)", True, renderer.fg)
-            surface.blit(
-                title,
-                ((renderer.width - title.get_width()) // 2, 80),
-            )
+            title = renderer.big_label("World Map")
+            surf.blit(title, (ox, oy - 36))
+            hint = renderer.small_font.render("Esc/Enter/< to return", True, renderer.fg)
+            surf.blit(hint, (ox, oy + map_surface.get_height() + 8))
 
-            y = 160
-            for idx, opt in enumerate(options):
-                selected = (idx == selected_idx)
-                color = renderer.player_color if selected else renderer.fg
-                prefix = "▶ " if selected else "  "
-                text = renderer.small_font.render(prefix + opt, True, color)
-                surface.blit(text, (renderer.width // 2 - 220, y))
-                y += text.get_height() + 10
-
-            hint = renderer.small_font.render(
-                ", / Esc to return to the dungeon",
-                True,
-                renderer.dim,
-            )
-            surface.blit(
-                hint,
-                ((renderer.width - hint.get_width()) // 2, renderer.height - 40),
-            )
-
-            pygame.display.flip()
+            renderer._present()
             clock.tick(60)
+
+        # pop map scene, resume dungeon
+        manager.pop_scene()
+
+    def _player_world_pos(self) -> tuple[int, int]:
+        player = self.game._player()
+        zx, zy, _ = self.game.zone
+        gx = zx * self.game.cfg.world_width + player.pos[0]
+        gy = zy * self.game.cfg.world_height + player.pos[1]
+        return gx, gy
+
+    def _world_to_map(self, wx: float, wy: float, size: tuple[int, int]) -> tuple[int, int]:
+        view = None
+        if self.game.world_map_cache:
+            view = self.game.world_map_cache.get("view")
+        if view:
+            min_x, min_y, span_x, span_y = view
+        else:
+            span_x = (self.span * 2 + 1) * self.game.cfg.world_width
+            span_y = (self.span * 2 + 1) * self.game.cfg.world_height
+            min_x = (self.game.zone[0] - self.span) * self.game.cfg.world_width
+            min_y = (self.game.zone[1] - self.span) * self.game.cfg.world_height
+        px = int((wx - min_x) / span_x * size[0])
+        py = int((wy - min_y) / span_y * size[1])
+        return px, py
+
+    def _build_cached_surface(self, renderer) -> pygame.Surface:
+        size_key = (renderer.width, renderer.height, self.span)
+        if self.game.world_map_cache:
+            cached = self.game.world_map_cache
+            if cached.get("key") == size_key:
+                return cached["surface"]
+        surf, view = self._render_overmap(renderer)
+        self.game.world_map_cache = {"surface": surf, "view": view, "key": size_key}
+        return surf
+
+    def _render_overmap(self, renderer) -> tuple[pygame.Surface, tuple[float, float, float, float]]:
+        """Render a Julia-based relief overmap around the current zone."""
+        target_w = min(1024, renderer.width - 32)
+        target_h = min(720, renderer.height - 120)
+        ss = 2
+        px_w = max(1, target_w * ss)
+        px_h = max(1, target_h * ss)
+        hi_surf = pygame.Surface((px_w, px_h))
+        field = self.game.fractal_field
+        cfg = self.game.cfg
+        cx, cy, _ = self.game.zone
+        span_x = (self.span * 2 + 1) * cfg.world_width
+        span_y = (self.span * 2 + 1) * cfg.world_height
+        min_wx = (cx - self.span) * cfg.world_width
+        min_wy = (cy - self.span) * cfg.world_height
+
+        visual_c = self._pick_visual_c()
+        visual_span = 3.2
+        visual_zoom = 1.35
+
+        heights = [[0.0 for _ in range(px_w)] for _ in range(px_h)]
+        glyph_idx = [[0 for _ in range(px_w)] for _ in range(px_h)]
+        for py in range(px_h):
+            wy = min_wy + (py / (px_h - 1)) * span_y
+            ny = (py / (px_h - 1)) - 0.5
+            for px in range(px_w):
+                wx = min_wx + (px / (px_w - 1)) * span_x
+                nx = (px / (px_w - 1)) - 0.5
+                fields = field.sample_full(wx, wy)
+                fields["height"] = self._julia_height(nx * visual_span, ny * visual_span, visual_c, scale=visual_zoom, iters=96)
+                glyph, _walk = mapgen._classify_tile(fields, 0.5)
+                heights[py][px] = fields["height"]
+                glyph_idx[py][px] = self._glyph_index(glyph)
+
+        light = (0.65, -0.85)
+        thresholds = (0.2, 0.35, 0.5, 0.7, 0.85)
+        for py in range(px_h):
+            for px in range(px_w):
+                h = heights[py][px]
+                base = self._biome_color_by_index(glyph_idx[py][px])
+                if 0 < px < px_w - 1 and 0 < py < px_h - 1:
+                    dhx = heights[py][px + 1] - heights[py][px - 1]
+                    dhy = heights[py + 1][px] - heights[py - 1][px]
+                    dot = -(dhx * light[0] + dhy * light[1])
+                    shade = max(0.2, min(1.25, 0.55 + dot * 0.9))
+                    spec = max(0.0, dot) ** 8
+                    shade += spec * 0.8
+                else:
+                    shade = 1.0
+                col = tuple(max(0, min(255, int(c * shade))) for c in base)
+                hi_surf.set_at((px, py), col)
+
+        contour_col = (30, 38, 48)
+        for py in range(1, px_h - 1):
+            for px in range(1, px_w - 1):
+                h = heights[py][px]
+                for t in thresholds:
+                    if (h < t <= heights[py][px + 1]) or (h < t <= heights[py + 1][px]) or (h >= t > heights[py][px + 1]):
+                        hi_surf.set_at((px, py), contour_col)
+                        break
+
+        # land bbox crop with padding
+        mask = [[glyph_idx[y][x] != 0 for x in range(px_w)] for y in range(px_h)]
+        xs = [x for y in range(px_h) for x in range(px_w) if mask[y][x]]
+        ys = [y for y in range(px_h) for x in range(px_w) if mask[y][x]]
+        if xs and ys:
+            min_x = max(0, min(xs))
+            max_x = min(px_w - 1, max(xs))
+            min_y = max(0, min(ys))
+            max_y = min(px_h - 1, max(ys))
+            pad_x = int(0.1 * (max_x - min_x + 1))
+            pad_y = int(0.1 * (max_y - min_y + 1))
+            min_x = max(0, min_x - pad_x)
+            max_x = min(px_w - 1, max_x + pad_x)
+            min_y = max(0, min_y - pad_y)
+            max_y = min(px_h - 1, max_y + pad_y)
+        else:
+            min_x, max_x, min_y, max_y = 0, px_w - 1, 0, px_h - 1
+
+        crop_w = max_x - min_x + 1
+        crop_h = max_y - min_y + 1
+        cropped = pygame.Surface((crop_w, crop_h))
+        cropped.blit(hi_surf, (0, 0), pygame.Rect(min_x, min_y, crop_w, crop_h))
+
+        surf = pygame.transform.smoothscale(cropped, (target_w, target_h))
+
+        view_min_wx = min_wx + (min_x / max(1, px_w - 1)) * span_x
+        view_min_wy = min_wy + (min_y / max(1, px_h - 1)) * span_y
+        view_span_x = (crop_w - 1) / max(1, px_w - 1) * span_x
+        view_span_y = (crop_h - 1) / max(1, px_h - 1) * span_y
+
+        return surf, (view_min_wx, view_min_wy, view_span_x, view_span_y)
+
+    def _biome_color_by_index(self, idx: int) -> tuple[int, int, int]:
+        palette = [
+            (70, 110, 200),
+            (120, 170, 190),
+            (150, 200, 120),
+            (70, 150, 90),
+            (170, 140, 100),
+            (200, 200, 210),
+        ]
+        if 0 <= idx < len(palette):
+            return palette[idx]
+        return palette[2]
+
+    def _glyph_index(self, glyph: str) -> int:
+        order = ["~", ",", ".", "T", "^", "#"]
+        try:
+            return order.index(glyph)
+        except ValueError:
+            return 2
+
+    def _julia_height(self, x: float, y: float, c: complex, scale: float = 1.0, iters: int = 80) -> float:
+        zx = x * scale
+        zy = y * scale
+        it = 0
+        while zx * zx + zy * zy <= 4.0 and it < iters:
+            xt = zx * zx - zy * zy + c.real
+            zy = 2 * zx * zy + c.imag
+            zx = xt
+            it += 1
+        if it >= iters:
+            return 0.0
+        mod = math.sqrt(zx * zx + zy * zy)
+        smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
+        return max(0.0, min(1.0, smooth / iters))
+
+    def _load_c_path(self) -> list[complex]:
+        if self._c_path_cache is not None:
+            return self._c_path_cache
+        # default path location
+        path_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools", "c_path.csv"))
+        points: list[complex] = []
+        try:
+            with open(path_file, newline="") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) < 2:
+                        continue
+                    try:
+                        re = float(row[0])
+                        im = float(row[1])
+                        points.append(complex(re, im))
+                    except ValueError:
+                        continue
+        except FileNotFoundError:
+            points = []
+        self._c_path_cache = points
+        return points
+
+    def _pick_visual_c(self) -> complex:
+        seed = getattr(self.game, "fractal_seed", 0) or 0
+        rng = random.Random(seed)
+        path = self._load_c_path()
+        if len(path) >= 2:
+            idx = rng.randrange(0, len(path) - 1)
+            t = rng.random()
+            c0 = path[idx]
+            c1 = path[idx + 1]
+            return complex(c0.real + (c1.real - c0.real) * t, c0.imag + (c1.imag - c0.imag) * t)
+        return self.GOOD_C[seed % len(self.GOOD_C)]

@@ -115,6 +115,9 @@ class Game:
         else:
             self.fractal_seed = getattr(self.character, "seed", None) or getattr(cfg, "seed", None)
         self.fractal_field = mapgen.FractalField(seed=self.fractal_seed)
+        # world map render cache (surface + view window)
+        self.world_map_cache = None
+        self.world_map_c: complex | None = None
         # flags
         self.map_requested = False
 
@@ -598,6 +601,14 @@ class Game:
             verb = self.rng.choice(verbs)
             self.log.add(f"Your butterfly {verb} the {actor.name} for {dmg} damage.")
 
+            # 50% chance to distract nearby foes until end of next turn
+            if self.rng.random() < 0.5:
+                if not self._has_status(actor, "distracted"):
+                    self._add_status(actor, "distracted", duration=1, on_apply=f"The {actor.name} seems distracted by the butterflies.")
+                else:
+                    # refresh duration
+                    actor.statuses["distracted"] = max(actor.statuses.get("distracted", 0), 1)
+
             if actor.stats.hp <= 0:
                 self.log.add(f"{actor.name} dies.")
                 self._on_enemy_killed(actor)
@@ -613,6 +624,23 @@ class Game:
 
     def _all_actors(self, level: LevelState) -> List[Actor]:
         return [a for a in level.actors.values() if a.alive]
+
+    # --- status helpers ---
+
+    def _add_status(self, actor: Actor, name: str, duration: int, on_apply: Optional[str] = None) -> None:
+        actor.statuses[name] = max(duration, actor.statuses.get(name, 0))
+        if on_apply:
+            self.log.add(on_apply)
+
+    def _tick_status(self, actor: Actor, name: str) -> None:
+        if name not in actor.statuses:
+            return
+        actor.statuses[name] -= 1
+        if actor.statuses[name] <= 0:
+            del actor.statuses[name]
+
+    def _has_status(self, actor: Actor, name: str) -> bool:
+        return actor.statuses.get(name, 0) > 0
 
     def _get_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]] = None) -> LevelState:
         if coord not in self.levels:
@@ -1072,6 +1100,17 @@ class Game:
             # player not on this level; reschedule later
             self._schedule(level, self.cfg.action_time_fast, lambda aid=actor_id, lvl=level: self._monster_act(lvl, aid))
             return
+
+        # status: Distracted (30% chance to lose turn)
+        if self._has_status(actor, "distracted"):
+            if self.rng.random() < 0.3:
+                self.log.add(f"The distracted {actor.name} falters.")
+                self._tick_status(actor, "distracted")
+                self._schedule(level, self.cfg.action_time_fast, lambda aid=actor_id, lvl=level: self._monster_act(lvl, aid))
+                return
+            else:
+                self._tick_status(actor, "distracted")
+
         px, py = level.actors[self.player_id].pos
         ax, ay = actor.pos
         if abs(px - ax) + abs(py - ay) == 1:

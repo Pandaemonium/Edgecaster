@@ -32,7 +32,13 @@ class AsciiRenderer:
         self.tile = tile
         self.origin_x = 0
         self.origin_y = 0
-        self.surface = pygame.display.set_mode((width, height))
+        self.surface_flags = pygame.RESIZABLE
+        # render surface at native resolution; display may be larger in fullscreen
+        self.surface = pygame.Surface((width, height))
+        self.display = pygame.display.set_mode((width, height), self.surface_flags)
+        self.lb_off = (0, 0)  # letterbox offset when centering
+        self.lb_scale = 1.0   # letterbox scale factor
+        self.lb_scale = 1.0   # letterbox scale factor
         pygame.display.set_caption("Edgecaster (ASCII prototype)")
         self.font = pygame.font.SysFont("consolas", self.base_tile)  # UI font (fixed)
         self.map_font = pygame.font.SysFont("consolas", self.tile)  # map glyphs, scales with zoom
@@ -52,6 +58,8 @@ class AsciiRenderer:
         self.mana_color = (90, 160, 255)
         self.bar_bg = (40, 40, 60)
         self.ability_bar_height = 72
+        self.top_bar_height = 64
+        self.log_panel_width = 320
         self.abilities: List[Ability] = []
         self.current_ability_index = 0
         self.target_cursor = (0, 0)
@@ -111,12 +119,30 @@ class AsciiRenderer:
         # Remember which game tick we last captured a frame for, so trails
         # represent *turns* rather than raw render frames.
         self.lorenz_last_tick: int | None = None
+        # urgent message state (renderer-side button hitbox)
+        self.urgent_ok_rect: pygame.Rect | None = None
+
+    def _to_surface(self, pos: Tuple[int, int]) -> Tuple[int, int]:
+        """Convert display-space mouse coords to surface-space, accounting for letterbox and scale."""
+        return (
+            int((pos[0] - self.lb_off[0]) / max(1e-6, self.lb_scale)),
+            int((pos[1] - self.lb_off[1]) / max(1e-6, self.lb_scale)),
+        )
+
+    def present(self) -> None:
+        self._present()
 
 
 
 
     def draw_world(self, world: World) -> None:
+        # clear main surface
         self.surface.fill(self.bg)
+        # compute map origin offset to account for top bar and right log
+        map_origin_x = 8
+        map_origin_y = self.top_bar_height + 8
+        self.origin_x = map_origin_x
+        self.origin_y = map_origin_y
         palette = {
             "~": (90, 130, 255),   # water
             ",": (190, 170, 120),  # shore
@@ -140,7 +166,7 @@ class AsciiRenderer:
                 text = self.map_font.render(ch, True, color)
                 px = x * self.tile + self.origin_x
                 py = y * self.tile + self.origin_y
-                if px >= self.width or py >= self.height:
+                if px >= self.width - self.log_panel_width or py >= self.height - self.ability_bar_height:
                     continue
                 self.surface.blit(text, (px, py))
 
@@ -593,12 +619,10 @@ class AsciiRenderer:
 
     def draw_status(self, game: Game) -> None:
         player = game.actors[game.player_id]
-        x = 8
+        x = 12
+        y = 12
 
-        # Shift the whole HUD down just a little (was y = 40)
-        y = 48
-
-        bar_w = 200
+        bar_w = 220
         bar_h = 12
 
         # --- Header: name, class, level ---
@@ -619,9 +643,9 @@ class AsciiRenderer:
         header_text = self.small_font.render(header_line, True, self.fg)
 
         # Raise header slightly (was y - 24)
-        header_y = y - 40
+        header_y = y
         self.surface.blit(header_text, (x, header_y))
-
+        y += header_text.get_height() + 10
 
         # --- HP bar ---
         pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
@@ -638,11 +662,13 @@ class AsciiRenderer:
         self.surface.blit(hp_text, (x + 4, y - 18))
 
         # --- XP bar (to the right of HP) ---
-        xp_x = x + bar_w + 20
-        xp_y = y
         xp_needed = max(1, getattr(player.stats, "xp_to_next", 1))
         xp_cur = getattr(player.stats, "xp", 0)
         lvl = getattr(player.stats, "level", 1)
+        xp_text = self.small_font.render(f"XP {xp_cur}/{xp_needed}   (Lv {lvl})", True, self.fg)
+        self.surface.blit(xp_text, (x + bar_w + 20, y - 18))
+        xp_x = x + bar_w + 20
+        xp_y = y
         xp_ratio = max(0, min(1, xp_cur / xp_needed))
         xp_w = 180
         pygame.draw.rect(
@@ -655,10 +681,8 @@ class AsciiRenderer:
             (120, 200, 120),
             pygame.Rect(xp_x, xp_y, int(xp_w * xp_ratio), bar_h),
         )
-        xp_text = self.small_font.render(
-            f"XP {xp_cur}/{xp_needed} (Lv {lvl})", True, self.fg
-        )
-        self.surface.blit(xp_text, (xp_x + 4, xp_y - 18))
+        # remove redundant Lv in bar; already shown above
+        # (label rendered before the bar)
 
         # --- Mana bar below HP ---
         y += bar_h + 16
@@ -699,20 +723,101 @@ class AsciiRenderer:
             coh_text = self.small_font.render(label, True, self.fg)
             self.surface.blit(coh_text, (x, y))
 
-
-    def draw_log(self, game: Game) -> None:
-        start_y = self.height - self.ability_bar_height - 120
-        lines = game.log.tail(5)
-        y = start_y
-        for line in lines:
-            text = self.small_font.render(line, True, self.fg)
-            self.surface.blit(text, (8, y))
-            y += text.get_height() + 2
+        # tick / zone info on top-right
         tick_text = self.small_font.render(f"Tick: {game.current_tick}", True, self.fg)
         zx, zy, zz = getattr(game, "zone", (0, 0, game.level_index))
         level_text = self.small_font.render(f"Zone ({zx},{zy}) Depth {zz}", True, self.fg)
-        self.surface.blit(tick_text, (self.width - tick_text.get_width() - 8, start_y))
-        self.surface.blit(level_text, (self.width - level_text.get_width() - 8, start_y + 18))
+        self.surface.blit(tick_text, (self.width - tick_text.get_width() - 8, 12))
+        self.surface.blit(level_text, (self.width - level_text.get_width() - 8, 30))
+
+
+    def draw_log(self, game: Game) -> None:
+        """Scrollable log on the left side."""
+        panel_w = self.log_panel_width
+        panel_h = self.height - self.top_bar_height - self.ability_bar_height
+        panel_rect = pygame.Rect(self.width - panel_w, self.top_bar_height, panel_w, panel_h)
+        pygame.draw.rect(self.surface, (14, 14, 24), panel_rect)
+        pygame.draw.rect(self.surface, (60, 60, 80), panel_rect, 1)
+
+        panel_surface = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+
+        lines = game.log.tail(200)
+        y = panel_h - 8
+        max_lines = 80
+        for line in reversed(lines[-max_lines:]):
+            wrapped = self._wrap_text(line, self.small_font, panel_w - 12)
+            for wline in reversed(wrapped):
+                text = self.small_font.render(wline, True, self.fg)
+                y -= text.get_height() + 2
+                if y < 4:
+                    break
+                panel_surface.blit(text, (6, y))
+            if y < 4:
+                break
+
+        self.surface.blit(panel_surface, panel_rect.topleft)
+
+    def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
+        """Simple word-wrap that fits text within max_width."""
+        words = text.split()
+        lines: List[str] = []
+        cur: List[str] = []
+        for w in words:
+            test = " ".join(cur + [w]) if cur else w
+            if font.size(test)[0] <= max_width:
+                cur.append(w)
+            else:
+                if cur:
+                    lines.append(" ".join(cur))
+                cur = [w]
+        if cur:
+            lines.append(" ".join(cur))
+        return lines or [text]
+
+    def _urgent_active(self, game: Game) -> bool:
+        return bool(getattr(game, "urgent_message", None)) and not getattr(game, "urgent_resolved", True)
+
+    def _ack_urgent(self, game: Game) -> None:
+        msg = getattr(game, "urgent_message", None)
+        game.urgent_resolved = True
+        if msg:
+            game.log.add(msg)
+        self.urgent_ok_rect = None
+
+    def draw_urgent_overlay(self, game: Game) -> None:
+        """Modal urgent message in center; requires click OK or Space/Enter."""
+        msg = getattr(game, "urgent_message", None)
+        if not msg:
+            return
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        panel_w = int(self.width * 0.6)
+        panel_h = int(self.height * 0.3)
+        panel_x = (self.width - panel_w) // 2
+        panel_y = (self.height - panel_h) // 2
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+        pygame.draw.rect(overlay, (20, 22, 40, 230), panel_rect)
+        pygame.draw.rect(overlay, (220, 220, 240, 240), panel_rect, 2)
+
+        lines = self._wrap_text(msg, self.font, panel_w - 40)
+        y = panel_y + 20
+        for line in lines:
+            txt = self.font.render(line, True, self.fg)
+            overlay.blit(txt, (panel_x + 20, y))
+            y += txt.get_height() + 6
+
+        ok_w, ok_h = 120, 36
+        ok_rect = pygame.Rect(panel_x + (panel_w - ok_w) // 2, panel_y + panel_h - ok_h - 20, ok_w, ok_h)
+        pygame.draw.rect(overlay, (60, 90, 60), ok_rect)
+        pygame.draw.rect(overlay, (180, 220, 180), ok_rect, 2)
+        ok_txt = self.font.render("OK", True, self.fg)
+        overlay.blit(ok_txt, ok_txt.get_rect(center=ok_rect.center))
+        self.urgent_ok_rect = ok_rect
+
+        hint = self.small_font.render("Press Space/Enter or click OK", True, self.dim)
+        overlay.blit(hint, (panel_x + (panel_w - hint.get_width()) // 2, ok_rect.bottom + 6))
+
+        self.surface.blit(overlay, (0, 0))
 
     def draw_ability_bar(self, game: Game) -> None:
         bar_rect = pygame.Rect(0, self.height - self.ability_bar_height, self.width, self.ability_bar_height)
@@ -843,43 +948,62 @@ class AsciiRenderer:
                             # Normal ESC in the dungeon: request pause
                             self.pause_requested = True
                             self.quit_requested = True   # ensure the loop exits
+                    elif event.key == pygame.K_F11:
+                        flags = self.display.get_flags()
+                        if flags & pygame.FULLSCREEN:
+                            self.display = pygame.display.set_mode((self.width, self.height), self.surface_flags)
+                        else:
+                            self.display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
                     else:
-                        self._handle_input(game, event.key)
+                        # Urgent messages consume input except confirm
+                        if self._urgent_active(game):
+                            if event.key in (pygame.K_SPACE, pygame.K_RETURN):
+                                self._ack_urgent(game)
+                            # ignore other keys
+                        else:
+                            self._handle_input(game, event.key)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if self.config_open and self.config_action:
+                    pos = self._to_surface(event.pos)
+                    if self._urgent_active(game):
+                        if self.urgent_ok_rect and self.urgent_ok_rect.collidepoint(pos):
+                            self._ack_urgent(game)
+                        # swallow clicks during urgent modal
+                    elif self.config_open and self.config_action:
                         # clicking outside just closes
                         self.config_open = False
                     elif self.dialog_open:
                         self.dialog_open = False
                     else:
-                        self._handle_click(game, event.pos)
+                        self._handle_click(game, pos)
                 elif event.type == pygame.MOUSEMOTION:
-                    self._update_hover(game, event.pos)
+                    self._update_hover(game, self._to_surface(event.pos))
                 elif event.type == pygame.MOUSEWHEEL:
-                    self._change_zoom(event.y)
+                    self._change_zoom(event.y, self._to_surface(pygame.mouse.get_pos()))
 
-                # continuous hover update if no motion event (keep in sync)
-                if self.aim_action:
-                    self._update_hover(game, pygame.mouse.get_pos())
+            # continuous hover update if no motion event (keep in sync)
+            if self.aim_action:
+                self._update_hover(game, self._to_surface(pygame.mouse.get_pos()))
 
-                self.draw_world(game.world)
-                self.draw_lorenz_overlay(game)
+            self.draw_world(game.world)
+            self.draw_lorenz_overlay(game)
 
-                self.draw_pattern_overlay(game)
-                self.draw_place_overlay(game)
-                self.draw_activation_overlay(game)
-                self.draw_aim_overlay(game)
-                self.draw_actors(game.world, game.all_actors_current())
-                self.draw_target_cursor(game)
-                self.draw_status(game)
-                self.draw_log(game)
-                self.draw_ability_bar(game)
-                if self.config_open and self.config_action:
-                    self.draw_config_overlay(game)
-                if self.dialog_open:
-                    self.draw_dialog_overlay()
-                pygame.display.flip()
-                clock.tick(60)
+            self.draw_pattern_overlay(game)
+            self.draw_place_overlay(game)
+            self.draw_activation_overlay(game)
+            self.draw_aim_overlay(game)
+            self.draw_actors(game.world, game.all_actors_current())
+            self.draw_target_cursor(game)
+            self.draw_status(game)
+            self.draw_log(game)
+            self.draw_ability_bar(game)
+            if self.config_open and self.config_action:
+                self.draw_config_overlay(game)
+            if self.dialog_open:
+                self.draw_dialog_overlay()
+            if self._urgent_active(game):
+                self.draw_urgent_overlay(game)
+            self._present()
+            clock.tick(60)
             # If some input handler requested that we quit the dungeon loop
             # (e.g. to open the inventory), honor that here.
             if self.quit_requested:
@@ -1185,10 +1309,9 @@ class AsciiRenderer:
         else:
             self.hover_neighbors = []
 
-    def _change_zoom(self, delta_steps: int) -> None:
-        # delta_steps: mouse wheel y (positive zoom in)
-        mouse_pos = pygame.mouse.get_pos()
-        mx, my = mouse_pos
+    def _change_zoom(self, delta_steps: int, pos: Tuple[int, int]) -> None:
+        # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
+        mx, my = pos
         # world position under cursor before zoom
         wx = (mx - self.origin_x) / self.tile
         wy = (my - self.origin_y) / self.tile
@@ -1600,6 +1723,25 @@ class AsciiRenderer:
         hint = self.small_font.render("Up/Down choose, Enter confirm, Esc close", True, self.fg)
         overlay.blit(hint, (panel_x + 12, panel_y + panel_h - 26))
         self.surface.blit(overlay, (0, 0))
+
+    def _present(self) -> None:
+        """Blit render surface to display with letterboxing (no stretch, aspect preserved)."""
+        dw, dh = self.display.get_size()
+        sw, sh = self.surface.get_size()
+        scale = min(dw / sw, dh / sh)
+        new_w = int(sw * scale)
+        new_h = int(sh * scale)
+        ox = max(0, (dw - new_w) // 2)
+        oy = max(0, (dh - new_h) // 2)
+        self.lb_off = (ox, oy)
+        self.lb_scale = scale
+        self.display.fill((0, 0, 0))
+        if scale != 1.0:
+            scaled = pygame.transform.smoothscale(self.surface, (new_w, new_h))
+            self.display.blit(scaled, (ox, oy))
+        else:
+            self.display.blit(self.surface, (ox, oy))
+        pygame.display.flip()
 
     def _set_flash(self, text: str, color: Tuple[int, int, int] = (255, 120, 120), duration_ms: int = 2000) -> None:
         self.flash_text = text

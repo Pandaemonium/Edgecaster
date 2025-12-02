@@ -69,7 +69,8 @@ class DungeonScene(Scene):
         if getattr(game, "map_requested", False):
             game.map_requested = False
             from .world_map_scene import WorldMapScene
-            manager.replace_scene(WorldMapScene(game, span=16))
+            # push world map on top; resume same dungeon scene/game afterward
+            manager.push_scene(WorldMapScene(game, span=16))
             return
 
         # 5) Otherwise, the loop ended for some external reason (like quitting)

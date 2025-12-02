@@ -33,6 +33,7 @@ class Actor:
     tags: Dict[str, int] = field(default_factory=dict)
     disposition: float = 0.0  # placeholder for future reputation system
     affiliations: tuple = field(default_factory=tuple)  # tuple of faction ids
+    statuses: Dict[str, int] = field(default_factory=dict)  # status_name -> remaining turns
 
     @property
     def alive(self) -> bool:

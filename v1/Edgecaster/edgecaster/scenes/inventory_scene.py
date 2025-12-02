@@ -80,5 +80,5 @@ class InventoryScene(Scene):
                 ((renderer.width - hint.get_width()) // 2, renderer.height - 40),
             )
 
-            pygame.display.flip()
+            renderer.present()
             clock.tick(60)
