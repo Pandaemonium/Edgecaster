@@ -10,6 +10,9 @@ from edgecaster.patterns.activation import project_vertices, damage_from_vertice
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
 from edgecaster.content import npcs
+from . import lorenz
+import math
+
 
 Move = Tuple[int, int]
 
@@ -115,6 +118,7 @@ class Game:
         # flags
         self.map_requested = False
 
+
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
         self.zone_coord: Tuple[int, int, int] = (0, 0, 0)
@@ -122,6 +126,36 @@ class Game:
 
         # create starting zone
         self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
+
+        # --- Strange Attractor / Lorenz aura state (game-time, not renderer-time) ---
+        self.lorenz_points: List[Tuple[float, float, float]] = []
+        self.lorenz_sigma = 10.0
+        self.lorenz_rho = 28.0
+        self.lorenz_beta = 8.0 / 3.0
+        self.lorenz_dt = 0.01
+        # how many small Euler steps per game-tick; tweak to taste
+        self.lorenz_steps_per_tick = 1
+        # small random perturbation each step to break perfect symmetry
+        self.lorenz_noise = 0.0007
+        # Renderer hint: when True, the Lorenz trails/afterimages should be cleared
+        self.lorenz_reset_trails: bool = False
+        # how many Lorenz 'butterflies' orbit the player
+        if getattr(self.character, "player_class", None) == "Strange Attractor":
+            # Start with two; one feels a bit lonely.
+            self.lorenz_num_points = 2
+        else:
+            # other classes start with no personal storm; we can repurpose this later
+            self.lorenz_num_points = 0
+
+
+        # center of the storm (tile coords, floats for possible smoothing later)
+        self.lorenz_center_x: float | None = None
+        self.lorenz_center_y: float | None = None
+
+        # bookkeeping to detect teleports / zone changes
+        self._lorenz_prev_pos: Optional[Tuple[int, int]] = None
+        self._lorenz_prev_zone: Tuple[int, int, int] = self.zone_coord
+
 
         # spawn player
         px, py = self._level().world.entry
@@ -269,6 +303,21 @@ class Game:
         player.stats.mana = player.stats.max_mana
         self.set_urgent(f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)")
 
+        # Strange Attractors gain an extra Lorenz butterfly each level.
+        if getattr(self.character, "player_class", None) == "Strange Attractor":
+            current = getattr(self, "lorenz_num_points", 2)
+            if current < 2:
+                # Just in case something weird happened; enforce the baseline.
+                current = 2
+            self.lorenz_num_points = current + 1
+
+            # Re-seed the storm so the new butterfly count is applied.
+            # Next time advance_lorenz runs, init_lorenz_points will use the new count.
+            self.lorenz_points = []
+
+            # Flavor text in the normal log (non-urgent).
+            self.log.add("Another butterfly is attracted to the storm...")
+
     # --- helpers ---
 
     def _new_id(self) -> str:
@@ -411,6 +460,149 @@ class Game:
         if level.need_fov:
             self._update_fov(level)
 
+        # NEW: advance the Lorenz aura in game-time, not render-time
+        self._advance_lorenz(level, delta)
+
+
+
+    # --- Lorenz / strange-attractor aura, game-side ---
+
+    def _init_lorenz_points(self) -> None:
+        """Thin wrapper around lorenz.init_lorenz_points."""
+        lorenz.init_lorenz_points(self)
+
+    def _step_lorenz(self, steps: int) -> None:
+        """Thin wrapper around lorenz.step_lorenz."""
+        lorenz.step_lorenz(self, steps)
+
+    def _advance_lorenz(self, level: LevelState, delta: int) -> None:
+        """Advance the Lorenz aura only for Strange Attractors."""
+        if not self.has_lorenz_aura:
+            # Keep all Lorenz state dormant/cleared for other classes.
+            self.lorenz_points = []
+            self.lorenz_center_x = None
+            self.lorenz_center_y = None
+            self._lorenz_prev_pos = None
+            self._lorenz_prev_zone = self.zone_coord
+            return
+
+        # First advance the continuous Lorenz dynamics
+        lorenz.advance_lorenz(self, level, delta)
+
+        # Then apply contact damage from butterflies to nearby hostiles
+        self._lorenz_contact_damage(level)
+
+
+
+    def _lorenz_contact_damage(self, level: LevelState) -> None:
+        """Apply 'butterfly' contact damage to hostiles overlapping the Lorenz storm.
+
+        We mirror the renderer's projection:
+        - Take (x, z) from each Lorenz point
+        - Rotate in the (x, z) plane by 30°
+        - Subtract a fixed 'natural' Lorenz center between the wings
+        - Scale to tile offsets, clamp to a radius
+        - Map to world tiles around lorenz_center_x/lorenz_center_y
+        """
+        points = getattr(self, "lorenz_points", None)
+        if not points:
+            return
+
+        # Only apply if we have a valid center; lorenz.advance_lorenz sets this to the player.
+        center_x = self.lorenz_center_x
+        center_y = self.lorenz_center_y
+        if center_x is None or center_y is None:
+            player = self._player()
+            center_x, center_y = player.pos
+
+        # Match the renderer's projection parameters
+        angle = math.radians(30.0)
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        lorenz_scale = 0.18          # same as AsciiRenderer.lorenz_scale
+        lorenz_radius_tiles = 7      # same as AsciiRenderer.lorenz_radius_tiles
+
+        # Project into a rotated 2D plane, track z band for the natural center
+        points_2d: List[Tuple[float, float, float]] = []
+        z_min = float("inf")
+        z_max = float("-inf")
+
+        for (x, y, z) in points:
+            u = x
+            v = z
+            ux = cos_a * u - sin_a * v
+            uy = sin_a * u + cos_a * v
+            points_2d.append((ux, uy, z))
+            if z < z_min:
+                z_min = z
+            if z > z_max:
+                z_max = z
+
+        if not points_2d:
+            return
+
+        if z_max <= z_min:
+            z_max = z_min + 1e-6
+
+        # Same 'natural' center as the renderer: between the wings
+        z_mid = 0.5 * (z_min + z_max)
+        x0 = 0.0
+        natural_ux = cos_a * x0 - sin_a * z_mid
+        natural_uy = sin_a * x0 + cos_a * z_mid
+
+        # Map butterflies to tiles and count how many hit each tile
+        tile_hits: Dict[Tuple[int, int], int] = {}
+        r2_max = float(lorenz_radius_tiles * lorenz_radius_tiles)
+
+        for (ux, uy, z) in points_2d:
+            rel_x = ux - natural_ux
+            rel_y = uy - natural_uy
+            dx = rel_x * lorenz_scale
+            dy = rel_y * lorenz_scale
+            if dx * dx + dy * dy > r2_max:
+                continue
+
+            tx = int(round(center_x + dx))
+            ty = int(round(center_y + dy))
+            if not level.world.in_bounds(tx, ty):
+                continue
+
+            key = (tx, ty)
+            tile_hits[key] = tile_hits.get(key, 0) + 1
+
+        if not tile_hits:
+            return
+
+        verbs = ["cuts", "slices", "singes", "shocks", "jolts", "burns", "blinds", "chars", "sears"]
+        base_damage = 1  # TODO: scale with stats later
+
+        for actor in list(level.actors.values()):
+            if not actor.alive:
+                continue
+            if actor.actor_id == self.player_id:
+                continue
+            if actor.faction != "hostile":
+                continue
+
+            hits = tile_hits.get(actor.pos, 0)
+            if hits <= 0:
+                continue
+
+            dmg = base_damage * hits
+            if dmg <= 0:
+                continue
+
+            actor.stats.hp -= dmg
+            actor.stats.clamp()
+
+            verb = self.rng.choice(verbs)
+            self.log.add(f"Your butterfly {verb} the {actor.name} for {dmg} damage.")
+
+            if actor.stats.hp <= 0:
+                self.log.add(f"{actor.name} dies.")
+                self._on_enemy_killed(actor)
+
+
     # --- actor queries ---
 
     def _actor_at(self, level: LevelState, pos: Tuple[int, int]) -> Optional[Actor]:
@@ -446,6 +638,31 @@ class Game:
         if self.player_id not in lvl.actors:
             return False
         return lvl.actors[self.player_id].stats.hp > 0
+    @property
+    def has_lorenz_aura(self) -> bool:
+        """True if the current character should have the Lorenz storm aura."""
+        return getattr(self.character, "player_class", None) == "Strange Attractor"
+
+    def _reset_lorenz_on_zone_change(self, player: Actor) -> None:
+        """Hard-snap the Lorenz storm to the player when changing zones."""
+        if not self.has_lorenz_aura:
+            return
+
+        # Clear all continuous state so we don't smear across zones.
+        self.lorenz_points = []
+        self._lorenz_prev_pos = player.pos
+        self._lorenz_prev_zone = self.zone_coord
+
+        # Center the storm on the new player position immediately.
+        px, py = player.pos
+        self.lorenz_center_x = float(px)
+        self.lorenz_center_y = float(py)
+
+        # Tell the renderer to nuke any old afterimage frames.
+        self.lorenz_reset_trails = True
+
+        # Optionally seed fresh butterflies right away so you never get a "blank" frame.
+        lorenz.init_lorenz_points(self)
 
 
 
@@ -757,6 +974,10 @@ class Game:
             self.zone_coord = target_coord
             self.log.add(f"You descend to depth {self.zone_coord[2]}.")
             self._update_fov(dest_level)
+
+            # NEW: snap the Lorenz storm to the new floor
+            self._reset_lorenz_on_zone_change(player)
+
         elif tile.glyph == "<" and cz > 0:
             target_coord = (cx, cy, cz - 1)
             dest_level = self._get_zone(target_coord, up_pos=None)
@@ -767,6 +988,10 @@ class Game:
             self.zone_coord = target_coord
             self.log.add(f"You ascend to depth {self.zone_coord[2]}.")
             self._update_fov(dest_level)
+
+            # NEW: snap the Lorenz storm to the new floor
+            self._reset_lorenz_on_zone_change(player)
+
 
     # --- movement & combat ---
 
@@ -835,7 +1060,8 @@ class Game:
         self.zone_coord = dest_coord
         self.log.add(f"You travel to zone {dest_coord[0]},{dest_coord[1]} (depth {dest_coord[2]}).")
         self._update_fov(dest_level)
-
+        # NEW: hard-snap Lorenz storm when wrapping zones
+        self._reset_lorenz_on_zone_change(actor)
 
 
     def _monster_act(self, level: LevelState, actor_id: str) -> None:
