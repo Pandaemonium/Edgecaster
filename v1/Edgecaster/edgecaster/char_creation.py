@@ -29,6 +29,20 @@ class CharCreation:
         pygame.init()
         self.width = width
         self.height = height
+        # layout parameters (tweak here)
+        self.layout = {
+            "title_y": 60,
+            "name_y": 110,
+            "class_y": 160,
+            "gen_y": 250,
+            "illum_y": 300,
+            "stats_y": 360,
+            "seed_panel_bottom_pad": 40,
+            "seed_panel_height": 140,
+            "seed_panel_width": 320,
+            "seed_panel_x_pad": 40,
+            "footer_pad": 40,
+        }
         flags = pygame.FULLSCREEN if fullscreen else 0
         self.surface = pygame.display.set_mode((width, height), flags)
         pygame.display.set_caption("Edgecaster - Character Creation")
@@ -37,18 +51,17 @@ class CharCreation:
         self.bg = (12, 12, 20)
         self.fg = (220, 230, 240)
         self.sel = (255, 230, 120)
+        self.bar_bg = (40, 40, 60)
 
         self.running = True
         self.click_targets = {}  # name -> Rect
 
-        # Fields in the order they appear visually:
+        # Fields in the order they appear visually (seed panel is navigated horizontally)
         self.fields = [
             "name",
             "class",
             "generator",
             "illuminator",
-            "seed_mode",
-            "seed_value",
             "con",
             "agi",
             "int",
@@ -62,11 +75,13 @@ class CharCreation:
 
         self.char = default_character()
         # seed handling
-        self.seed_mode = "fixed"
+        self.seed_mode = "random"
         default_seed = getattr(cfg, "seed", None) if cfg else None
         if default_seed is None:
             default_seed = getattr(self.char, "seed", None)
         self.seed_text = str(default_seed) if default_seed is not None else ""
+        # seed panel focus flag
+        self.seed_focus: bool = False
 
         # Safeguards in case default_character is missing attributes
         if not hasattr(self.char, "name") or self.char.name is None:
@@ -98,6 +113,14 @@ class CharCreation:
                     self.handle_click(event.pos)
 
                 if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_F11:
+                        # toggle fullscreen
+                        flags = pygame.display.get_surface().get_flags()
+                        if flags & pygame.FULLSCREEN:
+                            pygame.display.set_mode((self.width, self.height))
+                        else:
+                            pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                        continue
                     # ESC: bail out, keep default char
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
@@ -182,18 +205,17 @@ class CharCreation:
             return
 
         # --- Seed mode / value ---
-        if field == "seed_mode":
-            if key in (pygame.K_LEFT, pygame.K_RIGHT):
+        if self.seed_focus:
+            if key == pygame.K_LEFT:
+                self.seed_focus = False
+                self.idx = len(self.fields) - 1
+            elif key == pygame.K_RIGHT:
                 self.seed_mode = "random" if self.seed_mode == "fixed" else "fixed"
-            return
-        if field == "seed_value":
-            if self.seed_mode != "fixed":
-                return
-            if key == pygame.K_BACKSPACE:
+            elif key == pygame.K_BACKSPACE and self.seed_mode == "fixed":
                 self.seed_text = self.seed_text[:-1]
-            elif key == pygame.K_MINUS and not self.seed_text:
+            elif key == pygame.K_MINUS and not self.seed_text and self.seed_mode == "fixed":
                 self.seed_text = "-"
-            elif 48 <= key <= 57:  # digits
+            elif 48 <= key <= 57 and self.seed_mode == "fixed":  # digits
                 self.seed_text += chr(key)
             return
 
@@ -223,6 +245,11 @@ class CharCreation:
                 self.char.illuminator = self.illuminators[(idx + delta) % len(self.illuminators)]
             return
 
+        # --- Seed panel focus via right from stats/done ---
+        if not self.seed_focus and key == pygame.K_RIGHT and field in ("res", "done"):
+            self.seed_focus = True
+            return
+
         # --- Stat adjustments ---
         if field in ("con", "agi", "int", "res"):
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
@@ -248,69 +275,47 @@ class CharCreation:
 
     def draw(self) -> None:
         self.surface.fill(self.bg)
-        y = 60
+        # reset click targets each frame
+        self.click_targets.clear()
+        y = self.layout["title_y"]
 
         # Title
         self.draw_title("Character Creation", y)
         y += 50
 
-        # Name – no more "Edgecaster", just current name
-        self.draw_field(
-            "Name",
-            self.char.name,
-            y,
-            selected=self.fields[self.idx] == "name",
-        )
+        # Name
+        self.draw_field("Name", self.char.name, y, selected=self.fields[self.idx] == "name")
         y += 40
 
-        # Class selection
-        self.draw_field(
-            "Class",
-            self.char_class,
-            y,
-            selected=self.fields[self.idx] == "class",
-        )
-        y += 36
+        # Class + description
+        y = self.draw_class_section(y)
+        y += 12
 
         # Generator
         gen_label = self.char.generator
         if self.char.generator == "custom":
-            gen_label = "custom (press D to draw; 4 verts, X0-10, Y-5..5)"
-        self.draw_field(
-            "Generator",
-            gen_label,
-            y,
-            selected=self.fields[self.idx] == "generator",
-        )
-        y += 40
+            gen_label = "custom (press D to draw)"
+        self.draw_field("Generator", gen_label, y, selected=self.fields[self.idx] == "generator")
+        y += 36
 
         # Illuminator
-        self.draw_field(
-            "Illuminator",
-            self.char.illuminator,
-            y,
-            selected=self.fields[self.idx] == "illuminator",
-        )
-        y += 40
-
-        # Seed mode/value with text box
-        seed_sel = self.fields[self.idx] in ("seed_mode", "seed_value")
-        y = self.draw_seed_controls(y, selected=seed_sel)
+        self.draw_field("Illuminator", self.char.illuminator, y, selected=self.fields[self.idx] == "illuminator")
+        y += 36
 
         # Stats
         self.draw_stats(y)
-        # This y is approximate; draw_stats uses its own local y.
-        y += 190  # slightly larger than before for more spacing
-
-        # Class description
-        y = self.draw_class_section(y)
-        y += 30
+        # Seed panel rendered on the right
+        if self.idx >= len(self.fields):
+            self.idx = len(self.fields) - 1
+        seed_sel = self.seed_focus
+        self.draw_seed_panel(selected=seed_sel)
 
         # Footer ("done" field)
+        footer_y = self.height - self.layout["footer_pad"] - self.font.get_height()
         self.draw_field(
             "Press Enter to start (Esc=quit)",
             "",
-            y,
+            footer_y,
             selected=self.fields[self.idx] == "done",
         )
 
@@ -499,7 +504,10 @@ class CharCreation:
     def draw_field(self, label: str, value: str, y: int, selected: bool = False) -> None:
         col = self.sel if selected else self.fg
         text = self.font.render(f"{label}: {value}", True, col)
-        self.surface.blit(text, (80, y))
+        rect = text.get_rect(topleft=(80, y))
+        self.surface.blit(text, rect.topleft)
+        # store clickable rect
+        self.click_targets[f"{label.lower()}_rect"] = rect
 
     def draw_stats(self, y: int) -> None:
         label = self.big.render(
@@ -516,13 +524,26 @@ class CharCreation:
             selected = self.fields[self.idx] == key
             col = self.sel if selected else self.fg
             val = self.char.stats.get(key, 0)
+            # +/- buttons
+            minus_rect = pygame.Rect(80, y, 20, 20)
+            plus_rect = pygame.Rect(110, y, 20, 20)
+            pygame.draw.rect(self.surface, self.bar_bg, minus_rect)
+            pygame.draw.rect(self.surface, self.bar_bg, plus_rect)
+            mtxt = self.font.render("-", True, self.fg)
+            ptxt = self.font.render("+", True, self.fg)
+            self.surface.blit(mtxt, mtxt.get_rect(center=minus_rect.center))
+            self.surface.blit(ptxt, ptxt.get_rect(center=plus_rect.center))
+            self.click_targets[f"{key}_minus"] = minus_rect
+            self.click_targets[f"{key}_plus"] = plus_rect
+
             surf = self.font.render(f"{lbl}: {val}", True, col)
-            self.surface.blit(surf, (100, y))
+            self.surface.blit(surf, (140, y))
+            # clickable rect for field selection
+            self.click_targets[f"{key}_rect"] = pygame.Rect(140, y, surf.get_width(), surf.get_height())
             y += 32
 
     def draw_seed_controls(self, y: int, selected: bool) -> int:
         """Draw seed fixed/random radios and an input box."""
-        self.click_targets.clear()
         label = self.big.render("World Seed", True, self.fg)
         self.surface.blit(label, (80, y))
         y += 32
@@ -561,20 +582,87 @@ class CharCreation:
 
         return y + 64
 
+    def draw_seed_panel(self, selected: bool) -> None:
+        """Right-side seed panel with radios and text box."""
+        panel_w = self.layout["seed_panel_width"]
+        panel_h = self.layout["seed_panel_height"]
+        panel_x = self.width - panel_w - self.layout["seed_panel_x_pad"]
+        y = self.height - panel_h - self.layout["seed_panel_bottom_pad"]
+        title = self.big.render("World Seed", True, self.fg)
+        self.surface.blit(title, (panel_x, y))
+        y += 32
+
+        def radio(x, y, checked):
+            pygame.draw.circle(self.surface, self.fg, (x, y), 10, 2)
+            if checked:
+                pygame.draw.circle(self.surface, self.sel, (x, y), 6)
+
+        fixed_y = y + 4
+        random_y = y + 36
+        radio_x = panel_x
+        radio(radio_x, fixed_y, self.seed_mode == "fixed")
+        self.click_targets["seed_fixed"] = pygame.Rect(radio_x - 12, fixed_y - 12, 24, 24)
+        txt_fixed = self.font.render("Fixed seed:", True, self.sel if self.seed_mode == "fixed" else self.fg)
+        self.surface.blit(txt_fixed, (radio_x + 18, fixed_y - 12))
+
+        box_rect = pygame.Rect(radio_x + 140, fixed_y - 18, 220, 32)
+        self.click_targets["seed_box"] = box_rect
+        pygame.draw.rect(self.surface, (40, 40, 60), box_rect, border_radius=4)
+        pygame.draw.rect(
+            self.surface,
+            self.sel if selected and self.seed_mode == "fixed" else self.fg,
+            box_rect,
+            2,
+            border_radius=4,
+        )
+        shown = self.seed_text if self.seed_mode == "fixed" else ""
+        if shown == "":
+            shown = "enter number"
+        text_col = self.sel if (selected and self.seed_mode == "fixed") else self.fg
+        txt_val = self.font.render(shown, True, text_col)
+        self.surface.blit(txt_val, (box_rect.x + 8, box_rect.y + 6))
+
+        radio(radio_x, random_y, self.seed_mode == "random")
+        self.click_targets["seed_random"] = pygame.Rect(radio_x - 12, random_y - 12, 24, 24)
+        rtxt = self.font.render("Random seed each run", True, self.sel if self.seed_mode == "random" else self.fg)
+        self.surface.blit(rtxt, (radio_x + 18, random_y - 12))
+
     def handle_click(self, pos: tuple[int, int]) -> None:
         """Mouse support to focus seed entry / radios."""
         if "seed_fixed" in self.click_targets and self.click_targets["seed_fixed"].collidepoint(pos):
             self.seed_mode = "fixed"
-            self.idx = self.fields.index("seed_value")
+            self.seed_focus = True
             return
         if "seed_random" in self.click_targets and self.click_targets["seed_random"].collidepoint(pos):
             self.seed_mode = "random"
-            self.idx = self.fields.index("seed_mode")
+            self.seed_focus = True
             return
         if "seed_box" in self.click_targets and self.click_targets["seed_box"].collidepoint(pos):
             self.seed_mode = "fixed"
-            self.idx = self.fields.index("seed_value")
+            self.seed_focus = True
             return
+
+        # Check stats +/- buttons
+        for key in ("con", "agi", "int", "res"):
+            minus = self.click_targets.get(f"{key}_minus")
+            plus = self.click_targets.get(f"{key}_plus")
+            if minus and minus.collidepoint(pos):
+                self.adjust_stat(key, -1)
+                self.idx = self.fields.index(key)
+                return
+            if plus and plus.collidepoint(pos):
+                self.adjust_stat(key, 1)
+                self.idx = self.fields.index(key)
+                self.seed_focus = False
+                return
+
+        # Generic clicks on fields: set idx accordingly
+        for field in self.fields:
+            rect = self.click_targets.get(f"{field}_rect")
+            if rect and rect.collidepoint(pos):
+                self.idx = self.fields.index(field)
+                self.seed_focus = False
+                return
 
 
 def run_character_creation(cfg, fullscreen: bool = False) -> Optional[Character]:
