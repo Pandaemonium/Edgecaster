@@ -3,6 +3,16 @@ from typing import List, Tuple
 from typing import Optional
 
 from edgecaster.character import Character, default_character
+from edgecaster.scenes.base import (
+    MenuInput,
+    MENU_ACTION_UP,
+    MENU_ACTION_DOWN,
+    MENU_ACTION_LEFT,
+    MENU_ACTION_RIGHT,
+    MENU_ACTION_ACTIVATE,
+    MENU_ACTION_BACK,
+    MENU_ACTION_FULLSCREEN,
+)
 
 
 # --- Character classes & descriptions (from the old scene) ---
@@ -29,6 +39,8 @@ class CharCreation:
         pygame.init()
         self.width = width
         self.height = height
+        # Standardized menu input (for arrows, numpad, Enter/Esc, repeat)
+        self.menu_input = MenuInput()
         # layout parameters (tweak here)
         self.layout = {
             "title_y": 60,
@@ -104,56 +116,107 @@ class CharCreation:
 
     def run(self) -> Optional[Character]:
         clock = pygame.time.Clock()
+        menu = self.menu_input
+
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
                     return None
+
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self.handle_click(event.pos)
 
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_F11:
-                        # toggle fullscreen
+                    current = self.fields[self.idx]
+
+                    # --- SPECIAL CASE: 'd' for Draw on the GENERATOR field ---
+                    # We bypass MenuInput here so 'd' is *not* mapped to "right".
+                    if event.key == pygame.K_d and current == "generator":
+                        self.handle_key(pygame.K_d)
+                        continue
+
+                    action = menu.handle_keydown(event.key)
+                    handled = False
+
+                    # Fullscreen toggle (F11 etc.), same semantics as other menus
+                    if action == MENU_ACTION_FULLSCREEN:
                         flags = pygame.display.get_surface().get_flags()
                         if flags & pygame.FULLSCREEN:
                             pygame.display.set_mode((self.width, self.height))
                         else:
                             pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-                        continue
-                    # ESC: bail out, keep default char
-                    if event.key == pygame.K_ESCAPE:
+                        handled = True
+
+                    # Esc / back: cancel character creation
+                    elif action == MENU_ACTION_BACK:
                         self.running = False
                         return None
 
-                    # ENTER: either advance to next field, or confirm on "done"
-                    if event.key == pygame.K_RETURN:
+                    # Enter / KP-Enter = "activate"
+                    elif action == MENU_ACTION_ACTIVATE and event.key != pygame.K_SPACE:
                         current = self.fields[self.idx]
 
-                        # leaving name field via Enter: restore default if blank
+                        # Leaving name via Enter: restore default if blank
                         if current == "name" and not self.char.name.strip():
                             self.char.name = DEFAULT_NAME
 
                         if current == "done":
-                            # apply seed selection before exiting
+                            # Apply seed choices before starting game
                             if self.seed_mode == "random":
                                 self.char.use_random_seed = True
                                 self.char.seed = None
                             else:
                                 self.char.use_random_seed = False
-                                try:
-                                    self.char.seed = int(self.seed_text)
-                                except ValueError:
+                                text = self.seed_text.strip()
+                                if text:
+                                    try:
+                                        self.char.seed = int(text)
+                                    except ValueError:
+                                        self.char.seed = None
+                                else:
                                     self.char.seed = None
-                            self.running = False
-                            break
-                        else:
-                            # move to next field
-                            self.idx = (self.idx + 1) % len(self.fields)
-                            continue
 
-                    # Otherwise, normal key handling
-                    self.handle_key(event.key)
+                            # We're done here; let the main loop exit
+                            self.running = False
+                            handled = True
+                        else:
+                            # For all other fields, treat Enter like Down/Tab
+                            # so we reuse the existing navigation logic.
+                            self.handle_key(pygame.K_DOWN)
+                            handled = True
+
+                    # Directional navigation (arrows/WASD/numpad)
+                    elif action in (
+                        MENU_ACTION_UP,
+                        MENU_ACTION_DOWN,
+                        MENU_ACTION_LEFT,
+                        MENU_ACTION_RIGHT,
+                    ):
+                        key = self._key_from_action(action)
+                        if key is not None:
+                            self.handle_key(key)
+                            handled = True
+
+                    if not handled:
+                        # Everything else (letters, digits, space, custom keys)
+                        # goes through the original per-key logic.
+                        self.handle_key(event.key)
+
+                elif event.type == pygame.KEYUP:
+                    menu.handle_keyup(event.key)
+
+            # Key-repeat for held directional keys (including numpad)
+            repeat_action = menu.update()
+            if repeat_action in (
+                MENU_ACTION_UP,
+                MENU_ACTION_DOWN,
+                MENU_ACTION_LEFT,
+                MENU_ACTION_RIGHT,
+            ):
+                key = self._key_from_action(repeat_action)
+                if key is not None:
+                    self.handle_key(key)
 
             self.draw()
             pygame.display.flip()
@@ -163,6 +226,26 @@ class CharCreation:
         setattr(self.char, "char_class", self.char_class)
         setattr(self.char, "player_class", self.char_class)
         return self.char
+
+
+
+
+    def _key_from_action(self, action: str) -> Optional[int]:
+        """Map a logical MENU_ACTION_* back to a canonical pygame key.
+
+        This lets us re-use the existing handle_key() logic without touching
+        any of the underlying character-creation rules.
+        """
+        if action == MENU_ACTION_UP:
+            return pygame.K_UP
+        if action == MENU_ACTION_DOWN:
+            return pygame.K_DOWN
+        if action == MENU_ACTION_LEFT:
+            return pygame.K_LEFT
+        if action == MENU_ACTION_RIGHT:
+            return pygame.K_RIGHT
+        return None
+
 
     def handle_key(self, key: int) -> None:
         # Move between fields

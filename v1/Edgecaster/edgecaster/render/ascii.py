@@ -367,28 +367,66 @@ class AsciiRenderer:
 
 
 
-    def _actor_visual(self, actor: Actor) -> Tuple[str, Tuple[int, int, int]]:
-        if actor.faction == "player":
-            return "@", self.player_color
-        if actor.faction == "hostile":
-            return "m", self.monster_color
-        return "?", self.fg
+    def _entity_visual(self, ent) -> Tuple[str, Tuple[int, int, int]]:
+        """Return (glyph, color) for any renderable entity.
 
-    def draw_actors(self, world: World, actors) -> None:
-        for actor in actors:
-            x, y = actor.pos
+        - Actors are detected by having a 'faction' attribute.
+        - Generic entities (items/features) use their own glyph/color.
+        """
+        # Actors (player, monsters, NPCs, etc.)
+        if hasattr(ent, "faction"):
+            # This is basically your old _actor_visual, but folded in.
+            if ent.faction == "player":
+                return "@", self.player_color
+            if ent.faction == "hostile":
+                return "m", self.monster_color
+            if ent.faction == "npc":
+                # tweak this if you want a special glyph/color for NPCs
+                return "?", self.fg
+            return "?", self.fg
+
+        # Generic entities: items, features, etc.
+        glyph = getattr(ent, "glyph", "?")
+        color = getattr(ent, "color", self.fg)
+        return glyph, color
+
+
+    def draw_entities(self, world: World, entities) -> None:
+        """Draw all renderable entities (actors, items, features...) on the map.
+
+        Ordering is controlled by an optional 'render_layer' attribute:
+        higher layers are drawn later (on top).
+        """
+        # Sort by render_layer; actors get default layer 2, others 1.
+        def layer(ent) -> int:
+            if hasattr(ent, "faction"):
+                # treat actors as a higher layer by default
+                return getattr(ent, "render_layer", 2)
+            return getattr(ent, "render_layer", 1)
+
+        entities_sorted = sorted(entities, key=layer)
+
+        for ent in entities_sorted:
+            pos = getattr(ent, "pos", None)
+            if pos is None:
+                continue
+            x, y = pos
             if not world.in_bounds(x, y):
                 continue
             tile = world.get_tile(x, y)
             if not tile or not tile.visible:
                 continue
-            glyph, color = self._actor_visual(actor)
+
             px = x * self.tile + self.origin_x
             py = y * self.tile + self.origin_y
             if px >= self.width or py >= self.height:
                 continue
+
+            glyph, color = self._entity_visual(ent)
             text = self.map_font.render(glyph, True, color)
             self.surface.blit(text, (px, py))
+
+
 
     def draw_pattern_overlay(self, game: Game) -> None:
         self.edges_surface.fill((0, 0, 0, 0))
@@ -800,49 +838,32 @@ class AsciiRenderer:
         return lines or [text]
 
     def _urgent_active(self, game: Game) -> bool:
-        return bool(getattr(game, "urgent_message", None)) and not getattr(game, "urgent_resolved", True)
+        """
+        Legacy renderer-side urgent popup.
+
+        Urgent messages are now handled by UrgentMessageScene at the
+        SceneManager level, so this always returns False and the renderer
+        never hijacks input or draws its own overlay.
+        """
+        return False
 
     def _ack_urgent(self, game: Game) -> None:
-        msg = getattr(game, "urgent_message", None)
+        """
+        Legacy helper. Kept for compatibility but no longer used.
+
+        UrgentMessageScene is responsible for setting urgent_resolved
+        and clearing urgent_message.
+        """
         game.urgent_resolved = True
-        if msg:
-            game.log.add(msg)
         self.urgent_ok_rect = None
 
     def draw_urgent_overlay(self, game: Game) -> None:
-        """Modal urgent message in center; requires click OK or Space/Enter."""
-        msg = getattr(game, "urgent_message", None)
-        if not msg:
-            return
-        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 160))
-        panel_w = int(self.width * 0.6)
-        panel_h = int(self.height * 0.3)
-        panel_x = (self.width - panel_w) // 2
-        panel_y = (self.height - panel_h) // 2
-        panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
-        pygame.draw.rect(overlay, (20, 22, 40, 230), panel_rect)
-        pygame.draw.rect(overlay, (220, 220, 240, 240), panel_rect, 2)
+        """
+        Deprecated: urgent popups are handled by UrgentMessageScene now.
+        Left as a no-op for backward compatibility.
+        """
+        return
 
-        lines = self._wrap_text(msg, self.font, panel_w - 40)
-        y = panel_y + 20
-        for line in lines:
-            txt = self.font.render(line, True, self.fg)
-            overlay.blit(txt, (panel_x + 20, y))
-            y += txt.get_height() + 6
-
-        ok_w, ok_h = 120, 36
-        ok_rect = pygame.Rect(panel_x + (panel_w - ok_w) // 2, panel_y + panel_h - ok_h - 20, ok_w, ok_h)
-        pygame.draw.rect(overlay, (60, 90, 60), ok_rect)
-        pygame.draw.rect(overlay, (180, 220, 180), ok_rect, 2)
-        ok_txt = self.font.render("OK", True, self.fg)
-        overlay.blit(ok_txt, ok_txt.get_rect(center=ok_rect.center))
-        self.urgent_ok_rect = ok_rect
-
-        hint = self.small_font.render("Press Space/Enter or click OK", True, self.dim)
-        overlay.blit(hint, (panel_x + (panel_w - hint.get_width()) // 2, ok_rect.bottom + 6))
-
-        self.surface.blit(overlay, (0, 0))
 
     def draw_ability_bar(self, game: Game) -> None:
         bar_rect = pygame.Rect(0, self.height - self.ability_bar_height, self.width, self.ability_bar_height)
@@ -976,26 +997,19 @@ class AsciiRenderer:
                     elif event.key == pygame.K_F11:
                         self.toggle_fullscreen()
                     else:
-                        # Urgent messages consume input except confirm
-                        if self._urgent_active(game):
-                            if event.key in (pygame.K_SPACE, pygame.K_RETURN):
-                                self._ack_urgent(game)
-                            # ignore other keys
-                        else:
-                            self._handle_input(game, event.key)
+                        # Urgent messages are now handled by UrgentMessageScene, so the
+                        # renderer no longer consumes input specially here.
+                        self._handle_input(game, event.key)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     pos = self._to_surface(event.pos)
-                    if self._urgent_active(game):
-                        if self.urgent_ok_rect and self.urgent_ok_rect.collidepoint(pos):
-                            self._ack_urgent(game)
-                        # swallow clicks during urgent modal
-                    elif self.config_open and self.config_action:
+                    if self.config_open and self.config_action:
                         # clicking outside just closes
                         self.config_open = False
                     elif self.dialog_open:
                         self.dialog_open = False
                     else:
                         self._handle_click(game, pos)
+
                 elif event.type == pygame.MOUSEMOTION:
                     self._update_hover(game, self._to_surface(event.pos))
                 elif event.type == pygame.MOUSEWHEEL:
@@ -1012,7 +1026,9 @@ class AsciiRenderer:
             self.draw_place_overlay(game)
             self.draw_activation_overlay(game)
             self.draw_aim_overlay(game)
-            self.draw_actors(game.world, game.all_actors_current())
+            # Unified entity rendering: items + actors together.
+            renderables = game.renderables_current()
+            self.draw_entities(game.world, renderables)
             self.draw_target_cursor(game)
             self.draw_status(game)
             self.draw_log(game)
@@ -1021,9 +1037,9 @@ class AsciiRenderer:
                 self.draw_config_overlay(game)
             if self.dialog_open:
                 self.draw_dialog_overlay()
-            if self._urgent_active(game):
-                self.draw_urgent_overlay(game)
+            # Urgent overlay is now handled by UrgentMessageScene.
             self._present()
+
             clock.tick(60)
             # If some input handler requested that we quit the dungeon loop
             # (e.g. to open the inventory), honor that here.
@@ -1035,11 +1051,12 @@ class AsciiRenderer:
                 running = False
                 continue
 
-            # If the player is dead and any urgent message has been acknowledged,
-            # leave the dungeon loop so the scene manager can take over.
+
+            # If the player is dead, leave the dungeon loop so the scene manager
+            # can transition to a game-over / urgent popup scene.
             if hasattr(game, "player_alive") and not game.player_alive:
-                if not getattr(game, "urgent_message", None) or getattr(game, "urgent_resolved", True):
-                    running = False
+                running = False
+
 
 
 
@@ -1107,11 +1124,7 @@ class AsciiRenderer:
             pygame.K_KP9: (1, -1),
         }
         
-        # If an urgent message is active, ignore all input except SPACE to acknowledge.
-        if getattr(game, "urgent_message", None) and not getattr(game, "urgent_resolved", True):
-            if key == pygame.K_SPACE:
-                game.urgent_resolved = True
-            return
+
             
         # --- Inventory toggle (dungeon-level) ---
         # Press 'i' to open the inventory. We mark a flag on the Game and

@@ -2,78 +2,56 @@ from __future__ import annotations
 
 from typing import List
 
-import pygame
-
-from .base import Scene
+from .base import MenuScene
 
 
-class SavedGamesScene(Scene):
+
+class SavedGamesScene(MenuScene):
     """Dummy saved-games menu to test scene transitions."""
 
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+    # Use the standard footer controls from MenuScene (FOOTER_TEXT default)
+
+    def get_menu_items(self) -> List[str]:
+        # For now, just a single 'Back' option; saves are empty.
+        return ["Back to Main Menu"]
+
+    def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        """
+        Esc from saved games: just pop back to whatever pushed us (main menu).
+        """
+        manager.pop_scene()
+        return True
+
+    def on_activate(
+        self,
+        index: int,
+        manager: "SceneManager",  # type: ignore[name-defined]
+    ) -> bool:
+        """
+        Selecting the only option = go back.
+        """
+        # In future if you add more options, you can branch on index here.
+        manager.pop_scene()
+        return True
+
+    def draw_extra(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """
+        Draw the 'Saved Games' title and the 'no saves' text above the menu.
+        """
         renderer = manager.renderer
         surface = renderer.surface
-        clock = pygame.time.Clock()
 
-        # For now, just a single 'Back' option; saves are empty.
-        options: List[str] = ["Back to Main Menu"]
-        selected_idx = 0
+        title_text = renderer.font.render("Saved Games", True, renderer.fg)
+        surface.blit(
+            title_text,
+            ((renderer.width - title_text.get_width()) // 2, 80),
+        )
 
-        running = True
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
-
-                if event.type == pygame.KEYDOWN:
-                    if event.key in (pygame.K_ESCAPE,):
-                        manager.pop_scene()
-                        return
-                    if event.key == pygame.K_F11:
-                        renderer.toggle_fullscreen()
-                        continue
-                    if event.key in (pygame.K_UP, pygame.K_w, pygame.K_DOWN, pygame.K_s):
-                        selected_idx = 0
-                    if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        manager.pop_scene()
-                        return
-
-            # -------- DRAW --------
-            surface.fill(renderer.bg)
-
-            title_text = renderer.font.render("Saved Games", True, renderer.fg)
-            surface.blit(
-                title_text,
-                ((renderer.width - title_text.get_width()) // 2, 80),
-            )
-
-            # Dummy "no saves" info
-            info_text = renderer.small_font.render(
-                "No saved games found.", True, renderer.dim
-            )
-            surface.blit(
-                info_text,
-                ((renderer.width - info_text.get_width()) // 2, 140),
-            )
-
-            # Back option
-            y = 220
-            selected = (selected_idx == 0)
-            color = renderer.player_color if selected else renderer.fg
-            prefix = "▶ " if selected else "  "
-            text = renderer.font.render(prefix + "Back to Main Menu", True, color)
-            surface.blit(text, (renderer.width // 2 - 160, y))
-
-            hint = renderer.small_font.render(
-                "Enter/Space to go back, Esc also returns to main menu",
-                True,
-                renderer.dim,
-            )
-            surface.blit(
-                hint,
-                ((renderer.width - hint.get_width()) // 2, renderer.height - 40),
-            )
-
-            renderer.present()
-            clock.tick(60)
+        # Dummy "no saves" info
+        info_text = renderer.small_font.render(
+            "No saved games found.", True, renderer.dim
+        )
+        surface.blit(
+            info_text,
+            ((renderer.width - info_text.get_width()) // 2, 140),
+        )

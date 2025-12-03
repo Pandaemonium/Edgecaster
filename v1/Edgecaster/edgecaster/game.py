@@ -5,6 +5,7 @@ from typing import Dict, Tuple, List, Optional, Callable
 from edgecaster import config
 from edgecaster.state.world import World
 from edgecaster.state.actors import Actor, Stats
+from edgecaster.state.entities import Entity
 from edgecaster import mapgen
 from edgecaster.patterns.activation import project_vertices, damage_from_vertices
 from edgecaster.patterns import builder
@@ -75,6 +76,7 @@ class MessageLog:
 class LevelState:
     world: World
     actors: Dict[str, Actor]
+    entities: Dict[str, Entity]
     events: List[Tuple[int, int, Callable[[], None]]]
     order: int
     current_tick: int
@@ -98,6 +100,17 @@ class Game:
         self.rng = rng
         self.log = MessageLog()
         self.place_range = cfg.place_range
+        # urgent message system (level-ups, death, important events)
+        # urgent message system (level-ups, death, important events)
+        self.urgent_message: str | None = None
+        self.urgent_resolved: bool = True
+        self.urgent_callback: Optional[Callable[[str], None]] = None
+
+        # richer urgent metadata (title/body/choices) for the popup scene
+        self.urgent_title: Optional[str] = None
+        self.urgent_body: Optional[str] = None
+        self.urgent_choices: Optional[List[str]] = None
+
 
         # character info
         self.character: Character = character or default_character()
@@ -168,15 +181,18 @@ class Game:
         player_name = self.character.name or "Edgecaster"
         player_stats = self._build_player_stats()
         player = Actor(
-            actor_id=self._new_id(),
+            id=self._new_id(),
             name=player_name,
             pos=(px, py),
             faction="player",
             stats=player_stats,
         )
 
-        self.player_id = player.actor_id
-        self._level().actors[player.actor_id] = player
+        self.player_id = player.id
+        lvl = self._level()
+        lvl.actors[player.id] = player
+        lvl.entities[player.id] = player
+   
 
         # enemies
         self._spawn_enemies(self._level(), count=4)
@@ -316,7 +332,11 @@ class Game:
         player.stats.max_mana += mana_gain
         player.stats.hp = player.stats.max_hp
         player.stats.mana = player.stats.max_mana
-        self.set_urgent(f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)")
+        self.set_urgent(
+            f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)",
+            title="Level Up!",
+            choices=["Continue..."],
+        )
 
         # Strange Attractors gain an extra Lorenz butterfly each level.
         if getattr(self.character, "player_class", None) == "Strange Attractor":
@@ -340,12 +360,37 @@ class Game:
         self._next_id += 1
         return aid
         
-    def set_urgent(self, text: str) -> None:
-        """Display an urgent message that must be acknowledged with SPACE."""
-        self.urgent_message = text
-        self.urgent_resolved = False
-        # You can tweak this string to taste.
-        self.log.add(f"{text}  (press SPACE)")
+    def set_urgent(
+        self,
+        text: str,
+        *,
+        title: Optional[str] = None,
+        choices: Optional[List[str]] = None,
+    ) -> None:
+        """Notify the UI of an urgent message.
+
+        If a UI callback is installed, call it immediately; otherwise,
+        fall back to the old flag-based behaviour.
+        """
+        # Remember structured fields so the UI can style the popup.
+        self.urgent_title = title
+        self.urgent_body = text
+        self.urgent_choices = choices
+
+        if self.urgent_callback is not None:
+            # Let the current scene/UI handle it (typically by pushing
+            # an UrgentMessageScene).
+            self.urgent_callback(text)
+        else:
+            # Legacy behaviour: store flags so something else can poll.
+            self.urgent_message = text
+            self.urgent_resolved = False
+
+        # Urgent messages still go into the scrolling log for history.
+        self.log.add(text)
+
+
+
 
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
         x, y, depth = coord
@@ -357,6 +402,7 @@ class Game:
         lvl = LevelState(
             world=world,
             actors={},
+            entities={},   # NEW
             events=[],
             order=0,
             current_tick=0,
@@ -374,7 +420,13 @@ class Game:
         # mentor on starting overworld tile
         if coord == (0, 0, 0):
             self._spawn_mentor(lvl)
+
+        # scatter some test berries on overworld levels
+        if coord[2] == 0:  # depth == 0
+            self._scatter_test_berries(lvl, count=30)
+
         return lvl
+
 
     def _spawn_enemies(self, level: LevelState, count: int) -> None:
         spawned = 0
@@ -387,8 +439,10 @@ class Game:
                 continue
             if self._actor_at(level, (x, y)):
                 continue
+            if self._blocking_entity_at(level, (x, y)):
+                continue
             aid = self._new_id()
-            level.actors[aid] = Actor(
+            imp = Actor(
                 aid,
                 "Imp",
                 (x, y),
@@ -396,8 +450,12 @@ class Game:
                 stats=Stats(hp=5, max_hp=5),
                 tags={"xp": self.cfg.xp_per_imp},
             )
+            level.actors[aid] = imp
+            level.entities[aid] = imp  # mirror into entities
+
             self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
             spawned += 1
+
 
     def _spawn_mentor(self, level: LevelState) -> None:
         """Place mentor NPC near entry if available."""
@@ -414,7 +472,7 @@ class Game:
                 continue
             aid = self._new_id()
             mentor = Actor(
-                actor_id=aid,
+                id=aid,
                 name="Mentor",
                 pos=(tx, ty),
                 faction="npc",
@@ -424,6 +482,7 @@ class Game:
                 affiliations=("edgecasters",),
             )
             level.actors[aid] = mentor
+            level.entities[aid] = mentor
             break
 
     def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
@@ -443,7 +502,7 @@ class Game:
                 continue
             aid = self._new_id()
             actor = Actor(
-                actor_id=aid,
+                id=aid,
                 name=npc_data.get("name", "NPC"),
                 pos=(x, y),
                 faction="npc",
@@ -453,7 +512,66 @@ class Game:
                 affiliations=tuple(npc_data.get("factions", [])),
             )
             level.actors[aid] = actor
+            level.entities[aid] = actor  # now NPCs are entities too
             placed += 1
+
+
+    def _scatter_test_berries(self, level: LevelState, count: int = 30) -> None:
+        """Scatter some colored berry entities across the map as a test.
+
+        Berries are simple non-blocking items with glyph 'b' and different colors.
+        """
+        if count <= 0:
+            return
+
+        berry_defs = [
+            ("Blueberry",   "blueberry",   (80, 80, 200)),
+            ("Raspberry",   "raspberry",   (200, 60, 120)),
+            ("Strawberry",  "strawberry",  (230, 80, 80)),
+        ]
+
+        placed = 0
+        attempts = 0
+        max_attempts = count * 50
+
+        world = level.world
+
+        while placed < count and attempts < max_attempts:
+            attempts += 1
+            x = self.rng.randint(0, world.width - 1)
+            y = self.rng.randint(0, world.height - 1)
+
+            # must be a walkable, in-bounds tile
+            if not world.in_bounds(x, y):
+                continue
+            if not world.is_walkable(x, y):
+                continue
+
+            # avoid stacking on actors or existing entities
+            if self._actor_at(level, (x, y)):
+                continue
+            if self._entity_at(level, (x, y)):
+                continue
+
+            name, berry_id_tag, color = self.rng.choice(berry_defs)
+            eid = self._new_id()
+
+            ent = Entity(
+                id=eid,
+                name=name,
+                pos=(x, y),
+                glyph="b",
+                color=color,
+                kind="item",
+                render_layer=1,
+                blocks_movement=False,
+                tags={"item_type": berry_id_tag, "test_berry": True},
+            )
+
+            level.entities[eid] = ent
+            placed += 1
+
+
 
     # --- scheduling ---
 
@@ -620,7 +738,7 @@ class Game:
         for actor in list(level.actors.values()):
             if not actor.alive:
                 continue
-            if actor.actor_id == self.player_id:
+            if actor.id == self.player_id:
                 continue
             if actor.faction != "hostile":
                 continue
@@ -649,7 +767,8 @@ class Game:
 
             if actor.stats.hp <= 0:
                 self.log.add(f"{actor.name} dies.")
-                self._on_enemy_killed(actor)
+                self._kill_actor(level, actor)
+
 
 
     # --- actor queries ---
@@ -662,6 +781,28 @@ class Game:
 
     def _all_actors(self, level: LevelState) -> List[Actor]:
         return [a for a in level.actors.values() if a.alive]
+
+    # --- entity queries (non-actor entities) ---
+
+    def _entity_at(self, level: LevelState, pos: Tuple[int, int]) -> Optional[Entity]:
+        for ent in level.entities.values():
+            if ent.pos == pos:
+                return ent
+        return None
+
+    def _all_entities(self, level: LevelState) -> List[Entity]:
+        return list(level.entities.values())
+        
+    def _blocking_entity_at(self, level: LevelState, pos: Tuple[int, int]) -> Optional[Entity]:
+        """Return a blocking entity at this position, if any.
+
+        Non-blocking entities (like berries/items) are ignored for movement.
+        """
+        ent = self._entity_at(level, pos)
+        if ent and getattr(ent, "blocks_movement", False):
+            return ent
+        return None
+
 
     # --- status helpers ---
 
@@ -699,6 +840,20 @@ class Game:
     def all_actors_current(self) -> List[Actor]:
         """Alive actors on the current level."""
         return self._all_actors(self._level())
+
+    def all_entities_current(self) -> List[Entity]:
+        """All non-actor entities on the current level (items, features, etc.)."""
+        return self._all_entities(self._level())
+
+    def renderables_current(self) -> List[object]:
+        """All things that should be rendered on the current level.
+
+        This is a simple concatenation of non-actor entities (items, features)
+        and living actors (player, monsters, NPCs).
+        """
+        return self.all_entities_current() + self.all_actors_current()
+
+
 
     # --- player helpers ---
 
@@ -1081,47 +1236,67 @@ class Game:
 
     # --- movement & combat ---
 
-    def _handle_move_or_attack(self, level: LevelState, actor_id: str, dx: int, dy: int) -> None:
-        actor = level.actors.get(actor_id)
+    def _handle_move_or_attack(self, level: LevelState, id: str, dx: int, dy: int) -> None:
+        actor = level.actors.get(id)
         if actor is None or not actor.alive:
             return
+
         x, y = actor.pos
         nx = x + dx
         ny = y + dy
+
         if not level.world.in_bounds(nx, ny):
             # only player can transition zones
-            if actor_id == self.player_id:
+            if id == self.player_id:
                 self._transition_edge(actor, dx, dy)
             return
+
         # stair use is explicit, so only move/attack here
         target = self._actor_at(level, (nx, ny))
-        if target and target.actor_id != actor_id and target.faction != actor.faction:
+        if target and target.id != id and target.faction != actor.faction:
             self._attack(level, actor, target)
             return
+
+        # treat blocking entities as solid, like walls
+        blocking_ent = self._blocking_entity_at(level, (nx, ny))
+        if blocking_ent:
+            if id == self.player_id:
+                self.log.add(f"You bump into the {blocking_ent.name}.")
+            return
+
         if not level.world.is_walkable(nx, ny):
-            if actor_id == self.player_id:
+            if id == self.player_id:
                 self.log.add("You bump into a wall.")
             return
+
         actor.pos = (nx, ny)
-        if actor_id == self.player_id:
+        if id == self.player_id:
             level.need_fov = True
+
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
         dmg = 1
         defender.stats.hp -= dmg
         defender.stats.clamp()
-        if attacker.actor_id == self.player_id:
+        if attacker.id == self.player_id:
             self.log.add(f"You hit {defender.name} for {dmg}.")
         else:
             self.log.add(f"{attacker.name} hits you for {dmg}.")
         if defender.stats.hp <= 0:
-            if defender.actor_id == self.player_id:
-                self.set_urgent("You unravel...")
+            # Player death uses the urgent popup; enemies die normally.
+            if defender.id == self.player_id:
+                cause = attacker.name
+                self.set_urgent(
+                    f"Killed by {cause}",
+                    title="You unravel...",
+                    choices=["Continue..."],
+                )
             else:
-
                 self.log.add(f"{defender.name} dies.")
-                if attacker.actor_id == self.player_id:
-                    self._on_enemy_killed(defender)
+                self._kill_actor(level, defender)
+
+
+
 
     def _transition_edge(self, actor: Actor, dx: int, dy: int) -> None:
         """Move the player across zone boundaries."""
@@ -1150,13 +1325,13 @@ class Game:
         self._reset_lorenz_on_zone_change(actor)
 
 
-    def _monster_act(self, level: LevelState, actor_id: str) -> None:
-        actor = level.actors.get(actor_id)
+    def _monster_act(self, level: LevelState, id: str) -> None:
+        actor = level.actors.get(id)
         if actor is None or not actor.alive:
             return
         if self.player_id not in level.actors:
             # player not on this level; reschedule later
-            self._schedule(level, self.cfg.action_time_fast, lambda aid=actor_id, lvl=level: self._monster_act(lvl, aid))
+            self._schedule(level, self.cfg.action_time_fast, lambda aid=id, lvl=level: self._monster_act(lvl, aid))
             return
 
         # status: Distracted (30% chance to lose turn)
@@ -1164,7 +1339,7 @@ class Game:
             if self.rng.random() < 0.3:
                 self.log.add(f"The distracted {actor.name} falters.")
                 self._tick_status(actor, "distracted")
-                self._schedule(level, self.cfg.action_time_fast, lambda aid=actor_id, lvl=level: self._monster_act(lvl, aid))
+                self._schedule(level, self.cfg.action_time_fast, lambda aid=id, lvl=level: self._monster_act(lvl, aid))
                 return
             else:
                 self._tick_status(actor, "distracted")
@@ -1179,7 +1354,7 @@ class Game:
             target = (ax + dx, ay + dy)
             if level.world.in_bounds(*target) and level.world.is_walkable(*target) and not self._actor_at(level, target):
                 actor.pos = target
-        self._schedule(level, self.cfg.action_time_fast, lambda aid=actor_id, lvl=level: self._monster_act(lvl, aid))
+        self._schedule(level, self.cfg.action_time_fast, lambda aid=id, lvl=level: self._monster_act(lvl, aid))
 
     # --- pattern activation ---
 
@@ -1240,7 +1415,7 @@ class Game:
         for actor in list(level.actors.values()):
             if not actor.alive:
                 continue
-            if actor.actor_id == self.player_id or actor.faction == "player":
+            if actor.id == self.player_id or actor.faction == "player":
                 continue
             tile = level.world.get_tile(*actor.pos)
             if tile is None or not tile.visible:
@@ -1269,7 +1444,8 @@ class Game:
             self.log.add(f"Your rune sears {actor.name} for {dmg}.")
             if actor.stats.hp <= 0:
                 self.log.add(f"{actor.name} is annihilated.")
-                self._on_enemy_killed(actor)
+                self._kill_actor(level, actor)
+
         if hits == 0:
             self.log.add("Your rune fizzles; no foes in its reach.")
 
@@ -1320,7 +1496,7 @@ class Game:
             tile_x = int(round(ax))
             tile_y = int(round(ay))
             target_actor = self._actor_at(level, (tile_x, tile_y))
-            if target_actor and target_actor.actor_id != self.player_id and target_actor.faction != "player":
+            if target_actor and target_actor.id != self.player_id and target_actor.faction != "player":
                 target_actor.stats.hp -= per_vertex
                 hits += 1
                 self.log.add(f"Your focus bites {target_actor.name} for {per_vertex}.")
@@ -1340,6 +1516,23 @@ class Game:
         enemy.tags["_xp_awarded"] = 1
         xp_gain = enemy.tags.get("xp", self.cfg.xp_per_imp) if enemy.tags else self.cfg.xp_per_imp
         self._grant_xp(xp_gain)
+
+    def _kill_actor(self, level: LevelState, actor: Actor) -> None:
+        """Handle removing a dead actor from the world and awarding XP once."""
+        # Award XP (handles faction check + duplicate protection)
+        self._on_enemy_killed(actor)
+
+        # Use the canonical id (actor_id is a property alias if you made Actor→Entity)
+        aid = actor.actor_id
+
+        # Remove from actors dict
+        if aid in level.actors:
+            del level.actors[aid]
+
+        # Remove from entities dict (so it stops being rendered)
+        if aid in level.entities:
+            del level.entities[aid]
+
 
     def _update_fov(self, level: LevelState, radius: int = 8) -> None:
         if self.player_id not in level.actors:
@@ -1361,9 +1554,9 @@ class Game:
                         tile.visible = True
                         tile.explored = True
                     actor = self._actor_at(level, (x, y))
-                    if actor and actor.actor_id not in level.spotted:
-                        level.spotted.add(actor.actor_id)
-                        if actor.actor_id != self.player_id:
+                    if actor and actor.id not in level.spotted:
+                        level.spotted.add(actor.id)
+                        if actor.id != self.player_id:
                             self.log.add(f"You spot a {actor.name}.")
         level.need_fov = False
 
@@ -1376,6 +1569,10 @@ class Game:
     @property
     def actors(self) -> Dict[str, Actor]:
         return self._level().actors
+
+    @property
+    def entities(self) -> Dict[str, Entity]:
+        return self._level().entities
 
     @property
     def activation_points(self) -> List[Tuple[float, float]]:

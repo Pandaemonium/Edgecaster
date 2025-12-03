@@ -1,7 +1,12 @@
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
+from edgecaster.state.entities import Entity  # NEW
+
+
+
 Pos = Tuple[int, int]
+
 
 
 @dataclass
@@ -26,17 +31,26 @@ class Stats:
 
 
 @dataclass
-class Actor:
-    actor_id: str
-    name: str
-    pos: Pos
+class Actor(Entity):
+    """An Entity with stats + a faction + turns in the energy queue."""
     faction: str = "neutral"
     stats: Stats = field(default_factory=Stats)
-    tags: Dict[str, int] = field(default_factory=dict)
-    disposition: float = 0.0  # placeholder for future reputation system
+
+    # social / future bits
+    disposition: float = 0.0
     affiliations: tuple = field(default_factory=tuple)  # tuple of faction ids
-    statuses: Dict[str, int] = field(default_factory=dict)  # status_name -> remaining turns
+    # statuses/tags are inherited from Entity
 
     @property
     def alive(self) -> bool:
         return self.stats.alive
+
+    # Backwards-compat: some code may still use player.actor_id
+    @property
+    def actor_id(self) -> str:
+        return self.id
+
+    @actor_id.setter
+    def actor_id(self, value: str) -> None:
+        self.id = value
+

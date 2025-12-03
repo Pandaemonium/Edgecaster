@@ -4,6 +4,7 @@ import threading
 
 from .base import Scene
 from edgecaster.game import Game
+from .urgent_message_scene import UrgentMessageScene
 
 
 class DungeonScene(Scene):
@@ -21,6 +22,12 @@ class DungeonScene(Scene):
         cfg = manager.cfg
         renderer = manager.renderer
         char = manager.character
+
+
+
+
+
+
 
         # Lazily construct the game the first time this scene runs
         if self.game is None:
@@ -62,6 +69,31 @@ class DungeonScene(Scene):
         # expose to manager for options display
         manager.current_game = game
 
+        # Save any previous hook (in case we ever call DungeonScene from another scene)
+        old_cb = getattr(game, "urgent_callback", None)
+
+        def show_urgent(text: str) -> None:
+            # Build popup from game's structured urgent fields.
+            title = getattr(game, "urgent_title", "") or ""
+            body = getattr(game, "urgent_body", text)
+            choices = getattr(game, "urgent_choices", None) or ["Continue..."]
+
+            manager.push_scene(
+                UrgentMessageScene(
+                    game,
+                    body,
+                    title=title,
+                    choices=choices,
+                )
+            )
+            # Tell the ASCII renderer to exit its loop ASAP so DungeonScene.run()
+            # can yield to the new scene.
+            renderer.quit_requested = True
+
+
+
+        game.urgent_callback = show_urgent
+
         # Clear flags before rendering
         renderer.quit_requested = False
         if hasattr(renderer, "pause_requested"):
@@ -70,34 +102,63 @@ class DungeonScene(Scene):
         if hasattr(game, "inventory_requested"):
             game.inventory_requested = False
 
-        # Run the dungeon loop (this will exit on ESC, i, death, or window-close)
-        renderer.render(game)
+        # Run the dungeon loop with the urgent callback installed
+        try:
+            renderer.render(game)
+        finally:
+            # Restore previous callback so other scenes can reuse the hook.
+            game.urgent_callback = old_cb
 
         # ---- Decide what comes next ------------------------------------
 
-        # 1) Death → go back to main menu, discard the run
+        # 0) If an UrgentMessageScene was pushed from inside the game logic,
+        #    it will already be on top of the stack. In that case, just
+        #    yield control so SceneManager.run() can run it next.
+        
+        if manager.scene_stack and isinstance(manager.scene_stack[-1], UrgentMessageScene):
+            return
+
+        # 1) Fallback / generalisation for legacy urgent_message flag:
+        #    If there's an unresolved urgent_message, show it as a popup.
+        if getattr(game, "urgent_message", None) and not getattr(game, "urgent_resolved", True):
+            body = getattr(game, "urgent_body", None) or game.urgent_message or ""
+            title = getattr(game, "urgent_title", "") or ""
+            choices = getattr(game, "urgent_choices", None) or ["Continue..."]
+
+            manager.push_scene(
+                UrgentMessageScene(
+                    game,
+                    body,
+                    title=title,
+                    choices=choices,
+                )
+            )
+            return
+
+
+        # 2) Death → go back to main menu, discard the run
         if not getattr(game, "player_alive", True):
             self.game = None
+            manager.current_game = None
             manager.set_scene(MainMenuScene())
             return
 
-        # 2) Inventory requested → push overlay, keep dungeon scene on stack
+        # 3) Inventory requested → push overlay, keep dungeon scene on stack
         if getattr(game, "inventory_requested", False):
             game.inventory_requested = False
             manager.push_scene(InventoryScene(game))
             return
 
-        # 3) Pause requested → push pause menu overlay
+        # 4) Pause requested → push pause menu overlay
         if getattr(renderer, "pause_requested", False):
             renderer.pause_requested = False
             manager.push_scene(PauseMenuScene())
             return
 
-        # 4) World map requested → replace with world map scene (keep game instance)
+        # 5) World map requested → push world map scene (keep game instance)
         if getattr(game, "map_requested", False):
             game.map_requested = False
             from .world_map_scene import WorldMapScene
-            # push world map on top; resume same dungeon scene/game afterward
             manager.push_scene(WorldMapScene(game, span=16))
             return
 
