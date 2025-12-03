@@ -4,7 +4,17 @@ from typing import List, Dict, Optional
 
 import pygame
 
-from .base import Scene
+from .base import (
+    Scene,
+    MenuInput,
+    MENU_ACTION_UP,
+    MENU_ACTION_DOWN,
+    MENU_ACTION_LEFT,
+    MENU_ACTION_RIGHT,
+    MENU_ACTION_ACTIVATE,
+    MENU_ACTION_BACK,
+    MENU_ACTION_FULLSCREEN,
+)
 
 
 # ---------------------------------------------------------------------------#
@@ -49,6 +59,9 @@ class OptionsScene(Scene):
         self.ui_font: Optional[pygame.font.Font] = None
         self.small_font: Optional[pygame.font.Font] = None
 
+        # Standardized menu input (with key-repeat + numpad)
+        self._menu_input = MenuInput()
+
         # How THIS menu is drawn
         if applied_visual is None:
             if depth == 0:
@@ -59,7 +72,7 @@ class OptionsScene(Scene):
                     "offset_x": 0.0,
                     "offset_y": 0.0,
                     "angle": 0.0,
-                    "alpha": 1.0,   # 1.0 = fully solid
+                    "alpha": 1.0,  # 1.0 = fully solid
                 }
             else:
                 # Child menus normally get this explicitly from parent,
@@ -77,7 +90,6 @@ class OptionsScene(Scene):
             # Ensure alpha is always present
             self.applied_visual.setdefault("alpha", 1.0)
 
-
         # How CHILD menus will be drawn (edited by Options Options)
         if child_visual is None:
             # Defaults consistent with root: 0.90, 0.90, 0, 0, 0°, fully opaque.
@@ -87,13 +99,12 @@ class OptionsScene(Scene):
                 "offset_x": 0.0,
                 "offset_y": 0.0,
                 "angle": 0.0,
-                "alpha": 1.0,   # 1.0 = fully solid
+                "alpha": 1.0,  # 1.0 = fully solid
             }
         else:
             self.child_visual = dict(child_visual)
             # Ensure we always have an alpha key
             self.child_visual.setdefault("alpha", 1.0)
-
 
     # ------------------------------------------------------------------ #
     # Geometry / font helpers
@@ -174,12 +185,12 @@ class OptionsScene(Scene):
         renderer = manager.renderer
         surface = renderer.surface
         clock = pygame.time.Clock()
+        menu = self._menu_input
 
         # Snapshot current screen (dungeon, or parent options stack)
         # Only do this once per instance, so popping a child doesn't "bake in" its pixels.
         if self._background is None:
             self._background = surface.copy()
-
 
         # Geometry + fonts
         self._ensure_window_rect(renderer)
@@ -214,6 +225,120 @@ class OptionsScene(Scene):
         assert ui_font is not None and small_font is not None
 
         running = True
+
+        def handle_action(action: Optional[str]) -> bool:
+            """
+            Handle a logical menu action. Returns True if this menu should close.
+            """
+            nonlocal running
+
+            if action is None:
+                return False
+
+            if action == MENU_ACTION_FULLSCREEN:
+                renderer.toggle_fullscreen()
+                return False
+
+            if action == MENU_ACTION_BACK:
+                manager.pop_scene()
+                running = False
+                return True
+
+            if action == MENU_ACTION_UP:
+                self.selected_idx = (self.selected_idx - 1) % num_items
+                return False
+
+            if action == MENU_ACTION_DOWN:
+                self.selected_idx = (self.selected_idx + 1) % num_items
+                return False
+
+            if action in (
+                MENU_ACTION_LEFT,
+                MENU_ACTION_RIGHT,
+                MENU_ACTION_ACTIVATE,
+            ):
+                idx = self.selected_idx
+
+                # Boolean toggles (manager.options)
+                if idx < num_toggles:
+                    key = toggle_keys[idx]
+                    toggles[key] = not toggles[key]
+                    if key.lower() == "fullscreen":
+                        renderer.toggle_fullscreen()
+                    return False
+
+                # "Options" -> recursive child
+                if idx == options_index:
+                    if self.depth < self.MAX_DEPTH:
+                        child_rect = self._compute_child_rect()
+
+                        child_applied = dict(self.applied_visual)
+
+                        # Angle accumulates: parent angle + step
+                        parent_angle = float(
+                            self.applied_visual.get("angle", 0.0)
+                        )
+                        step_angle = float(
+                            self.child_visual.get("angle", 0.0)
+                        )
+                        child_applied["angle"] = parent_angle + step_angle
+
+                        # Opacity accumulates multiplicatively:
+                        # child opacity = parent opacity * child factor
+                        parent_alpha = float(
+                            self.applied_visual.get("alpha", 1.0)
+                        )
+                        step_alpha = float(
+                            self.child_visual.get("alpha", 1.0)
+                        )
+                        new_alpha = parent_alpha * step_alpha
+                        # Clamp to a sane visible range
+                        if new_alpha < 0.05:
+                            new_alpha = 0.05
+                        if new_alpha > 1.0:
+                            new_alpha = 1.0
+                        child_applied["alpha"] = new_alpha
+
+                        # Child's child_visual starts as our current child_visual
+                        child_child = dict(self.child_visual)
+
+                        child = OptionsScene(
+                            window_rect=child_rect,
+                            depth=self.depth + 1,
+                            applied_visual=child_applied,
+                            child_visual=child_child,
+                        )
+                        manager.push_scene(child)
+
+                    running = False
+                    return True
+
+                # "Options Options" -> visual submenu (edits child_visual)
+                if idx == options_options_index:
+                    parent_angle = float(
+                        self.applied_visual.get("angle", 0.0)
+                    )
+                    parent_alpha = float(
+                        self.applied_visual.get("alpha", 1.0)
+                    )
+                    visual_scene = VisualOptionsScene(
+                        base_rect=self.window_rect,
+                        depth=self.depth + 1,
+                        visual=self.child_visual,  # reference
+                        parent_angle=parent_angle,
+                        parent_alpha=parent_alpha,
+                    )
+                    manager.push_scene(visual_scene)
+                    running = False
+                    return True
+
+                # "Back"
+                manager.pop_scene()
+                running = False
+                return True
+
+            return False
+
         while running:
             # ----------------- EVENTS -----------------
             for event in pygame.event.get():
@@ -222,97 +347,20 @@ class OptionsScene(Scene):
                     return
 
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        manager.pop_scene()
-                        return
+                    action = menu.handle_keydown(event.key)
+                    if handle_action(action):
+                        break
 
-                    if event.key == pygame.K_F11:
-                        renderer.toggle_fullscreen()
-                        continue
+                elif event.type == pygame.KEYUP:
+                    menu.handle_keyup(event.key)
 
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        self.selected_idx = (self.selected_idx - 1) % num_items
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        self.selected_idx = (self.selected_idx + 1) % num_items
+            if not running:
+                break
 
-                    elif event.key in (
-                        pygame.K_LEFT,
-                        pygame.K_RIGHT,
-                        pygame.K_RETURN,
-                        pygame.K_SPACE,
-                    ):
-                        idx = self.selected_idx
-
-                        # Boolean toggles (manager.options)
-                        if idx < num_toggles:
-                            key = toggle_keys[idx]
-                            if event.key in (
-                                pygame.K_LEFT,
-                                pygame.K_RIGHT,
-                                pygame.K_RETURN,
-                                pygame.K_SPACE,
-                            ):
-                                toggles[key] = not toggles[key]
-                                if key.lower() == "fullscreen":
-                                    renderer.toggle_fullscreen()
-
-                        # "Options" -> recursive child
-                        elif idx == options_index:
-                            if self.depth < self.MAX_DEPTH:
-                                child_rect = self._compute_child_rect()
-
-                                child_applied = dict(self.applied_visual)
-
-                                # Angle accumulates: parent angle + step
-                                parent_angle = float(self.applied_visual.get("angle", 0.0))
-                                step_angle = float(self.child_visual.get("angle", 0.0))
-                                child_applied["angle"] = parent_angle + step_angle
-
-                                # Opacity accumulates multiplicatively:
-                                # child opacity = parent opacity * child factor
-                                parent_alpha = float(self.applied_visual.get("alpha", 1.0))
-                                step_alpha = float(self.child_visual.get("alpha", 1.0))
-                                new_alpha = parent_alpha * step_alpha
-                                # Clamp to a sane visible range
-                                if new_alpha < 0.05:
-                                    new_alpha = 0.05
-                                if new_alpha > 1.0:
-                                    new_alpha = 1.0
-                                child_applied["alpha"] = new_alpha
-
-                                # Child's child_visual starts as our current child_visual
-                                child_child = dict(self.child_visual)
-
-                                child = OptionsScene(
-                                    window_rect=child_rect,
-                                    depth=self.depth + 1,
-                                    applied_visual=child_applied,
-                                    child_visual=child_child,
-                                )
-                                manager.push_scene(child)
-                            return
-
-
-
-                        # "Options Options" -> visual submenu (edits child_visual)
-                        elif idx == options_options_index:
-                            parent_angle = float(self.applied_visual.get("angle", 0.0))
-                            parent_alpha = float(self.applied_visual.get("alpha", 1.0))
-                            visual_scene = VisualOptionsScene(
-                                base_rect=self.window_rect,
-                                depth=self.depth + 1,
-                                visual=self.child_visual,  # reference
-                                parent_angle=parent_angle,
-                                parent_alpha=parent_alpha,
-                            )
-                            manager.push_scene(visual_scene)
-                            return
-
-
-                        # "Back"
-                        else:
-                            manager.pop_scene()
-                            return
+            # Key repeat (hold-to-accelerate for navigation)
+            repeat_action = menu.update()
+            if handle_action(repeat_action):
+                break
 
             # ----------------- DRAW -----------------
 
@@ -330,7 +378,9 @@ class OptionsScene(Scene):
 
             # ---- Draw panel to logical surface (for anisotropic scaling + rotation) ----
             logical_surface = pygame.Surface((logical_w, logical_h), pygame.SRCALPHA)
-            border_thickness = max(1, int(2 * min(logical_scale_x, logical_scale_y)))
+            border_thickness = max(
+                1, int(2 * min(logical_scale_x, logical_scale_y))
+            )
 
             # Panel background + border
             pygame.draw.rect(
@@ -375,7 +425,7 @@ class OptionsScene(Scene):
             # Toggles
             for i, key in enumerate(toggle_keys):
                 val = toggles[key]
-                selected = (i == self.selected_idx)
+                selected = i == self.selected_idx
                 color = renderer.player_color if selected else renderer.fg
                 prefix = "▶ " if selected else "  "
                 status = "ON" if val else "OFF"
@@ -385,7 +435,7 @@ class OptionsScene(Scene):
                 y += text.get_height() + line_gap
 
             # "Options"
-            selected = (self.selected_idx == options_index)
+            selected = self.selected_idx == options_index
             if self.depth < self.MAX_DEPTH:
                 label = "Options"
                 color = renderer.player_color if selected else renderer.fg
@@ -398,7 +448,7 @@ class OptionsScene(Scene):
             y += opt_text.get_height() + line_gap
 
             # "Options Options"
-            selected = (self.selected_idx == options_options_index)
+            selected = self.selected_idx == options_options_index
             color = renderer.player_color if selected else renderer.fg
             prefix = "▶ " if selected else "  "
             oo_text = ui_font.render(prefix + "Options Options", True, color)
@@ -406,16 +456,18 @@ class OptionsScene(Scene):
             y += oo_text.get_height() + line_gap + line_gap
 
             # "Back"
-            selected = (self.selected_idx == back_index)
+            selected = self.selected_idx == back_index
             color = renderer.player_color if selected else renderer.fg
             prefix = "▶ " if selected else "  "
             back_label = "Back to Main Menu" if self.depth == 0 else "Back"
             back_text = ui_font.render(prefix + back_label, True, color)
             logical_surface.blit(back_text, (base_x, y))
 
-            # Hint
+            # Hint (updated with numpad + fullscreen)
             hint = small_font.render(
-                "↑/↓ or W/S to move • ←/→ or Enter/Space to change • Esc to return",
+                "↑/↓, W/S, or Numpad 8/2 to move • "
+                "←/→, A/D, or Numpad 4/6 to change • "
+                "Enter/Space/KP Enter to toggle • Esc to return • F11 fullscreen",
                 True,
                 renderer.dim,
             )
@@ -442,7 +494,6 @@ class OptionsScene(Scene):
 
             overlay.blit(rotated, rot_rect.topleft)
 
-
             surface.blit(overlay, (0, 0))
             renderer.present()
             clock.tick(60)
@@ -463,6 +514,7 @@ class VisualOptionsScene(Scene):
         - offset_x
         - offset_y
         - angle
+        - alpha
 
     It uses the *current* Options window rect as a base, and draws itself
     as a preview of what the CHILD Options menu will look like. So as you
@@ -491,6 +543,9 @@ class VisualOptionsScene(Scene):
         self._background: Optional[pygame.Surface] = None
         self.ui_font: Optional[pygame.font.Font] = None
         self.small_font: Optional[pygame.font.Font] = None
+
+        # Standard menu input (with hold-to-accelerate + numpad)
+        self._menu_input = MenuInput()
 
     def _ensure_fonts(self, renderer) -> None:
         if self.ui_font is not None and self.small_font is not None:
@@ -528,6 +583,7 @@ class VisualOptionsScene(Scene):
         renderer = manager.renderer
         surface = renderer.surface
         clock = pygame.time.Clock()
+        menu = self._menu_input
 
         # Snapshot (includes parent Options + deeper stack)
         # Only capture once so we don't accidentally include any children on re-entry.
@@ -535,7 +591,6 @@ class VisualOptionsScene(Scene):
             self._background = surface.copy()
 
         self._ensure_fonts(renderer)
-
 
         ui_font = self.ui_font
         small_font = self.small_font
@@ -558,7 +613,7 @@ class VisualOptionsScene(Scene):
         visual_steps: Dict[str, float] = {
             "scale_x": 0.05,
             "scale_y": 0.05,
-            "offset_x": 25.0,   # wider step
+            "offset_x": 25.0,  # wider step
             "offset_y": 25.0,
             "angle": 5.0,
         }
@@ -572,16 +627,13 @@ class VisualOptionsScene(Scene):
             # Full spins both ways
             "angle": (-360.0, 360.0),
         }
-        visual_keys.append("alpha")
 
-        # 1.0 = fully solid, dial down toward transparency.
+        # Add alpha control
+        visual_keys.append("alpha")
         visual_labels["alpha"] = "Child opacity"
         visual_steps["alpha"] = 0.05
         # Never let it go fully invisible; minimum 0.05-ish.
         visual_minmax["alpha"] = (0.05, 1.0)
-
-
-
 
         num_visuals = len(visual_keys)
         back_index = num_visuals
@@ -593,17 +645,66 @@ class VisualOptionsScene(Scene):
         logical_scale_x = logical_w / renderer.width
         logical_scale_y = logical_h / renderer.height
 
-        # --- Key repeat state for smooth parameter scrolling ---
-        repeat_key: Optional[int] = None
-        repeat_start_ms = 0
-        last_repeat_ms = 0
-        initial_delay = 300   # ms before repeat starts
-        slow_interval = 120   # ms between repeats at first
-        fast_interval = 40    # ms between repeats once "ramped up"
-        fast_threshold = 900  # ms after which we switch to fast mode
-
-
         running = True
+
+        def handle_action(action: Optional[str]) -> bool:
+            """
+            Handle a logical menu action. Returns True if this menu should close.
+            """
+            nonlocal running
+
+            if action is None:
+                return False
+
+            if action == MENU_ACTION_FULLSCREEN:
+                renderer.toggle_fullscreen()
+                return False
+
+            if action == MENU_ACTION_BACK:
+                manager.pop_scene()
+                running = False
+                return True
+
+            if action == MENU_ACTION_UP:
+                self.selected_idx = (self.selected_idx - 1) % num_items
+                return False
+
+            if action == MENU_ACTION_DOWN:
+                self.selected_idx = (self.selected_idx + 1) % num_items
+                return False
+
+            if action in (
+                MENU_ACTION_LEFT,
+                MENU_ACTION_RIGHT,
+                MENU_ACTION_ACTIVATE,
+            ):
+                idx = self.selected_idx
+
+                # Back
+                if idx == back_index:
+                    manager.pop_scene()
+                    running = False
+                    return True
+
+                # Adjust a visual parameter
+                if idx < num_visuals:
+                    v_key = visual_keys[idx]
+                    step = visual_steps[v_key]
+                    v_min, v_max = visual_minmax[v_key]
+                    cur = float(self.visual.get(v_key, 0.0))
+
+                    if action == MENU_ACTION_LEFT:
+                        cur -= step
+                    else:
+                        # Right or Activate both move forward
+                        cur += step
+
+                    cur = max(v_min, min(v_max, cur))
+                    self.visual[v_key] = cur
+                    return False
+
+            return False
+
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -611,103 +712,20 @@ class VisualOptionsScene(Scene):
                     return
 
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        manager.pop_scene()
-                        return
-
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        self.selected_idx = (self.selected_idx - 1) % num_items
-                        # arm repeat for nav up
-                        repeat_key = event.key
-                        t = pygame.time.get_ticks()
-                        repeat_start_ms = t
-                        last_repeat_ms = t
-
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        self.selected_idx = (self.selected_idx + 1) % num_items
-                        # arm repeat for nav down
-                        repeat_key = event.key
-                        t = pygame.time.get_ticks()
-                        repeat_start_ms = t
-                        last_repeat_ms = t
-
-                    elif event.key in (
-                        pygame.K_LEFT,
-                        pygame.K_RIGHT,
-                        pygame.K_RETURN,
-                        pygame.K_SPACE,
-                    ):
-                        idx = self.selected_idx
-
-                        if idx < num_visuals:
-                            v_key = visual_keys[idx]
-                            step = visual_steps[v_key]
-                            v_min, v_max = visual_minmax[v_key]
-                            cur = float(self.visual.get(v_key, 0.0))
-
-                            if event.key == pygame.K_LEFT:
-                                cur -= step
-                            elif event.key in (
-                                pygame.K_RIGHT,
-                                pygame.K_RETURN,
-                                pygame.K_SPACE,
-                            ):
-                                cur += step
-
-                            cur = max(v_min, min(v_max, cur))
-                            self.visual[v_key] = cur
-
-                            # arm repeat only for LEFT/RIGHT (not Enter/Space)
-                            if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
-                                repeat_key = event.key
-                                t = pygame.time.get_ticks()
-                                repeat_start_ms = t
-                                last_repeat_ms = t
-                        else:
-                            # Back
-                            manager.pop_scene()
-                            return
+                    action = menu.handle_keydown(event.key)
+                    if handle_action(action):
+                        break
 
                 elif event.type == pygame.KEYUP:
-                    # stop repeating when key is released
-                    if event.key == repeat_key:
-                        repeat_key = None
+                    menu.handle_keyup(event.key)
 
+            if not running:
+                break
 
-
-            # --- Synthetic key repeat for held nav / slider keys ---
-            if repeat_key is not None:
-                now = pygame.time.get_ticks()
-                held_ms = now - repeat_start_ms
-
-                if held_ms >= initial_delay:
-                    interval = fast_interval if held_ms >= fast_threshold else slow_interval
-                    if now - last_repeat_ms >= interval:
-                        last_repeat_ms = now
-
-                        if repeat_key in (pygame.K_UP, pygame.K_w):
-                            self.selected_idx = (self.selected_idx - 1) % num_items
-
-                        elif repeat_key in (pygame.K_DOWN, pygame.K_s):
-                            self.selected_idx = (self.selected_idx + 1) % num_items
-
-                        elif repeat_key in (pygame.K_LEFT, pygame.K_RIGHT):
-                            idx = self.selected_idx
-                            if idx < num_visuals:
-                                v_key = visual_keys[idx]
-                                step = visual_steps[v_key]
-                                v_min, v_max = visual_minmax[v_key]
-                                cur = float(self.visual.get(v_key, 0.0))
-
-                                if repeat_key == pygame.K_LEFT:
-                                    cur -= step
-                                else:  # RIGHT
-                                    cur += step
-
-                                cur = max(v_min, min(v_max, cur))
-                                self.visual[v_key] = cur
-
-
+            # Key-repeat (for held nav / sliders)
+            repeat_action = menu.update()
+            if handle_action(repeat_action):
+                break
 
             # ----------------- DRAW -----------------
             if self._background is not None:
@@ -752,7 +770,7 @@ class VisualOptionsScene(Scene):
             base_x = int(32 * logical_scale_x)
 
             for i, v_key in enumerate(visual_keys):
-                selected = (i == self.selected_idx)
+                selected = i == self.selected_idx
                 color = renderer.player_color if selected else renderer.fg
                 prefix = "▶ " if selected else "  "
 
@@ -762,10 +780,9 @@ class VisualOptionsScene(Scene):
                 elif v_key == "angle":
                     val_str = f"{val:.0f}°"
                 elif v_key == "alpha":
-                    val_str = f"{val:.2f}"   # show opacity as 0.00–1.00
+                    val_str = f"{val:.2f}"  # show opacity as 0.00–1.00
                 else:
                     val_str = str(int(val))
-
 
                 label = visual_labels[v_key]
                 line = f"{prefix}{label}: {val_str}"
@@ -774,7 +791,7 @@ class VisualOptionsScene(Scene):
                 y += text.get_height() + line_gap
 
             # Back
-            selected = (self.selected_idx == back_index)
+            selected = self.selected_idx == back_index
             color = renderer.player_color if selected else renderer.fg
             prefix = "▶ " if selected else "  "
             back_text = ui_font.render(prefix + "Back", True, color)
@@ -782,7 +799,9 @@ class VisualOptionsScene(Scene):
 
             # Hint
             hint = small_font.render(
-                "↑/↓ or W/S to move • ←/→ or Enter/Space to change • Esc to return",
+                "↑/↓, W/S, or Numpad 8/2 to move • "
+                "←/→, A/D, or Numpad 4/6 to change • "
+                "Enter/Space/KP Enter to change • Esc to return • F11 fullscreen",
                 True,
                 renderer.dim,
             )
@@ -813,8 +832,6 @@ class VisualOptionsScene(Scene):
 
             rotated.set_alpha(int(total_alpha * 255))
             overlay.blit(rotated, rot_rect.topleft)
-
-
 
             surface.blit(overlay, (0, 0))
             renderer.present()

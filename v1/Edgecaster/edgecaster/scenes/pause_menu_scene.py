@@ -2,95 +2,74 @@ from __future__ import annotations
 
 from typing import List
 
-import pygame
-
-from .base import Scene
+from .base import MenuScene
 from .options_scene import OptionsScene
 from .main_menu import MainMenuScene
 
 
-class PauseMenuScene(Scene):
+class PauseMenuScene(MenuScene):
     """Pause overlay: Resume, Options, Quit to Main Menu, Quit Game."""
 
-    def __init__(self) -> None:
-        self.selected_idx = 0
+    # Slightly customized footer so it says "Esc to resume"
+    FOOTER_TEXT = (
+        "↑/↓ Numpad or W/S to move, Enter/Space to select, "
+        "Esc to resume, F11 to toggle fullscreen"
+    )
 
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        renderer = manager.renderer
-        surface = renderer.surface
-        clock = pygame.time.Clock()
+    # ---- MenuScene hooks -----------------------------------------------------
 
-        options: List[str] = [
+    def get_menu_items(self) -> List[str]:
+        return [
             "Resume",
             "Options",
             "Quit to Main Menu",
             "Quit Game",
         ]
 
-        running = True
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
+    def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        """
+        Esc from pause = quick resume (pop this overlay).
+        """
+        manager.pop_scene()
+        return True
 
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        # ESC = quick resume
-                        manager.pop_scene()
-                        return
-                    if event.key == pygame.K_F11:
-                        renderer.toggle_fullscreen()
-                        continue
+    def on_activate(
+        self,
+        index: int,
+        manager: "SceneManager",  # type: ignore[name-defined]
+    ) -> bool:
+        """
+        Handle selecting a pause menu option.
+        Return True to close this menu after handling.
+        """
+        choice = self.get_menu_items()[index]
 
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        self.selected_idx = (self.selected_idx - 1) % len(options)
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        self.selected_idx = (self.selected_idx + 1) % len(options)
-                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        choice = options[self.selected_idx]
-                        if choice == "Resume":
-                            manager.pop_scene()
-                            return
-                        elif choice == "Options":
-                            # Stack Options on top of Pause; when Options pops,
-                            # we land back on the Pause menu.
-                            manager.push_scene(OptionsScene())
-                            return
-                        elif choice == "Quit to Main Menu":
-                            manager.set_scene(MainMenuScene())
-                            return
-                        elif choice == "Quit Game":
-                            manager.set_scene(None)
-                            return
+        if choice == "Resume":
+            manager.pop_scene()
 
-            # -------- DRAW --------
-            surface.fill(renderer.bg)
+        elif choice == "Options":
+            # Stack Options on top of Pause; when Options pops,
+            # we land back on the Pause menu.
+            manager.push_scene(OptionsScene())
 
-            title = renderer.font.render("Paused", True, renderer.fg)
-            surface.blit(
-                title,
-                ((renderer.width - title.get_width()) // 2, 80),
-            )
+        elif choice == "Quit to Main Menu":
+            manager.set_scene(MainMenuScene())
 
-            y = 150
-            for idx, opt in enumerate(options):
-                selected = (idx == self.selected_idx)
-                color = renderer.player_color if selected else renderer.fg
-                prefix = "▶ " if selected else "  "
-                text = renderer.font.render(prefix + opt, True, color)
-                surface.blit(text, (renderer.width // 2 - 180, y))
-                y += text.get_height() + 10
+        elif choice == "Quit Game":
+            manager.set_scene(None)
 
-            hint = renderer.small_font.render(
-                "↑/↓ or W/S to move • Enter/Space to select • Esc to resume",
-                True,
-                renderer.dim,
-            )
-            surface.blit(
-                hint,
-                ((renderer.width - hint.get_width()) // 2, renderer.height - 40),
-            )
+        # In all cases, we've finished with this Pause menu.
+        return True
 
-            renderer.present()
-            clock.tick(60)
+    def draw_extra(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """
+        Draw the 'Paused' title above the menu options.
+        """
+        renderer = manager.renderer
+        surface = renderer.surface
+
+        title = renderer.font.render("Paused", True, renderer.fg)
+        surface.blit(
+            title,
+            ((renderer.width - title.get_width()) // 2, 80),
+        )
