@@ -1,6 +1,9 @@
+# manager.py
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Type
+import pygame
+from pygame import Rect
 
 from edgecaster import config
 from edgecaster.render.ascii import AsciiRenderer
@@ -14,89 +17,126 @@ from .world_map_scene import WorldMapScene
 
 
 class SceneManager:
-    """Controls which high-level scene is currently running.
-
-    Now uses a scene *stack*:
-
-        - Top of stack = currently active scene.
-        - push_scene()  -> overlay a new scene (pause menu, options, map, shop, etc.)
-        - pop_scene()   -> return to whatever was underneath.
-        - set_scene()   -> backwards-compatible "hard switch":
-                           replace the entire stack, or quit if None.
-    """
-
     def __init__(self, cfg: config.GameConfig, renderer: AsciiRenderer) -> None:
+        # Store config + renderer from main.py
         self.cfg = cfg
         self.renderer = renderer
-        self.rng_factory = lambda seed=None: new_rng(seed if seed is not None else None)
 
-        # Last-chosen character (default until player customizes one)
-        self.character: Character = default_character()
+        # Scene stack + window rects (for overlay scenes like recursive options)
+        self.scene_stack: List[Scene] = []
+        self.window_stack: List[Rect] = []
 
         # Shared options state (persists across scenes)
+        # Merge "real" game options from the main branch with the newer test flags.
         self.options = {
             "Music": True,
             "Sound": True,
             "Fullscreen": False,
             "Vicious dog trigger warning": False,
+            "Show FPS": False,
+            "Big Text": False,
         }
-        # Keep a handle to the currently running Game (set by DungeonScene)
+
+        # RNG + game state
+        self.rng = new_rng()
+        # Use a default character like the original manager(1) did, so things
+        # like the Options -> World Seed display have something to look at.
+        self.character: Character = default_character()
         self.current_game = None
 
-        # New: stack of scenes, top is active
-        self.scene_stack: List[Scene] = []
+        # Start on the main menu
+        self.set_scene(MainMenuScene())
 
-        # Start at the main menu
-        self.push_scene(MainMenuScene())
+    # ------------------------------------------------------------------ #
+    # RNG factory used by scenes (e.g. DungeonScene) to spin up new RNGs.
 
-    # ---- Stack helpers -------------------------------------------------
+    def rng_factory(self, seed=None):
+        """
+        Factory used by scenes to make a new RNG.
 
-    @property
-    def current_scene(self) -> Optional[Scene]:
-        """Convenience accessor for the scene on top of the stack."""
-        return self.scene_stack[-1] if self.scene_stack else None
+        new_rng() already handles seeding when seed is None.
+        """
+        return new_rng(seed)
+
+    # ------------------------------------------------------------------ #
+    # Window helpers
+
+    def _root_window_rect(self) -> Rect:
+        """Full-screen rect."""
+        return Rect(0, 0, self.renderer.width, self.renderer.height)
+
+    def compute_child_window_rect(
+        self,
+        scale: float,
+        parent: Optional[Rect] = None,
+        offset: int = 0,
+    ) -> Rect:
+        """
+        Compute a child window rect:
+        - If parent is None, use the top of window_stack or full screen.
+        - Size = parent.size * scale, centered in parent, plus offset.
+        """
+        if parent is None:
+            base = self.window_stack[-1] if self.window_stack else self._root_window_rect()
+        else:
+            base = parent
+
+        w = int(base.width * scale)
+        h = int(base.height * scale)
+        x = base.x + (base.width - w) // 2 + offset
+        y = base.y + (base.height - h) // 2 + offset
+        return Rect(x, y, w, h)
+
+    def open_window_scene(
+        self,
+        scene_cls: Type[Scene],
+        *,
+        scale: float = 0.6,
+        parent: Optional[Rect] = None,
+        offset: int = 0,
+        **kwargs,
+    ) -> Scene:
+        """
+        General helper: open a scene as a window at a given scale.
+
+        - Computes window_rect
+        - Instantiates scene_cls(window_rect=..., **kwargs)
+        - Pushes onto scene_stack
+        """
+        window_rect = self.compute_child_window_rect(scale, parent, offset)
+        scene = scene_cls(window_rect=window_rect, **kwargs)  # type: ignore[arg-type]
+        # Tag the scene so we know it's windowed
+        scene.window_rect = window_rect  # type: ignore[attr-defined]
+        self.window_stack.append(window_rect)
+        self.scene_stack.append(scene)
+        return scene
+
+    # ------------------------------------------------------------------ #
+    # Stack operations
 
     def push_scene(self, scene: Scene) -> None:
-        """Overlay a new scene on top of the stack (pause menu, options, etc.)."""
+        """For non-windowed scenes, or when you handle window_rect manually."""
         self.scene_stack.append(scene)
 
     def pop_scene(self) -> None:
-        """Remove the topmost scene and resume the one beneath it."""
-        if self.scene_stack:
-            self.scene_stack.pop()
+        if not self.scene_stack:
+            return
+        scene = self.scene_stack.pop()
 
-    def replace_scene(self, scene: Scene) -> None:
-        """Replace only the top scene (leave the rest of the stack intact)."""
-        if self.scene_stack:
-            self.scene_stack[-1] = scene
-        else:
-            self.scene_stack.append(scene)
-
-    # ---- Backwards-compatible API --------------------------------------
+        # If this scene was windowed, pop matching rect too
+        if hasattr(scene, "window_rect") and self.window_stack:
+            self.window_stack.pop()
 
     def set_scene(self, scene: Optional[Scene]) -> None:
-        """
-        Backwards-compatible "hard switch":
-
-        - scene is None  -> clear the entire stack (exit game loop).
-        - scene not None -> replace the entire stack with just this scene.
-
-        This preserves the semantics of the old manager, where set_scene()
-        meant "go to this scene next" or "quit".
-        """
         if scene is None:
             self.scene_stack.clear()
         else:
             self.scene_stack = [scene]
 
-    # ---- Main loop ------------------------------------------------------
+    # ------------------------------------------------------------------ #
 
     def run(self) -> None:
-        """Run scenes until the stack is empty."""
+        # Main loop: always run the top of the stack
         while self.scene_stack:
             scene = self.scene_stack[-1]
             scene.run(self)
-            # When scene.run() returns, we just loop again:
-            # - the scene may have pushed/popped/replaced during its run,
-            # - or the stack may be empty (then we exit),
-            # - or it's still on top (and will be run again).
