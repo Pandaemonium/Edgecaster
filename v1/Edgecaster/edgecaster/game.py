@@ -195,8 +195,10 @@ class Game:
     def _build_player_stats(self) -> Stats:
         con = self.character.stats.get("con", 0)
         res = self.character.stats.get("res", 0)
+        intel = self.character.stats.get("int", 0)
         base_hp = 20 + con * 6
         base_mana = 50 + res * 12
+        base_coh = max(0, intel * 20)
         return Stats(
             hp=base_hp,
             max_hp=base_hp,
@@ -205,6 +207,8 @@ class Game:
             xp=0,
             level=1,
             xp_to_next=self._xp_needed_for_level(1),
+            coherence=base_coh,
+            max_coherence=base_coh,
         )
 
     def _init_param_defs(self) -> Dict[str, Dict[str, dict]]:
@@ -267,9 +271,9 @@ class Game:
         return max(1, self.cfg.xp_base + self.cfg.xp_per_level * (level - 1))
 
     def _coherence_limit(self) -> int:
-        """How many vertices can be stably handled; scales with INT."""
+        """How many vertices before coherence drain starts (INT*4)."""
         intellect = self.character.stats.get("int", 0)
-        return 50 + intellect * 50
+        return intellect * 4
 
     def _strength_limit(self) -> int:
         """How many activated vertices can be driven at once; scales with RES."""
@@ -293,10 +297,15 @@ class Game:
         while stats.xp_to_next > 0 and stats.xp >= stats.xp_to_next:
             stats.xp -= stats.xp_to_next
             stats.level += 1
-            stats.xp_to_next = self._xp_needed_for_level(stats.level)
             self._on_level_up(player)
             # stats may have changed; refresh parameter caps
             self._recalc_param_state_max()
+        stats.xp_to_next = self._xp_needed_for_level(stats.level)
+        # Recompute coherence from int
+        intel = self.character.stats.get("int", 0)
+        base_coh = max(0, intel * 20)
+        stats.max_coherence = base_coh
+        stats.coherence = min(stats.coherence, stats.max_coherence)
 
     def _on_level_up(self, player: Actor) -> None:
         con = self.character.stats.get("con", 0)
@@ -468,6 +477,32 @@ class Game:
 
         # NEW: advance the Lorenz aura in game-time, not render-time
         self._advance_lorenz(level, delta)
+
+        # NEW: coherence drain based on vertices
+        self._coherence_tick(level, delta)
+
+
+    def _coherence_tick(self, level: LevelState, delta: int) -> None:
+        """Drain coherence each tick based on vertex count beyond INT*4."""
+        player = self._player()
+        stats = player.stats
+        intel = self.character.stats.get("int", 0)
+        discount = intel * 4
+        verts = len(level.pattern.vertices) if level.pattern else 0
+        over = max(0, verts - discount)
+        if over <= 0:
+            return
+        # drain per tick: over/10 per requested design
+        drain = over * delta / 10.0
+        stats.coherence = int(max(0, stats.coherence - drain))
+        if stats.coherence <= 0:
+            # pattern unravels immediately
+            level.pattern = builder.Pattern()
+            level.pattern_anchor = None
+            level.activation_points = []
+            level.activation_ttl = 0
+            self.log.add("Your pattern loses coherence and unravels.")
+            stats.coherence = stats.max_coherence
 
 
 
@@ -649,6 +684,16 @@ class Game:
         if coord not in self.levels:
             self.levels[coord] = self._make_zone(coord, up_pos=up_pos)
             self._spawn_enemies(self.levels[coord], count=4)
+        # entering any zone clears pattern and resets coherence
+        lvl = self.levels[coord]
+        lvl.pattern = builder.Pattern()
+        lvl.pattern_anchor = None
+        lvl.activation_points = []
+        lvl.activation_ttl = 0
+        # reset coherence to max on zone change
+        player = self._player() if hasattr(self, "_player") else None
+        if player:
+            player.stats.coherence = player.stats.max_coherence
         return self.levels[coord]
 
     def all_actors_current(self) -> List[Actor]:
@@ -694,6 +739,13 @@ class Game:
 
         # Optionally seed fresh butterflies right away so you never get a "blank" frame.
         lorenz.init_lorenz_points(self)
+        # Clear any existing pattern when entering a zone and reset coherence
+        lvl = self._level()
+        lvl.pattern = builder.Pattern()
+        lvl.pattern_anchor = None
+        lvl.activation_points = []
+        lvl.activation_ttl = 0
+        player.stats.coherence = player.stats.max_coherence
 
 
 
@@ -971,6 +1023,9 @@ class Game:
         lvl.pattern_anchor = None
         lvl.activation_points = []
         lvl.activation_ttl = 0
+        # restore coherence to max when manually resetting
+        player = self._player()
+        player.stats.coherence = player.stats.max_coherence
         self.log.add("Rune reset.")
 
     def queue_meditate(self) -> None:

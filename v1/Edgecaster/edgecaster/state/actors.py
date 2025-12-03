@@ -13,6 +13,8 @@ class Stats:
     xp: int = 0
     level: int = 1
     xp_to_next: int = 0
+    coherence: int = 0
+    max_coherence: int = 0
 
     @property
     def alive(self) -> bool:

@@ -711,6 +711,22 @@ class AsciiRenderer:
         )
         self.surface.blit(mp_text, (x + 4, y - 18))
 
+        # --- Coherence bar to the right of mana ---
+        coh_x = x + bar_w + 20
+        coh_y = y
+        coh = getattr(player.stats, "coherence", 0)
+        coh_max = max(1, getattr(player.stats, "max_coherence", 1))
+        coh_ratio = max(0, min(1, coh / coh_max))
+        coh_w = 200
+        pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(coh_x, coh_y, coh_w, bar_h))
+        pygame.draw.rect(
+            self.surface,
+            (200, 180, 100),
+            pygame.Rect(coh_x, coh_y, int(coh_w * coh_ratio), bar_h),
+        )
+        coh_text = self.small_font.render(f"Coherence {coh}/{coh_max}", True, self.fg)
+        self.surface.blit(coh_text, (coh_x + 4, coh_y - 18))
+
         # --- Character stats & coherence under bars ---
         y += bar_h + 12
         if hasattr(game, "character") and game.character:
@@ -727,12 +743,8 @@ class AsciiRenderer:
             # coherence info
             verts_count = len(game.pattern.vertices) if hasattr(game, "pattern") else 0
             coh_limit = game._coherence_limit()
-            over = max(0, verts_count - coh_limit)
-            fail_chance = 0.0 if verts_count <= coh_limit else over / (coh_limit + over)
             y += 18
             label = f"Vertices {verts_count}/{coh_limit}"
-            if over > 0:
-                label += f"  Fail~{int(fail_chance*100)}%"
             coh_text = self.small_font.render(label, True, self.fg)
             self.surface.blit(coh_text, (x, y))
 
