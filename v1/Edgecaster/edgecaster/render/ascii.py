@@ -994,12 +994,29 @@ class AsciiRenderer:
                             # Normal ESC in the dungeon: request pause
                             self.pause_requested = True
                             self.quit_requested = True   # ensure the loop exits
+
                     elif event.key == pygame.K_F11:
                         self.toggle_fullscreen()
+
                     else:
+                        # '?' help popup (use unicode because there is no K_QUESTION)
+                        if getattr(event, "unicode", "") == "?":
+                            # Only if we're not in some special modal state
+                            if (
+                                not self.dialog_open
+                                and not self.config_open
+                                and not getattr(game, "awaiting_terminus", False)
+                                and self.aim_action is None
+                            ):
+                                if hasattr(game, "show_help"):
+                                    game.show_help()
+                            # Don't pass '?' into the normal input handler
+                            continue
+
                         # Urgent messages are now handled by UrgentMessageScene, so the
                         # renderer no longer consumes input specially here.
                         self._handle_input(game, event.key)
+
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     pos = self._to_surface(event.pos)
                     if self.config_open and self.config_action:
@@ -1124,6 +1141,23 @@ class AsciiRenderer:
             pygame.K_KP9: (1, -1),
         }
         
+        # --- Examine current tile ---
+        # For now, 'x' just examines the tile under the player's feet.
+        if key == pygame.K_x:
+            # Don’t interfere with targeting / special modes
+            if not getattr(game, "awaiting_terminus", False) and self.aim_action is None:
+                game.describe_current_tile()
+            return
+
+
+        # --- Pick up item on current tile ---
+        if key == pygame.K_g:
+            if not getattr(game, "awaiting_terminus", False) and self.aim_action is None:
+                if hasattr(game, "player_pick_up"):
+                    game.player_pick_up()
+            return
+
+
 
             
         # --- Inventory toggle (dungeon-level) ---

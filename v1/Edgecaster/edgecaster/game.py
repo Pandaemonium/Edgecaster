@@ -142,7 +142,9 @@ class Game:
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
         self.zone_coord: Tuple[int, int, int] = (0, 0, 0)
         self._next_id = 0
-
+        # Simple player inventory: list of Entity objects the player is carrying.
+        # For now it's a flat list; later we can support containers/stacking.
+        self.inventory: List[Entity] = []
         # create starting zone
         self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
 
@@ -203,7 +205,7 @@ class Game:
         leap = (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0))
         leap_msg = "It's a leap year. Be careful!" if leap else "It's not a leap year."
         self.log.add(f"Welcome, {player_name}. {leap_msg}")
-        self.log.add("Imps lurk nearby. Move with arrows/WASD. F: activate rune. ESC to exit.")
+        self.log.add("Imps lurk nearby. Press ? for help.")
 
         self._update_fov(self._level())
 
@@ -423,7 +425,7 @@ class Game:
 
         # scatter some test berries on overworld levels
         if coord[2] == 0:  # depth == 0
-            self._scatter_test_berries(lvl, count=30)
+            self._scatter_test_berries(lvl, count=10)
 
         return lvl
 
@@ -785,10 +787,29 @@ class Game:
     # --- entity queries (non-actor entities) ---
 
     def _entity_at(self, level: LevelState, pos: Tuple[int, int]) -> Optional[Entity]:
+        """Return the 'primary' entity at a tile, preferring non-actor items.
+
+        If both an actor (e.g. the player) and an item occupy the same tile,
+        we return the item first so that looking / picking up behaves
+        intuitively.
+        """
+        item_candidate: Optional[Entity] = None
+        actor_candidate: Optional[Entity] = None
+
         for ent in level.entities.values():
-            if ent.pos == pos:
-                return ent
-        return None
+            if ent.pos != pos:
+                continue
+
+            # Heuristic: anything with a 'faction' attribute we treat as an actor.
+            if hasattr(ent, "faction"):
+                if actor_candidate is None:
+                    actor_candidate = ent
+            else:
+                if item_candidate is None:
+                    item_candidate = ent
+
+        # Prefer items, but fall back to actors if no items present.
+        return item_candidate or actor_candidate
 
     def _all_entities(self, level: LevelState) -> List[Entity]:
         return list(level.entities.values())
@@ -869,6 +890,175 @@ class Game:
         if self.player_id not in lvl.actors:
             return False
         return lvl.actors[self.player_id].stats.hp > 0
+        
+        
+    def describe_current_tile(self, for_examine: bool = False) -> None:
+        """Describe entities under the player when manually examining ('x').
+
+        The for_examine flag is accepted for compatibility with the renderer,
+        but the current behaviour is the same either way: this is only used
+        for explicit 'look' commands, not auto-observe.
+        """
+        level = self._level()
+        if self.player_id not in level.actors:
+            return
+        player = level.actors[self.player_id]
+        pos = player.pos
+
+        ent = self._entity_at(level, pos)
+
+        # If there is no entity, or the only entity is the player themself,
+        # show the cheeky message.
+        if ent is None or getattr(ent, "id", None) == self.player_id:
+            self.log.add("You see nothing here, save yourself.")
+            return
+
+        # Otherwise, describe whatever is here.
+        self._describe_tile(level, pos, observer_id=self.player_id, auto=False)
+
+
+
+    def _describe_tile(
+        self,
+        level: LevelState,
+        pos: Tuple[int, int],
+        observer_id: Optional[str] = None,
+        auto: bool = False,
+    ) -> None:
+        """Log a description of entities at the given tile, if any.
+
+        - auto=True: 'auto-observe' (e.g. stepping onto a tile)
+        - auto=False: manual usage (normally routed through describe_current_tile)
+        """
+        ent = self._entity_at(level, pos)
+        if not ent:
+            return
+
+        # If this is an auto-observe and the only thing here is the observer,
+        # don't spam the log with "You see yourself" messages.
+        if auto and observer_id is not None and getattr(ent, "id", None) == observer_id:
+            return
+
+        name = getattr(ent, "name", None) or "thing"
+        article = "an" if name and name[0].lower() in "aeiou" else "a"
+        self.log.add(f"You see here {article} {name.lower()}.")
+
+    def show_help(self) -> None:
+        """Show a brief help / keybind summary as an urgent popup."""
+        lines = [
+            "Core controls:",
+            "  Movement: arrow keys / WASD / numpad",
+            "  Activate rune: F",
+            "  Examine tile underfoot: x",
+            "  Pick up item: g",
+            "  Inventory: i",
+            "  Use stairs: > (down) / < (up)",
+            "  World map: < from the overworld edge",
+            "",
+            "System / meta:",
+            "  Toggle fullscreen: F11",
+            "  Pause / menu: Esc",
+            "",
+            "Press any listed key in the dungeon to try it out.",
+        ]
+        body = "\n".join(lines)
+        self.set_urgent(
+            body,
+            title="Help",
+            choices=["Continue..."],
+        )
+
+
+
+    def player_pick_up(self) -> None:
+        """Attempt to pick up an item under the player's feet."""
+        level = self._level()
+        if self.player_id not in level.actors:
+            return
+        player = level.actors[self.player_id]
+        ent = self._entity_at(level, player.pos)
+        if ent is None:
+            self.log.add("There is nothing here to pick up.")
+            return
+
+        # Don't allow picking up actors or non-item entities (for now).
+        if hasattr(ent, "faction") or getattr(ent, "kind", None) != "item":
+            self.log.add("You can't pick that up.")
+            return
+
+        # Remove from the level's entity list.
+        for eid, e in list(level.entities.items()):
+            if e is ent:
+                del level.entities[eid]
+                break
+
+        # Ensure inventory exists and append the item.
+        if not hasattr(self, "inventory"):
+            self.inventory = []  # type: ignore[assignment]
+        self.inventory.append(ent)  # type: ignore[arg-type]
+
+        name = getattr(ent, "name", None) or "item"
+        article = "an" if name and name[0].lower() in "aeiou" else "a"
+        self.log.add(f"You pick up {article} {name.lower()}.")
+    def drop_inventory_item(self, index: int) -> None:
+        """Drop an item from the inventory onto the player's current tile."""
+        # Ensure inventory exists and index is in range
+        if not hasattr(self, "inventory"):
+            return
+        inv = self.inventory  # type: ignore[assignment]
+        if not (0 <= index < len(inv)):
+            return
+
+        level = self._level()
+        if self.player_id not in level.actors:
+            return
+        player = level.actors[self.player_id]
+
+        ent = inv.pop(index)
+
+        # Place the entity at the player's current position in the world.
+        ent.pos = player.pos
+        # Reinsert into the level's entity dict using its existing id.
+        level.entities[ent.id] = ent  # type: ignore[index]
+
+        name = getattr(ent, "name", None) or "item"
+        article = "an" if name and name[0].lower() in "aeiou" else "a"
+        self.log.add(f"You drop {article} {name.lower()}.")
+
+    def eat_inventory_item(self, index: int) -> None:
+        """Consume an item from the inventory, if edible.
+
+        For now, this is mainly used for test berries: they are removed
+        from the inventory and we log a little flavour text.
+        """
+        if not hasattr(self, "inventory"):
+            self.log.add("You have nothing to eat.")
+            return
+        inv = self.inventory  # type: ignore[assignment]
+        if not (0 <= index < len(inv)):
+            return
+
+        ent = inv[index]
+        tags = getattr(ent, "tags", {}) or {}
+
+        # Basic edibility check: our test berries all carry a 'test_berry'
+        # flag and an 'item_type' tag like 'blueberry', 'raspberry', etc.
+        is_berry = bool(tags.get("test_berry")) or tags.get("item_type") in {
+            "blueberry",
+            "raspberry",
+            "strawberry",
+        }
+        if not is_berry:
+            name = getattr(ent, "name", None) or "item"
+            self.log.add(f"You can't eat the {name.lower()}.")
+            return
+
+        # Actually consume the item.
+        inv.pop(index)
+        # Later we can hook in healing / buffs here; for now just flavour.
+        self.log.add("That was tart!")
+
+
     @property
     def has_lorenz_aura(self) -> bool:
         """True if the current character should have the Lorenz storm aura."""
@@ -1272,6 +1462,10 @@ class Game:
         actor.pos = (nx, ny)
         if id == self.player_id:
             level.need_fov = True
+            # Auto-look when the player steps onto a tile (but don't describe yourself)
+            self._describe_tile(level, actor.pos, observer_id=actor.id, auto=True)
+
+
 
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
@@ -1287,7 +1481,7 @@ class Game:
             if defender.id == self.player_id:
                 cause = attacker.name
                 self.set_urgent(
-                    f"Killed by {cause}",
+                    f"by way of {cause}",
                     title="You unravel...",
                     choices=["Continue..."],
                 )
