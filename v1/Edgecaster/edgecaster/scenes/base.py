@@ -3,6 +3,7 @@ from __future__ import annotations
 import pygame
 from typing import Optional
 
+
 # ---------------------------------------------------------------------------
 # Base Scene
 # ---------------------------------------------------------------------------
@@ -32,8 +33,9 @@ MENU_ACTION_ACTIVATE = "activate"
 MENU_ACTION_BACK = "back"
 MENU_ACTION_FULLSCREEN = "fullscreen"
 # Shared footer hint for standard menus
+# Shared footer hint for standard menus
 MENU_FOOTER_HELP = (
-    "↑/↓ Numpad or W/S to move, Enter/Space to select, Esc to go back, F11 to toggle fullscreen"
+    "W/S or ↑/↓ (numpad) to move, Enter/Space or click to select, Esc to go back, F11 fullscreen"
 )
 
 
@@ -217,6 +219,8 @@ class MenuScene(Scene):
     def __init__(self) -> None:
         self.selected_idx = 0
         self._menu_input = MenuInput()
+        # NEW: list of rects for hit-testing menu options with the mouse
+        self._option_rects: list[pygame.Rect] = []
 
     # ---- hooks for subclasses ------------------------------------------------
 
@@ -248,6 +252,22 @@ class MenuScene(Scene):
         """
         return None
 
+    # ---- mouse helpers -------------------------------------------------------
+
+    def _index_from_mouse_pos(self, pos: tuple[int, int]) -> int | None:
+        """Return index of option under this mouse position, or None."""
+        mx, my = pos
+        for i, rect in enumerate(self._option_rects):
+            if rect.collidepoint(mx, my):
+                return i
+        return None
+
+    def _update_hover_from_mouse(self, pos: tuple[int, int]) -> None:
+        idx = self._index_from_mouse_pos(pos)
+        if idx is not None:
+            self.selected_idx = idx
+
+
     # ---- main loop -----------------------------------------------------------
 
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
@@ -259,6 +279,7 @@ class MenuScene(Scene):
 
         while running:
             options = self.get_menu_items()
+            renderer = manager.renderer
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -275,8 +296,27 @@ class MenuScene(Scene):
                 elif event.type == pygame.KEYUP:
                     menu.handle_keyup(event.key)
 
-            if not running:
-                break
+                elif event.type == pygame.MOUSEMOTION:
+                    # Convert from display coords to surface coords if needed
+                    if hasattr(renderer, "_to_surface"):
+                        mx, my = renderer._to_surface(event.pos)
+                    else:
+                        mx, my = event.pos
+                    self._update_hover_from_mouse((mx, my))
+
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if hasattr(renderer, "_to_surface"):
+                        mx, my = renderer._to_surface(event.pos)
+                    else:
+                        mx, my = event.pos
+                    idx = self._index_from_mouse_pos((mx, my))
+                    if idx is not None:
+                        self.selected_idx = idx
+                        # Behave like pressing Enter on this option
+                        if self.on_activate(idx, manager):
+                            running = False
+                            break
+
 
             # Key-repeat
             repeat_action = menu.update()
@@ -356,12 +396,18 @@ class MenuScene(Scene):
             y = renderer.height // 3
 
         # Menu options
+        self._option_rects = []  # <-- rebuild each frame
         for idx, opt in enumerate(options):
             selected = idx == self.selected_idx
             color = renderer.player_color if selected else renderer.fg
             prefix = "▶ " if selected else "  "
             text_surf = renderer.font.render(prefix + opt, True, color)
-            surface.blit(text_surf, (renderer.width // 2 - 110, y))
+            x = renderer.width // 2 - 110
+
+            rect = text_surf.get_rect(topleft=(x, y))
+            surface.blit(text_surf, rect.topleft)
+            self._option_rects.append(rect)
+
             y += text_surf.get_height() + 10
 
         # Footer hint
@@ -371,6 +417,7 @@ class MenuScene(Scene):
                 hint,
                 ((renderer.width - hint.get_width()) // 2, renderer.height - 40),
             )
+
 
 
 class PopupMenuScene(MenuScene):
@@ -480,6 +527,7 @@ class PopupMenuScene(MenuScene):
 
         while running:
             options = self.get_menu_items()
+            renderer = manager.renderer
 
             # ----------------- EVENTS -----------------
             for event in pygame.event.get():
@@ -488,6 +536,25 @@ class PopupMenuScene(MenuScene):
                     return
 
                 if event.type == pygame.KEYDOWN:
+                    # Direct handling of confirm keys so we never depend
+                    # on any platform-specific quirks in MenuInput.
+                    if event.key in (
+                        pygame.K_RETURN,
+                        pygame.K_KP_ENTER,
+                        pygame.K_SPACE,
+                    ):
+                        if self.on_activate(self.selected_idx, manager):
+                            running = False
+                            break
+                        continue
+
+                    # Direct handling of Esc as a back key.
+                    if event.key == pygame.K_ESCAPE:
+                        if self.on_back(manager):
+                            running = False
+                            break
+                        continue
+
                     # Allow 'i' as an extra "back" key for inventory-like popups.
                     if event.key == pygame.K_i:
                         if self.on_back(manager):
@@ -495,6 +562,7 @@ class PopupMenuScene(MenuScene):
                             break
                         continue
 
+                    # Everything else goes through the standard menu keymap.
                     action = menu.handle_keydown(event.key)
                     if handle_action(action):
                         break
@@ -502,13 +570,27 @@ class PopupMenuScene(MenuScene):
                 elif event.type == pygame.KEYUP:
                     menu.handle_keyup(event.key)
 
-            if not running:
-                break
+                elif event.type == pygame.MOUSEMOTION:
+                    if hasattr(renderer, "_to_surface"):
+                        mx, my = renderer._to_surface(event.pos)
+                    else:
+                        mx, my = event.pos
+                    self._update_hover_from_mouse((mx, my))
 
-            # Key repeat
-            repeat_action = menu.update()
-            if handle_action(repeat_action):
-                break
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if hasattr(renderer, "_to_surface"):
+                        mx, my = renderer._to_surface(event.pos)
+                    else:
+                        mx, my = event.pos
+                    idx = self._index_from_mouse_pos((mx, my))
+                    if idx is not None:
+                        self.selected_idx = idx
+                        # Same semantics as activate
+                        if self.on_activate(idx, manager):
+                            running = False
+                            break
+
+
 
             # ----------------- DRAW -----------------
 
@@ -571,13 +653,23 @@ class PopupMenuScene(MenuScene):
             y += 8
 
         # Menu items
+        self._option_rects = []  # global screen-space rects
         for idx, label in enumerate(options):
             selected = (idx == self.selected_idx)
             color = renderer.player_color if selected else renderer.fg
             prefix = "▶ " if selected else "  "
             text = font.render(prefix + label, True, color)
-            x = (panel.get_width() - text.get_width()) // 2
-            panel.blit(text, (x, y))
+            local_x = (panel.get_width() - text.get_width()) // 2
+            local_y = y
+
+            # Local rect on the panel
+            local_rect = text.get_rect(topleft=(local_x, local_y))
+            panel.blit(text, local_rect.topleft)
+
+            # Convert to global coords for hit-testing
+            global_rect = local_rect.move(rect.left, rect.top)
+            self._option_rects.append(global_rect)
+
             y += text.get_height() + 4
 
         # Footer
@@ -588,3 +680,4 @@ class PopupMenuScene(MenuScene):
         panel.blit(footer_text, (fx, fy))
 
         surface.blit(panel, rect.topleft)
+

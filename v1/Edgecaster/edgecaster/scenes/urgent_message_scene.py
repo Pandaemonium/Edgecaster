@@ -4,32 +4,23 @@ from typing import Optional, Callable, List
 
 import pygame
 
-from .base import (
-    Scene,
-    MenuInput,
-    MENU_ACTION_UP,
-    MENU_ACTION_DOWN,
-    MENU_ACTION_ACTIVATE,
-    MENU_ACTION_BACK,
-    MENU_ACTION_FULLSCREEN,
-)
+from .base import PopupMenuScene
 
 if False:  # type checking only
     from .manager import SceneManager  # pragma: no cover
 
 
-class UrgentMessageScene(Scene):
+class UrgentMessageScene(PopupMenuScene):
     """
-    Simple popup for urgent messages / events.
+    Popup-style urgent message dialog.
 
     Semantics:
-    - Shows a title + multi-line message.
-    - Presents one or more choices (default: ["Continue"]).
-    - On selection, runs an optional callback and pops itself.
-
-    For current use, we’ll mostly use it as:
-        UrgentMessageScene(game, game.urgent_message)
-    with a single "Continue" option.
+    - Shows an optional title and a multi-line message.
+    - Presents one or more choices (default: ["Continue..."]).
+    - On selection, clears the Game's urgent_* fields and optionally
+      invokes a callback.
+    - Used both for "real" urgent events (level-up, death, etc.)
+      and lightweight context menus (e.g. inventory item actions).
     """
 
     def __init__(
@@ -43,126 +34,66 @@ class UrgentMessageScene(Scene):
         window_rect: Optional[pygame.Rect] = None,
         back_confirms: bool = True,
     ) -> None:
+        # Let PopupMenuScene handle snapshot, dimming, generic layout, etc.
+        super().__init__(window_rect=window_rect, dim_background=True, scale=0.7)
+
         self.game = game
         self.message = message
         self.title = title
-        self.choices = choices or ["Continue"]
+        self.choices = choices or ["Continue..."]
         self.on_choice = on_choice
 
-        self.window_rect = window_rect
-        self.selected_idx = 0
-
-        self._background: Optional[pygame.Surface] = None
-        self._menu_input = MenuInput()
-
-        self.ui_font: Optional[pygame.font.Font] = None
-        self.small_font: Optional[pygame.font.Font] = None
-
-        # NEW: controls how Esc behaves.
-        # - True  (default)  → Esc acts like Activate on current choice
-        # - False (context)  → Esc just closes this popup
+        # Controls how Esc behaves:
+        # - True  → Esc acts like Activate on the current choice
+        # - False → Esc just closes the popup
         self.back_confirms = back_confirms
 
-
-
     # ------------------------------------------------------------------ #
-    # Helpers
+    # Window rect helpers
 
     def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         """
-        If no window_rect was provided, use manager.compute_child_window_rect
-        so we stack nicely with other popups.
+        Override PopupMenuScene's default to integrate with the
+        window_stack via manager.compute_child_window_rect, so urgent
+        popups stack nicely with other windows.
         """
         if self.window_rect is not None:
             return
-        self.window_rect = manager.compute_child_window_rect(scale=0.7)
-
-    def _ensure_fonts(self, renderer) -> None:
-        if self.ui_font is not None and self.small_font is not None:
-            return
-
-        # Slightly larger font for the header, smaller for body/choices.
-        base_tile = getattr(renderer, "base_tile", 16)
-        header_size = max(18, int(base_tile * 1.4))
-        body_size = max(12, int(base_tile * 1.0))
-
-        self.ui_font = pygame.font.SysFont("consolas", header_size)
-        self.small_font = pygame.font.SysFont("consolas", body_size)
-
-
-    def _compute_window_rect(
-        self,
-        renderer,
-        ui_font: pygame.font.Font,
-        small_font: pygame.font.Font,
-        wrapped_lines: list[str],
-    ) -> pygame.Rect:
-        """Compute a centered window rect sized to the title, body, and choices."""
-        # Width: max of title, body lines, choices, and hint
-        max_width = 0
-
-        if self.title:
-            w, _ = ui_font.size(self.title)
-            max_width = max(max_width, w)
-
-        for line in wrapped_lines:
-            w, _ = small_font.size(line if line else " ")
-            max_width = max(max_width, w)
-
-        for label in self.choices:
-            w, _ = small_font.size("▶ " + label)
-            max_width = max(max_width, w)
-
-        hint_text = "Enter/Space to confirm • Esc to dismiss"
-        w, _ = small_font.size(hint_text)
-        max_width = max(max_width, w)
-
-        margin_x = 24
-        panel_w = max_width + 2 * margin_x
-
-        min_w = int(renderer.width * 0.3)
-        max_w = int(renderer.width * 0.8)
-        panel_w = max(min_w, min(max_w, panel_w))
-
-        # Height: title + body + choices + hint + margins
-        y = 16
-        if self.title:
-            y += ui_font.get_height() + 12
-
-        line_h = small_font.get_height() + 2
-        num_body = max(1, len(wrapped_lines))  # ensure some vertical space
-        y += num_body * line_h
-
-        y += 16  # gap before choices
-        choice_h = ui_font.get_height() + 6
-        y += max(1, len(self.choices)) * choice_h
-
-        y += small_font.get_height() + 20  # hint + bottom margin
-        panel_h = y
-
-        min_h = int(renderer.height * 0.2)
-        max_h = int(renderer.height * 0.8)
-        panel_h = max(min_h, min(max_h, panel_h))
-
-        x = (renderer.width - panel_w) // 2
-        y0 = (renderer.height - panel_h) // 2
-        return pygame.Rect(x, y0, panel_w, panel_h)
-
+        self.window_rect = manager.compute_child_window_rect(scale=self.popup_scale)
 
     # ------------------------------------------------------------------ #
-    # MenuScene-style hooks (for MenuInput)
 
-    def get_menu_items(self, manager: "SceneManager") -> list[str]:  # type: ignore[name-defined]
-        # Exactly the list of choices
+    # NEW: internal helper to close this popup
+    def _close_self(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """
+        Close this popup. If we're on a scene stack, pop just this scene.
+        Otherwise, fall back to clearing the current scene.
+        """
+        stack = getattr(manager, "scene_stack", None)
+        if stack is not None and stack and stack[-1] is self and hasattr(manager, "pop_scene"):
+            manager.pop_scene()
+        else:
+            # Fallback for non-stacked usage
+            if hasattr(manager, "set_scene"):
+                manager.set_scene(None)
+
+    # MenuScene-style hooks
+
+    def get_menu_items(self) -> list[str]:
+        # Called with no args by MenuScene.run()
         return self.choices
 
-    def on_activate(self, index: int, manager: "SceneManager") -> bool:
+    def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        """
+        Handle confirm (Enter/Space/Left/Right depending on binding).
+        """
         # Mark urgent as resolved if this came from Game.set_urgent.
         if hasattr(self.game, "urgent_resolved"):
             self.game.urgent_resolved = True
         if hasattr(self.game, "urgent_message"):
             self.game.urgent_message = None
-        # Clear structured urgent metadata so it doesn't leak to future popups
+
+        # Clear structured urgent metadata so it doesn't leak.
         if hasattr(self.game, "urgent_title"):
             self.game.urgent_title = None
         if hasattr(self.game, "urgent_body"):
@@ -170,216 +101,207 @@ class UrgentMessageScene(Scene):
         if hasattr(self.game, "urgent_choices"):
             self.game.urgent_choices = None
 
-        # Optional callback for event choices / dialogue later
+        # Optional callback for event choices / dialogue later.
         if self.on_choice is not None:
             self.on_choice(index, manager)
 
-        # Pop ourselves and return to whatever was underneath
-        manager.pop_scene()
-        return True
-
-
+        # ACTUALLY close this popup now.
+        self._close_self(manager)
+        return True  # tell PopupMenuScene.run to stop
 
     def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
-        """Handle 'back' / Esc key behaviour.
-
-        By default, this behaves like confirming the currently selected
-        choice (appropriate for classic urgent popups).
-
-        For lightweight context menus (like the inventory item submenu),
-        we can pass back_confirms=False to make Esc simply dismiss the
-        popup without triggering any choice.
+        """
+        Handle 'back' / Esc key behaviour.
         """
         if getattr(self, "back_confirms", True):
+            # Same semantics as activate (including closing).
             return self.on_activate(self.selected_idx, manager)
-
-        # Just close the popup; do not fire any choice callback.
-        manager.pop_scene()
-        return True
-
+        else:
+            # Just close the popup; do NOT call on_activate.
+            self._close_self(manager)
+            return True
 
     # ------------------------------------------------------------------ #
-    # Main loop
+    # Text layout helpers
 
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+    @staticmethod
+    def _wrap_text(
+        text: str,
+        font: pygame.font.Font,
+        max_width: int,
+    ) -> List[str]:
+        """
+        Simple word-wrapping in pixel space using the given font.
+        Respects explicit newlines in `text`.
+        """
+        lines: List[str] = []
+
+        for raw_line in text.splitlines() or [""]:
+            words = raw_line.split()
+            if not words:
+                # Preserve blank lines
+                lines.append("")
+                continue
+
+            current = words[0]
+            for word in words[1:]:
+                test = current + " " + word
+                if font.size(test)[0] <= max_width:
+                    current = test
+                else:
+                    lines.append(current)
+                    current = word
+            lines.append(current)
+
+        return lines
+
+    # ------------------------------------------------------------------ #
+    # Drawing - override PopupMenuScene's default panel layout
+
+    def _draw_panel(self, manager: "SceneManager", options: list[str]) -> None:  # type: ignore[name-defined]
+        """
+        Custom panel for urgent messages.
+
+        Layout:
+          [Title  (big)]
+          [Wrapped body text (small)...]
+          [Choices (small)...]
+          (no footer)
+        """
         renderer = manager.renderer
         surface = renderer.surface
-        clock = pygame.time.Clock()
-        menu = self._menu_input
 
-        # Snapshot once so we don't accidentally include ourselves on re-entry
-        if self._background is None:
-            self._background = surface.copy()
+        # Fonts: title larger, body + choices same smaller size
+        title_font = renderer.font
+        body_font = renderer.small_font
 
-        self._ensure_fonts(renderer)
+        # --- First pass: estimate size we need for a snug panel ---
 
-        ui_font = self.ui_font
-        small_font = self.small_font
-        assert ui_font is not None and small_font is not None
+        padding_x = 24
+        padding_y = 16
 
-        # Simple text wrapping (by character count; good enough for now)
-        import textwrap
+        # Wrap body with a reasonable maximum width guess (useful for sizing).
+        max_body_width_guess = int(renderer.width * 0.6)
+        if self.message:
+            body_lines_for_size = self._wrap_text(self.message, body_font, max_body_width_guess)
+        else:
+            body_lines_for_size = []
 
-        wrap_width = 60
-        wrapped_lines: list[str] = []
-        for paragraph in self.message.splitlines():
-            paragraph = paragraph.rstrip()
-            if not paragraph:
-                wrapped_lines.append("")
-                continue
-            wrapped_lines.extend(textwrap.wrap(paragraph, wrap_width))
+        widths: list[int] = []
+        total_height = padding_y  # top padding
 
-        # If no rect was provided, compute a snug one based on content.
-        if self.window_rect is None:
-            self.window_rect = self._compute_window_rect(renderer, ui_font, small_font, wrapped_lines)
+        # Title
+        if self.title:
+            tw, th = title_font.size(self.title)
+            widths.append(tw)
+            total_height += th + 8  # small gap after title
 
-        rect = self.window_rect
-        assert rect is not None
+        # Body lines
+        for line in body_lines_for_size:
+            text_line = line if line else " "
+            w, h = body_font.size(text_line)
+            widths.append(w)
+            total_height += h + 2
 
+        if body_lines_for_size:
+            total_height += 12  # gap before choices if we had a body
+        else:
+            total_height += 4   # minimal gap if no body text
 
-        ui_font = self.ui_font
-        small_font = self.small_font
-        assert ui_font is not None and small_font is not None
+        # Choices (use same font as body so they match)
+        for label in options:
+            prefix_label = "▶ " + label  # worst-case width with selection arrow
+            w, h = body_font.size(prefix_label)
+            widths.append(w)
+            total_height += h + 4
 
-        # Simple text wrapping (by character count; good enough for now)
-        import textwrap
+        total_height += padding_y  # bottom padding
 
-        wrap_width = 60
-        wrapped_lines = []
-        for paragraph in self.message.splitlines():
-            paragraph = paragraph.rstrip()
-            if not paragraph:
-                wrapped_lines.append("")
-                continue
-            wrapped_lines.extend(textwrap.wrap(paragraph, wrap_width))
+        # Guard against empty widths (no title, no body, no options)
+        content_width = max(widths) if widths else 100
 
-        running = True
+        # Constrain panel size to screen
+        max_panel_width = renderer.width - 40
+        max_panel_height = renderer.height - 40
 
-        def handle_action(action: Optional[str]) -> bool:
-            if action is None:
-                return False
+        panel_width = min(content_width + 2 * padding_x, max_panel_width)
+        panel_height = min(total_height, max_panel_height)
 
-            if action == MENU_ACTION_FULLSCREEN:
-                renderer.toggle_fullscreen()
-                return False
+        # Center the panel
+        x = (renderer.width - panel_width) // 2
+        y = (renderer.height - panel_height) // 2
 
-            if action == MENU_ACTION_UP:
-                if self.choices:
-                    self.selected_idx = (self.selected_idx - 1) % len(self.choices)
-                return False
+        rect = pygame.Rect(x, y, panel_width, panel_height)
+        self.window_rect = rect
 
-            if action == MENU_ACTION_DOWN:
-                if self.choices:
-                    self.selected_idx = (self.selected_idx + 1) % len(self.choices)
-                return False
+        # Keep the manager's window_stack in sync if this is a windowed scene
+        stack = getattr(manager, "window_stack", None)
+        if stack and stack[-1] is not None:
+            stack[-1] = rect
 
-            if action == MENU_ACTION_BACK:
-                return self.on_back(manager)
+        # --- Second pass: actually render using the final rect ---
 
-            if action == MENU_ACTION_ACTIVATE:
-                return self.on_activate(self.selected_idx, manager)
+        panel = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
 
-            return False
+        # Panel background + border (same visual language as other popups)
+        panel.fill((10, 10, 20, 240))
+        pygame.draw.rect(
+            panel,
+            (220, 220, 240, 255),
+            panel.get_rect(),
+            2,
+        )
 
-        while running:
-            # ----------------- EVENTS -----------------
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
+        y = padding_y
 
-                if event.type == pygame.KEYDOWN:
-                    action = menu.handle_keydown(event.key)
-                    if handle_action(action):
-                        running = False
-                        break
+        # Title (biggest font)
+        if self.title:
+            title_surf = title_font.render(self.title, True, renderer.player_color)
+            tx = (panel.get_width() - title_surf.get_width()) // 2
+            panel.blit(title_surf, (tx, y))
+            y += title_surf.get_height() + 8
 
-                elif event.type == pygame.KEYUP:
-                    menu.handle_keyup(event.key)
+        # Body text, re-wrapped to the *actual* panel width
+        max_body_width = panel.get_width() - 2 * padding_x
+        if self.message:
+            body_lines = self._wrap_text(self.message, body_font, max_body_width)
+        else:
+            body_lines = []
 
-            if not running:
-                break
+        for line in body_lines:
+            line_text = line if line else " "
+            body_surf = body_font.render(line_text, True, renderer.fg)
+            bx = (panel.get_width() - body_surf.get_width()) // 2
+            panel.blit(body_surf, (bx, y))
+            y += body_surf.get_height() + 2
 
-            # Key repeat
-            repeat_action = menu.update()
-            if handle_action(repeat_action):
-                break
+        if body_lines:
+            y += 12
+        else:
+            y += 4
 
-            # ----------------- DRAW -----------------
+        # Choices (same size as body text)
+        self._option_rects = []  # global rects used for mouse hit-testing
+        for idx, label in enumerate(options):
+            selected = (idx == self.selected_idx)
+            color = renderer.player_color if selected else renderer.fg
+            prefix = "▶ " if selected else "  "
+            text_surf = body_font.render(prefix + label, True, color)
 
-            # Restore snapshot (includes dungeon + any other overlays)
-            if self._background is not None:
-                surface.blit(self._background, (0, 0))
-            else:
-                surface.fill(renderer.bg)
+            local_x = (panel.get_width() - text_surf.get_width()) // 2
+            local_y = y
 
-            overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
-            # Always dim the world for urgent messages
-            overlay.fill((0, 0, 0, 180))
+            # Local rect on the panel
+            local_rect = text_surf.get_rect(topleft=(local_x, local_y))
+            panel.blit(text_surf, local_rect.topleft)
 
-            panel_x, panel_y, panel_w, panel_h = rect
-            logical_w, logical_h = panel_w, panel_h
+            # Convert to global coords for hit-testing
+            global_rect = local_rect.move(rect.left, rect.top)
+            self._option_rects.append(global_rect)
 
-            logical_surface = pygame.Surface((logical_w, logical_h), pygame.SRCALPHA)
-            border_thickness = max(1, int(2 * (renderer.base_tile / 16)))
+            y += text_surf.get_height() + 4
 
-            # Panel background + border
-            pygame.draw.rect(
-                logical_surface,
-                (20, 20, 40, 235),
-                (0, 0, logical_w, logical_h),
-            )
-            pygame.draw.rect(
-                logical_surface,
-                (220, 220, 240, 240),
-                (0, 0, logical_w, logical_h),
-                border_thickness,
-            )
+        # Note: no footer hint for urgent messages.
 
-            # Title (optional)
-            title_y = 16
-            y = title_y
-            margin_x = 24
-
-            if self.title:
-                title_text = ui_font.render(self.title, True, renderer.fg)
-                logical_surface.blit(
-                    title_text,
-                    ((logical_w - title_text.get_width()) // 2, title_y),
-                )
-                y = title_y + title_text.get_height() + 12
-
-            # Message body
-            for line in wrapped_lines:
-                if not line:
-                    y += small_font.get_height()
-                    continue
-                text = small_font.render(line, True, renderer.fg)
-                logical_surface.blit(text, (margin_x, y))
-                y += text.get_height() + 2
-
-            # Choices
-            y += 16
-            for i, label in enumerate(self.choices):
-                selected = i == self.selected_idx
-                color = renderer.player_color if selected else renderer.fg
-                prefix = "▶ " if selected else "  "
-                text = small_font.render(prefix + label, True, color)
-                logical_surface.blit(text, (margin_x, y))
-                y += text.get_height() + 6
-
-
-            # Hint
-            hint = small_font.render(
-                "",
-                True,
-                renderer.dim,
-            )
-            hint_y = logical_h - hint.get_height() - 10
-            hint_x = (logical_w - hint.get_width()) // 2
-            logical_surface.blit(hint, (hint_x, hint_y))
-
-            overlay.blit(logical_surface, (panel_x, panel_y))
-            surface.blit(overlay, (0, 0))
-            renderer.present()
-            clock.tick(60)
+        # Blit panel to the logical surface
+        surface.blit(panel, rect.topleft)
