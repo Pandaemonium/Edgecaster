@@ -136,13 +136,18 @@ class Game:
         self.world_map_rendering = False
         self.world_map_ready = False
         self.world_map_thread_started = False
+        # per-tile julia grid (x coords, y coords) derived from overmap view
+        self.tile_julia_grid: dict[str, list[float]] | None = None
         # flags
         self.map_requested = False
 
 
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
-        self.zone_coord: Tuple[int, int, int] = (0, 0, 0)
+        # start roughly at world center so Julia coords near (0,0)
+        center_zx = self.cfg.world_map_screens // 2
+        center_zy = self.cfg.world_map_screens // 2
+        self.zone_coord: Tuple[int, int, int] = (center_zx, center_zy, 0)
         self._next_id = 0
         # Simple player inventory: list of Entity objects the player is carrying.
         # For now it's a flat list; later we can support containers/stacking.
@@ -399,12 +404,86 @@ class Game:
 
 
 
+    def build_tile_julia_grid(self) -> None:
+        """Precompute per-tile Julia coordinates across the whole world grid."""
+        if not getattr(self, "overmap_params", None):
+            return
+        p = self.overmap_params
+        # Require julia extents from overmap_params
+        if not all(k in p for k in ("view_min_jx", "view_max_jx", "view_min_jy", "view_max_jy")):
+            return
+        total_x = self.cfg.world_map_screens * self.cfg.world_width
+        total_y = self.cfg.world_map_screens * self.cfg.world_height
+        if total_x <= 0 or total_y <= 0:
+            return
+        step_x = (p["view_max_jx"] - p["view_min_jx"]) / max(1, total_x - 1)
+        step_y = (p["view_max_jy"] - p["view_min_jy"]) / max(1, total_y - 1)
+        jx = [p["view_min_jx"] + i * step_x for i in range(total_x)]
+        jy = [p["view_min_jy"] + i * step_y for i in range(total_y)]
+        self.tile_julia_grid = {
+            "x": jx,
+            "y": jy,
+            "total_x": total_x,
+            "total_y": total_y,
+            "step_x": step_x,
+            "step_y": step_y,
+            "view_min_jx": p["view_min_jx"],
+            "view_max_jx": p["view_max_jx"],
+            "view_min_jy": p["view_min_jy"],
+            "view_max_jy": p["view_max_jy"],
+        }
+
+    def _ensure_overmap_ready(self) -> None:
+        """Render the overmap and build the julia grid if not already available."""
+        if getattr(self, "overmap_params", None) and getattr(self, "tile_julia_grid", None):
+            return
+        try:
+            from edgecaster.scenes.world_map_scene import WorldMapScene
+            wm = WorldMapScene(self, span=16)
+            class Stub:
+                def __init__(self, w, h) -> None:
+                    self.width = w
+                    self.height = h
+            stub = Stub(self.cfg.view_width, self.cfg.view_height)
+            surf, view = wm._render_overmap(stub)
+            self.world_map_cache = {"surface": surf, "view": view, "key": (stub.width, stub.height, wm.span)}
+            if not getattr(self, "overmap_params", None):
+                self.overmap_params = {}
+            self.overmap_params.setdefault("surface", surf.copy())
+            # build grid
+            self.build_tile_julia_grid()
+        except Exception as e:
+            raise
 
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
         x, y, depth = coord
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
         if depth == 0:
-            mapgen.generate_fractal_overworld(world, self.fractal_field, coord, self.rng, up_pos=up_pos)
+            self._ensure_overmap_ready()
+            jx_slice = jy_slice = None
+            if getattr(self, "tile_julia_grid", None):
+                gx0 = x * world.width
+                gx1 = gx0 + world.width
+                gy0 = y * world.height
+                gy1 = gy0 + world.height
+                xgrid = self.tile_julia_grid.get("x", [])
+                ygrid = self.tile_julia_grid.get("y", [])
+                # fall back to None if out of bounds
+                if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
+                    jx_slice = jy_slice = None
+                else:
+                    jx_slice = xgrid[gx0:gx1]
+                    jy_slice = ygrid[gy0:gy1]
+            mapgen.generate_fractal_overworld(
+                world,
+                self.fractal_field,
+                coord,
+                self.rng,
+                up_pos=up_pos,
+                overmap_params=self.overmap_params,
+                jx_slice=jx_slice,
+                jy_slice=jy_slice,
+            )
         else:
             mapgen.generate_basic(world, self.rng, up_pos=up_pos)
         lvl = LevelState(
@@ -1590,6 +1669,18 @@ class Game:
 
 
 
+            try:
+                params = getattr(self, "overmap_params", None)
+                grid = getattr(self, "tile_julia_grid", None)
+                if params and grid:
+                    wx = level.coord[0] * level.world.width + nx
+                    wy = level.coord[1] * level.world.height + ny
+                    jx = grid["x"][wx]
+                    jy = grid["y"][wy]
+                    h = mapgen._julia_height_norm(jx, jy, params["visual_c"], scale=1.0, iters=96)
+                    self.log.add(f"{h:.4f}: ({jx:.5f}, {jy:.5f})")
+            except Exception:
+                pass
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
         dmg = 1

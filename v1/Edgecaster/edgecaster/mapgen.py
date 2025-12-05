@@ -1,6 +1,7 @@
 from typing import Tuple, Optional
 import math
 import random
+from typing import Tuple, Optional, Dict, List
 
 from edgecaster.state.world import World
 
@@ -190,6 +191,41 @@ def _hash01(x: int, y: int) -> float:
     h &= 0xFFFFFFFF
     return (h % 1000) / 1000.0
 
+def _color_from_fields(fields: dict) -> tuple[int, int, int]:
+    """Smooth gradient inspired by the overmap palette (water→plains→forest→hills→mountains)."""
+    h = max(0.0, min(1.0, fields["height"]))
+    anchors = [
+        (0.00, (50, 90, 170)),   # deep water
+        (0.15, (110, 160, 190)), # shore/shallows
+        (0.32, (150, 200, 140)), # plains
+        (0.52, (90, 170, 110)),  # forested low hills
+        (0.72, (170, 150, 110)), # hills
+        (1.00, (210, 210, 215)), # high/mountains
+    ]
+    for i in range(len(anchors) - 1):
+        h0, c0 = anchors[i]
+        h1, c1 = anchors[i + 1]
+        if h <= h1:
+            t = 0.0 if h1 == h0 else (h - h0) / (h1 - h0)
+            return tuple(int(c0[j] + t * (c1[j] - c0[j])) for j in range(3))
+    return anchors[-1][1]
+
+def _julia_height_norm(nx: float, ny: float, c: complex, scale: float = 1.0, iters: int = 96) -> float:
+    """Julia escape-time normalized height (0..1)."""
+    zx = nx * scale
+    zy = ny * scale
+    it = 0
+    while zx * zx + zy * zy <= 4.0 and it < iters:
+        xt = zx * zx - zy * zy + c.real
+        zy = 2 * zx * zy + c.imag
+        zx = xt
+        it += 1
+    if it >= iters:
+        return 0.0
+    mod = math.sqrt(zx * zx + zy * zy)
+    smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
+    return max(0.0, min(1.0, smooth / iters))
+
 
 def _classify_tile(fields: dict, noise: float) -> Tuple[str, bool]:
     """Return glyph, walkable based on height/moisture and a dash of noise."""
@@ -217,24 +253,64 @@ def _classify_tile(fields: dict, noise: float) -> Tuple[str, bool]:
 
 
 def generate_fractal_overworld(
-    world: World, field: FractalField, coord: Tuple[int, int, int], rng, up_pos: Optional[Tuple[int, int]] = None
+    world: World,
+    field: FractalField,
+    coord: Tuple[int, int, int],
+    rng,
+    up_pos: Optional[Tuple[int, int]] = None,
+    biome: Optional[str] = None,
+    zoom_mult: float = 1.0,
+    overmap_params: Optional[dict] = None,
+    jx_slice: Optional[List[float]] = None,
+    jy_slice: Optional[List[float]] = None,
 ) -> None:
-    """Fractal-driven overworld using height/moisture fields with lighter obstruction."""
+    """Fractal-driven overworld; tint directly from per-tile Julia coords."""
+    if overmap_params is None:
+        raise RuntimeError("Overmap params missing; cannot generate local zone without exact correspondence.")
     zx, zy, _ = coord
     w, h = world.width, world.height
     cx0 = zx * w
     cy0 = zy * h
+    surf = overmap_params.get("surface")
+    min_wx = overmap_params.get("min_wx")
+    min_wy = overmap_params.get("min_wy")
+    span_x = overmap_params.get("span_x")
+    span_y = overmap_params.get("span_y")
+    surf_w = surf_h = None
+    if surf is not None:
+        surf_w, surf_h = surf.get_size()
 
     for y in range(h):
         for x in range(w):
             wx = cx0 + x
             wy = cy0 + y
-            fields = field.sample_full(wx, wy)
-            noise = _hash01(int(wx), int(wy))
-            glyph, walkable = _classify_tile(fields, noise)
+            if jx_slice is not None and jy_slice is not None:
+                jx = jx_slice[x]
+                jy = jy_slice[y]
+                h_val = _julia_height_norm(jx, jy, overmap_params["visual_c"], scale=1.0, iters=96)
+                fields = {
+                    "height": h_val,
+                    "moisture": h_val,
+                    "pattern": 0.0,
+                    "corruption": 0.0,
+                }
+                glyph, _ = _classify_tile(fields, 0.5)
+                tint = _color_from_fields(fields)
+            else:
+                if surf is None or surf_w is None or surf_h is None or min_wx is None or span_x is None:
+                    raise RuntimeError("Overmap surface missing for tint sampling.")
+                px = int((wx - min_wx) / span_x * surf_w)
+                py = int((wy - min_wy) / span_y * surf_h)
+                px = max(0, min(surf_w - 1, px))
+                py = max(0, min(surf_h - 1, py))
+                
+                fields = field.sample_full(wx, wy)
+                tint = _color_from_fields(fields)
+                glyph, _ = _classify_tile(fields, 0.5)
             tile = world.tiles[y][x]
-            tile.glyph = glyph
-            tile.walkable = walkable
+            tile.glyph = glyph if glyph != "~" else "."
+            tile.walkable = True
+            tile.tint = tint
 
     # entry: use up_pos if provided, else nearest walkable to center
     if up_pos and world.in_bounds(*up_pos) and world.is_walkable(*up_pos):
