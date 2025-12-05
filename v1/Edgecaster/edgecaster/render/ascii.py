@@ -1220,6 +1220,17 @@ class AsciiRenderer:
             game.queue_player_wait()
             return
 
+        # Test: generic action system hook – press 'y' to Yawp!
+        if key == pygame.K_y:
+            # If we've wired up the generic action API, use it.
+            if hasattr(game, "queue_player_action"):
+                game.queue_player_action("yawp")
+            else:
+                # Fallback so this doesn't hard-crash if you haven't added it yet.
+                game.log.add("You yawp! 'Yawp!'")
+            return
+
+
         if key == pygame.K_t:
             dlg = game.talk_start()
             if dlg:
