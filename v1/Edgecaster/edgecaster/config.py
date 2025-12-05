@@ -11,6 +11,7 @@ class GameConfig:
     tile_size: int = 24
     world_width: int = 40
     world_height: int = 24
+    world_map_screens: int = 100
     seed: int = default_seed
     max_vertices: int = 50000
     action_time_instant: int = 0

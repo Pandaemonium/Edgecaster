@@ -68,6 +68,39 @@ class WorldMapScene(Scene):
             hint = renderer.small_font.render("Esc/Enter/< to return", True, renderer.fg)
             surf.blit(hint, (ox, oy + map_surface.get_height() + 8))
 
+            # overlay corner coords (zoomed view and original full view)
+            params = getattr(self.game, "overmap_params", {})
+            if params:
+                # bottom-left
+                bl_view = f"View BL world: ({params.get('min_wx',0):.2f}, {params.get('min_wy',0):.2f})"
+                bl_orig = f"Orig BL world: ({params.get('orig_min_wx',0):.2f}, {params.get('orig_min_wy',0):.2f})"
+                bl_view_j = f"View BL julia: ({params.get('view_min_jx',0):.3f}, {params.get('view_min_jy',0):.3f})"
+                bl_orig_j = f"Orig BL julia: ({params.get('orig_min_jx',0):.3f}, {params.get('orig_min_jy',0):.3f})"
+                bl1 = renderer.small_font.render(bl_view, True, renderer.fg)
+                bl2 = renderer.small_font.render(bl_orig, True, renderer.fg)
+                bl3 = renderer.small_font.render(bl_view_j, True, renderer.fg)
+                bl4 = renderer.small_font.render(bl_orig_j, True, renderer.fg)
+                y_base = oy + map_surface.get_height() - (bl1.get_height()+bl2.get_height()+bl3.get_height()+bl4.get_height()+12)
+                surf.blit(bl1, (ox + 4, y_base))
+                surf.blit(bl2, (ox + 4, y_base + bl1.get_height()))
+                surf.blit(bl3, (ox + 4, y_base + bl1.get_height() + bl2.get_height()))
+                surf.blit(bl4, (ox + 4, y_base + bl1.get_height() + bl2.get_height() + bl3.get_height()))
+                # top-right
+                tr_view = f"View TR world: ({params.get('view_max_wx',0):.2f}, {params.get('view_max_wy',0):.2f})"
+                tr_orig = f"Orig TR world: ({params.get('orig_max_wx',0):.2f}, {params.get('orig_max_wy',0):.2f})"
+                tr_view_j = f"View TR julia: ({params.get('view_max_jx',0):.3f}, {params.get('view_max_jy',0):.3f})"
+                tr_orig_j = f"Orig TR julia: ({params.get('orig_max_jx',0):.3f}, {params.get('orig_max_jy',0):.3f})"
+                tr1 = renderer.small_font.render(tr_view, True, renderer.fg)
+                tr2 = renderer.small_font.render(tr_orig, True, renderer.fg)
+                tr3 = renderer.small_font.render(tr_view_j, True, renderer.fg)
+                tr4 = renderer.small_font.render(tr_orig_j, True, renderer.fg)
+                tr_x = ox + map_surface.get_width() - max(tr1.get_width(), tr2.get_width(), tr3.get_width(), tr4.get_width()) - 4
+                y_tr = oy + 4
+                surf.blit(tr1, (tr_x, y_tr))
+                surf.blit(tr2, (tr_x, y_tr + tr1.get_height()))
+                surf.blit(tr3, (tr_x, y_tr + tr1.get_height() + tr2.get_height()))
+                surf.blit(tr4, (tr_x, y_tr + tr1.get_height() + tr2.get_height() + tr3.get_height()))
+
             renderer._present()
             clock.tick(60)
 
@@ -82,18 +115,11 @@ class WorldMapScene(Scene):
         return gx, gy
 
     def _world_to_map(self, wx: float, wy: float, size: tuple[int, int]) -> tuple[int, int]:
-        view = None
-        if self.game.world_map_cache:
-            view = self.game.world_map_cache.get("view")
-        if view:
-            min_x, min_y, span_x, span_y = view
-        else:
-            span_x = (self.span * 2 + 1) * self.game.cfg.world_width
-            span_y = (self.span * 2 + 1) * self.game.cfg.world_height
-            min_x = (self.game.zone[0] - self.span) * self.game.cfg.world_width
-            min_y = (self.game.zone[1] - self.span) * self.game.cfg.world_height
-        px = int((wx - min_x) / span_x * size[0])
-        py = int((wy - min_y) / span_y * size[1])
+        # map world tile coords to full-map pixels
+        total_w = self.game.cfg.world_map_screens * self.game.cfg.world_width
+        total_h = self.game.cfg.world_map_screens * self.game.cfg.world_height
+        px = int((wx / max(1, total_w)) * size[0])
+        py = int((wy / max(1, total_h)) * size[1])
         return px, py
 
     def _build_cached_surface(self, renderer) -> pygame.Surface:
@@ -125,11 +151,19 @@ class WorldMapScene(Scene):
         hi_surf = pygame.Surface((px_w, px_h))
         field = self.game.fractal_field
         cfg = self.game.cfg
-        cx, cy, _ = self.game.zone
-        span_x = (self.span * 2 + 1) * cfg.world_width
-        span_y = (self.span * 2 + 1) * cfg.world_height
-        min_wx = (cx - self.span) * cfg.world_width
-        min_wy = (cy - self.span) * cfg.world_height
+        # Show the full world: 0..(num_zones*zone_size)
+        total_w = cfg.world_map_screens * cfg.world_width
+        total_h = cfg.world_map_screens * cfg.world_height
+        min_wx = 0.0
+        min_wy = 0.0
+        span_x = float(total_w)
+        span_y = float(total_h)
+
+        # record original corners before any crop
+        orig_min_wx = min_wx
+        orig_min_wy = min_wy
+        orig_max_wx = min_wx + span_x
+        orig_max_wy = min_wy + span_y
 
         visual_c = self._pick_visual_c()
         visual_span = 3.2
@@ -205,6 +239,40 @@ class WorldMapScene(Scene):
         view_min_wy = min_wy + (min_y / max(1, px_h - 1)) * span_y
         view_span_x = (crop_w - 1) / max(1, px_w - 1) * span_x
         view_span_y = (crop_h - 1) / max(1, px_h - 1) * span_y
+        view_max_wx = view_min_wx + view_span_x
+        view_max_wy = view_min_wy + view_span_y
+
+        # stash corners for locals/diagnostics
+        self.game.overmap_params = {
+            "min_wx": view_min_wx,
+            "min_wy": view_min_wy,
+            "span_x": view_span_x,
+            "span_y": view_span_y,
+            "visual_c": visual_c,
+            "visual_span": visual_span,
+            "visual_zoom": visual_zoom,
+            "surface_size": (surf.get_width(), surf.get_height()),
+            "surface": surf.copy(),
+            "orig_min_wx": orig_min_wx,
+            "orig_min_wy": orig_min_wy,
+            "orig_max_wx": orig_max_wx,
+            "orig_max_wy": orig_max_wy,
+            "view_max_wx": view_max_wx,
+            "view_max_wy": view_max_wy,
+            # julia coords (effective inputs to _julia_height)
+            "orig_min_jx": -0.5 * visual_span * visual_zoom,
+            "orig_max_jx": 0.5 * visual_span * visual_zoom,
+            "orig_min_jy": -0.5 * visual_span * visual_zoom,
+            "orig_max_jy": 0.5 * visual_span * visual_zoom,
+            # cropped view julia coords
+            "view_min_jx": (((view_min_wx - orig_min_wx) / span_x) - 0.5) * visual_span * visual_zoom,
+            "view_max_jx": (((view_max_wx - orig_min_wx) / span_x) - 0.5) * visual_span * visual_zoom,
+            "view_min_jy": (((view_min_wy - orig_min_wy) / span_y) - 0.5) * visual_span * visual_zoom,
+            "view_max_jy": (((view_max_wy - orig_min_wy) / span_y) - 0.5) * visual_span * visual_zoom,
+        }
+        # build per-tile Julia grid for the whole world using these extents
+        if hasattr(self.game, "build_tile_julia_grid"):
+            self.game.build_tile_julia_grid()
 
         return surf, (view_min_wx, view_min_wy, view_span_x, view_span_y)
 

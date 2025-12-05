@@ -169,7 +169,14 @@ class AsciiRenderer:
                 tile = world.tiles[y][x]
                 if not tile.explored and not tile.visible:
                     continue
-                base_col = palette.get(tile.glyph, self.fg)
+                base_col = tile.tint if getattr(tile, "tint", None) else palette.get(tile.glyph, self.fg)
+                # sanitize color: ensure length 3 and ints 0-255
+                if base_col is None:
+                    base_col = self.fg
+                if len(base_col) >= 3:
+                    base_col = tuple(max(0, min(255, int(base_col[i]))) for i in range(3))
+                else:
+                    base_col = self.fg
                 if tile.visible:
                     color = base_col
                 else:
