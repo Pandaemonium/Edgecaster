@@ -3,10 +3,7 @@ from typing import Dict, Tuple
 
 from edgecaster.state.entities import Entity  # NEW
 
-
-
 Pos = Tuple[int, int]
-
 
 
 @dataclass
@@ -39,6 +36,11 @@ class Actor(Entity):
     # social / future bits
     disposition: float = 0.0
     affiliations: tuple = field(default_factory=tuple)  # tuple of faction ids
+
+    # Which high-level Actions this actor can perform.
+    # (Action names from edgecaster.systems.actions.)
+    actions: tuple[str, ...] = field(default_factory=tuple)
+
     # statuses/tags are inherited from Entity
 
     @property
@@ -53,4 +55,3 @@ class Actor(Entity):
     @actor_id.setter
     def actor_id(self, value: str) -> None:
         self.id = value
-

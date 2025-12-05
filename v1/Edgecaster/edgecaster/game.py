@@ -12,6 +12,12 @@ from edgecaster.patterns.activation import project_vertices, damage_from_vertice
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
 from edgecaster.content import npcs
+from edgecaster.systems.actions import get_action, action_delay
+from edgecaster.systems import ai
+from edgecaster.state import monster_manual
+
+
+
 from . import lorenz
 import math
 
@@ -210,7 +216,11 @@ class Game:
             pos=(px, py),
             faction="player",
             stats=player_stats,
+            # For now the player only uses 'move' through the Action system;
+            # fractal stuff still routes through dedicated methods.
+            actions=("move", "wait"),
         )
+
 
         self.player_id = player.id
         lvl = self._level()
@@ -473,6 +483,32 @@ class Game:
 
 
 
+
+    def queue_actor_action(self, actor_id: str, action_name: str, **kwargs) -> None:
+        """
+        Perform a generic action for the given actor and advance time based
+        on the action's speed.
+
+        This uses the existing per-level event system (_advance_time)
+        instead of introducing a separate scheduler.
+        """
+        lvl = self._level()
+        action_def = get_action(action_name)
+        delay = action_delay(self.cfg, action_def)  # use cfg, not 'config'
+
+        # Do the actual action right now.
+        action_def.func(self, actor_id, **kwargs)
+
+        # Advance game time by the appropriate amount.
+        self._advance_time(lvl, delay)
+
+    def queue_player_action(self, action_name: str, **kwargs) -> None:
+        """Convenience wrapper to queue an action for the current player."""
+        self.queue_actor_action(self.player_id, action_name, **kwargs)
+
+
+
+
     def build_tile_julia_grid(self) -> None:
         """Precompute per-tile Julia coordinates across the whole world grid."""
         if not getattr(self, "overmap_params", None):
@@ -677,14 +713,13 @@ class Game:
             if self._blocking_entity_at(level, (x, y)):
                 continue
             aid = self._new_id()
-            imp = Actor(
-                aid,
-                "Imp",
-                (x, y),
-                faction="hostile",
-                stats=Stats(hp=5, max_hp=5),
-                tags={"xp": self.cfg.xp_per_imp},
+            imp = monster_manual.make_monster(
+                "imp",
+                id=aid,
+                pos=(x, y),
+                cfg=self.cfg,
             )
+
             level.actors[aid] = imp
             level.entities[aid] = imp  # mirror into entities
 
@@ -800,14 +835,13 @@ class Game:
         def place_imp(pos: Tuple[int, int]) -> None:
             x, y = pos
             aid = self._new_id()
-            imp = Actor(
-                aid,
-                "Imp",
-                (x, y),
-                faction="hostile",
-                stats=Stats(hp=5, max_hp=5),
-                tags={"xp": self.cfg.xp_per_imp},
+            imp = monster_manual.make_monster(
+                "imp",
+                id=aid,
+                pos=(x, y),
+                cfg=self.cfg,
             )
+
             level.actors[aid] = imp
             level.entities[aid] = imp
 
@@ -831,14 +865,13 @@ class Game:
         def place_echo(pos: Tuple[int, int]) -> None:
             x, y = pos
             aid = self._new_id()
-            echo = Actor(
-                aid,
-                "Fractal Echo",
-                (x, y),
-                faction="hostile",
-                stats=Stats(hp=6, max_hp=6),
-                tags={"xp": self.cfg.xp_per_imp},
+            echo = monster_manual.make_monster(
+                "fractal_echo",
+                id=aid,
+                pos=(x, y),
+                cfg=self.cfg,
             )
+
             level.actors[aid] = echo
             level.entities[aid] = echo
 
@@ -1644,11 +1677,19 @@ class Game:
 
     # --- actions ---
 
+    # --- actions ---
+
     def queue_player_move(self, delta: Move) -> None:
-        lvl = self._level()
+        """
+        Legacy entry point used by the renderer for directional input.
+
+        Under the hood we now route this through the generic Action
+        system so that movement is just another Action, with its speed
+        and energy cost defined in the registry.
+        """
         dx, dy = delta
-        self._handle_move_or_attack(lvl, self.player_id, dx, dy)
-        self._advance_time(lvl, self.cfg.action_time_fast)
+        self.queue_actor_action(self.player_id, "move", dx=dx, dy=dy)
+
 
     def queue_player_wait(self) -> None:
         """Spend a turn doing nothing (useful for letting effects tick or luring enemies)."""
@@ -1968,32 +2009,63 @@ class Game:
         actor = level.actors.get(id)
         if actor is None or not actor.alive:
             return
+
+        # If the player is not on this level (e.g. moved away), just
+        # reschedule a bit later and do nothing for now.
         if self.player_id not in level.actors:
-            # player not on this level; reschedule later
-            self._schedule(level, self.cfg.action_time_fast, lambda aid=id, lvl=level: self._monster_act(lvl, aid))
+            self._schedule(
+                level,
+                self.cfg.action_time_fast,
+                lambda aid=id, lvl=level: self._monster_act(lvl, aid),
+            )
             return
 
-        # status: Distracted (30% chance to lose turn)
+        # Status: Distracted (30% chance to lose turn)
         if self._has_status(actor, "distracted"):
             if self.rng.random() < 0.3:
                 self.log.add(f"The distracted {actor.name} falters.")
                 self._tick_status(actor, "distracted")
-                self._schedule(level, self.cfg.action_time_fast, lambda aid=id, lvl=level: self._monster_act(lvl, aid))
+                # Lose a turn: just wait one 'fast' step.
+                self._schedule(
+                    level,
+                    self.cfg.action_time_fast,
+                    lambda aid=id, lvl=level: self._monster_act(lvl, aid),
+                )
                 return
             else:
                 self._tick_status(actor, "distracted")
 
-        px, py = level.actors[self.player_id].pos
-        ax, ay = actor.pos
-        if abs(px - ax) + abs(py - ay) == 1:
-            self._attack(level, actor, level.actors[self.player_id])
-        else:
-            steps = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
-            dx, dy = self.rng.choice(steps)
-            target = (ax + dx, ay + dy)
-            if level.world.in_bounds(*target) and level.world.is_walkable(*target) and not self._actor_at(level, target):
-                actor.pos = target
-        self._schedule(level, self.cfg.action_time_fast, lambda aid=id, lvl=level: self._monster_act(lvl, aid))
+        # --- Decide + perform an Action via the AI layer -----------------
+        try:
+            action_name, params = ai.choose_action(self, level, actor)
+        except Exception:
+            # Extremely defensive: if AI explodes, just wait.
+            action_name, params = "wait", {}
+
+        delay = self.cfg.action_time_fast
+
+        if action_name:
+            from edgecaster.systems.actions import get_action, action_delay
+
+            try:
+                action_def = get_action(action_name)
+            except KeyError:
+                # Unknown action: fall back to a simple wait.
+                delay = self.cfg.action_time_fast
+            else:
+                # Perform the action immediately; do NOT call _advance_time
+                # here, because we are already executing inside the event
+                # queue (_advance_time's loop).
+                action_def.func(self, actor.id, **(params or {}))
+                delay = action_delay(self.cfg, action_def)
+
+        # --- Schedule next turn -----------------------------------------
+        self._schedule(
+            level,
+            delay,
+            lambda aid=id, lvl=level: self._monster_act(lvl, aid),
+        )
+
 
     # --- pattern activation ---
 
