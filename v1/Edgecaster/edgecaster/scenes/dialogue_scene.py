@@ -135,8 +135,7 @@ class DialoguePopupScene(PopupMenuScene):
             if isinstance(override, str):
                 next_id = override
 
-        # Decide where to go next
-        next_id = choice.next_id
+        # Decide where to go next (use possibly-overridden next_id)
         if next_id is None:
             # End of dialogue
             self._close_self(manager)
@@ -151,6 +150,7 @@ class DialoguePopupScene(PopupMenuScene):
         # Move to the next node and stay in this scene.
         self.node_id = next_id
         return False
+
 
     def on_back(self, manager) -> bool:
         """Esc = bail out of the dialogue."""

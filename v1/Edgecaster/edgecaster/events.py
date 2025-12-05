@@ -192,7 +192,21 @@ def pick_random_event(game) -> Optional[Event]:
     
     
 def _open_dialogue_node(game, tree: DialogueTree, node_id: str) -> None:
-    """Show a single node as an urgent popup and wire up its choices."""
+    """
+    Legacy urgent-popup fallback for dialogues.
+
+    If there's a SceneManager attached, delegate to start_dialogue(...) so
+    we use the proper DialoguePopupScene and stay on a single window
+    instead of nesting urgent popups. Only use the urgent popup path when
+    there is *no* scene manager (e.g. tests / headless mode).
+    """
+    manager = getattr(game, "scene_manager", None)
+    if manager is not None:
+        # Re-enter the "real" dialogue path starting from this node.
+        start_dialogue(game, tree, start_node=node_id)
+        return
+
+    # --- Original urgent-popup behaviour (no manager case) ---
     node = tree.nodes[node_id]
 
     def on_choice(choice_index: int, g) -> None:
@@ -216,33 +230,35 @@ def _open_dialogue_node(game, tree: DialogueTree, node_id: str) -> None:
     )
 
 
-def start_dialogue(game: "Game", tree: DialogueTree) -> None:
-    """Entry point for triggering a dialogue from game logic."""
-    manager = getattr(game, "scene_manager", None)
 
-    # If there's no scene manager attached, fall back to the legacy
-    # urgent-message style interaction.
+def start_dialogue(game: "Game", tree: DialogueTree, start_node: Optional[str] = None) -> None:
+    """Entry point for triggering a dialogue from game logic.
+
+    If start_node is given, begin at that node instead of tree.start_id.
+    """
+    manager = getattr(game, "scene_manager", None)
+    entry = start_node or tree.start_id
+
+    # If there's no scene manager attached, fall back to the legacy urgent popup.
     if manager is None:
         game.log.add("(Dialogue fallback: no scene manager attached.)")
-        _open_dialogue_node(game, tree, tree.start_id)
+        _open_dialogue_node(game, tree, entry)
         return
 
     try:
-        # Import here to avoid circular imports at module load time.
         from edgecaster.scenes.dialogue_scene import DialoguePopupScene
 
         manager.open_window_scene(
             DialoguePopupScene,
             game=game,
             tree=tree,
-            node_id=tree.start_id,
-            scale=0.7,  # used only by SceneManager to size the window
+            node_id=entry,
+            scale=0.7,
         )
     except Exception as e:
-        # Don't hard-crash the game; log the problem and fall back
-        # to the old “press keys in the log” interaction.
         game.log.add(f"(Dialogue error: {e!r})")
-        _open_dialogue_node(game, tree, tree.start_id)
+        _open_dialogue_node(game, tree, entry)
+
 
 
 

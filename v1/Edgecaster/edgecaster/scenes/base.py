@@ -589,7 +589,9 @@ class PopupMenuScene(MenuScene):
                         if self.on_activate(idx, manager):
                             running = False
                             break
-
+            # 💡 NEW: if we have been told to stop, don't draw another frame
+            if not running:
+                break
 
 
             # ----------------- DRAW -----------------
