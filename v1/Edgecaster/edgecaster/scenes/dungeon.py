@@ -68,6 +68,7 @@ class DungeonScene(Scene):
         game = self.game
         # expose to manager for options display
         manager.current_game = game
+        setattr(game, "scene_manager", manager)
 
         # Save any previous hook (in case we ever call DungeonScene from another scene)
         old_cb = getattr(game, "urgent_callback", None)
@@ -78,17 +79,27 @@ class DungeonScene(Scene):
             body = getattr(game, "urgent_body", text)
             choices = getattr(game, "urgent_choices", None) or ["Continue..."]
 
+            def handle_choice(idx, _manager) -> None:
+                # Look up any effect the Game attached to this urgent event.
+                effect = getattr(game, "urgent_choice_effect", None)
+                if effect is not None:
+                    effect(idx, game)
+                    # Clear it so it doesn't leak to the next popup.
+                    game.urgent_choice_effect = None
+
             manager.push_scene(
                 UrgentMessageScene(
                     game,
                     body,
                     title=title,
                     choices=choices,
+                    on_choice=handle_choice,
                 )
             )
             # Tell the ASCII renderer to exit its loop ASAP so DungeonScene.run()
             # can yield to the new scene.
             renderer.quit_requested = True
+
 
 
 

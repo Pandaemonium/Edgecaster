@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import heapq
 from typing import Dict, Tuple, List, Optional, Callable
 
-from edgecaster import config
+from edgecaster import config, events
 from edgecaster.state.world import World
 from edgecaster.state.actors import Actor, Stats
 from edgecaster.state.entities import Entity
@@ -105,12 +105,14 @@ class Game:
         self.urgent_message: str | None = None
         self.urgent_resolved: bool = True
         self.urgent_callback: Optional[Callable[[str], None]] = None
+        self.scene_manager = None  # type: ignore[assignment]
 
         # richer urgent metadata (title/body/choices) for the popup scene
         self.urgent_title: Optional[str] = None
         self.urgent_body: Optional[str] = None
         self.urgent_choices: Optional[List[str]] = None
-
+        # Optional effect to run when a choice is selected
+        self.urgent_choice_effect: Optional[Callable[[int, "Game"], None]] = None
 
         # character info
         self.character: Character = character or default_character()
@@ -368,16 +370,20 @@ class Game:
         *,
         title: Optional[str] = None,
         choices: Optional[List[str]] = None,
+        on_choice_effect: Optional[Callable[[int, "Game"], None]] = None,
     ) -> None:
+
         """Notify the UI of an urgent message.
 
         If a UI callback is installed, call it immediately; otherwise,
         fall back to the old flag-based behaviour.
         """
+
         # Remember structured fields so the UI can style the popup.
         self.urgent_title = title
         self.urgent_body = text
         self.urgent_choices = choices
+        self.urgent_choice_effect = on_choice_effect
 
         if self.urgent_callback is not None:
             # Let the current scene/UI handle it (typically by pushing
@@ -516,6 +522,112 @@ class Game:
             level.actors[aid] = actor
             level.entities[aid] = actor  # now NPCs are entities too
             placed += 1
+
+    def _spawn_entities_near(
+        self,
+        level: LevelState,
+        center: Tuple[int, int],
+        count: int,
+        place_entity: Callable[[Tuple[int, int]], None],
+        radius: int = 3,
+    ) -> int:
+        """Generic helper to spawn up to `count` entities within `radius` of center.
+
+        `place_entity` is called with each chosen (x, y) and is responsible for
+        inserting the new thing into `level.entities` (and `level.actors`, if
+        applicable).
+        """
+        cx, cy = center
+        spawned = 0
+        attempts = 0
+        max_attempts = count * 20
+
+        while spawned < count and attempts < max_attempts:
+            attempts += 1
+            x = cx + self.rng.randint(-radius, radius)
+            y = cy + self.rng.randint(-radius, radius)
+
+            if not level.world.in_bounds(x, y):
+                continue
+            if not level.world.is_walkable(x, y):
+                continue
+            if self._actor_at(level, (x, y)):
+                continue
+            # Avoid stacking multiple entities on the same tile for now.
+            if self._entity_at(level, (x, y)):
+                continue
+
+            place_entity((x, y))
+            spawned += 1
+
+        return spawned
+
+    def _spawn_imps_near(
+        self,
+        level: LevelState,
+        center: Tuple[int, int],
+        count: int,
+        radius: int = 3,
+    ) -> int:
+        """Spawn up to `count` imps within `radius` tiles of center."""
+        def place_imp(pos: Tuple[int, int]) -> None:
+            x, y = pos
+            aid = self._new_id()
+            imp = Actor(
+                aid,
+                "Imp",
+                (x, y),
+                faction="hostile",
+                stats=Stats(hp=5, max_hp=5),
+                tags={"xp": self.cfg.xp_per_imp},
+            )
+            level.actors[aid] = imp
+            level.entities[aid] = imp
+
+            # Schedule AI
+            self._schedule(
+                level,
+                self.cfg.action_time_fast,
+                lambda aid=aid, lvl=level: self._monster_act(lvl, aid),
+            )
+
+        return self._spawn_entities_near(level, center, count, place_imp, radius)
+
+    def _spawn_berries_near(
+        self,
+        level: LevelState,
+        center: Tuple[int, int],
+        count: int,
+        radius: int = 3,
+    ) -> int:
+        """Spawn up to `count` test berries within `radius` tiles of center."""
+        berry_defs = [
+            ("Blueberry",   "blueberry",   (80, 80, 200)),
+            ("Raspberry",   "raspberry",   (200, 60, 120)),
+            ("Strawberry",  "strawberry",  (230, 80, 80)),
+        ]
+
+        def place_berry(pos: Tuple[int, int]) -> None:
+            x, y = pos
+            name, berry_id_tag, color = self.rng.choice(berry_defs)
+            eid = self._new_id()
+            ent = Entity(
+                id=eid,
+                name=name,
+                pos=(x, y),
+                glyph="b",
+                color=color,
+                kind="item",
+                render_layer=1,
+                blocks_movement=False,
+                tags={"item_type": berry_id_tag, "test_berry": True},
+            )
+            level.entities[eid] = ent
+
+        return self._spawn_entities_near(level, center, count, place_berry, radius)
+
+
+
 
 
     def _scatter_test_berries(self, level: LevelState, count: int = 30) -> None:
@@ -1055,8 +1167,19 @@ class Game:
 
         # Actually consume the item.
         inv.pop(index)
-        # Later we can hook in healing / buffs here; for now just flavour.
-        self.log.add("That was tart!")
+
+        # Heal the player a bit for eating a berry.
+        player = self._player()
+        before = player.stats.hp
+        player.stats.hp = min(player.stats.max_hp, player.stats.hp + 1)
+        after = player.stats.hp
+
+        # Flavour text
+        if after > before:
+            self.log.add("That was tart!")
+        else:
+            self.log.add("That was really tart!")
+
 
 
     @property
@@ -1517,6 +1640,25 @@ class Game:
         self._update_fov(dest_level)
         # NEW: hard-snap Lorenz storm when wrapping zones
         self._reset_lorenz_on_zone_change(actor)
+ 
+        self.log.add(f"You travel to zone {dest_coord[0]},{dest_coord[1]} (depth {dest_coord[2]}).")
+        self._update_fov(dest_level)
+        # NEW: hard-snap Lorenz storm when wrapping zones
+        self._reset_lorenz_on_zone_change(actor)
+
+        # --- RANDOM OVERWORLD EVENTS (testing) ---
+        # 50% chance to fire *some* event on overworld for now.
+        if self.zone_coord[2] == 0 and self.rng.random() < 0.5:
+            ev = events.pick_random_event(self)
+            if ev is not None:
+                self.set_urgent(
+                    ev.body,
+                    title=ev.title,
+                    choices=ev.choices,
+                    on_choice_effect=ev.effect,
+                )
+
+
 
 
     def _monster_act(self, level: LevelState, id: str) -> None:

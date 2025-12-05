@@ -63,19 +63,42 @@ class UrgentMessageScene(PopupMenuScene):
 
     # ------------------------------------------------------------------ #
 
-    # NEW: internal helper to close this popup
     def _close_self(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         """
-        Close this popup. If we're on a scene stack, pop just this scene.
-        Otherwise, fall back to clearing the current scene.
+        Close this popup. Prefer removing *this* scene from the stack, even if
+        other scenes were pushed on top of it by the on_choice callback.
         """
         stack = getattr(manager, "scene_stack", None)
-        if stack is not None and stack and stack[-1] is self and hasattr(manager, "pop_scene"):
-            manager.pop_scene()
-        else:
-            # Fallback for non-stacked usage
-            if hasattr(manager, "set_scene"):
-                manager.set_scene(None)
+
+        if stack is not None and stack:
+            # Normal case: we're on top
+            if stack[-1] is self and hasattr(manager, "pop_scene"):
+                manager.pop_scene()
+            else:
+                # on_choice may have pushed a new scene above us (e.g. DialoguePopupScene).
+                # In that case, surgically remove *this* scene from the stack and
+                # leave whatever got pushed on top.
+                if self in stack:
+                    stack.remove(self)
+
+                    # If this popup was ever opened as a windowed scene, keep
+                    # window_stack in sync too.
+                    win_stack = getattr(manager, "window_stack", None)
+                    if (
+                        win_stack is not None
+                        and hasattr(self, "window_rect")
+                        and self.window_rect in win_stack
+                    ):
+                        try:
+                            win_stack.remove(self.window_rect)
+                        except ValueError:
+                            pass
+            return
+
+        # Fallback: no stack information, just clear the current scene.
+        if hasattr(manager, "set_scene"):
+            manager.set_scene(None)
+
 
     # MenuScene-style hooks
 
