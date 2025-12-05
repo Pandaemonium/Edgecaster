@@ -81,6 +81,16 @@ class WorldMapScene(Scene):
             marker = self._world_to_map(px, py, map_surface.get_size())
             pygame.draw.circle(surf, (255, 230, 120), (ox + marker[0], oy + marker[1]), 4)
 
+            # marker for lab zone (if known)
+            if hasattr(self.game, "lab_zone") and self.game.lab_zone:
+                lab_zx, lab_zy = self.game.lab_zone
+                total_w = self.game.cfg.world_map_screens * self.game.cfg.world_width
+                total_h = self.game.cfg.world_map_screens * self.game.cfg.world_height
+                lab_wx = lab_zx * self.game.cfg.world_width + self.game.cfg.world_width // 2
+                lab_wy = lab_zy * self.game.cfg.world_height + self.game.cfg.world_height // 2
+                lx, ly = self._world_to_map(lab_wx, lab_wy, map_surface.get_size())
+                pygame.draw.circle(surf, (200, 120, 255), (ox + lx, oy + ly), 4)
+
             title = renderer.big_label("World Map")
             surf.blit(title, (ox, oy - 36))
             hint = renderer.small_font.render("Esc/Enter/< to return", True, renderer.fg)

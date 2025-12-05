@@ -69,6 +69,16 @@ class DungeonScene(Scene):
         # expose to manager for options display
         manager.current_game = game
         setattr(game, "scene_manager", manager)
+        # If a fractal edit result is waiting, absorb it into custom patterns
+        if getattr(manager, "fractal_edit_result", None):
+            res = manager.fractal_edit_result
+            manager.fractal_edit_result = None
+            pts = res.get("vertices") if isinstance(res, dict) else None
+            if pts and len(pts) >= 2:
+                game.custom_patterns.append(pts)
+                game.character.custom_pattern = pts
+                # force ability bar rebuild
+                renderer.abilities_signature = None
 
         # Save any previous hook (in case we ever call DungeonScene from another scene)
         old_cb = getattr(game, "urgent_callback", None)
@@ -147,33 +157,42 @@ class DungeonScene(Scene):
             return
 
 
-        # 2) Death → go back to main menu, discard the run
+        # 2) Death -> go back to main menu, discard the run
         if not getattr(game, "player_alive", True):
             self.game = None
             manager.current_game = None
             manager.set_scene(MainMenuScene())
             return
 
-        # 3) Inventory requested → push overlay, keep dungeon scene on stack
+        # 3) Inventory requested -> push overlay, keep dungeon scene on stack
         if getattr(game, "inventory_requested", False):
             game.inventory_requested = False
             manager.push_scene(InventoryScene(game))
             return
 
-        # 4) Pause requested → push pause menu overlay
+        # 4) Fractal editor requested -> open editor scene
+        if getattr(game, "fractal_editor_requested", False):
+            game.fractal_editor_requested = False
+            from .fractal_editor_scene import FractalEditorScene, FractalEditorState
+            state = getattr(game, "fractal_editor_state", None) or FractalEditorState()
+            # Launch full-screen editor so clicks/render align to the same origin
+            manager.push_scene(FractalEditorScene(state=state, window_rect=None))
+            return
+
+        # 5) Pause requested -> push pause menu overlay
         if getattr(renderer, "pause_requested", False):
             renderer.pause_requested = False
             manager.push_scene(PauseMenuScene())
             return
 
-        # 5) World map requested → push world map scene (keep game instance)
+        # 6) World map requested -> push world map scene (keep game instance)
         if getattr(game, "map_requested", False):
             game.map_requested = False
             from .world_map_scene import WorldMapScene
             manager.push_scene(WorldMapScene(game, span=16))
             return
 
-        # 5) Otherwise, the loop ended for some external reason (like quitting)
+        # Otherwise, the loop ended for some external reason (like quitting)
         self.game = None
         manager.current_game = None
         manager.set_scene(None)

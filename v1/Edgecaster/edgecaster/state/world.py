@@ -22,6 +22,7 @@ class World:
     entry: Tuple[int, int] = field(default=(0, 0))
     up_stairs: Optional[Tuple[int, int]] = None
     down_stairs: Optional[Tuple[int, int]] = None
+    is_lab: bool = False
 
     def __post_init__(self) -> None:
         self.tiles = _make_grid(self.width, self.height)

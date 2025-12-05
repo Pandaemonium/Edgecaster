@@ -18,6 +18,10 @@ import math
 
 Move = Tuple[int, int]
 
+@dataclass
+class LabState:
+    chaos: float = 0.0
+    chaos_threshold: float = 1.0
 
 def _line_points(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
     points = []
@@ -92,6 +96,7 @@ class LevelState:
     hover_vertex: Optional[int] = None  # for renderer hinting
     spotted: set = None  # seen actors
     coord: Tuple[int, int, int] = (0, 0, 0)  # (x, y, depth)
+    lab_state: Optional["LabState"] = None  # lab-specific state if this is a lab zone
 
 
 
@@ -124,6 +129,10 @@ class Game:
         self.unlocked_generators: List[str] = [self.character.generator]
         # start with params auto-maxed given current stats
         self._recalc_param_state_max()
+        # custom patterns (list of vertex lists)
+        self.custom_patterns: List[list] = []
+        if getattr(self.character, "custom_pattern", None):
+            self.custom_patterns.append(self.character.custom_pattern)
         # fractal field for overworld generation
         # seed: use character seed if provided, else derive from rng
         if getattr(self.character, "use_random_seed", False):
@@ -141,6 +150,8 @@ class Game:
         self.tile_julia_grid: dict[str, list[float]] | None = None
         # flags
         self.map_requested = False
+        self.fractal_editor_requested = False
+        self.fractal_editor_state = None
 
 
         # zones keyed by (x, y, depth)
@@ -219,6 +230,13 @@ class Game:
         self.log.add("Imps lurk nearby. Press ? for help.")
 
         self._update_fov(self._level())
+
+        # decide a lab zone for this run (one random overworld zone)
+        self.lab_zone: Tuple[int, int] = (
+            self.rng.randrange(0, self.cfg.world_map_screens),
+            self.rng.randrange(0, self.cfg.world_map_screens),
+        )
+        self.log.add(f"A mysterious lab is rumored at overworld zone ({self.lab_zone[0]}, {self.lab_zone[1]}). Press < to view the world map.")
 
 
     def _build_player_stats(self) -> Stats:
@@ -309,6 +327,42 @@ class Game:
         res = self.character.stats.get("res", 0)
         return 40 + res * 40
 
+    # --- level-up stat logic ---
+
+    def _auto_stat_roll(self) -> None:
+        """Roll a stat increase based on class weights."""
+        weights = getattr(self.character, "stat_weights", None)
+        if not weights:
+            weights = {"con": 0.25, "res": 0.25, "int": 0.25, "agi": 0.25}
+        keys = list(weights.keys())
+        vals = [max(0.0, float(weights[k])) for k in keys]
+        total = sum(vals)
+        if total <= 0:
+            vals = [1.0 for _ in keys]
+            total = len(keys)
+        vals = [v / total for v in vals]
+        r = self.rng.random()
+        acc = 0.0
+        chosen = keys[-1]
+        for k, w in zip(keys, vals):
+            acc += w
+            if r <= acc:
+                chosen = k
+                break
+        self.character.stats[chosen] = self.character.stats.get(chosen, 0) + 1
+        self.log.add(f"Your {chosen.upper()} grows (+1).")
+
+    def _choose_stat_upgrade(self) -> Optional[str]:
+        """Even levels: choose a stat to upgrade. For now auto-picks highest weight."""
+        options = ["con", "res", "int", "agi"]
+        weights = getattr(self.character, "stat_weights", None)
+        if not weights:
+            weights = {k: 1.0 for k in options}
+        chosen = max(options, key=lambda k: weights.get(k, 0))
+        self.character.stats[chosen] = self.character.stats.get(chosen, 0) + 1
+        self.log.add(f"You focus your training: {chosen.upper()} +1.")
+        return chosen
+
     def _fizzle_roll(self, over: int, limit: int) -> bool:
         """Return True if activation should fizzle (probability increases with overage)."""
         if over <= 0:
@@ -345,6 +399,17 @@ class Game:
         player.stats.max_mana += mana_gain
         player.stats.hp = player.stats.max_hp
         player.stats.mana = player.stats.max_mana
+        # Stat upgrades: odd levels auto-roll by class weights; even levels choose.
+        lvl = player.stats.level
+        if lvl % 2 == 1:
+            self._auto_stat_roll()
+        else:
+            chosen = self._choose_stat_upgrade()
+            if chosen is None:
+                chosen = "res"  # fallback
+            self.character.stats[chosen] = self.character.stats.get(chosen, 0) + 1
+        # refresh params after stat change
+        self._recalc_param_state_max()
         self.set_urgent(
             f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)",
             title="Level Up!",
@@ -534,33 +599,40 @@ class Game:
         x, y, depth = coord
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
         if depth == 0:
-            self._ensure_overmap_ready()
-            jx_slice = jy_slice = None
-            if getattr(self, "tile_julia_grid", None):
-                gx0 = x * world.width
-                gx1 = gx0 + world.width
-                gy0 = y * world.height
-                gy1 = gy0 + world.height
-                xgrid = self.tile_julia_grid.get("x", [])
-                ygrid = self.tile_julia_grid.get("y", [])
-                # fall back to None if out of bounds
-                if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
-                    jx_slice = jy_slice = None
-                else:
-                    jx_slice = xgrid[gx0:gx1]
-                    jy_slice = ygrid[gy0:gy1]
-            mapgen.generate_fractal_overworld(
-                world,
-                self.fractal_field,
-                coord,
-                self.rng,
-                up_pos=up_pos,
-                overmap_params=self.overmap_params,
-                jx_slice=jx_slice,
-                jy_slice=jy_slice,
-            )
+            # Lab zone override
+            if (x, y) == getattr(self, "lab_zone", (-1, -1)):
+                mapgen.generate_lab(world, self.rng)
+                lab_state = LabState()
+            else:
+                self._ensure_overmap_ready()
+                jx_slice = jy_slice = None
+                if getattr(self, "tile_julia_grid", None):
+                    gx0 = x * world.width
+                    gx1 = gx0 + world.width
+                    gy0 = y * world.height
+                    gy1 = gy0 + world.height
+                    xgrid = self.tile_julia_grid.get("x", [])
+                    ygrid = self.tile_julia_grid.get("y", [])
+                    # fall back to None if out of bounds
+                    if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
+                        jx_slice = jy_slice = None
+                    else:
+                        jx_slice = xgrid[gx0:gx1]
+                        jy_slice = ygrid[gy0:gy1]
+                mapgen.generate_fractal_overworld(
+                    world,
+                    self.fractal_field,
+                    coord,
+                    self.rng,
+                    up_pos=up_pos,
+                    overmap_params=self.overmap_params,
+                    jx_slice=jx_slice,
+                    jy_slice=jy_slice,
+                )
+                lab_state = None
         else:
             mapgen.generate_basic(world, self.rng, up_pos=up_pos)
+            lab_state = None
         lvl = LevelState(
             world=world,
             actors={},
@@ -578,6 +650,7 @@ class Game:
             down_stairs=world.down_stairs,
             spotted=set(),
             coord=coord,
+            lab_state=lab_state,
         )
         # mentor on starting overworld tile
         if coord == (0, 0, 0):
@@ -746,6 +819,37 @@ class Game:
             )
 
         return self._spawn_entities_near(level, center, count, place_imp, radius)
+
+    def _spawn_echoes_near(
+        self,
+        level: LevelState,
+        center: Tuple[int, int],
+        count: int,
+        radius: int = 3,
+    ) -> int:
+        """Spawn hostile fractal echoes within `radius` of center."""
+        def place_echo(pos: Tuple[int, int]) -> None:
+            x, y = pos
+            aid = self._new_id()
+            echo = Actor(
+                aid,
+                "Fractal Echo",
+                (x, y),
+                faction="hostile",
+                stats=Stats(hp=6, max_hp=6),
+                tags={"xp": self.cfg.xp_per_imp},
+            )
+            level.actors[aid] = echo
+            level.entities[aid] = echo
+
+            # Schedule AI
+            self._schedule(
+                level,
+                self.cfg.action_time_fast,
+                lambda aid=aid, lvl=level: self._monster_act(lvl, aid),
+            )
+
+        return self._spawn_entities_near(level, center, count, place_echo, radius)
 
     def _spawn_berries_near(
         self,
@@ -1156,6 +1260,12 @@ class Game:
         if self.player_id not in lvl.actors:
             return False
         return lvl.actors[self.player_id].stats.hp > 0
+
+    # --- lab console ---
+
+    def request_fractal_editor(self) -> None:
+        """Request opening the fractal editor (e.g., when on a lab console)."""
+        self.fractal_editor_requested = True
         
         
     def describe_current_tile(self, for_examine: bool = False) -> None:
@@ -1622,12 +1732,22 @@ class Game:
             parts = self._param_value("zigzag", "parts")
             amp = self._param_value("zigzag", "amp")
             gen = builder.ZigzagGenerator(parts=parts, amplitude_factor=amp)
-        elif kind == "custom":
-            if not self.character.custom_pattern or len(self.character.custom_pattern) < 2:
+        elif kind.startswith("custom"):
+            idx = 0
+            if kind != "custom":
+                try:
+                    idx = int(kind.split("_", 1)[1])
+                except Exception:
+                    idx = 0
+            if not self.custom_patterns or idx >= len(self.custom_patterns):
+                self.log.add("No custom pattern saved.")
+                return
+            pattern = self.custom_patterns[idx]
+            if not pattern or len(pattern) < 2:
                 self.log.add("No custom pattern saved.")
                 return
             amp = self._param_value("custom", "amplitude")
-            gen = builder.CustomPolyGenerator(self.character.custom_pattern, amplitude=amp)
+            gen = builder.CustomPolyGenerator(pattern, amplitude=amp)
         else:
             self.log.add("Unknown fractal op.")
             return
@@ -1752,6 +1872,10 @@ class Game:
             level.need_fov = True
             # Auto-look when the player steps onto a tile (but don't describe yourself)
             self._describe_tile(level, actor.pos, observer_id=actor.id, auto=True)
+            # auto-trigger lab console if standing on it
+            tile = level.world.get_tile(nx, ny)
+            if tile and tile.glyph == "=":
+                self.request_fractal_editor()
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
         dmg = 1

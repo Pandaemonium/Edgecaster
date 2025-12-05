@@ -207,12 +207,14 @@ class OptionsScene(Scene):
         # 0..len(toggles)-1 : boolean toggles
         # len(toggles)      : "Options" (recursive)
         # len(toggles)+1    : "Options Options" (visual submenu)
-        # len(toggles)+2    : "Back"
+        # len(toggles)+2    : "Developer mode" (stat editor)
+        # len(toggles)+3    : "Back"
         num_toggles = len(toggles)
         options_index = num_toggles
         options_options_index = num_toggles + 1
-        back_index = num_toggles + 2
-        num_items = num_toggles + 3
+        dev_index = num_toggles + 2
+        back_index = num_toggles + 3
+        num_items = num_toggles + 4
 
         # Logical panel size (used for anisotropic scaling)
         logical_w = int(renderer.width * 0.90)
@@ -332,6 +334,23 @@ class OptionsScene(Scene):
                     running = False
                     return True
 
+                # Developer mode -> stat editor
+                if idx == dev_index:
+                    target_char = getattr(manager, "character", None)
+                    if target_char is None and getattr(manager, "current_game", None):
+                        target_char = getattr(manager.current_game, "character", None)
+                    if target_char is not None:
+                        child_rect = self._compute_child_rect()
+                        dev_scene = DeveloperOptionsScene(
+                            base_rect=child_rect,
+                            depth=self.depth + 1,
+                            character=target_char,
+                        )
+                        manager.push_scene(dev_scene)
+                        running = False
+                        return True
+                    return False
+
                 # "Back"
                 manager.pop_scene()
                 running = False
@@ -442,7 +461,7 @@ class OptionsScene(Scene):
             else:
                 label = "Options (max depth)"
                 color = renderer.dim
-            prefix = "▶ " if selected else "  "
+            prefix = "-> " if selected else "  "
             opt_text = ui_font.render(prefix + label, True, color)
             logical_surface.blit(opt_text, (base_x, y))
             y += opt_text.get_height() + line_gap
@@ -450,15 +469,23 @@ class OptionsScene(Scene):
             # "Options Options"
             selected = self.selected_idx == options_options_index
             color = renderer.player_color if selected else renderer.fg
-            prefix = "▶ " if selected else "  "
+            prefix = "-> " if selected else "  "
             oo_text = ui_font.render(prefix + "Options Options", True, color)
             logical_surface.blit(oo_text, (base_x, y))
-            y += oo_text.get_height() + line_gap + line_gap
+            y += oo_text.get_height() + line_gap
+
+            # "Developer mode"
+            selected = self.selected_idx == dev_index
+            color = renderer.player_color if selected else renderer.fg
+            prefix = "-> " if selected else "  "
+            dev_text = ui_font.render(prefix + "Developer mode", True, color)
+            logical_surface.blit(dev_text, (base_x, y))
+            y += dev_text.get_height() + line_gap + line_gap
 
             # "Back"
             selected = self.selected_idx == back_index
             color = renderer.player_color if selected else renderer.fg
-            prefix = "▶ " if selected else "  "
+            prefix = "-> " if selected else "  "
             back_label = "Back to Main Menu" if self.depth == 0 else "Back"
             back_text = ui_font.render(prefix + back_label, True, color)
             logical_surface.blit(back_text, (base_x, y))
@@ -834,5 +861,132 @@ class VisualOptionsScene(Scene):
             overlay.blit(rotated, rot_rect.topleft)
 
             surface.blit(overlay, (0, 0))
+            renderer.present()
+            clock.tick(60)
+
+
+# ---------------------------------------------------------------------------#
+# DeveloperOptionsScene (stat editor)
+# ---------------------------------------------------------------------------#
+
+
+class DeveloperOptionsScene(Scene):
+    """Simple developer page to tweak base character stats."""
+
+    def __init__(self, base_rect: pygame.Rect, depth: int, character) -> None:
+        self.base_rect = base_rect
+        self.depth = depth
+        self.character = character
+        self.selected_idx = 0
+        self._background: Optional[pygame.Surface] = None
+        self.ui_font: Optional[pygame.font.Font] = None
+        self.small_font: Optional[pygame.font.Font] = None
+        self._menu_input = MenuInput()
+
+    def _ensure_fonts(self, renderer) -> None:
+        if self.ui_font is not None and self.small_font is not None:
+            return
+        base_ui = renderer.base_tile * 2
+        ui_size = max(18, int(base_ui * 0.9))
+        small_size = max(12, int(18 * 0.9))
+        self.ui_font = pygame.font.SysFont("consolas", ui_size)
+        self.small_font = pygame.font.SysFont("consolas", small_size)
+
+    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        renderer = manager.renderer
+        surface = renderer.surface
+        clock = pygame.time.Clock()
+        menu = self._menu_input
+
+        if self._background is None:
+            self._background = surface.copy()
+
+        self._ensure_fonts(renderer)
+        ui_font = self.ui_font
+        small_font = self.small_font
+        assert ui_font and small_font
+
+        stats_keys = ["con", "res", "int", "agi"]
+
+        def handle_action(action: Optional[str]) -> bool:
+            nonlocal stats_keys
+            if action is None:
+                return False
+            if action == MENU_ACTION_FULLSCREEN:
+                renderer.toggle_fullscreen()
+                return False
+            if action == MENU_ACTION_BACK:
+                manager.pop_scene()
+                return True
+            if action == MENU_ACTION_UP:
+                self.selected_idx = (self.selected_idx - 1) % (len(stats_keys) + 1)
+                return False
+            if action == MENU_ACTION_DOWN:
+                self.selected_idx = (self.selected_idx + 1) % (len(stats_keys) + 1)
+                return False
+            if action in (MENU_ACTION_LEFT, MENU_ACTION_RIGHT, MENU_ACTION_ACTIVATE):
+                # Back
+                if self.selected_idx == len(stats_keys):
+                    manager.pop_scene()
+                    return True
+                key = stats_keys[self.selected_idx]
+                delta = -1 if action == MENU_ACTION_LEFT else 1
+                self.character.stats[key] = max(0, self.character.stats.get(key, 0) + delta)
+                return False
+            return False
+
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    manager.set_scene(None)
+                    return
+                if event.type == pygame.KEYDOWN:
+                    if handle_action(menu.handle_keydown(event.key)):
+                        running = False
+                        break
+                elif event.type == pygame.KEYUP:
+                    menu.handle_keyup(event.key)
+            if not running:
+                break
+
+            repeat = menu.update()
+            if handle_action(repeat):
+                break
+
+            if self._background is not None:
+                surface.blit(self._background, (0, 0))
+            else:
+                surface.fill(renderer.bg)
+
+            panel = pygame.Surface((self.base_rect.width, self.base_rect.height), pygame.SRCALPHA)
+            pygame.draw.rect(panel, (20, 20, 40, 235), panel.get_rect())
+            pygame.draw.rect(panel, (220, 220, 240, 240), panel.get_rect(), 2)
+
+            title = ui_font.render("Developer mode", True, renderer.fg)
+            panel.blit(title, ((panel.get_width() - title.get_width()) // 2, 12))
+
+            y = 60
+            line_gap = 8
+            for idx, key in enumerate(stats_keys):
+                selected = self.selected_idx == idx
+                prefix = "-> " if selected else "  "
+                val = self.character.stats.get(key, 0)
+                line = f"{prefix}Base[{key.upper()}]: {val}"
+                text = ui_font.render(line, True, renderer.player_color if selected else renderer.fg)
+                panel.blit(text, (24, y))
+                y += text.get_height() + line_gap
+
+            # Back
+            selected = self.selected_idx == len(stats_keys)
+            prefix = "-> " if selected else "  "
+            back_text = ui_font.render(prefix + "Back", True, renderer.player_color if selected else renderer.fg)
+            panel.blit(back_text, (24, y))
+
+            # Hint
+            hint = small_font.render("Arrows/Numpad to select, Left/Right to adjust, Esc to return", True, renderer.dim)
+            panel.blit(hint, (24, panel.get_height() - hint.get_height() - 12))
+
+            surface.blit(panel, self.base_rect.topleft)
             renderer.present()
             clock.tick(60)

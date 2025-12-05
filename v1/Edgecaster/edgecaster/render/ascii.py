@@ -1248,6 +1248,10 @@ class AsciiRenderer:
                 return
             game.use_stairs_up()
             return
+        if key in (pygame.K_PLUS, pygame.K_EQUALS):
+            game.fractal_editor_requested = True
+            self.quit_requested = True
+            return
         if key in (pygame.K_RETURN, pygame.K_SPACE):
             self._trigger_current(game)
 
@@ -1345,9 +1349,9 @@ class AsciiRenderer:
         elif action == "zigzag":
             self.aim_action = None
             game.queue_player_fractal("zigzag")
-        elif action == "custom":
+        elif action.startswith("custom"):
             self.aim_action = None
-            game.queue_player_fractal("custom")
+            game.queue_player_fractal(action)
         elif action == "activate_all":
             self.aim_action = "activate_all"
             self._update_hover(game, pygame.mouse.get_pos())
@@ -1467,6 +1471,14 @@ class AsciiRenderer:
             gen_label = {"koch": "Koch", "branch": "Branch", "zigzag": "Zigzag", "custom": "Custom"}.get(g, g)
             if g in ("koch", "branch", "zigzag", "custom"):
                 add(gen_label, g)
+        # additional custom patterns (beyond the first)
+        customs = getattr(game, "custom_patterns", [])
+        for idx, _pts in enumerate(customs):
+            action = "custom" if idx == 0 else f"custom_{idx}"
+            label = "Custom" if idx == 0 else f"Custom {idx+1}"
+            if idx == 0 and "custom" in gens_ordered:
+                continue
+            add(label, action)
 
         # illuminator choice
         if illuminator_choice == "radius":
@@ -1588,13 +1600,22 @@ class AsciiRenderer:
                 verts.append((x, y))
                 if i > 0:
                     segs.append((i - 1, i))
-        elif action == "custom":
+        elif action.startswith("custom"):
             pts = getattr(game.character, "custom_pattern", None) if hasattr(game, "character") else None
             amp = 1.0
             try:
                 amp = game.get_param_value("custom", "amplitude")
             except Exception:
                 pass
+            if hasattr(game, "custom_patterns"):
+                idx = 0
+                if action != "custom":
+                    try:
+                        idx = int(action.split("_", 1)[1])
+                    except Exception:
+                        idx = 0
+                if idx < len(game.custom_patterns):
+                    pts = game.custom_patterns[idx]
             if pts and len(pts) >= 2:
                 # normalize and scale uniformly to fit while preserving aspect
                 xs = [p[0] for p in pts]

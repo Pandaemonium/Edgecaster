@@ -35,6 +35,45 @@ def carve_v_tunnel(world: World, y1: int, y2: int, x: int) -> None:
             tile.glyph = "."
 
 
+def generate_lab(world: World, rng) -> None:
+    """Small lab layout: single room with a central console '='."""
+    # fill with walls
+    for y in range(world.height):
+        for x in range(world.width):
+            tile = world.tiles[y][x]
+            tile.walkable = False
+            tile.glyph = "#"
+
+    room_margin = 2
+    x0 = room_margin
+    y0 = room_margin
+    x1 = world.width - room_margin - 1
+    y1 = world.height - room_margin - 1
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            tile = world.get_tile(x, y)
+            if tile:
+                tile.walkable = True
+                tile.glyph = "."
+
+    # console at center
+    cx = (x0 + x1) // 2
+    cy = (y0 + y1) // 2
+    tile = world.get_tile(cx, cy)
+    if tile:
+        tile.glyph = "="
+        tile.walkable = True
+
+    # entry: any floor tile
+    floor_tiles = [(x, y) for y in range(world.height) for x in range(world.width) if world.get_tile(x, y).walkable]
+    if floor_tiles:
+        world.entry = rng.choice(floor_tiles)
+    else:
+        world.entry = (world.width // 2, world.height // 2)
+    world.up_stairs = None
+    world.down_stairs = None
+    world.is_lab = True
+
 def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) -> None:
     """Simple rectangular rooms connected by halls, with optional stairs."""
     # start filled with walls
