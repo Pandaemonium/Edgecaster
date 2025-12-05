@@ -76,29 +76,27 @@ def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) 
                 carve_h_tunnel(world, prev_cx, cx, cy)
         rooms.append(new_room)
 
-    if rooms:
-        x, y, w, h = rooms[0]
-        entry = (x + w // 2, y + h // 2)
-        world.entry = entry
+    # collect all walkable tiles for random placement
+    floor_tiles = [(xx, yy) for yy in range(world.height) for xx in range(world.width) if world.get_tile(xx, yy).walkable]
+
+    if floor_tiles:
+        world.entry = rng.choice(floor_tiles)
     else:
         world.entry = (world.width // 2, world.height // 2)
 
-    # stairs placement: always inside carved rooms so player is not boxed in
-    if rooms:
-        # up stairs (if coming from above) go in the first room center
-        ux, uy, uw, uh = rooms[0]
-        up_c = (ux + uw // 2, uy + uh // 2)
+    # stairs placement: pick random floor tiles so they aren't always centered
+    if floor_tiles:
+        # up stairs (if coming from above)
         if up_pos is not None:
+            up_c = rng.choice(floor_tiles)
             tile = world.get_tile(*up_c)
             if tile:
                 tile.glyph = "<"
                 tile.walkable = True
                 world.up_stairs = up_c
                 world.entry = up_c
-
-        # down stairs in the last room center
-        lx, ly, lw, lh = rooms[-1]
-        down_c = (lx + lw // 2, ly + lh // 2)
+        # down stairs
+        down_c = rng.choice(floor_tiles)
         tile = world.get_tile(*down_c)
         if tile:
             tile.glyph = ">"

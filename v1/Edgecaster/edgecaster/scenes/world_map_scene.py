@@ -4,7 +4,7 @@ import csv
 import math
 import os
 import random
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 
 import pygame
 
@@ -25,7 +25,7 @@ class WorldMapScene(Scene):
         complex(-0.70176, -0.3842),
         complex(-0.75, 0.11),
     ]
-    _c_path_cache: Optional[list[complex]] = None
+    _c_path_cache: Optional[List[Dict[str, float]]] = None
 
     def __init__(self, game, span: int = 16) -> None:
         self.game = game
@@ -49,6 +49,24 @@ class WorldMapScene(Scene):
                     if event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE, pygame.K_LESS, pygame.K_COMMA, pygame.K_PERIOD, pygame.K_GREATER):
                         running = False
                         break
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.game.world_map_ready:
+                    map_w, map_h = map_surface.get_size()
+                    mx, my = event.pos
+                    ox = (renderer.width - map_w) // 2
+                    oy = (renderer.height - map_h) // 2
+                    rel_x = mx - ox
+                    rel_y = my - oy
+                    if 0 <= rel_x < map_w and 0 <= rel_y < map_h:
+                        # convert to world tiles then zones
+                        total_w = self.game.cfg.world_map_screens * self.game.cfg.world_width
+                        total_h = self.game.cfg.world_map_screens * self.game.cfg.world_height
+                        wx = int(rel_x / map_w * total_w)
+                        wy = int(rel_y / map_h * total_h)
+                        zx = wx // self.game.cfg.world_width
+                        zy = wy // self.game.cfg.world_height
+                        self.game.fast_travel_to_zone(zx, zy)
+                        running = False
+                        break
 
             # Draw map
             surf = renderer.surface
@@ -67,39 +85,6 @@ class WorldMapScene(Scene):
             surf.blit(title, (ox, oy - 36))
             hint = renderer.small_font.render("Esc/Enter/< to return", True, renderer.fg)
             surf.blit(hint, (ox, oy + map_surface.get_height() + 8))
-
-            # overlay corner coords (zoomed view and original full view)
-            params = getattr(self.game, "overmap_params", {})
-            if params:
-                # bottom-left
-                bl_view = f"View BL world: ({params.get('min_wx',0):.2f}, {params.get('min_wy',0):.2f})"
-                bl_orig = f"Orig BL world: ({params.get('orig_min_wx',0):.2f}, {params.get('orig_min_wy',0):.2f})"
-                bl_view_j = f"View BL julia: ({params.get('view_min_jx',0):.3f}, {params.get('view_min_jy',0):.3f})"
-                bl_orig_j = f"Orig BL julia: ({params.get('orig_min_jx',0):.3f}, {params.get('orig_min_jy',0):.3f})"
-                bl1 = renderer.small_font.render(bl_view, True, renderer.fg)
-                bl2 = renderer.small_font.render(bl_orig, True, renderer.fg)
-                bl3 = renderer.small_font.render(bl_view_j, True, renderer.fg)
-                bl4 = renderer.small_font.render(bl_orig_j, True, renderer.fg)
-                y_base = oy + map_surface.get_height() - (bl1.get_height()+bl2.get_height()+bl3.get_height()+bl4.get_height()+12)
-                surf.blit(bl1, (ox + 4, y_base))
-                surf.blit(bl2, (ox + 4, y_base + bl1.get_height()))
-                surf.blit(bl3, (ox + 4, y_base + bl1.get_height() + bl2.get_height()))
-                surf.blit(bl4, (ox + 4, y_base + bl1.get_height() + bl2.get_height() + bl3.get_height()))
-                # top-right
-                tr_view = f"View TR world: ({params.get('view_max_wx',0):.2f}, {params.get('view_max_wy',0):.2f})"
-                tr_orig = f"Orig TR world: ({params.get('orig_max_wx',0):.2f}, {params.get('orig_max_wy',0):.2f})"
-                tr_view_j = f"View TR julia: ({params.get('view_max_jx',0):.3f}, {params.get('view_max_jy',0):.3f})"
-                tr_orig_j = f"Orig TR julia: ({params.get('orig_max_jx',0):.3f}, {params.get('orig_max_jy',0):.3f})"
-                tr1 = renderer.small_font.render(tr_view, True, renderer.fg)
-                tr2 = renderer.small_font.render(tr_orig, True, renderer.fg)
-                tr3 = renderer.small_font.render(tr_view_j, True, renderer.fg)
-                tr4 = renderer.small_font.render(tr_orig_j, True, renderer.fg)
-                tr_x = ox + map_surface.get_width() - max(tr1.get_width(), tr2.get_width(), tr3.get_width(), tr4.get_width()) - 4
-                y_tr = oy + 4
-                surf.blit(tr1, (tr_x, y_tr))
-                surf.blit(tr2, (tr_x, y_tr + tr1.get_height()))
-                surf.blit(tr3, (tr_x, y_tr + tr1.get_height() + tr2.get_height()))
-                surf.blit(tr4, (tr_x, y_tr + tr1.get_height() + tr2.get_height() + tr3.get_height()))
 
             renderer._present()
             clock.tick(60)
@@ -142,7 +127,7 @@ class WorldMapScene(Scene):
         return surf
 
     def _render_overmap(self, renderer) -> tuple[pygame.Surface, tuple[float, float, float, float]]:
-        """Render a Julia-based relief overmap around the current zone."""
+        """Render a Julia-based relief overmap using fixed bounds from the c_path entry."""
         target_w = min(1024, renderer.width - 32)
         target_h = min(720, renderer.height - 120)
         ss = 2
@@ -158,27 +143,36 @@ class WorldMapScene(Scene):
         min_wy = 0.0
         span_x = float(total_w)
         span_y = float(total_h)
+        max_wx = min_wx + span_x
+        max_wy = min_wy + span_y
 
-        # record original corners before any crop
-        orig_min_wx = min_wx
-        orig_min_wy = min_wy
-        orig_max_wx = min_wx + span_x
-        orig_max_wy = min_wy + span_y
-
-        visual_c = self._pick_visual_c()
-        visual_span = 3.2
-        visual_zoom = 1.35
+        p = getattr(self.game, "overmap_params", {}) or {}
+        if all(k in p for k in ("view_min_jx", "view_max_jx", "view_min_jy", "view_max_jy", "visual_c")):
+            visual_c = p["visual_c"]
+            j_min_x = p["view_min_jx"]
+            j_max_x = p["view_max_jx"]
+            j_min_y = p["view_min_jy"]
+            j_max_y = p["view_max_jy"]
+        else:
+            entry = self._pick_visual_entry()
+            visual_c = entry["c"]
+            j_min_x = entry["x_min"]
+            j_max_x = entry["x_max"]
+            j_min_y = entry["y_min"]
+            j_max_y = entry["y_max"]
 
         heights = [[0.0 for _ in range(px_w)] for _ in range(px_h)]
         glyph_idx = [[0 for _ in range(px_w)] for _ in range(px_h)]
+        span_jx = j_max_x - j_min_x
+        span_jy = j_max_y - j_min_y
         for py in range(px_h):
             wy = min_wy + (py / (px_h - 1)) * span_y
-            ny = (py / (px_h - 1)) - 0.5
+            jy = j_min_y + (py / (px_h - 1)) * span_jy
             for px in range(px_w):
                 wx = min_wx + (px / (px_w - 1)) * span_x
-                nx = (px / (px_w - 1)) - 0.5
+                jx = j_min_x + (px / (px_w - 1)) * span_jx
                 fields = field.sample_full(wx, wy)
-                fields["height"] = self._julia_height(nx * visual_span, ny * visual_span, visual_c, scale=visual_zoom, iters=96)
+                fields["height"] = self._julia_height(jx, jy, visual_c, scale=1.0, iters=96)
                 glyph, _walk = mapgen._classify_tile(fields, 0.5)
                 heights[py][px] = fields["height"]
                 glyph_idx[py][px] = self._glyph_index(glyph)
@@ -210,37 +204,14 @@ class WorldMapScene(Scene):
                         hi_surf.set_at((px, py), contour_col)
                         break
 
-        # land bbox crop with padding
-        mask = [[glyph_idx[y][x] != 0 for x in range(px_w)] for y in range(px_h)]
-        xs = [x for y in range(px_h) for x in range(px_w) if mask[y][x]]
-        ys = [y for y in range(px_h) for x in range(px_w) if mask[y][x]]
-        if xs and ys:
-            min_x = max(0, min(xs))
-            max_x = min(px_w - 1, max(xs))
-            min_y = max(0, min(ys))
-            max_y = min(px_h - 1, max(ys))
-            pad_x = int(0.1 * (max_x - min_x + 1))
-            pad_y = int(0.1 * (max_y - min_y + 1))
-            min_x = max(0, min_x - pad_x)
-            max_x = min(px_w - 1, max_x + pad_x)
-            min_y = max(0, min_y - pad_y)
-            max_y = min(px_h - 1, max_y + pad_y)
-        else:
-            min_x, max_x, min_y, max_y = 0, px_w - 1, 0, px_h - 1
+        surf = pygame.transform.smoothscale(hi_surf, (target_w, target_h))
 
-        crop_w = max_x - min_x + 1
-        crop_h = max_y - min_y + 1
-        cropped = pygame.Surface((crop_w, crop_h))
-        cropped.blit(hi_surf, (0, 0), pygame.Rect(min_x, min_y, crop_w, crop_h))
-
-        surf = pygame.transform.smoothscale(cropped, (target_w, target_h))
-
-        view_min_wx = min_wx + (min_x / max(1, px_w - 1)) * span_x
-        view_min_wy = min_wy + (min_y / max(1, px_h - 1)) * span_y
-        view_span_x = (crop_w - 1) / max(1, px_w - 1) * span_x
-        view_span_y = (crop_h - 1) / max(1, px_h - 1) * span_y
-        view_max_wx = view_min_wx + view_span_x
-        view_max_wy = view_min_wy + view_span_y
+        view_min_wx = min_wx
+        view_min_wy = min_wy
+        view_span_x = span_x
+        view_span_y = span_y
+        view_max_wx = max_wx
+        view_max_wy = max_wy
 
         # stash corners for locals/diagnostics
         self.game.overmap_params = {
@@ -249,26 +220,24 @@ class WorldMapScene(Scene):
             "span_x": view_span_x,
             "span_y": view_span_y,
             "visual_c": visual_c,
-            "visual_span": visual_span,
-            "visual_zoom": visual_zoom,
             "surface_size": (surf.get_width(), surf.get_height()),
             "surface": surf.copy(),
-            "orig_min_wx": orig_min_wx,
-            "orig_min_wy": orig_min_wy,
-            "orig_max_wx": orig_max_wx,
-            "orig_max_wy": orig_max_wy,
+            "orig_min_wx": min_wx,
+            "orig_min_wy": min_wy,
+            "orig_max_wx": max_wx,
+            "orig_max_wy": max_wy,
             "view_max_wx": view_max_wx,
             "view_max_wy": view_max_wy,
-            # julia coords (effective inputs to _julia_height)
-            "orig_min_jx": -0.5 * visual_span * visual_zoom,
-            "orig_max_jx": 0.5 * visual_span * visual_zoom,
-            "orig_min_jy": -0.5 * visual_span * visual_zoom,
-            "orig_max_jy": 0.5 * visual_span * visual_zoom,
-            # cropped view julia coords
-            "view_min_jx": (((view_min_wx - orig_min_wx) / span_x) - 0.5) * visual_span * visual_zoom,
-            "view_max_jx": (((view_max_wx - orig_min_wx) / span_x) - 0.5) * visual_span * visual_zoom,
-            "view_min_jy": (((view_min_wy - orig_min_wy) / span_y) - 0.5) * visual_span * visual_zoom,
-            "view_max_jy": (((view_max_wy - orig_min_wy) / span_y) - 0.5) * visual_span * visual_zoom,
+            # julia coords (inputs to _julia_height)
+            "orig_min_jx": j_min_x,
+            "orig_max_jx": j_max_x,
+            "orig_min_jy": j_min_y,
+            "orig_max_jy": j_max_y,
+            # view julia coords (same as orig because no crop)
+            "view_min_jx": j_min_x,
+            "view_max_jx": j_max_x,
+            "view_min_jy": j_min_y,
+            "view_max_jy": j_max_y,
         }
         # build per-tile Julia grid for the whole world using these extents
         if hasattr(self.game, "build_tile_julia_grid"):
@@ -311,37 +280,48 @@ class WorldMapScene(Scene):
         smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
         return max(0.0, min(1.0, smooth / iters))
 
-    def _load_c_path(self) -> list[complex]:
+    def _load_c_path(self) -> List[Dict[str, float]]:
+        """Load curated Julia parameters and bounds from tools/c_path.csv."""
         if self._c_path_cache is not None:
             return self._c_path_cache
-        # default path location
-        path_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools", "c_path.csv"))
-        points: list[complex] = []
+        path_file = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "tools", "c_path.csv")
+        )
+        entries: List[Dict[str, float]] = []
         try:
             with open(path_file, newline="") as f:
-                reader = csv.reader(f)
+                reader = csv.DictReader(f)
                 for row in reader:
-                    if len(row) < 2:
-                        continue
                     try:
-                        re = float(row[0])
-                        im = float(row[1])
-                        points.append(complex(re, im))
-                    except ValueError:
+                        re = float(row.get("re", row.get("real", row.get("c_real", 0.0))))
+                        im = float(row.get("im", row.get("imag", row.get("c_imag", 0.0))))
+                        x_min = float(row.get("x_min", -1.5))
+                        x_max = float(row.get("x_max", 1.5))
+                        y_min = float(row.get("y_min", -1.0))
+                        y_max = float(row.get("y_max", 1.0))
+                        entries.append(
+                            {
+                                "c": complex(re, im),
+                                "x_min": x_min,
+                                "x_max": x_max,
+                                "y_min": y_min,
+                                "y_max": y_max,
+                            }
+                        )
+                    except (TypeError, ValueError):
                         continue
         except FileNotFoundError:
-            points = []
-        self._c_path_cache = points
-        return points
+            entries = []
+        self._c_path_cache = entries
+        return entries
 
-    def _pick_visual_c(self) -> complex:
+    def _pick_visual_entry(self) -> Dict[str, float]:
+        """Deterministically pick a curated entry based on the fractal seed."""
         seed = getattr(self.game, "fractal_seed", 0) or 0
         rng = random.Random(seed)
         path = self._load_c_path()
-        if len(path) >= 2:
-            idx = rng.randrange(0, len(path) - 1)
-            t = rng.random()
-            c0 = path[idx]
-            c1 = path[idx + 1]
-            return complex(c0.real + (c1.real - c0.real) * t, c0.imag + (c1.imag - c0.imag) * t)
-        return self.GOOD_C[seed % len(self.GOOD_C)]
+        if path:
+            return rng.choice(path)
+        # fallback to legacy GOOD_C with default bounds
+        c = self.GOOD_C[seed % len(self.GOOD_C)]
+        return {"c": c, "x_min": -1.6, "x_max": 1.6, "y_min": -1.1, "y_max": 1.1}

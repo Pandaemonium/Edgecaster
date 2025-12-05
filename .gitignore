@@ -12,4 +12,3 @@ build/
 *.egg-info/
 Edgecaster/
 v1/Edgecaster/map_samples/
-v1/Edgecaster/tools/

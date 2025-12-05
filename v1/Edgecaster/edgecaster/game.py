@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import heapq
+import threading
 from typing import Dict, Tuple, List, Optional, Callable
 
 from edgecaster import config, events
@@ -149,6 +150,9 @@ class Game:
         center_zy = self.cfg.world_map_screens // 2
         self.zone_coord: Tuple[int, int, int] = (center_zx, center_zy, 0)
         self._next_id = 0
+        # initialize overmap parameters/grid eagerly (fixed bounds) and kick off async render
+        self._init_overmap_params_and_grid()
+
         # Simple player inventory: list of Entity objects the player is carrying.
         # For now it's a flat list; later we can support containers/stacking.
         self.inventory: List[Entity] = []
@@ -433,27 +437,98 @@ class Game:
             "view_max_jy": p["view_max_jy"],
         }
 
-    def _ensure_overmap_ready(self) -> None:
-        """Render the overmap and build the julia grid if not already available."""
+    def _init_overmap_params_and_grid(self) -> None:
+        """Set fixed overmap params from curated c-path bounds and start background render."""
+        # If already initialized, do nothing.
         if getattr(self, "overmap_params", None) and getattr(self, "tile_julia_grid", None):
             return
         try:
             from edgecaster.scenes.world_map_scene import WorldMapScene
             wm = WorldMapScene(self, span=16)
+            entry = wm._pick_visual_entry()
+        except Exception:
+            return
+        cfg = self.cfg
+        total_w = cfg.world_map_screens * cfg.world_width
+        total_h = cfg.world_map_screens * cfg.world_height
+        min_wx = 0.0
+        min_wy = 0.0
+        max_wx = float(total_w)
+        max_wy = float(total_h)
+        # stash params without surface; render thread will fill it
+        self.overmap_params = {
+            "min_wx": min_wx,
+            "min_wy": min_wy,
+            "span_x": max_wx,
+            "span_y": max_wy,
+            "visual_c": entry["c"],
+            "surface_size": (0, 0),
+            "surface": None,
+            "orig_min_wx": min_wx,
+            "orig_min_wy": min_wy,
+            "orig_max_wx": max_wx,
+            "orig_max_wy": max_wy,
+            "view_max_wx": max_wx,
+            "view_max_wy": max_wy,
+            "orig_min_jx": entry["x_min"],
+            "orig_max_jx": entry["x_max"],
+            "orig_min_jy": entry["y_min"],
+            "orig_max_jy": entry["y_max"],
+            "view_min_jx": entry["x_min"],
+            "view_max_jx": entry["x_max"],
+            "view_min_jy": entry["y_min"],
+            "view_max_jy": entry["y_max"],
+        }
+        # build grid immediately so locals can generate
+        self.build_tile_julia_grid()
+        # kick off background render
+        self._start_world_map_thread()
+
+    def _start_world_map_thread(self) -> None:
+        if self.world_map_thread_started:
+            return
+        self.world_map_thread_started = True
+        self.world_map_rendering = True
+        t = threading.Thread(target=self._background_render_map, daemon=True)
+        t.start()
+
+    def _background_render_map(self) -> None:
+        """Render overmap in a background thread using fixed params."""
+        try:
+            from edgecaster.scenes.world_map_scene import WorldMapScene
+            wm = WorldMapScene(self, span=16)
             class Stub:
-                def __init__(self, w, h) -> None:
+                def __init__(self, w: int, h: int) -> None:
                     self.width = w
                     self.height = h
             stub = Stub(self.cfg.view_width, self.cfg.view_height)
             surf, view = wm._render_overmap(stub)
             self.world_map_cache = {"surface": surf, "view": view, "key": (stub.width, stub.height, wm.span)}
-            if not getattr(self, "overmap_params", None):
-                self.overmap_params = {}
-            self.overmap_params.setdefault("surface", surf.copy())
-            # build grid
-            self.build_tile_julia_grid()
-        except Exception as e:
-            raise
+            self.world_map_ready = True
+        finally:
+            self.world_map_rendering = False
+
+    def _ensure_overmap_ready(self) -> None:
+        """Ensure overmap params/grid exist; kick off background render if needed."""
+        if getattr(self, "overmap_params", None) and getattr(self, "tile_julia_grid", None):
+            return
+        # initialize params/grid
+        self._init_overmap_params_and_grid()
+        # If no render in progress/ready, fall back to synchronous render to avoid missing data
+        if not self.world_map_ready and not self.world_map_rendering:
+            try:
+                from edgecaster.scenes.world_map_scene import WorldMapScene
+                wm = WorldMapScene(self, span=16)
+                class Stub:
+                    def __init__(self, w, h) -> None:
+                        self.width = w
+                        self.height = h
+                stub = Stub(self.cfg.view_width, self.cfg.view_height)
+                surf, view = wm._render_overmap(stub)
+                self.world_map_cache = {"surface": surf, "view": view, "key": (stub.width, stub.height, wm.span)}
+                self.world_map_ready = True
+            finally:
+                self.world_map_rendering = False
 
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
         x, y, depth = coord
@@ -1588,7 +1663,7 @@ class Game:
             self.log.add("You meditate but feel already full of mana.")
         self._advance_time(lvl, 100)
 
-    def use_stairs(self) -> None:
+    def use_stairs_down(self) -> None:
         lvl = self._level()
         player = self._player()
         tile = lvl.world.get_tile(*player.pos)
@@ -1611,7 +1686,18 @@ class Game:
             # NEW: snap the Lorenz storm to the new floor
             self._reset_lorenz_on_zone_change(player)
 
-        elif tile.glyph == "<" and cz > 0:
+    def use_stairs_up(self) -> None:
+        lvl = self._level()
+        player = self._player()
+        tile = lvl.world.get_tile(*player.pos)
+        if tile is None:
+            return
+        cx, cy, cz = self.zone_coord
+        # surface: if no upstairs, request world map
+        if cz == 0 and tile.glyph != "<":
+            self.map_requested = True
+            return
+        if tile.glyph == "<" and cz > 0:
             target_coord = (cx, cy, cz - 1)
             dest_level = self._get_zone(target_coord, up_pos=None)
             del lvl.actors[self.player_id]
@@ -1667,21 +1753,6 @@ class Game:
             # Auto-look when the player steps onto a tile (but don't describe yourself)
             self._describe_tile(level, actor.pos, observer_id=actor.id, auto=True)
 
-
-
-            try:
-                params = getattr(self, "overmap_params", None)
-                grid = getattr(self, "tile_julia_grid", None)
-                if params and grid:
-                    wx = level.coord[0] * level.world.width + nx
-                    wy = level.coord[1] * level.world.height + ny
-                    jx = grid["x"][wx]
-                    jy = grid["y"][wy]
-                    h = mapgen._julia_height_norm(jx, jy, params["visual_c"], scale=1.0, iters=96)
-                    self.log.add(f"{h:.4f}: ({jx:.5f}, {jy:.5f})")
-            except Exception:
-                pass
-
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
         dmg = 1
         defender.stats.hp -= dmg
@@ -1732,11 +1803,6 @@ class Game:
         # NEW: hard-snap Lorenz storm when wrapping zones
         self._reset_lorenz_on_zone_change(actor)
  
-        self.log.add(f"You travel to zone {dest_coord[0]},{dest_coord[1]} (depth {dest_coord[2]}).")
-        self._update_fov(dest_level)
-        # NEW: hard-snap Lorenz storm when wrapping zones
-        self._reset_lorenz_on_zone_change(actor)
-
         # --- RANDOM OVERWORLD EVENTS (testing) ---
         # 50% chance to fire *some* event on overworld for now.
         if self.zone_coord[2] == 0 and self.rng.random() < 0.5:
@@ -1748,6 +1814,28 @@ class Game:
                     choices=ev.choices,
                     on_choice_effect=ev.effect,
                 )
+
+    def fast_travel_to_zone(self, zx: int, zy: int) -> None:
+        """Instantly move the player to the given overworld zone (depth 0)."""
+        # clamp to world bounds
+        zx = max(0, min(self.cfg.world_map_screens - 1, zx))
+        zy = max(0, min(self.cfg.world_map_screens - 1, zy))
+        dest_coord = (zx, zy, 0)
+        level = self._level()
+        actor = level.actors.get(self.player_id)
+        if actor is None:
+            return
+        dest_level = self._get_zone(dest_coord, up_pos=None)
+        # move actor between levels
+        if self.player_id in level.actors:
+            del level.actors[self.player_id]
+        actor.pos = dest_level.world.entry
+        dest_level.actors[self.player_id] = actor
+        self.zone_coord = dest_coord
+        dest_level.need_fov = True
+        self._update_fov(dest_level)
+        self._reset_lorenz_on_zone_change(actor)
+        self.log.add(f"You fast-travel to zone {zx},{zy}.")
 
 
 
