@@ -48,6 +48,16 @@ class UrgentMessageScene(PopupMenuScene):
         # - False → Esc just closes the popup
         self.back_confirms = back_confirms
 
+
+    # NEW: ensure the Game has a link to the SceneManager while this popup lives
+    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Let dialogue helpers see the real SceneManager instead of
+        # falling back to the legacy nested-urgent behaviour.
+        if getattr(self.game, "scene_manager", None) is None:
+            self.game.scene_manager = manager  # type: ignore[attr-defined]
+        super().run(manager)
+
+
     # ------------------------------------------------------------------ #
     # Window rect helpers
 
@@ -109,6 +119,10 @@ class UrgentMessageScene(PopupMenuScene):
     def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
         """
         Handle confirm (Enter/Space/Left/Right depending on binding).
+
+        New behavior: close this popup *before* running the callback, so that
+        any scenes opened by the callback sit at the same stack level and
+        don't snapshot an already-dimmed/background-with-popup screen.
         """
         # Mark urgent as resolved if this came from Game.set_urgent.
         if hasattr(self.game, "urgent_resolved"):
@@ -124,13 +138,22 @@ class UrgentMessageScene(PopupMenuScene):
         if hasattr(self.game, "urgent_choices"):
             self.game.urgent_choices = None
 
+        # NEW: restore the pre-popup background so follow-up popups
+        # (like dialogue trees) snapshot a clean frame.
+        if hasattr(manager, "renderer") and getattr(self, "_background", None) is not None:
+            manager.renderer.surface.blit(self._background, (0, 0))
+
+        # Close this popup first so any scenes opened by the callback
+        # become the new top-of-stack and capture a clean background.
+        self._close_self(manager)
+
         # Optional callback for event choices / dialogue later.
         if self.on_choice is not None:
             self.on_choice(index, manager)
 
-        # ACTUALLY close this popup now.
-        self._close_self(manager)
         return True  # tell PopupMenuScene.run to stop
+
+
 
     def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
         """
