@@ -150,6 +150,7 @@ _LUNATIC_LINES = [
     "The lab? It's out there, but sometimes the doors bite back.",
     "Beware the ones that buzz—they'll drink your mana dry.",
     "The further down you go, the heavier the echoes hit.",
+    "Was it Lorenz or Lorentz? I always get them confused...",
 ]
 
 

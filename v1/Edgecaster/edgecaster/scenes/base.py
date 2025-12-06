@@ -513,11 +513,7 @@ class PopupMenuScene(MenuScene):
                     return True
                 return False
 
-            if action in (
-                MENU_ACTION_LEFT,
-                MENU_ACTION_RIGHT,
-                MENU_ACTION_ACTIVATE,
-            ):
+            if action == MENU_ACTION_ACTIVATE:
                 if self.on_activate(self.selected_idx, manager):
                     running = False
                     return True

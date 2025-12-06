@@ -226,17 +226,22 @@ class Game:
         player_name = self.character.name or "Edgecaster"
         player_stats = self._build_player_stats()
 
-        player_id = self._new_id()
-        player = Actor(
-            id=player_id,
-            name=player_name,
-            pos=(px, py),
-            faction="player",
-            stats=player_stats,
-            actions=("move", "wait"),
-        )
+        # Choose a template id for the player base body.
+        # Later you can put this on Character (race/species field).
+        player_tmpl_id = getattr(self.character, "template_id", None) or "human_base"
 
-        # Optionally tag this actor as "the" player + class, for later UI/AI tricks
+        # Build a base Actor from the data-driven factory
+        player = enemy_factory.spawn_enemy(player_tmpl_id, (px, py))
+
+        # Override template defaults with run-specific data
+        player.id = self._new_id()
+        player.name = player_name
+        player.pos = (px, py)
+        player.faction = "player"      # make sure this is canonical
+        player.stats = player_stats    # use character-derived stats
+        player.actions = ("move", "wait")
+
+        # Tag as 'the player'
         player.tags.setdefault("is_player", True)
         if getattr(self.character, "player_class", None):
             player.tags.setdefault("class", self.character.player_class)
@@ -246,12 +251,6 @@ class Game:
         lvl.actors[player.id] = player
         lvl.entities[player.id] = player
 
-
-
-        self.player_id = player.id
-        lvl = self._level()
-        lvl.actors[player.id] = player
-        lvl.entities[player.id] = player
    
 
         # enemies
@@ -733,17 +732,10 @@ class Game:
 
 
     def _enemy_template_ids(self) -> List[str]:
-        """
-        Return list of all enemy template ids from enemies.yaml.
-
-        This is a simple PoC used by _spawn_enemies so we can see all the glyphs.
-        Later, a more sophisticated monstergen can sit on top of the templates registry.
-        """
         cached = getattr(self, "_enemy_ids_cache", None)
         if cached is not None:
             return cached
 
-        # enemies.yaml lives in edgecaster/content/enemies.yaml
         content_dir = Path(__file__).resolve().parent / "content"
         yaml_path = content_dir / "enemies.yaml"
 
@@ -752,15 +744,29 @@ class Game:
 
         enemy_ids: List[str] = []
         for entry in data:
-            if isinstance(entry, dict) and "id" in entry:
-                enemy_ids.append(entry["id"])
+            if not isinstance(entry, dict):
+                continue
+            tid = entry.get("id")
+            if not tid:
+                continue
 
-        # Failsafe: if something weird happens, at least allow "imp"
+            faction = entry.get("faction", "hostile")
+            tags = set(entry.get("tags", []) or [])
+
+            # Only randomize true enemies
+            if faction != "hostile":
+                continue
+            if "player_only" in tags:
+                continue
+
+            enemy_ids.append(tid)
+
         if not enemy_ids:
             enemy_ids = ["imp"]
 
         self._enemy_ids_cache = enemy_ids
         return enemy_ids
+
 
 
 
