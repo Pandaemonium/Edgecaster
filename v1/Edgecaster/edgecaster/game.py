@@ -210,16 +210,33 @@ class Game:
         px, py = self._level().world.entry
         player_name = self.character.name or "Edgecaster"
         player_stats = self._build_player_stats()
+
+        # Pull baseline definition from the monster manual so that:
+        # - faction
+        # - default actions
+        # live in the same place as monsters.
+        human_tmpl = monster_manual.MONSTERS["human"]
+
+        player_id = self._new_id()
         player = Actor(
-            id=self._new_id(),
-            name=player_name,
+            id=player_id,
+            name=player_name or human_tmpl.name,
             pos=(px, py),
-            faction="player",
+            faction=human_tmpl.faction,
             stats=player_stats,
-            # For now the player only uses 'move' through the Action system;
-            # fractal stuff still routes through dedicated methods.
-            actions=("move", "wait"),
+            actions=human_tmpl.actions,
         )
+
+        # Optionally tag this actor as "the" player + class, for later UI/AI tricks
+        player.tags.setdefault("is_player", True)
+        if getattr(self.character, "player_class", None):
+            player.tags.setdefault("class", self.character.player_class)
+
+        self.player_id = player.id
+        lvl = self._level()
+        lvl.actors[player.id] = player
+        lvl.entities[player.id] = player
+
 
 
         self.player_id = player.id
