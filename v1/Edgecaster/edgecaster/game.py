@@ -143,6 +143,15 @@ class Game:
 
         # character info
         self.character: Character = character or default_character()
+
+        # What the HUD should call the thing-you-are:
+        # initially your class, later overwritten by body-hops.
+        base_label = (
+            getattr(self.character, "char_class", None)
+            or getattr(self.character, "player_class", None)
+        )
+        self.current_host_label: Optional[str] = base_label
+
         # XP / parameter defs based on character stats
         self.param_defs = self._init_param_defs()
         self.param_state = self._init_param_state()
@@ -1936,6 +1945,81 @@ class Game:
 
             # NEW: snap the Lorenz storm to the new floor
             self._reset_lorenz_on_zone_change(player)
+
+
+    def possess_actor(self, target_id: str) -> None:
+        """Epiphenomenal body-hop: switch which Actor is controlled as the player."""
+        level = self._level()
+
+        # Sanity checks
+        if target_id == self.player_id:
+            return
+        target = level.actors.get(target_id)
+        if target is None or not target.alive:
+            self.log.add("Your consciousness finds no purchase.")
+            return
+
+        # --- release old host (if still around) ---
+        old_player = level.actors.get(self.player_id)
+        if old_player is not None:
+            old_tags = getattr(old_player, "tags", None)
+            native_faction = None
+            if isinstance(old_tags, dict):
+                # Stop treating the old shell as 'the player'
+                old_tags.pop("is_player", None)
+                # If we previously recorded its original faction, use that
+                native_faction = (
+                    old_tags.get("native_faction")
+                    or old_tags.get("original_faction")
+                )
+            # Fall back to hostile if we don't know better
+            if getattr(old_player, "faction", None) != "dead":
+                old_player.faction = native_faction or "hostile"
+
+        # --- claim new host ---
+        # Capture its current faction before we overwrite it
+        prev_faction = getattr(target, "faction", None)
+
+        tags = getattr(target, "tags", None)
+        if tags is None:
+            tags = {}
+            target.tags = tags  # type: ignore[assignment]
+
+        # Remember native faction so we can restore later if needed
+        if prev_faction and "native_faction" not in tags:
+            tags["native_faction"] = prev_faction
+
+        # Mark as the player-controlled body
+        tags["is_player"] = True
+        target.faction = "player"
+
+        # HUD label: prioritize a species/kind tag, fall back to its name.
+        host_label = (
+            tags.get("species")
+            or tags.get("kind")
+            or getattr(target, "name", None)
+            or "???"
+        )
+        self.current_host_label = host_label
+
+        # Switch control to the new body
+        self.player_id = target.id
+
+        # Recompute FOV from the new perspective
+        level.need_fov = True
+        self._update_fov(level)
+
+        # Re-center Lorenz storm on the new host if this run has an aura
+        if self.has_lorenz_aura:
+            px, py = target.pos
+            self.lorenz_center_x = float(px)
+            self.lorenz_center_y = float(py)
+            self._lorenz_prev_pos = target.pos
+            self._lorenz_prev_zone = self.zone_coord
+            self.lorenz_reset_trails = True
+
+        self.log.add(f"You've always been a {host_label}, so long as you can remember.")
+
 
 
     # --- movement & combat ---

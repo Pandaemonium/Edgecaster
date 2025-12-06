@@ -6,7 +6,7 @@
 - id: human_base
   name: Human
   glyph: "@"
-  color: [230, 230, 230]
+  color: [255, 210, 80]
   faction: player
   ai: none          # or omit / special-case in factory
   base_hp: 1        # will be overridden by Character stats
