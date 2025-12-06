@@ -241,3 +241,129 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         print(f"The {imp_name} {verb}: \"{line}\"")
 
 
+# ---------------------------------------------------------------------------
+# Fractal / rune actions
+# ---------------------------------------------------------------------------
+
+@register_action("place", label="Place", speed="fast")
+def _action_place(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Enter 'place terminus' mode for the acting entity.
+
+    Right now this is effectively a player-only thing and does not
+    consume any extra parameters; we just delegate to Game.
+    """
+    # Keep this robust if used in tests or before Game grows helpers.
+    if hasattr(game, "begin_place_mode"):
+        game.begin_place_mode()
+
+
+@register_action("subdivide", label="Subdivide", speed="fast")
+def _action_subdivide(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Apply the 'subdivide' fractal generator to the current rune pattern.
+    """
+    if hasattr(game, "act_fractal"):
+        game.act_fractal(actor_id, "subdivide")
+
+
+@register_action("extend", label="Extend", speed="fast")
+def _action_extend(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Apply the 'extend' fractal generator to the current rune pattern.
+    """
+    if hasattr(game, "act_fractal"):
+        game.act_fractal(actor_id, "extend")
+
+
+@register_action("koch", label="Koch", speed="fast")
+def _action_koch(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Apply the 'koch' fractal generator to the current rune pattern.
+    """
+    if hasattr(game, "act_fractal"):
+        game.act_fractal(actor_id, "koch")
+
+
+@register_action("branch", label="Branch", speed="fast")
+def _action_branch(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Apply the 'branch' fractal generator to the current rune pattern.
+    """
+    if hasattr(game, "act_fractal"):
+        game.act_fractal(actor_id, "branch")
+
+
+@register_action("zigzag", label="Zigzag", speed="fast")
+def _action_zigzag(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Apply the 'zigzag' fractal generator to the current rune pattern.
+    """
+    if hasattr(game, "act_fractal"):
+        game.act_fractal(actor_id, "zigzag")
+
+
+@register_action("custom", label="Custom", speed="fast")
+def _action_custom(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Apply the base 'custom' fractal pattern (index 0).
+
+    For extra saved patterns we use action names like 'custom_1',
+    'custom_2', etc. and pass the suffix through to Game.act_fractal.
+    """
+    if hasattr(game, "act_fractal"):
+        game.act_fractal(actor_id, "custom")
+
+
+# Extra custom patterns can be registered on demand if you like, e.g.:
+# @register_action("custom_1", label="Custom 2", speed="fast")
+# def _action_custom_1(game: Any, actor_id: str, **kwargs: Any) -> None:
+#     if hasattr(game, "act_fractal"):
+#         game.act_fractal(actor_id, "custom_1")
+
+
+@register_action("activate_all", label="Activate R", speed="fast")
+def _action_activate_all(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Activate the rune pattern with a 'radius' illuminator around a vertex.
+
+    Expected **kwargs:
+        target_vertex: Optional[int] – index into the pattern's vertex list.
+    """
+    target_vertex = kwargs.get("target_vertex")
+    if hasattr(game, "act_activate_all"):
+        game.act_activate_all(actor_id, target_vertex)
+
+
+@register_action("activate_seed", label="Activate N", speed="fast")
+def _action_activate_seed(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Activate the rune pattern using a 'neighbors' illuminator.
+
+    Expected **kwargs:
+        target_vertex: Optional[int] – index into the pattern's vertex list.
+    """
+    target_vertex = kwargs.get("target_vertex")
+    if hasattr(game, "act_activate_seed"):
+        game.act_activate_seed(actor_id, target_vertex)
+
+
+@register_action("reset", label="Reset Rune", speed="fast")
+def _action_reset_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Reset the current rune/pattern and coherence for the acting entity.
+    """
+    if hasattr(game, "act_reset_rune"):
+        game.act_reset_rune(actor_id)
+
+
+@register_action("meditate", label="Meditate", speed="slow")
+def _action_meditate(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Meditate to restore mana / coherence.
+
+    Marked as 'slow' so action_delay will charge more ticks than a
+    normal 'fast' action.
+    """
+    if hasattr(game, "act_meditate"):
+        game.act_meditate(actor_id)
