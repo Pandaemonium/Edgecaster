@@ -382,22 +382,28 @@ class AsciiRenderer:
         """
         # Actors (player, monsters, NPCs, etc.)
         if hasattr(ent, "faction"):
-            # This is basically your old _actor_visual, but folded in.
-            if ent.faction == "player":
-                return "@", self.player_color
-            # use entity's own glyph/color if provided
-            glyph = getattr(ent, "glyph", "?")
-            color = getattr(ent, "color", self.monster_color)
+            # Always respect the entity's own glyph so body-swaps look right.
+            glyph = getattr(ent, "glyph", "@")
+
+            # You can still give factions default colors, but don't clobber explicit ones.
+            base_color = getattr(ent, "color", None)
+            if base_color is not None:
+                color = base_color
+            elif ent.faction == "player":
+                color = self.player_color
+            elif ent.faction == "npc":
+                color = self.fg
+            else:
+                color = self.monster_color
+
             return glyph, color
-            if ent.faction == "npc":
-                # tweak this if you want a special glyph/color for NPCs
-                return "?", self.fg
-            return "?", self.fg
 
         # Generic entities: items, features, etc.
         glyph = getattr(ent, "glyph", "?")
         color = getattr(ent, "color", self.fg)
         return glyph, color
+
+
 
 
     def draw_entities(self, world: World, entities) -> None:
@@ -694,11 +700,14 @@ class AsciiRenderer:
             name = getattr(player, "name", "Edgecaster")
             char_class = None
 
-        lvl = getattr(player.stats, "level", 1)
-        if char_class:
-            header_line = f"{name} the {char_class} (Lv {lvl})"
+        lvl = player.stats.level if player else 1
+
+        label = getattr(game, "current_host_label", None)
+        if label:
+            header_line = f"{name} the {label}"
         else:
-            header_line = f"{name} (Lv {lvl})"
+            header_line = name
+        header_line += f" (Lv {lvl})"
 
         header_text = self.small_font.render(header_line, True, self.fg)
 
@@ -1167,6 +1176,27 @@ class AsciiRenderer:
             return
 
 
+        # --- Epiphenomenal debug: body-hop into the nearest other actor ---
+        if key == pygame.K_p:
+            level = game._level()
+            player = level.actors.get(game.player_id)
+            if player is not None:
+                px, py = player.pos
+                best_id = None
+                best_d2 = 1e18
+                for actor in level.actors.values():
+                    if not actor.alive or actor.id == game.player_id:
+                        continue
+                    ax, ay = actor.pos
+                    dx = ax - px
+                    dy = ay - py
+                    d2 = dx * dx + dy * dy
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_id = actor.id
+                if best_id is not None:
+                    game.possess_actor(best_id)
+            return
 
             
         # --- Inventory toggle (dungeon-level) ---

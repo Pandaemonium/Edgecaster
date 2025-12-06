@@ -22,6 +22,9 @@ CHAR_CLASSES: List[str] = [
     "Automoton",
     "Strange Attractor",
     "Weaver",
+    "Relativist",
+    "Chromaticist",
+    "Epiphenomenal"
 ]
 
 CLASS_DESCRIPTIONS = {
@@ -29,6 +32,9 @@ CLASS_DESCRIPTIONS = {
     "Automoton": "A common misconception that machines cannot perform magic. Quite the contrary.",
     "Strange Attractor": "Cursed to dance among weird energies, or they among her.",
     "Weaver": "Everyone wears clothing, but few make their own. So too with destiny.",
+    "Relativist": "'Twould be folly to presume that everyone marches at the same pace.",
+    "Chromaticist": "Disciple of the Eightfold Way, correct in the habit that water flows.",
+    "Epiphenomenal": "What's in a name? Is there anything else besides?"
 }
 
 DEFAULT_NAME = "Pandaemonium"
