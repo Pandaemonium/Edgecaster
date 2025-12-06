@@ -1,0 +1,66 @@
+Enemy System Strategy
+=====================
+
+North Star
+-----------
+Enemies are data‑first actors with pluggable behaviors. Adding a new demon should mean editing data (YAML/JSON) and picking existing behaviors, not writing new classes. One shared Entity/Actor type, with small composable components (combat stats, AI controller, faction, tags). Save/load uses template id + per‑instance state for persistence.
+
+Runtime Shape
+-------------
+- Entity (eid, x, y, glyph, color, name, blocks_movement=True, components: Dict[str, Any])
+- Components:
+  - CombatStats(max_hp, hp, attack, defense, speed, tags: set[str])
+  - Faction(name)
+  - AIController(behavior_id, state: dict)
+  - (Optional later) StatusEffects, Inventory, Resistances, OnHit/OnDeath hooks, LootTable reference.
+
+Data Templates
+--------------
+- Stored in `data/enemies.yaml` (or JSON/TOML) with entries like:
+  - id, name, glyph, color, base_hp, base_attack, base_defense, speed, faction, ai, tags.
+- Loader builds EnemyTemplate objects in a registry keyed by id.
+
+Factory
+-------
+- spawn_enemy(tmpl_id, x, y) looks up template, allocates Entity with components:
+  - CombatStats from base_* and tags copy
+  - Faction from template
+  - AIController with behavior_id
+  - template_id component for save/load/debug
+- Central eid allocator.
+
+AI Behaviors (pluggable)
+------------------------
+- Behavior IDs map to shared functions (e.g., melee_brute, skirmisher, caster_hexer, mindless_swarm, turret_engine).
+- Behaviors read components/tags; no subclassing. Swapping AI id in data changes behavior.
+
+Persistence
+-----------
+- Save template_id plus per‑instance state (hp, position, ai.state, statuses). Templates stay in data; instances store only deltas.
+
+Example Archetypes
+------------------
+- demon_imp: fast, low HP, skirmisher AI, tags: flying, trivial.
+- demon_brute: slow, high HP/attack/defense, melee_brute AI, tags: heavy, elite.
+- demon_hexer: glass cannon, caster_hexer AI, prefers distance, tags: caster, fragile.
+- demon_swarm: fast, low dmg, mindless_swarm AI, tags: swarm, flying.
+- demon_engine: stationary turret/hazard, turret_engine AI, tags: construct, bossish.
+
+Workflow Goals
+--------------
+- Most changes are in YAML: stats, tags, AI id, glyph/color.
+- Adding a new AI pattern means writing one behavior function and referencing it by id in data.
+- Shared logic (damage, resistances, on-hit, status application) lives in systems, keyed by tags/flags.
+
+Next Steps (minimal implementation)
+-----------------------------------
+1) Add data file `data/enemies.yaml` with initial demons above.
+2) Add templates loader/registry.
+3) Add factory `spawn_enemy` that builds Entities with components.
+4) Wire a basic AI dispatcher keyed by behavior_id.
+5) Update spawners/mapgen to place enemies by template id instead of hardcoding classes.
+6) Save/load: store template_id and component state.
+
+Design Tenet (one-liner)
+------------------------
+“Adding or tweaking demons means editing YAML and selecting shared behaviors, not adding classes.”

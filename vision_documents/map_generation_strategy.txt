@@ -1,0 +1,54 @@
+Map Generation Strategy (Julia-Based Overworld → Local Zones)
+------------------------------------------------------------
+
+Core Goals
+- Overmap: Julia-set render (curated c-path). Crop/scale so land fills ~80% of view: keep ~10% water margin each edge; land extremities hit ~90%.
+- Grid: 100×100 zones (configurable). Each grid cell = one overworld zone (local map). Crossing a screen edge moves exactly one grid cell.
+- Local maps: ~60×40 tiles. Each tile derives from the same Julia field at its world coord; locals are true zoom-ins of the overmap. Keep glyphs neutral; tint drives look.
+- Persistence: Deterministic from seed. Option to precompute/cache for fast dev startup; full pre-gen OK for release. Within-run, world is persistent.
+- POIs: Mix of visible (cities/major sites) and discoverable (lairs/ruins) placed atop the fractal world.
+
+Overmap Generation
+1) Pick c from curated c_path (seed-stable; interpolate between adjacent points). Prefer connected Julia shapes.
+2) Render Julia over a large view; crop/scale so land touches ~90% in each direction, leaving ~10% water border.
+3) Cache: rendered surface + view params (min_wx, min_wy, span_x, span_y, visual_c, visual_span, visual_zoom, surface_size). Store per run/seed.
+4) Grid overlay: 100×100 cells over the cropped view (uniform spacing in world coords).
+
+Mapping World → Zones → Tiles
+- Zone world rect:
+  wx ∈ [min_wx + (zx/num_zones)*span_x, min_wx + ((zx+1)/num_zones)*span_x]
+  wy ∈ [min_wy + (zy/num_zones)*span_y, min_wy + ((zy+1)/num_zones)*span_y]
+- Local tiles: map to world coords in that rect; sample the cached overmap surface for tint:
+  px = (wx - min_wx) / span_x * surf_width; py similarly. Clamp to surface. tint = overmap_surface[px, py].
+- Keep terrain glyphs neutral (“.”; stairs keep glyph); tint drives color. Avoid palette overrides when surface is available.
+- Optional detail: blend overmap tint with higher-zoom Julia sample, but overmap color stays the base for alignment.
+
+Biomes & Terrain (logic, not color)
+- Derive coarse biomes from Julia fields (height/moisture) at zone centers for encounters/movement. Color comes from overmap pixels.
+- Early: keep overworld walkable; later, add sparse blockers from gradients, not palette.
+
+POIs
+- Place major cities on prominent/connected land (Poisson-disk over land zones). Show on overmap from start.
+- Place lairs/ruins via weighted random over land (e.g., boundary/high-gradient preference). Hidden until discovery.
+- Generate POI locations at world-gen; generate interiors on visit (seed = world_seed + POI ID).
+
+Performance & Flow
+- Dev mode: allow cached world (overmap + metadata) to skip startup; deterministic via seed.
+- Prod: pre-render overmap once at startup; avoid re-render per visit; cache per seed/resolution.
+- Lazy zone gen: generate starting zone (and maybe neighbors); stream others on demand. Keep a small cache (e.g., 3×3 around player).
+
+Code/Architecture Hints
+- mapgen.py: field sampling, overmap render, zone generation (tile tint from overmap surface), optional biome logic.
+- scenes/world_map_scene.py: render once; store surface and params into game.
+- game.py: owns seed, overmap cache/params, world_field (biomes), zone creation; ensure overmap is ready before locals.
+- render/ascii.py: use tile.tint if present; minimal glyph palette.
+- state/world.py: tiles include tint.
+- Later: separate POI generators (city_generator.py, dungeon_generator.py) seeded per POI.
+
+AI/Collaboration Tips
+- Keep this file as shared reference. Use small, explicit param dicts: {min_wx, min_wy, span_x, span_y, visual_c, visual_span, visual_zoom, surface_size, surface}.
+- Log diagnostics at zone gen: zone coord, overmap rect, sampled color stats (over/local).
+- Keep prompts focused; split functions; test often; use deterministic seeding for order-independent zone gen.
+
+Determinism
+- All randomness from seed (world_seed → choose c, POI placement, etc.). Zone-level randomness keyed by (world_seed, zone_coord). Store seed + chosen c + view params to regenerate worlds. Cached worlds optional for dev speed.

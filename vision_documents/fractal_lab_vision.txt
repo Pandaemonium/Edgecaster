@@ -1,0 +1,28 @@
+Fractal Lab Vision (run-time spell forge)
+
+Purpose
+- A rare sanctuary where you experiment on generators/activators mid-run.
+- Tight loop: tweak → pay cost → risk chaos → gain a crafted variant for this run.
+
+Core pieces (long-term)
+- Lab POI: visible on overmap, unique map layout with a console.
+- LabState: chaos meter, unlocked sigils, stored reagents.
+- Console UI: adjust generator params (angle/amp/parts), activator params (radius/N), socket metamagic sigils (echo/delay/etc), show costs/chaos.
+- Costs/gating: mana + rare reagents + stat gates (Int/Res). Time cost (action ticks).
+- Chaos: each craft raises chaos; thresholds spawn hazards (echo constructs), warps, mana vents. Vent action to reset chaos.
+- Rewards: run-only crafted variants, sigils bound to activators, biome-tuned imprints (later).
+
+Minimal prototype (v0)
+- Place one Lab in a random overworld zone (depth 0).
+- Lab map: small room, console glyph '='. Safe otherwise.
+- Interaction: stand on console, press a key to “stabilize” a craft:
+  - Pay mana/reagent cost (start with mana-only).
+  - Apply a small buff: e.g., increase Activate R radius one step if stats allow.
+  - Bump a simple chaos meter (future hook; optional hazard spawn).
+- No persistence yet; buffs last for the run. No sigils yet.
+
+Future upgrades
+- Sigils (echo/delay/reflect/split) with sockets on activators.
+- Chaos hazards and venting action.
+- Multiple labs per run, lab-specific side quests/puzzles to unlock console.
+- Recipes and meta unlock chance when crafting under high chaos.
