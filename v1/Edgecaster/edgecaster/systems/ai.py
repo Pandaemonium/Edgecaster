@@ -32,6 +32,8 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return _lunatic(game, level, actor)
     if behavior_id == "mana_bite":
         return _mana_bite(game, level, actor)
+    if behavior_id == "imp_loudmouth":
+        return _imp_loudmouth(game, level, actor)
 
     # Default: generic “walk toward player and bump” brain.
     return _generic_walk_toward(game, level, actor)
@@ -164,10 +166,40 @@ def _lunatic_chatter(game: Any, actor: Any) -> None:
         pass
 
 
+
+
 def _mana_bite(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     """
     Mana viper.
     Intent: fast; bite drains a small amount of mana (handled on hit in combat/effects system).
     Currently: generic walk toward + bump attack.
     """
+    return _generic_walk_toward(game, level, actor)
+
+
+def _imp_loudmouth(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """
+    Imp loudmouth.
+    Intent: mostly runs the generic melee brain, but occasionally
+    uses the 'imp_taunt' action to hurl abuse at the player.
+    """
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    player_id = getattr(game, "player_id", None)
+    if player_id is None or player_id not in level.actors:
+        return ("wait", {})
+
+    # Get RNG
+    rng = getattr(game, "rng", None)
+    if rng is None:
+        import random as rng  # type: ignore
+
+    # Chance to taunt instead of moving/attacking.
+    # Keep this fairly low so it feels occasional, not spammy.
+    if "imp_taunt" in available and rng.random() < 0.06:
+        return ("imp_taunt", {})
+
+    # Otherwise, just use the generic walk-toward-then-bump behavior.
     return _generic_walk_toward(game, level, actor)

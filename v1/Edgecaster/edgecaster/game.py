@@ -3,11 +3,16 @@ import heapq
 import threading
 from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
+import yaml
+
 
 from edgecaster import config, events
 from edgecaster.state.world import World
 from edgecaster.state.actors import Actor, Stats
 from edgecaster.state.entities import Entity
+from edgecaster.enemies import factory as enemy_factory
+
+
 from edgecaster import mapgen
 from edgecaster.patterns.activation import project_vertices, damage_from_vertices
 from edgecaster.patterns import builder
@@ -250,6 +255,12 @@ class Game:
    
 
         # enemies
+        
+        
+
+
+
+
         self._spawn_enemies(self._level(), count=4)
 
         # optional little intro flourish (you can tweak or remove)
@@ -720,94 +731,75 @@ class Game:
         return lvl
 
 
+
+    def _enemy_template_ids(self) -> List[str]:
+        """
+        Return list of all enemy template ids from enemies.yaml.
+
+        This is a simple PoC used by _spawn_enemies so we can see all the glyphs.
+        Later, a more sophisticated monstergen can sit on top of the templates registry.
+        """
+        cached = getattr(self, "_enemy_ids_cache", None)
+        if cached is not None:
+            return cached
+
+        # enemies.yaml lives in edgecaster/content/enemies.yaml
+        content_dir = Path(__file__).resolve().parent / "content"
+        yaml_path = content_dir / "enemies.yaml"
+
+        with yaml_path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or []
+
+        enemy_ids: List[str] = []
+        for entry in data:
+            if isinstance(entry, dict) and "id" in entry:
+                enemy_ids.append(entry["id"])
+
+        # Failsafe: if something weird happens, at least allow "imp"
+        if not enemy_ids:
+            enemy_ids = ["imp"]
+
+        self._enemy_ids_cache = enemy_ids
+        return enemy_ids
+
+
+
+
     def _spawn_enemies(self, level: LevelState, count: int) -> None:
+        """Spawn a handful of enemies using the data-driven enemy factory."""
         spawned = 0
         attempts = 0
-        # candidate enemy ids (data-driven) - load from registry
-        from edgecaster.enemies.factory import spawn_enemy
-        try:
-            enemy_ids = list(enemy_templates.ENEMY_TEMPLATES.keys())
-        except Exception:
-            enemy_ids = ["imp"]
-        self._debug(f"Spawning enemies. Available ids: {enemy_ids}")
-
-        def pick_enemy_id(depth: int) -> str:
-            # simple depth-based weights
-            # depth 0: weak set; depth 1: add mediums; depth 2+: add strongs
-            weak = [("imp", 4), ("goblin", 3), ("vampire_bat", 3)]
-            medium = [("shadow", 2), ("fractal_echo", 2), ("raving_lunatic", 1)]
-            strong = [("corrupted_thug", 3), ("mana_viper", 3)]
-            table = weak[:]
-            if depth >= 1:
-                table += medium
-            if depth >= 2:
-                table += strong
-            # filter to ids actually loaded
-            table = [(k, w) for (k, w) in table if k in enemy_templates.ENEMY_TEMPLATES]
-            if not table:
-                return enemy_ids[0] if enemy_ids else "imp"
-            total = sum(w for _, w in table)
-            r = self.rng.uniform(0, total)
-            acc = 0.0
-            for k, w in table:
-                acc += w
-                if r <= acc:
-                    return k
-            return table[-1][0]
-
-        # For first zone, always place one raving lunatic at entry and a few imps nearby
-        if getattr(level, "coord", None) == self.zone_coord and not getattr(level, "debug_spawned", False):
-            # lunatic at entry
-            try:
-                lunatic = spawn_enemy("raving_lunatic", level.world.entry)
-                lunatic.id = self._new_id()
-                aid = lunatic.id
-                level.actors[aid] = lunatic
-                level.entities[aid] = lunatic
-                self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
-                self._debug(f"Spawned opening lunatic at {level.world.entry} id={aid}")
-            except Exception as e:
-                self._debug(f"Failed to spawn lunatic: {e!r}")
-            # a few imps randomly
-            imp_spawns = 3
-            placed = 0
-            attempts_local = 0
-            while placed < imp_spawns and attempts_local < 100:
-                attempts_local += 1
-                x = self.rng.randint(1, level.world.width - 2)
-                y = self.rng.randint(1, level.world.height - 2)
-                if not level.world.is_walkable(x, y):
-                    continue
-                if self._actor_at(level, (x, y)) or self._blocking_entity_at(level, (x, y)):
-                    continue
-                imp = spawn_enemy("imp", (x, y))
-                imp.id = self._new_id()
-                aid = imp.id
-                level.actors[aid] = imp
-                level.entities[aid] = imp
-                self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
-                self._debug(f"Spawned opening imp at {(x,y)} id={aid}")
-                placed += 1
-            level.debug_spawned = True
         while spawned < count and attempts < 200:
             attempts += 1
             x = self.rng.randint(1, level.world.width - 2)
             y = self.rng.randint(1, level.world.height - 2)
+            pos = (x, y)
+
             if not level.world.is_walkable(x, y):
                 continue
-            if self._actor_at(level, (x, y)):
+            if self._actor_at(level, pos):
                 continue
-            if self._blocking_entity_at(level, (x, y)):
+            if self._blocking_entity_at(level, pos):
                 continue
-            kind = pick_enemy_id(level.coord[2] if hasattr(level, "coord") else 0)
-            monster = spawn_enemy(kind, (x, y))
-            monster.id = self._new_id()
-            aid = monster.id
-            level.actors[aid] = monster
-            level.entities[aid] = monster  # mirror into entities
-            self._debug(f"Spawned enemy {kind} ({monster.name}/{monster.glyph}) at {(x,y)} id={aid}")
-            self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
+
+            # Pick a random enemy template id from enemies.yaml
+            enemy_ids = self._enemy_template_ids()
+            tmpl_id = self.rng.choice(enemy_ids)
+
+            mob = enemy_factory.spawn_enemy(tmpl_id, pos)
+
+            level.actors[mob.id] = mob
+            level.entities[mob.id] = mob  # mirror into entities
+
+            # Schedule AI for this enemy.
+            self._schedule(
+                level,
+                self.cfg.action_time_fast,
+                lambda aid=mob.id, lvl=level: self._monster_act(lvl, aid),
+            )
             spawned += 1
+
+
 
 
     def _spawn_mentor(self, level: LevelState) -> None:
@@ -914,28 +906,20 @@ class Game:
         count: int,
         radius: int = 3,
     ) -> int:
-        """Spawn up to `count` imps within `radius` tiles of center."""
+        """Spawn up to `count` imps within `radius` tiles of center using templates."""
         def place_imp(pos: Tuple[int, int]) -> None:
-            x, y = pos
-            aid = self._new_id()
-            imp = monster_manual.make_monster(
-                "imp",
-                id=aid,
-                pos=(x, y),
-                cfg=self.cfg,
-            )
+            imp = enemy_factory.spawn_enemy("imp", pos)
+            level.actors[imp.id] = imp
+            level.entities[imp.id] = imp
 
-            level.actors[aid] = imp
-            level.entities[aid] = imp
-
-            # Schedule AI
             self._schedule(
                 level,
                 self.cfg.action_time_fast,
-                lambda aid=aid, lvl=level: self._monster_act(lvl, aid),
+                lambda aid=imp.id, lvl=level: self._monster_act(lvl, aid),
             )
 
         return self._spawn_entities_near(level, center, count, place_imp, radius)
+
 
     def _spawn_echoes_near(
         self,
@@ -946,26 +930,18 @@ class Game:
     ) -> int:
         """Spawn hostile fractal echoes within `radius` of center."""
         def place_echo(pos: Tuple[int, int]) -> None:
-            x, y = pos
-            aid = self._new_id()
-            echo = monster_manual.make_monster(
-                "fractal_echo",
-                id=aid,
-                pos=(x, y),
-                cfg=self.cfg,
-            )
+            echo = enemy_factory.spawn_enemy("fractal_echo", pos)
+            level.actors[echo.id] = echo
+            level.entities[echo.id] = echo
 
-            level.actors[aid] = echo
-            level.entities[aid] = echo
-
-            # Schedule AI
             self._schedule(
                 level,
                 self.cfg.action_time_fast,
-                lambda aid=aid, lvl=level: self._monster_act(lvl, aid),
+                lambda aid=echo.id, lvl=level: self._monster_act(lvl, aid),
             )
 
         return self._spawn_entities_near(level, center, count, place_echo, radius)
+
 
     def _spawn_berries_near(
         self,
