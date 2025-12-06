@@ -2,6 +2,4 @@
 
 -Bottom half of Options menu uses different cursor than the top.
 
--Pressing left or right on PopupMenu causes it to be selected. Sometimes causes it to be accidentally selected if you're spamming movement.
-
 -Mapgen takes a long time, more for some seeds than others it would seem, and causes slowdown until it's done. Understandable no doubt for such an intensive process. Eventually work on a more streamlined process of worldgen a la Dwarf Fortress where worlds can be created and saved, then loaded and reused more quickly and easily.

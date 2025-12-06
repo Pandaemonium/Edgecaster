@@ -1,6 +1,23 @@
 # Enemy templates (data-driven)
 # Each id must be unique.
 
+# content/enemies.yaml
+
+- id: human_base
+  name: Human
+  glyph: "@"
+  color: [230, 230, 230]
+  faction: player
+  ai: none          # or omit / special-case in factory
+  base_hp: 1        # will be overridden by Character stats
+  base_mana: 0      # ditto
+  base_attack: 1
+  base_defense: 0
+  speed: 100
+  tags: ["humanoid"]
+
+
+
 - id: "imp"
   name: "Imp"
   glyph: "i"
