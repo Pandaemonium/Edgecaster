@@ -72,6 +72,22 @@ def get_action(name: str) -> ActionDef:
 
     Raises KeyError if the action is unknown.
     """
+    # On-demand aliases for custom_N -> same base but passing through the suffix.
+    if name.startswith("custom_") and "custom" in _action_registry:
+        if name not in _action_registry:
+            base = _action_registry["custom"]
+
+            def _custom_n_action(game: Any, actor_id: str, **kwargs: Any) -> None:
+                if hasattr(game, "act_fractal"):
+                    game.act_fractal(actor_id, name)
+
+            _action_registry[name] = ActionDef(
+                name=name,
+                label=base.label,
+                speed=base.speed,
+                func=_custom_n_action,
+            )
+        return _action_registry[name]
     try:
         return _action_registry[name]
     except KeyError as exc:

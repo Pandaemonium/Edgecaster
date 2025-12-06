@@ -1,0 +1,35 @@
+Spring Cleaning Checklist
+=========================
+
+Core cleanup
+------------
+- Remove/ignore the embedded repo at `C:\Games\Edgecaster\Edgecaster` (keep outer repo clean).
+- Keep generated assets out of git: `v1/Edgecaster/tools/path_thumbnails/` and other thumbnails/screenshots → ensure in `.gitignore`.
+- Commit vision docs (`vision_documents/*.txt`) so they aren’t untracked.
+
+Enemies & AI
+------------
+- Confirm all enemies spawn via YAML → templates → factory; remove any lingering references to legacy manual data.
+- Flesh out AI behaviors beyond the current stubs (melee_brute, skirmisher, dive_bite, lunatic chatter, mana_bite).
+- Add proper spawn tables per biome/depth/zone difficulty; drop the debug “spawn lunatic+imps on start” once happy with early game.
+- Hook loot drops (e.g., goblin loot_drop tag) and mana-drain effects for mana_viper into actions/effects.
+
+Fractal/editor
+--------------
+- Consolidate character creation custom fractal flow to reuse `fractal_editor_scene.py`.
+- Tighten click/render alignment QA in the editor; ensure F11/fullscreen works consistently in all scenes.
+
+Content/data
+------------
+- Document new behaviors/actions when added (update architecture/strategy docs).
+- Ensure items/factions/data tables are kept in `content/` and loaded via registries (avoid scattered hardcoding).
+
+UX/renderer
+-----------
+- Ability bar: keep extending in `render/ascii.py` (no parallel UIs).
+- Message logging: ensure names/tags propagate correctly; consider removing placeholder “Unknown” fallbacks once registry is stable.
+
+Tests/dev quality
+-----------------
+- Add smoke tests or sanity checks for template loading (enemy YAML) so missing IDs fail loudly in dev, not at runtime.
+- Periodically review `debug.log` usage; keep it small and rotated/cleared each run as now.
