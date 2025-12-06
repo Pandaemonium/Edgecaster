@@ -128,8 +128,40 @@ def _lunatic(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     dist = abs(px - ax) + abs(py - ay)
     if dist <= 1:
         return _generic_walk_toward(game, level, actor)
-    # TODO: emit ambient chatter lines here.
+    # ambient chatter chance
+    rng = getattr(game, "rng", None)
+    if rng is None:
+        import random as rng  # type: ignore
+    if rng.random() < 0.05:
+        _lunatic_chatter(game, actor)
     return ("wait", {})
+
+
+_LUNATIC_LINES = [
+    "The lines! They wiggle—just like the coastlines...",
+    "Do you hear the humming? It's the fractals singing.",
+    "Press ? and the secrets unfold. Or maybe it's just a map...",
+    "Don't stare into the Julia sea too long, you'll drown in detail.",
+    "Patterns within patterns—draw them, cast them, flee them.",
+    "Your mana leaks like sand unless you weave tight runes!",
+    "Coherence... coherence... don't let it unravel.",
+    "The lab? It's out there, but sometimes the doors bite back.",
+    "Beware the ones that buzz—they'll drink your mana dry.",
+    "The further down you go, the heavier the echoes hit.",
+]
+
+
+def _lunatic_chatter(game: Any, actor: Any) -> None:
+    """Log a random voiceline from the lunatic."""
+    try:
+        rng = getattr(game, "rng", None)
+        import random
+        if rng is None:
+            rng = random
+        line = rng.choice(_LUNATIC_LINES)  # type: ignore[attr-defined]
+        game.log.add(f"{actor.name} mutters: \"{line}\"")
+    except Exception:
+        pass
 
 
 def _mana_bite(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:

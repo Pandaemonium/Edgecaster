@@ -12,5 +12,5 @@ build/
 *.egg-info/
 v1/Edgecaster/map_samples/
 v1/Edgecaster/tools/thumbnails/
-v1/Edgecaster/tools/map_thumbnails/
+v1/Edgecaster/tools/path_thumbnails/
 v1/Edgecaster/tools/gitignore_tools/

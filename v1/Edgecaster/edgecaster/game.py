@@ -730,16 +730,64 @@ class Game:
         except Exception:
             enemy_ids = ["imp"]
         self._debug(f"Spawning enemies. Available ids: {enemy_ids}")
-        # For first zone, drop one of each for testing
+
+        def pick_enemy_id(depth: int) -> str:
+            # simple depth-based weights
+            # depth 0: weak set; depth 1: add mediums; depth 2+: add strongs
+            weak = [("imp", 4), ("goblin", 3), ("vampire_bat", 3)]
+            medium = [("shadow", 2), ("fractal_echo", 2), ("raving_lunatic", 1)]
+            strong = [("corrupted_thug", 3), ("mana_viper", 3)]
+            table = weak[:]
+            if depth >= 1:
+                table += medium
+            if depth >= 2:
+                table += strong
+            # filter to ids actually loaded
+            table = [(k, w) for (k, w) in table if k in enemy_templates.ENEMY_TEMPLATES]
+            if not table:
+                return enemy_ids[0] if enemy_ids else "imp"
+            total = sum(w for _, w in table)
+            r = self.rng.uniform(0, total)
+            acc = 0.0
+            for k, w in table:
+                acc += w
+                if r <= acc:
+                    return k
+            return table[-1][0]
+
+        # For first zone, always place one raving lunatic at entry and a few imps nearby
         if getattr(level, "coord", None) == self.zone_coord and not getattr(level, "debug_spawned", False):
-            for kind in enemy_ids:
-                monster = spawn_enemy(kind, level.world.entry)
-                monster.id = self._new_id()
-                aid = monster.id
-                level.actors[aid] = monster
-                level.entities[aid] = monster
+            # lunatic at entry
+            try:
+                lunatic = spawn_enemy("raving_lunatic", level.world.entry)
+                lunatic.id = self._new_id()
+                aid = lunatic.id
+                level.actors[aid] = lunatic
+                level.entities[aid] = lunatic
                 self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
-                self._debug(f"Spawned debug enemy {kind} ({monster.name}/{monster.glyph}) at entry {level.world.entry} id={aid}")
+                self._debug(f"Spawned opening lunatic at {level.world.entry} id={aid}")
+            except Exception as e:
+                self._debug(f"Failed to spawn lunatic: {e!r}")
+            # a few imps randomly
+            imp_spawns = 3
+            placed = 0
+            attempts_local = 0
+            while placed < imp_spawns and attempts_local < 100:
+                attempts_local += 1
+                x = self.rng.randint(1, level.world.width - 2)
+                y = self.rng.randint(1, level.world.height - 2)
+                if not level.world.is_walkable(x, y):
+                    continue
+                if self._actor_at(level, (x, y)) or self._blocking_entity_at(level, (x, y)):
+                    continue
+                imp = spawn_enemy("imp", (x, y))
+                imp.id = self._new_id()
+                aid = imp.id
+                level.actors[aid] = imp
+                level.entities[aid] = imp
+                self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
+                self._debug(f"Spawned opening imp at {(x,y)} id={aid}")
+                placed += 1
             level.debug_spawned = True
         while spawned < count and attempts < 200:
             attempts += 1
@@ -751,9 +799,7 @@ class Game:
                 continue
             if self._blocking_entity_at(level, (x, y)):
                 continue
-            if not enemy_ids:
-                break
-            kind = self.rng.choice(enemy_ids)
+            kind = pick_enemy_id(level.coord[2] if hasattr(level, "coord") else 0)
             monster = spawn_enemy(kind, (x, y))
             monster.id = self._new_id()
             aid = monster.id

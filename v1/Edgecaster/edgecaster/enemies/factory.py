@@ -102,4 +102,5 @@ def spawn_enemy(tmpl_id: str, pos: Tuple[int, int]) -> Actor:
     # stash movement speed in tags for later use by the turn/energy system
     actor.tags["speed"] = tmpl.speed
     actor.tags["tags"] = tmpl.tags.copy()
+    actor.tags["xp"] = tmpl.xp
     return actor

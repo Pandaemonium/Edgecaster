@@ -23,6 +23,7 @@ class EnemyTemplate:
     speed: float
     faction: str
     ai: str
+    xp: int
     tags: Set[str]
 
 
@@ -42,6 +43,7 @@ def _build_template(entry: dict) -> EnemyTemplate:
         speed=float(entry.get("speed", 1.0)),
         faction=entry.get("faction", "neutral"),
         ai=entry.get("ai", "idle"),
+        xp=int(entry.get("xp", 1)),
         tags=set(entry.get("tags", [])),
     )
 
