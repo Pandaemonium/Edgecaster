@@ -334,11 +334,6 @@ class CharCreation:
                 self.char.illuminator = self.illuminators[(idx + delta) % len(self.illuminators)]
             return
 
-        # --- Seed panel focus via right from stats/done ---
-        if not self.seed_focus and key == pygame.K_RIGHT and field in ("res", "done"):
-            self.seed_focus = True
-            return
-
         # --- Stat adjustments ---
         if field in ("con", "agi", "int", "res"):
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
