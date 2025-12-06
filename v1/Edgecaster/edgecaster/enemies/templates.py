@@ -16,6 +16,7 @@ class EnemyTemplate:
     name: str
     glyph: str
     color: Tuple[int, int, int]
+    actions: Tuple[str, ...]
     base_hp: int
     base_attack: int
     base_defense: int
@@ -34,6 +35,7 @@ def _build_template(entry: dict) -> EnemyTemplate:
         name=entry["name"],
         glyph=entry["glyph"],
         color=tuple(entry["color"]),
+        actions=tuple(entry.get("actions", ("move", "wait"))),
         base_hp=int(entry.get("base_hp", 1)),
         base_attack=int(entry.get("base_attack", 1)),
         base_defense=int(entry.get("base_defense", 0)),
@@ -44,7 +46,7 @@ def _build_template(entry: dict) -> EnemyTemplate:
     )
 
 
-def load_enemy_templates(path: Path | str | None = None) -> None:
+def load_enemy_templates(path: Path | str | None = None, logger=None) -> None:
     """Load enemy templates from YAML and populate ENEMY_TEMPLATES."""
     global ENEMY_TEMPLATES
     if path is None:
@@ -54,13 +56,20 @@ def load_enemy_templates(path: Path | str | None = None) -> None:
         raise FileNotFoundError(f"Enemy template file not found: {path}")
     if yaml is None:
         raise ImportError("PyYAML is required to load enemy templates.")
-    data = yaml.safe_load(path.read_text())
+    text = path.read_text()
+    data = yaml.safe_load(text)
     if not isinstance(data, Iterable):
         raise ValueError(f"Enemy template file malformed: {path}")
-    ENEMY_TEMPLATES = {}
+    ENEMY_TEMPLATES.clear()
     for entry in data:
         tmpl = _build_template(entry)
         ENEMY_TEMPLATES[tmpl.id] = tmpl
+    if logger:
+        logger(f"[enemies] loaded {len(ENEMY_TEMPLATES)} templates from {path}")
+        logger(f"[enemies] ids: {list(ENEMY_TEMPLATES.keys())}")
+    if logger:
+        logger(f"[enemies] loaded {len(ENEMY_TEMPLATES)} templates from {path}")
+        logger(f"[enemies] ids: {list(ENEMY_TEMPLATES.keys())}")
 
 
 def get_template(tmpl_id: str) -> EnemyTemplate:

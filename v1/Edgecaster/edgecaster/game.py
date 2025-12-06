@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import heapq
 import threading
 from typing import Dict, Tuple, List, Optional, Callable
+from pathlib import Path
 
 from edgecaster import config, events
 from edgecaster.state.world import World
@@ -14,10 +15,7 @@ from edgecaster.character import Character, default_character
 from edgecaster.content import npcs
 from edgecaster.systems.actions import get_action, action_delay
 from edgecaster.systems import ai
-from edgecaster.state import monster_manual
-
-
-
+import edgecaster.enemies.templates as enemy_templates
 from . import lorenz
 import math
 
@@ -112,6 +110,18 @@ class Game:
         self.rng = rng
         self.log = MessageLog()
         self.place_range = cfg.place_range
+        # debug log file
+        self.debug_log_path = Path(__file__).resolve().parent.parent / "debug.log"
+        # clear debug log each run
+        try:
+            self.debug_log_path.write_text("", encoding="utf-8")
+        except Exception:
+            pass
+        # ensure enemy templates are loaded once up-front
+        try:
+            enemy_templates.load_enemy_templates(logger=self._debug)
+        except Exception as e:
+            self._debug(f"Enemy template load failed: {e!r}")
         # urgent message system (level-ups, death, important events)
         # urgent message system (level-ups, death, important events)
         self.urgent_message: str | None = None
@@ -211,20 +221,14 @@ class Game:
         player_name = self.character.name or "Edgecaster"
         player_stats = self._build_player_stats()
 
-        # Pull baseline definition from the monster manual so that:
-        # - faction
-        # - default actions
-        # live in the same place as monsters.
-        human_tmpl = monster_manual.MONSTERS["human"]
-
         player_id = self._new_id()
         player = Actor(
             id=player_id,
-            name=player_name or human_tmpl.name,
+            name=player_name,
             pos=(px, py),
-            faction=human_tmpl.faction,
+            faction="player",
             stats=player_stats,
-            actions=human_tmpl.actions,
+            actions=("move", "wait"),
         )
 
         # Optionally tag this actor as "the" player + class, for later UI/AI tricks
@@ -719,6 +723,24 @@ class Game:
     def _spawn_enemies(self, level: LevelState, count: int) -> None:
         spawned = 0
         attempts = 0
+        # candidate enemy ids (data-driven) - load from registry
+        from edgecaster.enemies.factory import spawn_enemy
+        try:
+            enemy_ids = list(enemy_templates.ENEMY_TEMPLATES.keys())
+        except Exception:
+            enemy_ids = ["imp"]
+        self._debug(f"Spawning enemies. Available ids: {enemy_ids}")
+        # For first zone, drop one of each for testing
+        if getattr(level, "coord", None) == self.zone_coord and not getattr(level, "debug_spawned", False):
+            for kind in enemy_ids:
+                monster = spawn_enemy(kind, level.world.entry)
+                monster.id = self._new_id()
+                aid = monster.id
+                level.actors[aid] = monster
+                level.entities[aid] = monster
+                self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
+                self._debug(f"Spawned debug enemy {kind} ({monster.name}/{monster.glyph}) at entry {level.world.entry} id={aid}")
+            level.debug_spawned = True
         while spawned < count and attempts < 200:
             attempts += 1
             x = self.rng.randint(1, level.world.width - 2)
@@ -729,17 +751,15 @@ class Game:
                 continue
             if self._blocking_entity_at(level, (x, y)):
                 continue
-            aid = self._new_id()
-            imp = monster_manual.make_monster(
-                "imp",
-                id=aid,
-                pos=(x, y),
-                cfg=self.cfg,
-            )
-
-            level.actors[aid] = imp
-            level.entities[aid] = imp  # mirror into entities
-
+            if not enemy_ids:
+                break
+            kind = self.rng.choice(enemy_ids)
+            monster = spawn_enemy(kind, (x, y))
+            monster.id = self._new_id()
+            aid = monster.id
+            level.actors[aid] = monster
+            level.entities[aid] = monster  # mirror into entities
+            self._debug(f"Spawned enemy {kind} ({monster.name}/{monster.glyph}) at {(x,y)} id={aid}")
             self._schedule(level, self.cfg.action_time_fast, lambda aid=aid, lvl=level: self._monster_act(lvl, aid))
             spawned += 1
 
@@ -2341,3 +2361,11 @@ class Game:
     def set_target_cursor(self, pos: Tuple[int, int]) -> None:
         # helper for renderer if needed
         pass
+
+    # --- debug logging ---
+    def _debug(self, msg: str) -> None:
+        try:
+            with open(self.debug_log_path, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass

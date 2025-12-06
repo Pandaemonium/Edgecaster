@@ -385,8 +385,10 @@ class AsciiRenderer:
             # This is basically your old _actor_visual, but folded in.
             if ent.faction == "player":
                 return "@", self.player_color
-            if ent.faction == "hostile":
-                return "m", self.monster_color
+            # use entity's own glyph/color if provided
+            glyph = getattr(ent, "glyph", "?")
+            color = getattr(ent, "color", self.monster_color)
+            return glyph, color
             if ent.faction == "npc":
                 # tweak this if you want a special glyph/color for NPCs
                 return "?", self.fg

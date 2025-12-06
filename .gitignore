@@ -10,5 +10,7 @@ debug.log
 dist/
 build/
 *.egg-info/
-#Edgecaster/
 v1/Edgecaster/map_samples/
+v1/Edgecaster/tools/thumbnails/
+v1/Edgecaster/tools/map_thumbnails/
+v1/Edgecaster/tools/gitignore_tools/
