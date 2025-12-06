@@ -41,6 +41,16 @@ MONSTERS: Dict[str, MonsterTemplate] = {
         actions=("move", "wait"),
         xp_cfg_key="xp_per_imp",  # reuse for now
     ),
+    # --- Player / human baseline (also usable for human NPCs later) ---
+    "human": MonsterTemplate(
+        key="human",
+        name="Human",
+        faction="player",          # default faction; can be overridden
+        base_hp=10,                # placeholder; actual player stats come from char creation
+        actions=("move", "wait"),  # we can add rune actions here later
+        xp=None,                   # you don't get XP for killing yourself :)
+        xp_cfg_key=None,
+    ),
 }
 
 
