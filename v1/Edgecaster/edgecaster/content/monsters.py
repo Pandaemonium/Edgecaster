@@ -1,2 +1,0 @@
-"""Monster data placeholder."""
-monsters = []

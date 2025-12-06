@@ -11,7 +11,7 @@
   base_defense: 0
   speed: 1.2
   faction: "hostile"
-  ai: "skirmisher"
+  ai: "imp_loudmouth"
   xp: 10
   tags: ["demon", "trivial", "taunting"]
 

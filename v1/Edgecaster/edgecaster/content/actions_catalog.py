@@ -1,2 +1,0 @@
-"""Action definitions placeholder."""
-actions = []

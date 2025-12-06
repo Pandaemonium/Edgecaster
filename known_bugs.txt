@@ -1,5 +1,0 @@
--Sometimes when you die, if you get hit twice in the same turn, you'll get two death messages.
-
--Bottom half of Options menu uses different cursor than the top.
-
--Pressing left or right on PopupMenu causes it to be selected. Sometimes causes it to be accidentally selected if you're spamming movement.
