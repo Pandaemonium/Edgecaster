@@ -1770,15 +1770,35 @@ class Game:
         lvl = self._level()
         self._advance_time(lvl, self.cfg.action_time_fast)
     
+    def queue_player_fractal(self, kind: str) -> None:
+        lvl = self._level()
+        self._apply_fractal_op(lvl, kind)
+        self._advance_time(lvl, self.cfg.action_time_fast)
+
+
+    def reset_pattern(self) -> None:
+        lvl = self._level()
+        self._reset_pattern_core(lvl)
+
+
     def queue_player_activate(self, target_vertex: Optional[int]) -> None:
         lvl = self._level()
         self._activate_pattern_all(lvl, target_vertex)
         self._advance_time(lvl, self.cfg.action_time_fast)
 
+
     def queue_player_activate_seed(self, target_vertex: Optional[int]) -> None:
         lvl = self._level()
         self._activate_pattern_seed_neighbors(lvl, target_vertex)
         self._advance_time(lvl, self.cfg.action_time_fast)
+
+
+    def queue_meditate(self) -> None:
+        lvl = self._level()
+        # Reuse the same core logic but keep the old time cost
+        self._meditate_core(lvl, self.player_id)
+        self._advance_time(lvl, 100)
+
 
     # --- interaction / NPCs ---
 
@@ -1824,79 +1844,7 @@ class Game:
         self.character.generator = choice
         return f"{choice.title()} added to your repertoire."
 
-    def queue_player_fractal(self, kind: str) -> None:
-        lvl = self._level()
-        if not lvl.pattern.vertices:
-            self.log.add("No pattern to modify. Place a terminus first.")
-            return
-        segs = lvl.pattern.to_segments()
-        if kind == "subdivide":
-            parts = self._param_value("subdivide", "parts")
-            gen = builder.SubdivideGenerator(parts=parts)
-        elif kind == "koch":
-            height = self._param_value("koch", "height")
-            flip = self._param_value("koch", "flip")
-            gen = builder.KochGenerator(height_factor=height, flip=flip)
-        elif kind == "branch":
-            angle = self._param_value("branch", "angle")
-            count = self._param_value("branch", "count")
-            gen = builder.BranchGenerator(angle_deg=angle, length_factor=0.45, branch_count=count)
-        elif kind == "extend":
-            gen = builder.ExtendGenerator()
-        elif kind == "zigzag":
-            parts = self._param_value("zigzag", "parts")
-            amp = self._param_value("zigzag", "amp")
-            gen = builder.ZigzagGenerator(parts=parts, amplitude_factor=amp)
-        elif kind.startswith("custom"):
-            idx = 0
-            if kind != "custom":
-                try:
-                    idx = int(kind.split("_", 1)[1])
-                except Exception:
-                    idx = 0
-            if not self.custom_patterns or idx >= len(self.custom_patterns):
-                self.log.add("No custom pattern saved.")
-                return
-            pattern = self.custom_patterns[idx]
-            if not pattern or len(pattern) < 2:
-                self.log.add("No custom pattern saved.")
-                return
-            amp = self._param_value("custom", "amplitude")
-            gen = builder.CustomPolyGenerator(pattern, amplitude=amp)
-        else:
-            self.log.add("Unknown fractal op.")
-            return
-        segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
-        segs = builder.cleanup_duplicates(segs)
-        if len(segs) > self.cfg.max_vertices:
-            segs = segs[: self.cfg.max_vertices]
-            self.log.add("Pattern capped at max vertices.")
-        lvl.pattern = builder.Pattern.from_segments(segs)
-        self._advance_time(lvl, self.cfg.action_time_fast)
 
-    def reset_pattern(self) -> None:
-        lvl = self._level()
-        lvl.pattern = builder.Pattern()
-        lvl.pattern_anchor = None
-        lvl.activation_points = []
-        lvl.activation_ttl = 0
-        # restore coherence to max when manually resetting
-        player = self._player()
-        player.stats.coherence = player.stats.max_coherence
-        self.log.add("Rune reset.")
-
-    def queue_meditate(self) -> None:
-        lvl = self._level()
-        player = self._player()
-        before = player.stats.mana
-        gain = 10
-        player.stats.mana = min(player.stats.max_mana, player.stats.mana + gain)
-        restored = player.stats.mana - before
-        if restored > 0:
-            self.log.add(f"You meditate and restore {restored} mana.")
-        else:
-            self.log.add("You meditate but feel already full of mana.")
-        self._advance_time(lvl, 100)
 
     def use_stairs_down(self) -> None:
         lvl = self._level()
@@ -2217,6 +2165,117 @@ class Game:
 
 
     # --- pattern activation ---
+
+
+    # --- pattern activation helpers for the Action system ---
+
+    def act_activate_all(self, actor_id: str, target_vertex: Optional[int]) -> None:
+        """Generic action entry point: activate the whole pattern at a vertex."""
+        level = self._level()
+        # For now we still assume the player is the caster; later we can
+        # look up the actor by id and its level explicitly.
+        self._activate_pattern_all(level, target_vertex)
+
+
+    def act_activate_seed(self, actor_id: str, target_vertex: Optional[int]) -> None:
+        """Generic action entry point: activate neighbors around a seed vertex."""
+        level = self._level()
+        self._activate_pattern_seed_neighbors(level, target_vertex)
+
+
+    def act_fractal(self, actor_id: str, kind: str) -> None:
+        """Generic action entry point: apply a fractal generator to the current pattern."""
+        level = self._level()
+        self._apply_fractal_op(level, kind)
+
+
+    def act_reset_rune(self, actor_id: str) -> None:
+        """Generic action entry point: reset the current rune/pattern."""
+        level = self._level()
+        self._reset_pattern_core(level)
+
+
+    def act_meditate(self, actor_id: str) -> None:
+        """Generic action entry point: meditate to restore mana."""
+        level = self._level()
+        self._meditate_core(level, actor_id)
+
+
+    def _apply_fractal_op(self, lvl: LevelState, kind: str) -> None:
+        if not lvl.pattern.vertices:
+            self.log.add("No pattern to modify. Place a terminus first.")
+            return
+        segs = lvl.pattern.to_segments()
+        if kind == "subdivide":
+            parts = self._param_value("subdivide", "parts")
+            gen = builder.SubdivideGenerator(parts=parts)
+        elif kind == "koch":
+            height = self._param_value("koch", "height")
+            flip = self._param_value("koch", "flip")
+            gen = builder.KochGenerator(height_factor=height, flip=flip)
+        elif kind == "branch":
+            angle = self._param_value("branch", "angle")
+            count = self._param_value("branch", "count")
+            gen = builder.BranchGenerator(angle_deg=angle, length_factor=0.45, branch_count=count)
+        elif kind == "extend":
+            gen = builder.ExtendGenerator()
+        elif kind == "zigzag":
+            parts = self._param_value("zigzag", "parts")
+            amp = self._param_value("zigzag", "amp")
+            gen = builder.ZigzagGenerator(parts=parts, amplitude_factor=amp)
+        elif kind.startswith("custom"):
+            idx = 0
+            if kind != "custom":
+                try:
+                    idx = int(kind.split("_", 1)[1])
+                except Exception:
+                    idx = 0
+            if not self.custom_patterns or idx >= len(self.custom_patterns):
+                self.log.add("No custom pattern saved.")
+                return
+            pattern = self.custom_patterns[idx]
+            if not pattern or len(pattern) < 2:
+                self.log.add("No custom pattern saved.")
+                return
+            amp = self._param_value("custom", "amplitude")
+            gen = builder.CustomPolyGenerator(pattern, amplitude=amp)
+        else:
+            self.log.add("Unknown fractal op.")
+            return
+
+        segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
+        segs = builder.cleanup_duplicates(segs)
+        if len(segs) > self.cfg.max_vertices:
+            segs = segs[: self.cfg.max_vertices]
+            self.log.add("Pattern capped at max vertices.")
+        lvl.pattern = builder.Pattern.from_segments(segs)
+
+
+    def _reset_pattern_core(self, lvl: LevelState) -> None:
+        lvl.pattern = builder.Pattern()
+        lvl.pattern_anchor = None
+        lvl.activation_points = []
+        lvl.activation_ttl = 0
+        # restore coherence to max when manually resetting
+        player = self._player()
+        player.stats.coherence = player.stats.max_coherence
+        self.log.add("Rune reset.")
+
+
+    def _meditate_core(self, lvl: LevelState, actor_id: str) -> None:
+        # Currently only the player meditates; hook actor_id up properly later.
+        player = self._player()
+        before = player.stats.mana
+        gain = 10
+        player.stats.mana = min(player.stats.max_mana, player.stats.mana + gain)
+        restored = player.stats.mana - before
+        if restored > 0:
+            self.log.add(f"You meditate and restore {restored} mana.")
+        else:
+            self.log.add("You meditate but feel already full of mana.")
+
+
+
 
     def _activation_origin(self, level: LevelState) -> Optional[Tuple[int, int]]:
         return level.pattern_anchor

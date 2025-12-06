@@ -1354,10 +1354,13 @@ class AsciiRenderer:
         else:
             if self.aim_action in ("activate_all", "activate_seed"):
                 target_idx = self._current_hover_vertex(game)
-                if self.aim_action == "activate_all":
-                    game.queue_player_activate(target_idx)
+                if hasattr(game, "queue_player_action"):
+                    game.queue_player_action(self.aim_action, target_vertex=target_idx)
                 else:
-                    game.queue_player_activate_seed(target_idx)
+                    if self.aim_action == "activate_all":
+                        game.queue_player_activate(target_idx)
+                    else:
+                        game.queue_player_activate_seed(target_idx)
                 self.aim_action = None
             else:
                 px, py = game.actors[game.player_id].pos
@@ -1373,40 +1376,57 @@ class AsciiRenderer:
         self._trigger_action(game, ability.action)
 
     def _trigger_action(self, game: Game, action: str) -> None:
+        # helper: prefer generic action system if available
+        def do_action(action_name: str, **kwargs):
+            if hasattr(game, "queue_player_action"):
+                game.queue_player_action(action_name, **kwargs)
+            else:
+                # Fallbacks for older builds
+                if action_name in ("subdivide", "koch", "branch", "extend", "zigzag") or action_name.startswith("custom"):
+                    game.queue_player_fractal(action_name)
+                elif action_name == "activate_all":
+                    target_idx = self._current_hover_vertex(game)
+                    game.queue_player_activate(target_idx)
+                elif action_name == "activate_seed":
+                    target_idx = self._current_hover_vertex(game)
+                    game.queue_player_activate_seed(target_idx)
+                elif action_name == "reset":
+                    game.reset_pattern()
+                elif action_name == "meditate":
+                    game.queue_meditate()
+
         if action == "place":
             self.target_cursor = game.actors[game.player_id].pos
-            game.begin_place_mode()
+            # Place is a free mode-toggle-ish action; we can still send it
+            # through the generic system, but keep the legacy behavior.
+            if hasattr(game, "queue_player_action"):
+                game.queue_player_action("place")
+            else:
+                game.begin_place_mode()
             self.aim_action = None
-        elif action == "subdivide":
+
+        elif action in ("subdivide", "koch", "branch", "extend", "zigzag") or action.startswith("custom"):
             self.aim_action = None
-            game.queue_player_fractal("subdivide")
-        elif action == "koch":
-            self.aim_action = None
-            game.queue_player_fractal("koch")
-        elif action == "branch":
-            self.aim_action = None
-            game.queue_player_fractal("branch")
-        elif action == "extend":
-            self.aim_action = None
-            game.queue_player_fractal("extend")
-        elif action == "zigzag":
-            self.aim_action = None
-            game.queue_player_fractal("zigzag")
-        elif action.startswith("custom"):
-            self.aim_action = None
-            game.queue_player_fractal(action)
+            do_action(action)
+
         elif action == "activate_all":
+            # keep aim/hover logic, but actual action now goes through the
+            # generic hook in _handle_click when we’ve picked a target
             self.aim_action = "activate_all"
             self._update_hover(game, pygame.mouse.get_pos())
+
         elif action == "activate_seed":
             self.aim_action = "activate_seed"
             self._update_hover(game, pygame.mouse.get_pos())
+
         elif action == "reset":
             self.aim_action = None
-            game.reset_pattern()
+            do_action("reset")
+
         elif action == "meditate":
             self.aim_action = None
-            game.queue_meditate()
+            do_action("meditate")
+
 
     def _current_hover_vertex(self, game: Game) -> int | None:
         return self.hover_vertex
