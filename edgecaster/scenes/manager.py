@@ -136,9 +136,44 @@ class SceneManager:
     # ------------------------------------------------------------------ #
 
     def run(self) -> None:
-        # Main loop: always run the top of the stack
+        """
+        Main loop: if a scene opts into the live-loop hooks, drive it from
+        here. Otherwise fall back to the scene's legacy run().
+        """
         while self.scene_stack:
             scene = self.scene_stack[-1]
-            scene.run(self)
+            if getattr(scene, "uses_live_loop", False):
+                self._run_live_scene(scene)
+            else:
+                scene.run(self)
 
+    # ------------------------------------------------------------------ #
+    # Live-loop driver for scenes that set uses_live_loop = True.
+
+    def _run_live_scene(self, scene: Scene) -> None:
+        renderer = self.renderer
+        clock = pygame.time.Clock()
+
+        # Drive events/update/render until the scene stack changes or the
+        # app is quit.
+        while self.scene_stack and self.scene_stack[-1] is scene:
+            dt = clock.tick(60)
+
+            # Events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.set_scene(None)
+                    return
+                scene.handle_event(event, self)
+
+            # Update
+            scene.update(dt, self)
+
+            # Render
+            scene.render(renderer, self)
+
+            # If renderer signals quit (legacy escape hatch), honor it.
+            if getattr(renderer, "quit_requested", False):
+                renderer.quit_requested = False
+                return
 
