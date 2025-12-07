@@ -2424,11 +2424,21 @@ class Game:
                 self.log.add("No custom pattern saved.")
                 return
             pattern = self.custom_patterns[idx]
-            if not pattern or len(pattern) < 2:
+            verts = None
+            edges = []
+            if isinstance(pattern, dict):
+                verts = pattern.get("vertices")
+                edges = pattern.get("edges", [])
+            else:
+                verts = pattern
+            if not verts or len(verts) < 2:
                 self.log.add("No custom pattern saved.")
                 return
             amp = self._param_value("custom", "amplitude")
-            gen = builder.CustomPolyGenerator(pattern, amplitude=amp)
+            if edges:
+                gen = builder.CustomGraphGenerator(verts, edges, amplitude=amp)
+            else:
+                gen = builder.CustomPolyGenerator(verts, amplitude=amp)
         else:
             self.log.add("Unknown fractal op.")
             return

@@ -1085,6 +1085,8 @@ class AsciiRenderer:
         Draw one dungeon frame (no event polling, no main loop).
         Scenes call this once per tick.
         """
+        # Ensure abilities reflect current game state (customs, unlocks, etc.)
+        self._ensure_abilities(game)
         # continuous hover update if no motion event (keep in sync)
         if self.aim_action:
             self._update_hover(game, self._to_surface(pygame.mouse.get_pos()))
@@ -1124,6 +1126,14 @@ class AsciiRenderer:
         self.start_dungeon(game)
         self.draw_dungeon_frame(game)
 
+    def _ensure_abilities(self, game: Game) -> None:
+        """Rebuild abilities if the signature changed or list is empty."""
+        sig = compute_abilities_signature(game)
+        if self.abilities_signature != sig or not self.abilities:
+            self.abilities = build_abilities(game)
+            self.ability_page = 0
+            self.abilities_signature = sig
+
 
 
     def _handle_input(self, game: Game, key: int) -> None:
@@ -1148,15 +1158,7 @@ class AsciiRenderer:
                     game.log.add(msg)
                     # force ability rebuild to reflect new generator unlock
                     self._build_abilities(game)
-                    gen_list = tuple(
-                        getattr(
-                            game,
-                            "unlocked_generators",
-                            [getattr(game.character, "generator", "koch")],
-                        )
-                    )
-                    illum_sig = getattr(game.character, "illuminator", "radius")
-                    self.abilities_signature = (gen_list, illum_sig)
+                    self.abilities_signature = compute_abilities_signature(game)
                 self.dialog_open = False
                 return
 
@@ -1545,7 +1547,7 @@ class AsciiRenderer:
                 if i > 0:
                     segs.append((i - 1, i))
         elif action.startswith("custom"):
-            pts = getattr(game.character, "custom_pattern", None) if hasattr(game, "character") else None
+            pattern = getattr(game.character, "custom_pattern", None) if hasattr(game, "character") else None
             amp = 1.0
             try:
                 amp = game.get_param_value("custom", "amplitude")
@@ -1559,7 +1561,16 @@ class AsciiRenderer:
                     except Exception:
                         idx = 0
                 if idx < len(game.custom_patterns):
-                    pts = game.custom_patterns[idx]
+                    pattern = game.custom_patterns[idx]
+
+            pts = None
+            edges = []
+            if isinstance(pattern, dict):
+                pts = pattern.get("vertices")
+                edges = pattern.get("edges", [])
+            else:
+                pts = pattern
+
             if pts and len(pts) >= 2:
                 # normalize and scale uniformly to fit while preserving aspect
                 xs = [p[0] for p in pts]
@@ -1589,7 +1600,10 @@ class AsciiRenderer:
                 ox = (1.0 - sx) * 0.5
                 oy = (1.0 - sy) * 0.5
                 verts = [(ox + p[0] * sx, oy + (1 - p[1]) * sy) for p in norm]
-                segs = [(i, i + 1) for i in range(len(verts) - 1)]
+                if edges:
+                    segs = [(a, b) for a, b in edges if a < len(verts) and b < len(verts)]
+                else:
+                    segs = [(i, i + 1) for i in range(len(verts) - 1)]
             else:
                 verts = [(0.15, 0.5), (0.85, 0.5)]
                 segs = [(0, 1)]

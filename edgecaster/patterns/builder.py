@@ -1,7 +1,7 @@
 """Fractal-style pattern builders similar to fractal_lab."""
 import math
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 from edgecaster.state.patterns import Pattern, Segment, Vec2
 
@@ -300,6 +300,72 @@ class CustomPolyGenerator(GeneratorBase):
                 out.append(Segment(pa, pb, c, seg.weight))
                 if len(out) >= max_segments:
                     return out[:max_segments]
+        return out
+
+
+@dataclass
+class CustomGraphGenerator(GeneratorBase):
+    """
+    Apply a user-drawn graph (vertices + explicit edges) normalized to the base segment.
+    The first and last vertices define the baseline; amplitude scales lateral displacement.
+    """
+
+    vertices: List[Vec2]
+    edges: List[Tuple[int, int]]
+    amplitude: float = 1.0
+
+    def __init__(self, vertices: List[Vec2], edges: List[Tuple[int, int]], amplitude: float = 1.0) -> None:
+        super().__init__(name="CustomPoly")
+        self.vertices = vertices
+        self.edges = edges
+        self.amplitude = amplitude
+
+    def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
+        # Fallback to polyline behavior if edges are missing.
+        if not self.edges:
+            return CustomPolyGenerator(self.vertices, amplitude=self.amplitude).apply_segments(segments, max_segments)
+
+        out: List[Segment] = []
+        if len(self.vertices) < 2:
+            return segments
+
+        base_dx = self.vertices[-1][0] - self.vertices[0][0]
+        base_dy = self.vertices[-1][1] - self.vertices[0][1]
+        base_len = math.hypot(base_dx, base_dy)
+        if base_len <= 0:
+            return segments
+
+        for seg in segments:
+            ax, ay = seg.a
+            bx, by = seg.b
+            dx = bx - ax
+            dy = by - ay
+            seg_len = math.hypot(dx, dy)
+            if seg_len == 0:
+                out.append(seg)
+                continue
+
+            dir_x = dx / seg_len
+            dir_y = dy / seg_len
+            perp_x = -dir_y
+            perp_y = dir_x
+
+            def map_point(px: float, py: float) -> Vec2:
+                rel_x = (px - self.vertices[0][0]) / base_len
+                rel_y = ((py - self.vertices[0][1]) / base_len) * self.amplitude
+                wx = ax + rel_x * dx + rel_y * perp_x * seg_len
+                wy = ay + rel_y * perp_y * seg_len + rel_x * dy
+                return (wx, wy)
+
+            mapped = [map_point(px, py) for (px, py) in self.vertices]
+            c = seg.color
+            for ea, eb in self.edges:
+                if ea < 0 or eb < 0 or ea >= len(mapped) or eb >= len(mapped):
+                    continue
+                out.append(Segment(mapped[ea], mapped[eb], c, seg.weight))
+                if len(out) >= max_segments:
+                    return out[:max_segments]
+
         return out
 
 

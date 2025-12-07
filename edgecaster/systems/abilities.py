@@ -27,7 +27,7 @@ class Ability:
 # ---------------------------------------------------------------------
 
 
-def compute_abilities_signature(game: Game) -> Tuple[Tuple[str, ...], str]:
+def compute_abilities_signature(game: Game) -> Tuple[Tuple[str, ...], str, Tuple[Tuple[int, int], ...]]:
     """
     A small hashable signature for “what abilities should exist?”
     Used so the caller can detect when it needs to rebuild.
@@ -41,7 +41,12 @@ def compute_abilities_signature(game: Game) -> Tuple[Tuple[str, ...], str]:
 
     unlocked = getattr(game, "unlocked_generators", [generator_choice])
     gen_list = tuple(unlocked)
-    return gen_list, illuminator_choice
+    customs = getattr(game, "custom_patterns", [])
+    custom_sig: Tuple[Tuple[int, int], ...] = tuple(
+        (len(p.get("vertices", p)), len(p.get("edges", []))) if isinstance(p, dict) else (len(p), 0)
+        for p in customs
+    )
+    return gen_list, illuminator_choice, custom_sig
 
 
 def build_abilities(game: Game) -> List[Ability]:

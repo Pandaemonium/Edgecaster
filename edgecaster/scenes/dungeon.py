@@ -134,10 +134,12 @@ class DungeonScene(Scene):
         if getattr(manager, "fractal_edit_result", None):
             res = manager.fractal_edit_result
             manager.fractal_edit_result = None
-            pts = res.get("vertices") if isinstance(res, dict) else None
-            if pts and len(pts) >= 2:
-                game.custom_patterns.append(pts)
-                game.character.custom_pattern = pts
+            verts = res.get("vertices") if isinstance(res, dict) else None
+            edges = res.get("edges") if isinstance(res, dict) else []
+            if verts and len(verts) >= 2:
+                pattern = {"vertices": verts, "edges": edges}
+                game.custom_patterns.append(pattern)
+                game.character.custom_pattern = pattern
                 renderer.abilities_signature = None
 
         # Save any previous hook (in case we ever call DungeonScene from another scene)
