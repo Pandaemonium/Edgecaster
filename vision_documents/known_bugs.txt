@@ -9,3 +9,5 @@
 -Imps can taunt you from offscreen. Will require a more sophisticated overhaul of enemy vision and AI.
 
 -Under some circumstances that I'm not sure, the inventory / get items functionality stops working. Other actions like Yawp still work.
+
+-Using keyboard controls to select the location of placed rune node doesn't always work right.
