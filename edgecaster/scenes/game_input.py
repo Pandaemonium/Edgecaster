@@ -8,11 +8,17 @@ import pygame
 
 @dataclass
 class GameCommand:
-    """Logical game command produced from raw keyboard input."""
+    """Logical game command produced from raw keyboard / mouse input."""
     kind: str
-    vector: Optional[Tuple[int, int]] = None   # e.g. movement or cursor step
+    vector: Optional[Tuple[int, int]] = None   # movement or cursor step
     hotkey: Optional[int] = None              # ability hotkey (1-9)
     raw_key: Optional[int] = None             # original pygame keycode
+
+    # Mouse-specific fields (used for click / hover / wheel)
+    mouse_pos: Optional[Tuple[int, int]] = None
+    mouse_button: Optional[int] = None
+    wheel_y: Optional[int] = None
+
 
 
 class GameInput:
@@ -132,4 +138,36 @@ class GameInput:
         if key in self.move_bindings:
             cmds.append(GameCommand("move", vector=self.move_bindings[key], raw_key=key))
 
+ 
         return cmds
+       
+       
+       
+       
+    def handle_mousebutton(self, event: pygame.event.Event) -> List[GameCommand]:
+        """Map a raw mouse button event to a click command."""
+        return [
+            GameCommand(
+                kind="mouse_click",
+                mouse_pos=getattr(event, "pos", None),
+                mouse_button=getattr(event, "button", None),
+            )
+        ]
+
+    def handle_mousemotion(self, event: pygame.event.Event) -> List[GameCommand]:
+        """Map mouse motion to a hover/aim update command."""
+        return [
+            GameCommand(
+                kind="mouse_move",
+                mouse_pos=getattr(event, "pos", None),
+            )
+        ]
+
+    def handle_mousewheel(self, event: pygame.event.Event) -> List[GameCommand]:
+        """Map mouse wheel scrolling to a zoom command."""
+        return [
+            GameCommand(
+                kind="mouse_wheel",
+                wheel_y=getattr(event, "y", 0),
+            )
+        ]

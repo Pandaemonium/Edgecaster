@@ -1,279 +1,264 @@
-# EDGECASTER ARCHITECTURE GUIDE  
-# High-Level Overview and Current Refactor Status  
-# Updated: 2025-12-07
+EDGECASTER ARCHITECTURE GUIDE
+High-Level Overview and Current Refactor Status
+Updated: 2025-12-07
 
-This document describes the large-scale structure of Edgecaster, 
-with special focus on the ongoing 2024–2025 disentangling 
-of ascii.py. It is the authoritative orientation file 
+This document describes the large-scale structure of Edgecaster,
+with special focus on the ongoing 2024–2025 disentangling
+of ascii.py. It is the authoritative orientation file
 for any contributor joining mid-refactor.
 
 ============================================================
 SECTION 1 — TOP-LEVEL RESPONSIBILITIES
-============================================================
 
 Edgecaster is divided into five major layers:
 
-------------------------------------------------------------
-1. SCENES  (edgecaster/scenes/)
-------------------------------------------------------------
+SCENES (edgecaster/scenes/)
+
 Scenes own:
-    - event loops
-    - input interpretation (via GameCommand)
-    - scene transitions (push/pop)
-    - high-level UI state (dialog open, config open, aim mode)
-    - all game-facing interactions (“intent” level)
+- event loops
+- input interpretation (via GameCommand)
+- scene transitions (push/pop)
+- high-level UI state (dialog open, config open, aim mode)
+- all game-facing interactions (“intent” level)
 
 They DO NOT:
-    - draw pixels
-    - hold game state
-    - know about Pygame rendering details
+- draw pixels
+- hold game state
+- know about Pygame rendering details
 
 Key scenes:
-    manager.py          → scene stack + main loop
-    dungeon.py          → central gameplay loop
-    inventory_scene.py  → item UI
-    urgent_message_scene.py
-    dialogue_scene.py
-    world_map_scene.py
-    fractal_editor_scene.py
+manager.py → scene stack + main loop
+dungeon.py → central gameplay loop
+inventory_scene.py → item UI
+urgent_message_scene.py
+dialogue_scene.py
+world_map_scene.py
+fractal_editor_scene.py
 
 DungeonScene today owns:
-    ✓ All keyboard input
-    ✓ Ability-hotkey interpretation
-    ✓ Click → command routing (in progress)
-    ✓ Targeting/aim confirmation
-    ✓ Player movement, actions, transitions
+✓ All keyboard input
+✓ All mouse input (click / move / wheel)
+✓ Ability-hotkey interpretation
+✓ Click → command routing
+✓ Targeting/aim confirmation (including rune terminus placement)
+✓ Player movement, actions, transitions
 
-------------------------------------------------------------
-2. RENDERERS  (edgecaster/render/)
-------------------------------------------------------------
+RENDERERS (edgecaster/render/)
+
 Renderers are VIEW ONLY.
 
 ascii.py:
-    - draws the world, entities, overlays
-    - draws the ability bar (using supplied data)
-    - draws dialog/config boxes (until new scenes fully take over)
-    - computes hitboxes for mouse interactions
+- draws the world, entities, overlays
+- draws the ability bar (using supplied data)
+- draws dialog/config boxes (until new scenes fully take over)
+- computes hitboxes / geometry helpers for mouse interactions
 
 Renderers DO NOT:
-    - read keyboard input
-    - perform game logic
-    - mutate game state
-    - perform ability routing
+- read keyboard input
+- read mouse events
+- perform game logic
+- mutate game state
+- perform ability routing
 
 ascii.py now holds only minimal UI state:
-    - which ability is highlighted
-    - which dialog/config option is selected
-    - visual hover states
-    - pagination of ability bar
+- which ability is highlighted
+- which dialog/config option is selected
+- visual hover states
+- pagination of ability bar
 
-The renderer should be fully swappable 
+The renderer should be fully swappable
 (ASCII → tiles) with no changes to game logic.
 
-------------------------------------------------------------
-3. INPUT SYSTEM  (edgecaster/scenes/game_input.py)
-------------------------------------------------------------
+INPUT SYSTEM (edgecaster/scenes/game_input.py)
+
 GameInput translates raw Pygame events into semantic commands:
 
-    GameCommand(
-        kind="move" | "confirm" | "ability_hotkey" | "quick_activate_all" | ...
-        vector=...
-        hotkey=...
-    )
+GameCommand(
+    kind="move" | "confirm" | "ability_hotkey" | "quick_activate_all"
+         | "mouse_click" | "mouse_move" | "mouse_wheel" | ...
+    vector=...
+    hotkey=...
+    mouse_pos=...
+    mouse_button=...
+    wheel_y=...
+)
+
 
 This unified input layer:
-    ✓ keeps scenes clean
-    ✓ enables future key rebinding
-    ✓ ensures renderer never handles raw events
+✓ keeps scenes clean
+✓ enables future key rebinding
+✓ ensures renderer never handles raw events
 
-------------------------------------------------------------
-4. GAME CORE  (edgecaster/game.py)
-------------------------------------------------------------
+GAME CORE (edgecaster/game.py)
+
 The authoritative state machine.
 
 Owns:
-    - actor registry & turn queue
-    - movement + interactions
-    - level transitions
-    - fractal systems integration
-    - unlocked abilities
-    - world state, player character, etc.
+- actor registry & turn queue
+- movement + interactions
+- level transitions
+- fractal systems integration
+- unlocked abilities
+- world state, player character, etc.
 
 Does NOT:
-    - handle input
-    - know about renderers
+- handle input
+- know about renderers
 
-------------------------------------------------------------
-5. SYSTEMS LAYER  (edgecaster/systems/)
-------------------------------------------------------------
+SYSTEMS LAYER (edgecaster/systems/)
+
 Pure game logic modules:
-    - actions.py       → atomic actions
-    - ai.py            → behavior scripts
-    - patterns/
-    - rules, effects, turn logic
+- actions.py → atomic actions
+- ai.py → behavior scripts
+- patterns/
+- rules, effects, turn logic
 
 NEW (2025):
-    systems/abilities.py
-        - central source of truth for ability definitions
-        - computes ability bar from game state
-        - routes ability effects into game via generic action API
-        - USED BY SCENES, not renderer
-
+systems/abilities.py
+- central source of truth for ability definitions
+- computes ability bar from game state
+- routes ability effects into game via generic action API
+- USED BY SCENES, not renderer
 
 ============================================================
 SECTION 2 — CURRENT STATUS OF THE GREAT ASCII.PY PURGE
-============================================================
 
 The original ascii.py contained:
-    - rendering
-    - input handling
-    - mouse logic
-    - ability bar construction
-    - ability bar ACTION routing (!!)
-    - dialog/config state control
-    - targeting/aim logic
-    - some gameplay logic (!)
+- rendering
+- input handling
+- mouse logic
+- ability bar construction
+- ability bar ACTION routing (!!)
+- dialog/config state control
+- targeting/aim logic
+- some gameplay logic (!)
 
 As of December 2025:
 
-------------------------------------------------------------
 ✔ Input is fully removed from ascii.py
-------------------------------------------------------------
-DungeonScene now handles all keyboard-based gameplay input.
 
-Legacy ascii hotkeys remain only for fallback render() mode 
+DungeonScene now handles all keyboard- and mouse-based gameplay input.
+
+Legacy ascii hotkeys remain only for fallback render() mode
 (not used in normal play).
 
-------------------------------------------------------------
 ✔ Ability bar LOGIC is extracted into systems/abilities.py
-------------------------------------------------------------
+
 systems/abilities.py now owns:
-    ✓ Ability dataclass (renderer-agnostic)
-    ✓ build_abilities(game)
-    ✓ compute_abilities_signature(game)
-    ✓ trigger_ability_effect(game, action, hover_vertex=None)
+✓ Ability dataclass (renderer-agnostic)
+✓ build_abilities(game)
+✓ compute_abilities_signature(game)
+✓ trigger_ability_effect(game, action, hover_vertex=None)
 
 Renderer now:
-    - receives a list of Ability objects
-    - does NOT know how actions work internally
-    - never calls game.* directly
+- receives a list of Ability objects
+- does NOT know how actions work internally
+- never calls game.* directly
 
 Scenes now call:
-    trigger_ability_effect(...)
-instead of `renderer._trigger_action`, which is deleted.
+trigger_ability_effect(...)
+instead of renderer._trigger_action, which is deleted.
 
-------------------------------------------------------------
 ✔ DungeonScene integrates the new ability system
-------------------------------------------------------------
+
 DungeonScene now:
-    - rebuilds ability lists when needed
-    - handles ability hotkeys (numbers)
-    - handles quick-activate
-    - handles confirm/targeting with generic abilities API
+- rebuilds ability lists when needed
+- handles ability hotkeys (numbers)
+- handles quick-activate
+- handles confirm/targeting with generic abilities API
 
 Renderer is now a “view model” host only.
 
-------------------------------------------------------------
 ✔ Targeting and aim mode have moved out of renderer
-------------------------------------------------------------
+
 Renderer:
-    - computes hover vertex
-    - draws cursor
+- computes hover vertex / tile under mouse
+- draws cursors and previews
 
 DungeonScene:
-    - decides when to enter aim mode
-    - decides when to fire an activation
-    - calls trigger_ability_effect
+- decides when to enter aim / targeting modes
+- decides when to fire an activation or place a terminus
+- calls trigger_ability_effect / game.try_place_terminus
 
-------------------------------------------------------------
-✔ ascii.py has no more direct game logic
-------------------------------------------------------------
+✔ ascii.py has no more direct game logic or input handling
+
+Mouse semantics (movement, rune terminus placement, ability clicks,
+zooming) are now handled via:
+Pygame event → GameInput → GameCommand → DungeonScene._handle_command
+
+ascii.py provides:
+- drawing
+- hitboxes and coordinate transforms
+- lightweight UI state (selection, pagination)
+
 Remaining TODOs (see Section 3):
-    - move dialog logic out
-    - move config menu out
-    - unify mouse routing
-    - remove the last legacy input paths
-
+- move dialog logic out
+- move config menu out
+- finalize ability bar view model extraction
+- complete renderer swapability
 
 ============================================================
 SECTION 3 — REMAINING REFACTOR WORK
-============================================================
 
 These items are open and prioritized:
 
-------------------------------------------------------------
 TODO 1 — Move dialog UI into DialogueScene fully
-------------------------------------------------------------
+
 Currently ascii.py still:
-    - stores dialog_selection
-    - draws the dialog box
-    - handles dialog hover
-    - receives scene commands to adjust dialog_selection
+- stores dialog_selection
+- draws the dialog box
+- handles dialog hover
+- receives scene commands to adjust dialog_selection
 
 Goal:
-    DialogueScene owns:
-        - full dialog state
-        - prompt/choices
-        - input logic
+DialogueScene owns:
+- full dialog state
+- prompt/choices
+- input logic
 
 Renderer draws a DialogViewModel describing:
-    - header
-    - text
-    - options
-    - selection index
+- header
+- text
+- options
+- selection index
 
-------------------------------------------------------------
 TODO 2 — Move config overlay out of ascii.py
-------------------------------------------------------------
+
 Pattern configuration (gear icon) is still renderer-owned.
 
 Goal:
-    PatternConfigScene owns:
-        - selection index
-        - generator config state
+PatternConfigScene owns:
+- selection index
+- generator config state
 
 Renderer draws it.
 
-------------------------------------------------------------
-TODO 3 — Mouse input unification
-------------------------------------------------------------
-Currently ascii.py computes hitboxes AND handles click behaviors.
+TODO 3 — Remove legacy ascii.render() input path
 
-Goal:
-    ascii.py: produces hitboxes and hover info.
-    GameInput: produces click commands.
-    Scenes: interpret commands and call abilities/effects.
+Once dialog/config are scene-owned:
+- ascii._handle_input becomes dead code
+- ascii.render() becomes view-only
+- entire renderer is pure
 
-------------------------------------------------------------
-TODO 4 — Remove legacy ascii.render() input path
-------------------------------------------------------------
-Once dialog/config/mouse are scene-owned:
-    - ascii._handle_input becomes dead code
-    - ascii.render() becomes view-only
-    - entire renderer is pure
+TODO 4 — Final ability bar model extraction
 
-------------------------------------------------------------
-TODO 5 — Final ability bar model extraction
-------------------------------------------------------------
 Renderer still tracks:
-    - ability_page
-    - current_ability_index
+- ability_page
+- current_ability_index
 
 Goal:
-    Create AbilityBarModel:
-        page
-        active_index
-        ability_list (from systems)
-        hit-test rectangles (computed by renderer but stored externally)
+Create AbilityBarModel:
+page
+active_index
+ability_list (from systems)
+hit-test rectangles (computed by renderer but stored externally)
 
 This can live in DungeonScene or in a dedicated UI scene.
 
-------------------------------------------------------------
-TODO 6 — Renderer swapability
-------------------------------------------------------------
-Once complete, a second renderer (tiles or shader-based) 
-can be implemented with zero changes to game logic or scenes.
+TODO 5 — Renderer swapability
 
+Once complete, a second renderer (tiles or shader-based)
+can be implemented with zero changes to game logic or scenes.
 
 Inventory Architecture (2025-12)
 
@@ -295,42 +280,96 @@ Popup headers reflect the owning entity. - Containers identified by
 This system supports future data-driven items and advanced inventory
 logic.
 
+Update December 7:
+
+Renderer is now input-free. All ESC / ? / F11 / ability keys and all
+mouse events now flow through GameInput → DungeonScene._handle_command.
+ascii.py is draw-only for both keyboard and mouse paths.
+
+Death transition fixed. _ensure_game() no longer clears the scene stack;
+death is handled solely through _process_transitions(), cleanly
+returning to the main menu.
+
+Renderer purification continues. The remaining impurities are dialog and
+config overlays (state + layout); next step is to move these into
+dedicated scenes and let ascii.py render view models only.
 
 ============================================================
 SECTION 4 — GUIDELINES FOR NEW CONTRIBUTORS
-============================================================
 
-1. Input NEVER belongs in renderers.
-2. Game logic NEVER belongs in renderers.
-3. Scenes own all:
-       - input → command → action translation
-       - UI state machines (dialog, config, targeting)
-4. Renderer consumes view models and draws them.
-5. systems/* implements pure game logic.
-6. game.py holds authoritative state.
-7. Content (YAML) defines gameplay data, not code.
-8. Always check this document before adding new code.
+Input NEVER belongs in renderers.
 
+Game logic NEVER belongs in renderers.
+
+Scenes own all:
+- input → command → action translation
+- UI state machines (dialog, config, targeting)
+
+Renderer consumes view models and draws them.
+
+systems/* implements pure game logic.
+
+game.py holds authoritative state.
+
+Content (YAML) defines gameplay data, not code.
+
+Always check this document before adding new code.
 
 ============================================================
 SECTION 5 — TL;DR FOR THE NEXT GUY
-============================================================
 
-- ascii.py used to do everything.  
-- We are removing everything from ascii.py except drawing.  
-- All ability logic has already moved to systems/abilities.py.  
-- All keyboard input has already moved to DungeonScene.  
-- Targeting & aim confirmation now live in scenes.  
-- Dialog/config still need to be extracted next.  
-- Mouse routing will soon become scene-owned.  
-- The renderer will eventually be 100% pure view code.  
+ascii.py used to do everything.
+
+We are removing everything from ascii.py except drawing.
+
+All ability logic has already moved to systems/abilities.py.
+
+All keyboard and mouse input has already moved to DungeonScene via GameInput.
+
+Targeting & aim confirmation now live in scenes.
+
+Dialog/config still need to be extracted next.
+
+Mouse routing is now scene-owned; renderers only expose hitboxes and helpers.
+
+The renderer will eventually be 100% pure view code.
 
 Welcome aboard — KEEP THE RENDERER CLEAN.
 
-# Recent Increment
-- Game input bindings are now data-driven in `scenes/game_input.py` (constructor accepts custom bindings/move_bindings). Use the GameCommand layer for new inputs; avoid hardcoding keys in renderers.
-- Introduced an `engine.py` scaffold to own the top-level run; currently delegates to SceneManager.run() while we continue peeling loops/logic out of scenes/renderers. Next steps: move event/update/render loop into Engine and make scenes pure command/update producers with view models for the renderer.
-- Scene base now exposes optional live-loop hooks (`uses_live_loop`, `handle_event`, `update`, `render`). SceneManager will drive scenes that set `uses_live_loop=True` via a unified event/update/render loop; legacy scenes keep their `run()` method. This is the path to a single engine-owned loop and a draw-only renderer.
-- Engine now directly drives scenes: if a scene sets `uses_live_loop`, Engine calls SceneManager._run_live_scene; otherwise it falls back to the scene’s legacy `run()`. SceneManager remains the stack owner, but the main loop now lives in Engine.
-- Renderer: removed its internal dungeon event loop in `AsciiRenderer.render()`. The renderer is now draw-only; scenes own all input and drive `draw_dungeon_frame()`. Legacy callers can still invoke `render(game)`, but it only draws a single frame.
-- Ability bar now rebuilds whenever the game state changes (including new custom fractals): renderer checks compute_abilities_signature(game) each frame via _ensure_abilities(), so new customs always produce new buttons. Custom patterns now carry explicit edges and are respected by both the generator and the icon renderer.
+Recent Increment
+
+Game input bindings are now data-driven in scenes/game_input.py
+(constructor accepts custom bindings/move_bindings). Use the
+GameCommand layer for new inputs; avoid hardcoding keys in renderers.
+
+Introduced an engine.py scaffold to own the top-level run; currently
+delegates to SceneManager.run() while we continue peeling loops/logic
+out of scenes/renderers. Next steps: move event/update/render loop
+into Engine and make scenes pure command/update producers with view
+models for the renderer.
+
+Scene base now exposes optional live-loop hooks (uses_live_loop,
+handle_event, update, render). SceneManager will drive scenes
+that set uses_live_loop=True via a unified event/update/render loop;
+legacy scenes keep their run() method. This is the path to a single
+engine-owned loop and a draw-only renderer.
+
+Engine now directly drives scenes: if a scene sets uses_live_loop,
+Engine calls SceneManager._run_live_scene; otherwise it falls back to
+the scene’s legacy run(). SceneManager remains the stack owner, but
+the main loop now lives in Engine.
+
+Renderer: removed its internal dungeon event loop in
+AsciiRenderer.render(). The renderer is now draw-only; scenes own
+all input and drive draw_dungeon_frame(). Legacy callers can still
+invoke render(game), but it only draws a single frame.
+
+Ability bar now rebuilds whenever the game state changes (including
+new custom fractals): renderer checks compute_abilities_signature(game)
+each frame via _ensure_abilities(), so new customs always produce new
+buttons. Custom patterns now carry explicit edges and are respected by
+both the generator and the icon renderer.
+
+Mouse input: all mouse button/move/wheel events now flow through
+GameInput → DungeonScene._handle_command; ascii.py only exposes
+hitboxes, coordinate transforms, and hover helpers.
