@@ -275,6 +275,27 @@ Once complete, a second renderer (tiles or shader-based)
 can be implemented with zero changes to game logic or scenes.
 
 
+Inventory Architecture (2025-12)
+
+Edgecaster now uses per-entity inventory registries, replacing the old
+single player list.
+
+Key principles: - Any entity may own an inventory. - Inventories
+resolved via get_inventory(entity_id). - player_inventory is a
+convenience accessor.
+
+Core API: - take_from_container(container_id, index) -
+move_item_between_inventories(src, idx, dest) -
+eat_item_from_inventory(owner_id, index)
+
+UI: - InventoryScene reads inventories and supports nested containers. -
+Popup headers reflect the owning entity. - Containers identified by
+"container": true tags.
+
+This system supports future data-driven items and advanced inventory
+logic.
+
+
 ============================================================
 SECTION 4 — GUIDELINES FOR NEW CONTRIBUTORS
 ============================================================

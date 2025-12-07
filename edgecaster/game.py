@@ -194,9 +194,10 @@ class Game:
         # initialize overmap parameters/grid eagerly (fixed bounds) and kick off async render
         self._init_overmap_params_and_grid()
 
-        # Simple player inventory: list of Entity objects the player is carrying.
-        # For now it's a flat list; later we can support containers/stacking.
-        self.inventory: List[Entity] = []
+        # Inventories: mapping from owner id to a list of carried Entities.
+        # Initially empty; per-owner lists are created lazily via get_inventory().
+        self.inventories: Dict[str, List[Entity]] = {}
+
         # create starting zone
         self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
 
@@ -260,7 +261,12 @@ class Game:
         lvl.actors[player.id] = player
         lvl.entities[player.id] = player
 
-   
+ 
+        # DEBUG: spawn a few Inventory entities near the starting position so we
+        # can pick them up and test nested containers / recursion.
+        self.debug_spawn_inventory_near_player(count=3)
+
+ 
 
         # enemies
         
@@ -545,6 +551,27 @@ class Game:
     def queue_player_action(self, action_name: str, **kwargs) -> None:
         """Convenience wrapper to queue an action for the current player."""
         self.queue_actor_action(self.player_id, action_name, **kwargs)
+
+
+
+
+
+    def get_inventory(self, owner_id: str) -> List[Entity]:
+        """Return the inventory list for a given owner id, creating it if needed.
+
+        This keeps all inventories in a single registry on the Game object,
+        while still conceptually treating them as per-entity state.
+        """
+        return self.inventories.setdefault(owner_id, [])
+
+    @property
+    def player_inventory(self) -> List[Entity]:
+        """Convenience accessor for the current host's inventory.
+
+        This automatically follows body-swaps by using the current player_id.
+        """
+        return self.get_inventory(self.player_id)
+
 
 
 
@@ -1000,6 +1027,9 @@ class Game:
 
         Berries are simple non-blocking items with glyph 'b' and different colors.
         """
+
+
+
         if count <= 0:
             return
 
@@ -1049,6 +1079,87 @@ class Game:
 
             level.entities[eid] = ent
             placed += 1
+
+
+
+    def debug_spawn_inventory_near_player(self, count: int = 1, radius: int = 3) -> None:
+        """Debug helper: conjure one or more meta-Inventories near the player.
+
+        Each Inventory is an item-entity with container=True and the glyph '∞',
+        so it can be picked up with 'g' and opened from the inventory UI.
+        """
+        level = self._level()
+        if self.player_id not in level.actors:
+            return
+        player = level.actors[self.player_id]
+
+        def place_inventory(pos: Tuple[int, int]) -> None:
+            x, y = pos
+
+            # --- NEW: random fun adjectives for inventories ---
+            adjectives = [
+                "fetid", "dubious", "spectacular", "outrageous", "sensible",
+                "colossal", "lightly-aged", "unfortunate", "malicious",
+                "courageous", "flavorful", "salty", "magnanimous",
+                "pernicious", "persuasive", "cartoonish", "trapezoidal",
+                "bovine", "spectral", "capitalized", "clockwise",
+                "counter-clockwise", "mirrored", "recursive", "stout",
+                "lean", "microscopic", "semipermeable", "blessed",
+                "+1", "+2", "candlelit", "smoky", "smoked", "cozy",
+                "uninhabitable", "nuclear", "deathly", "ferocious",
+                "fractious", "queer", "rectilinear", "lavender-scented",
+                "hopefully not racist", "erotic", "far-fetched", "amazing",
+                "underwhelming", "carnivorous", "mysterious", "arctic",
+                "celestial", "fiery", "toasty", "room temperature",
+                "unassuming", "subtle", "gaudy", "ornate", "gem-encrusted",
+                "golden", "wooden", "marbled", "spiked", "luminescent",
+                "electrified", "poisonous", "venomous", "mangled",
+                "malfunctioning", "twisted", "octonionic", "eldritch", "malted",
+            ]
+            adj = self.rng.choice(adjectives)
+            display_name = f"{adj} Inventory"
+
+            # --- NEW: random color for this inventory ---
+            # Using rng ensures deterministic per-seed, not chaos.
+            color = (
+                self.rng.randint(80, 255),  # R
+                self.rng.randint(80, 255),  # G
+                self.rng.randint(80, 255),  # B
+            )
+
+            eid = self._new_id()
+            ent = Entity(
+                id=eid,
+                name=display_name,
+                pos=(x, y),
+                glyph="∞",
+                color=color,             # <-- now random
+                kind="item",
+                render_layer=1,
+                blocks_movement=False,
+                tags={
+                    "container": True,
+                    "item_type": "inventory",
+                },
+            )
+            level.entities[eid] = ent
+
+
+        spawned = self._spawn_entities_near(
+            level,
+            player.pos,
+            count,
+            place_inventory,
+            radius=radius,
+        )
+
+        if spawned > 0:
+            if spawned == 1:
+                self.log.add("A strange Inventory shimmers into existence nearby.")
+            else:
+                self.log.add(f"{spawned} strange Inventories shimmer into existence nearby.")
+        else:
+            self.log.add("The world resists conjuring an Inventory here.")
 
 
 
@@ -1475,20 +1586,17 @@ class Game:
                 del level.entities[eid]
                 break
 
-        # Ensure inventory exists and append the item.
-        if not hasattr(self, "inventory"):
-            self.inventory = []  # type: ignore[assignment]
-        self.inventory.append(ent)  # type: ignore[arg-type]
+        # Append the item to the current host's inventory.
+        inv = self.player_inventory
+        inv.append(ent)
+
 
         name = getattr(ent, "name", None) or "item"
         article = "an" if name and name[0].lower() in "aeiou" else "a"
         self.log.add(f"You pick up {article} {name.lower()}.")
     def drop_inventory_item(self, index: int) -> None:
         """Drop an item from the inventory onto the player's current tile."""
-        # Ensure inventory exists and index is in range
-        if not hasattr(self, "inventory"):
-            return
-        inv = self.inventory  # type: ignore[assignment]
+        inv = self.player_inventory
         if not (0 <= index < len(inv)):
             return
 
@@ -1501,31 +1609,31 @@ class Game:
 
         # Place the entity at the player's current position in the world.
         ent.pos = player.pos
-        # Reinsert into the level's entity dict using its existing id.
         level.entities[ent.id] = ent  # type: ignore[index]
 
         name = getattr(ent, "name", None) or "item"
         article = "an" if name and name[0].lower() in "aeiou" else "a"
         self.log.add(f"You drop {article} {name.lower()}.")
 
-    def eat_inventory_item(self, index: int) -> None:
-        """Consume an item from the inventory, if edible.
 
-        For now, this is mainly used for test berries: they are removed
-        from the inventory and we log a little flavour text.
+    def eat_item_from_inventory(self, owner_id: str, index: int) -> None:
+        """Consume an item from the given owner's inventory, if edible.
+
+        This is mainly used for test berries. The *player* always gets
+        healed, regardless of where the item was stored.
         """
-        if not hasattr(self, "inventory"):
-            self.log.add("You have nothing to eat.")
+        inv = self.get_inventory(owner_id)
+        if not inv:
+            if owner_id == self.player_id:
+                self.log.add("You have nothing to eat.")
             return
-        inv = self.inventory  # type: ignore[assignment]
+
         if not (0 <= index < len(inv)):
             return
 
         ent = inv[index]
         tags = getattr(ent, "tags", {}) or {}
 
-        # Basic edibility check: our test berries all carry a 'test_berry'
-        # flag and an 'item_type' tag like 'blueberry', 'raspberry', etc.
         is_berry = bool(tags.get("test_berry")) or tags.get("item_type") in {
             "blueberry",
             "raspberry",
@@ -1533,10 +1641,14 @@ class Game:
         }
         if not is_berry:
             name = getattr(ent, "name", None) or "item"
-            self.log.add(f"You can't eat the {name.lower()}.")
+            if owner_id == self.player_id:
+                self.log.add(f"You can't eat the {name.lower()}.")
+            else:
+                # Slightly different flavour when rummaging in bags.
+                self.log.add(f"You decide not to eat the {name.lower()}.")
             return
 
-        # Actually consume the item.
+        # Actually consume the item from that inventory.
         inv.pop(index)
 
         # Heal the player a bit for eating a berry.
@@ -1545,11 +1657,84 @@ class Game:
         player.stats.hp = min(player.stats.max_hp, player.stats.hp + 1)
         after = player.stats.hp
 
-        # Flavour text
         if after > before:
             self.log.add("That was tart!")
         else:
             self.log.add("That was really tart!")
+
+    def eat_inventory_item(self, index: int) -> None:
+        """Backward-compatible wrapper for older code paths.
+
+        Eats from the current host's inventory (player).
+        """
+        self.eat_item_from_inventory(self.player_id, index)
+
+
+    def take_from_container(self, container_id: str, index: int) -> None:
+        """Move an item from another entity's inventory into the current host's.
+
+        This is the backend for the UI's 'Take' action, and can also be
+        used by AI later. It does not assume the container is on the ground
+        or visible – it's purely structural.
+        """
+        # Inventory we are taking *from* (e.g. chest, bag, rock, goblin).
+        src_inv = self.get_inventory(container_id)
+        if not (0 <= index < len(src_inv)):
+            return
+
+        # Item being taken.
+        ent = src_inv.pop(index)
+
+        # Where it goes: always into the current host's inventory.
+        dst_inv = self.player_inventory
+        dst_inv.append(ent)
+
+        name = getattr(ent, "name", None) or "item"
+        article = "an" if name and name[0].lower() in "aeiou" else "a"
+        self.log.add(f"You take {article} {name.lower()}.")
+
+
+    def move_item_between_inventories(
+        self,
+        src_owner_id: str,
+        index: int,
+        dest_owner_id: str,
+    ) -> None:
+        """Move an item from one entity's inventory to another's.
+
+        Used by the UI to 'bag' items into containers (or later,
+        for trading, stealing, etc.).
+        """
+        # No-op if same inventory
+        if src_owner_id == dest_owner_id:
+            return
+
+        src_inv = self.get_inventory(src_owner_id)
+        if not (0 <= index < len(src_inv)):
+            return
+
+        ent = src_inv.pop(index)
+        dst_inv = self.get_inventory(dest_owner_id)
+        dst_inv.append(ent)
+
+        name = getattr(ent, "name", None) or "item"
+        article = "an" if name and name[0].lower() in "aeiou" else "a"
+
+        # Friendly label for the destination
+        if dest_owner_id == self.player_id:
+            dest_label = "your inventory"
+        else:
+            dest_label = dest_owner_id
+            level = self._level()
+            dest_ent = level.entities.get(dest_owner_id) or level.actors.get(dest_owner_id)
+            if dest_ent is not None:
+                dest_name = getattr(dest_ent, "name", None)
+                if dest_name:
+                    dest_label = dest_name
+
+        self.log.add(f"You put {article} {name.lower()} into {dest_label}.")
+
+
 
 
 
@@ -2077,6 +2262,10 @@ class Game:
                     on_choice_effect=ev.effect,
                 )
 
+        # DEBUG: drop a test Inventory on each new screen to exercise nested containers.
+        self.debug_spawn_inventory_near_player(count=1)
+
+
     def fast_travel_to_zone(self, zx: int, zy: int) -> None:
         """Instantly move the player to the given overworld zone (depth 0)."""
         # clamp to world bounds
@@ -2099,7 +2288,8 @@ class Game:
         self._reset_lorenz_on_zone_change(actor)
         self.log.add(f"You fast-travel to zone {zx},{zy}.")
 
-
+        # DEBUG: same behaviour as edge-wrap: one Inventory per arrival.
+        self.debug_spawn_inventory_near_player(count=1)
 
 
     def _monster_act(self, level: LevelState, id: str) -> None:
