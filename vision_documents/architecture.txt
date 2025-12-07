@@ -373,3 +373,38 @@ both the generator and the icon renderer.
 Mouse input: all mouse button/move/wheel events now flow through
 GameInput → DungeonScene._handle_command; ascii.py only exposes
 hitboxes, coordinate transforms, and hover helpers.
+
+Data-Driven Entities (2025-12)
+
+We have introduced a parallel content file for non-Actor Entities, content/entities.yaml, following the same architecture as enemies.yaml.
+
+Key points:
+
+Everything in the world is an Entity.
+Actors (monsters, player) are a specialization, not a separate category.
+
+entities.yaml defines items, berries, containers, environmental objects, etc. (presumably with more specialized .yaml files to split off eventually)
+Each entry provides:
+
+id, name, glyph, color, kind, render_layer,
+blocks_movement, tags, statuses
+
+
+Game now includes a small entity template loader and a helper to instantiate Entities from YAML.
+This mirrors the existing enemy factory and removes hard-coded item logic from game.py.
+
+All berry spawning and the debug inventory generator now use this system.
+Berries and containers exist as first-class Entities—consistent with long-term plans where even items may have HP, statuses, or behavior.
+
+Vision:
+This moves the engine toward a unified ontology, where
+Entity → Object → Organism → Animal → Heron
+is just content + component definitions rather than hard-wired Python classes.
+
+Long-term, this allows:
+
+sentient berries
+dissolving the boundary between “item” and “creature”
+procedural generation that mixes biological, mythic, and material Entities seamlessly
+
+This completes the first step toward a fully data-driven world model parallel to our data-driven monster model.
