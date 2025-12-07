@@ -1,0 +1,47 @@
+# edgecaster/content/entities.yaml
+
+# --- BERRIES -------------------------------------------------
+- id: blueberry
+  name: Blueberry
+  glyph: "b"
+  color: [80, 80, 200]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  tags:
+    item_type: blueberry
+    test_berry: true
+
+- id: raspberry
+  name: Raspberry
+  glyph: "b"
+  color: [200, 60, 120]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  tags:
+    item_type: raspberry
+    test_berry: true
+
+- id: strawberry
+  name: Strawberry
+  glyph: "b"
+  color: [230, 80, 80]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  tags:
+    item_type: strawberry
+    test_berry: true
+
+# --- META-INVENTORY CONTAINER --------------------------------
+- id: debug_inventory
+  name: Strange Inventory
+  glyph: "∞"
+  color: [200, 200, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  tags:
+    container: true
+    item_type: inventory

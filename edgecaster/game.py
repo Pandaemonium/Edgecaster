@@ -841,6 +841,90 @@ class Game:
             )
             spawned += 1
 
+    def _entity_templates(self) -> Dict[str, dict]:
+        """Load non-actor entity templates from content/entities.yaml (cached)."""
+        cached = getattr(self, "_entity_templates_cache", None)
+        if cached is not None:
+            return cached
+
+        content_dir = Path(__file__).resolve().parent / "content"
+        yaml_path = content_dir / "entities.yaml"
+
+        try:
+            with yaml_path.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or []
+        except FileNotFoundError:
+            self._debug(f"No entities.yaml found at {yaml_path}; using empty template set.")
+            data = []
+
+        templates: Dict[str, dict] = {}
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            tid = entry.get("id")
+            if not tid:
+                continue
+            templates[tid] = entry
+
+        self._entity_templates_cache = templates
+        self._debug(f"Loaded {len(templates)} entity templates from {yaml_path}.")
+        return templates
+
+    def _spawn_entity_from_template(
+        self,
+        template_id: str,
+        pos: Tuple[int, int],
+        overrides: Optional[Dict[str, object]] = None,
+    ) -> Entity:
+        """Instantiate a plain Entity from entities.yaml at the given position.
+
+        `overrides` can supply name/color/kind/etc. and will be merged on top
+        of the template; `tags` are merged rather than replaced.
+        """
+        templates = self._entity_templates()
+        tmpl = templates.get(template_id)
+        if tmpl is None:
+            raise KeyError(f"Unknown entity template id {template_id!r}")
+
+        # Base fields from template
+        name = tmpl.get("name", template_id)
+        glyph = tmpl.get("glyph", "?")
+        color = tmpl.get("color", (255, 255, 255))
+        if isinstance(color, list):
+            color = tuple(color)
+        kind = tmpl.get("kind", "generic")
+        render_layer = int(tmpl.get("render_layer", 1))
+        blocks_movement = bool(tmpl.get("blocks_movement", False))
+        tags = dict(tmpl.get("tags", {}) or {})
+        statuses = dict(tmpl.get("statuses", {}) or {})
+
+        # Apply overrides (tags merged)
+        if overrides:
+            o = dict(overrides)  # shallow copy
+            override_tags = o.pop("tags", None)
+            if override_tags:
+                tags.update(override_tags)
+
+            name = o.get("name", name)
+            glyph = o.get("glyph", glyph)
+            color = tuple(o.get("color", color))
+            kind = o.get("kind", kind)
+            render_layer = int(o.get("render_layer", render_layer))
+            blocks_movement = bool(o.get("blocks_movement", blocks_movement))
+
+        eid = self._new_id()
+        return Entity(
+            id=eid,
+            name=name,
+            pos=pos,
+            glyph=glyph,
+            color=color,            # type: ignore[arg-type]
+            render_layer=render_layer,
+            kind=kind,
+            blocks_movement=blocks_movement,
+            tags=tags,
+            statuses=statuses,
+        )
 
 
 
@@ -992,31 +1076,29 @@ class Game:
         count: int,
         radius: int = 3,
     ) -> int:
-        """Spawn up to `count` test berries within `radius` tiles of center."""
-        berry_defs = [
-            ("Blueberry",   "blueberry",   (80, 80, 200)),
-            ("Raspberry",   "raspberry",   (200, 60, 120)),
-            ("Strawberry",  "strawberry",  (230, 80, 80)),
-        ]
+        """Spawn up to `count` test berries within `radius` tiles of center
+        using data-driven templates from entities.yaml.
+        """
+        templates = self._entity_templates()
+        berry_ids: List[str] = []
+        for tid, tmpl in templates.items():
+            tags = tmpl.get("tags", {}) or {}
+            # Any template tagged as a test berry is allowed.
+            if tags.get("test_berry"):
+                berry_ids.append(tid)
+
+        if not berry_ids:
+            # Fallback to legacy behaviour if no berries defined.
+            self._debug("No test_berry templates found in entities.yaml.")
+            return 0
 
         def place_berry(pos: Tuple[int, int]) -> None:
-            x, y = pos
-            name, berry_id_tag, color = self.rng.choice(berry_defs)
-            eid = self._new_id()
-            ent = Entity(
-                id=eid,
-                name=name,
-                pos=(x, y),
-                glyph="b",
-                color=color,
-                kind="item",
-                render_layer=1,
-                blocks_movement=False,
-                tags={"item_type": berry_id_tag, "test_berry": True},
-            )
-            level.entities[eid] = ent
+            template_id = self.rng.choice(berry_ids)
+            ent = self._spawn_entity_from_template(template_id, pos)
+            level.entities[ent.id] = ent
 
         return self._spawn_entities_near(level, center, count, place_berry, radius)
+
 
 
 
@@ -1025,24 +1107,25 @@ class Game:
     def _scatter_test_berries(self, level: LevelState, count: int = 30) -> None:
         """Scatter some colored berry entities across the map as a test.
 
-        Berries are simple non-blocking items with glyph 'b' and different colors.
+        Berries are defined in content/entities.yaml via the `test_berry` tag.
         """
-
-
-
         if count <= 0:
             return
 
-        berry_defs = [
-            ("Blueberry",   "blueberry",   (80, 80, 200)),
-            ("Raspberry",   "raspberry",   (200, 60, 120)),
-            ("Strawberry",  "strawberry",  (230, 80, 80)),
-        ]
+        templates = self._entity_templates()
+        berry_ids: List[str] = []
+        for tid, tmpl in templates.items():
+            tags = tmpl.get("tags", {}) or {}
+            if tags.get("test_berry"):
+                berry_ids.append(tid)
+
+        if not berry_ids:
+            self._debug("No test_berry templates in entities.yaml; skipping berry scatter.")
+            return
 
         placed = 0
         attempts = 0
         max_attempts = count * 50
-
         world = level.world
 
         while placed < count and attempts < max_attempts:
@@ -1050,34 +1133,18 @@ class Game:
             x = self.rng.randint(0, world.width - 1)
             y = self.rng.randint(0, world.height - 1)
 
-            # must be a walkable, in-bounds tile
             if not world.in_bounds(x, y):
                 continue
             if not world.is_walkable(x, y):
                 continue
-
-            # avoid stacking on actors or existing entities
             if self._actor_at(level, (x, y)):
                 continue
             if self._entity_at(level, (x, y)):
                 continue
 
-            name, berry_id_tag, color = self.rng.choice(berry_defs)
-            eid = self._new_id()
-
-            ent = Entity(
-                id=eid,
-                name=name,
-                pos=(x, y),
-                glyph="b",
-                color=color,
-                kind="item",
-                render_layer=1,
-                blocks_movement=False,
-                tags={"item_type": berry_id_tag, "test_berry": True},
-            )
-
-            level.entities[eid] = ent
+            template_id = self.rng.choice(berry_ids)
+            ent = self._spawn_entity_from_template(template_id, (x, y))
+            level.entities[ent.id] = ent
             placed += 1
 
 
@@ -1096,7 +1163,7 @@ class Game:
         def place_inventory(pos: Tuple[int, int]) -> None:
             x, y = pos
 
-            # --- NEW: random fun adjectives for inventories ---
+            # --- random fun adjectives for inventories (unchanged) ---
             adjectives = [
                 "fetid", "dubious", "spectacular", "outrageous", "sensible",
                 "colossal", "lightly-aged", "unfortunate", "malicious",
@@ -1115,34 +1182,31 @@ class Game:
                 "golden", "wooden", "marbled", "spiked", "luminescent",
                 "electrified", "poisonous", "venomous", "mangled",
                 "malfunctioning", "twisted", "octonionic", "eldritch", "malted",
+                "syrupy", "tumultuous", "festooned", "inappropriate", "entropic",
+                "extropic", "overpopulated", "arbitrary", "cannibalistic",
+                "ecstatic", "carbon-based", "semifluid", "carbonated",
+                "vitamin-rich", "emotionally vulnerable", "disgruntled",
             ]
             adj = self.rng.choice(adjectives)
             display_name = f"{adj} Inventory"
 
-            # --- NEW: random color for this inventory ---
-            # Using rng ensures deterministic per-seed, not chaos.
+            # Random color, overriding the template's default
             color = (
-                self.rng.randint(80, 255),  # R
-                self.rng.randint(80, 255),  # G
-                self.rng.randint(80, 255),  # B
+                self.rng.randint(80, 255),
+                self.rng.randint(80, 255),
+                self.rng.randint(80, 255),
             )
 
-            eid = self._new_id()
-            ent = Entity(
-                id=eid,
-                name=display_name,
-                pos=(x, y),
-                glyph="∞",
-                color=color,             # <-- now random
-                kind="item",
-                render_layer=1,
-                blocks_movement=False,
-                tags={
-                    "container": True,
-                    "item_type": "inventory",
+            ent = self._spawn_entity_from_template(
+                "debug_inventory",
+                (x, y),
+                overrides={
+                    "name": display_name,
+                    "color": color,
                 },
             )
-            level.entities[eid] = ent
+            level.entities[ent.id] = ent
+
 
 
         spawned = self._spawn_entities_near(
