@@ -1117,44 +1117,12 @@ class AsciiRenderer:
 
     def render(self, game: Game) -> None:
         """
-        Legacy main loop for the dungeon, kept as a thin wrapper so older
-        callers still work. New code should let DungeonScene own the loop
-        and call start_dungeon/handle_dungeon_* and draw_dungeon_frame().
+        Legacy entry point kept for compatibility. The renderer no longer owns
+        an event loop; scenes should drive input and call draw_dungeon_frame().
         """
-        clock = pygame.time.Clock()
+        # Ensure fonts/surfaces are ready, then draw a single frame.
         self.start_dungeon(game)
-        running = True
-
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                    # Let the caller decide how to interpret this
-                    self.quit_requested = True
-
-                elif event.type == pygame.KEYDOWN:
-                    self.handle_dungeon_keydown(game, event)
-
-                elif event.type == pygame.MOUSEBUTTONDOWN:
-                    self.handle_dungeon_mouse_button_down(game, event)
-
-                elif event.type == pygame.MOUSEMOTION:
-                    self.handle_dungeon_mouse_motion(game, event)
-
-                elif event.type == pygame.MOUSEWHEEL:
-                    self.handle_dungeon_mouse_wheel(game, event)
-
-            self.draw_dungeon_frame(game)
-            clock.tick(60)
-
-            # Exit conditions: mirror what DungeonScene currently expects
-            if self.quit_requested or getattr(self, "pause_requested", False):
-                running = False
-                continue
-
-            if hasattr(game, "player_alive") and not game.player_alive:
-                running = False
-
+        self.draw_dungeon_frame(game)
 
 
 

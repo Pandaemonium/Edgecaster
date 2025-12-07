@@ -27,12 +27,17 @@ class Engine:
 
     def run(self) -> None:
         """
-        Run the game. Currently defers to SceneManager.run(), which still
-        owns per-scene loops. Future work: unify the loop here and convert
-        scenes to pure command/update handlers plus view models.
+        Run the game. Scenes that opt into uses_live_loop are driven from
+        here via SceneManager._run_live_scene; legacy scenes continue to
+        use their run() method. This is the first step toward a single
+        engine-owned loop.
         """
         try:
-            self.manager.run()
+            while self.manager.scene_stack:
+                scene = self.manager.scene_stack[-1]
+                if getattr(scene, "uses_live_loop", False):
+                    self.manager._run_live_scene(scene)
+                else:
+                    scene.run(self.manager)
         finally:
             self.renderer.teardown()
-
