@@ -43,12 +43,22 @@ class DungeonScene(Scene):
             cmds = self.input.handle_keydown(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            renderer.handle_dungeon_mouse_button_down(game, event)
+            cmds = self.input.handle_mousebutton(event)
+            for cmd in cmds:
+                self._handle_command(game, renderer, cmd, manager)
+
         elif event.type == pygame.MOUSEMOTION:
-            renderer.handle_dungeon_mouse_motion(game, event)
+            cmds = self.input.handle_mousemotion(event)
+            for cmd in cmds:
+                self._handle_command(game, renderer, cmd, manager)
+
         elif event.type == pygame.MOUSEWHEEL:
-            renderer.handle_dungeon_mouse_wheel(game, event)
+            cmds = self.input.handle_mousewheel(event)
+            for cmd in cmds:
+                self._handle_command(game, renderer, cmd, manager)
+
 
     def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         game, renderer = self._ensure_game(manager)
@@ -182,12 +192,7 @@ class DungeonScene(Scene):
             renderer.start_dungeon(game)
             self._started = True
 
-        # Death fallback: if somehow dead on entry, bounce to main menu
-        if hasattr(game, "player_alive") and not game.player_alive:
-            self.game = None
-            manager.current_game = None
-            manager.set_scene(MainMenuScene())
-            return None, renderer
+
 
         return game, renderer
 
@@ -281,10 +286,8 @@ class DungeonScene(Scene):
         # ------------------------------------------------------------
 
         if kind == "escape":
-            # Mirror old renderer logic:
-            if renderer.dialog_open:
-                renderer.dialog_open = False
-            elif in_terminus_mode:
+            # Mirror old renderer logic, minus legacy dialog:
+            if in_terminus_mode:
                 game.awaiting_terminus = False
             elif renderer.config_open:
                 renderer.config_open = False
@@ -294,6 +297,7 @@ class DungeonScene(Scene):
                 renderer.quit_requested = True
             return
 
+
         if kind == "toggle_fullscreen":
             renderer.toggle_fullscreen()
             return
@@ -301,8 +305,7 @@ class DungeonScene(Scene):
         if kind == "show_help":
             # Only if we're not in some special modal state
             if (
-                not renderer.dialog_open
-                and not renderer.config_open
+                not renderer.config_open
                 and not in_terminus_mode
                 and not in_aim_mode
             ):
@@ -310,36 +313,12 @@ class DungeonScene(Scene):
                     game.show_help()
             return
 
+
         # ------------------------------------------------------------
-        # 1) Dialog overlay (always takes precedence while open)
+        # 1) Dialog overlay (always takes precedence while open) !! LEGACY, REMOVED !!
         # ------------------------------------------------------------
 
-        if renderer.dialog_open:
-            if key in (pygame.K_RETURN, pygame.K_SPACE):
-                # Confirm current choice
-                if renderer.dialog_options:
-                    choice = renderer.dialog_options[renderer.dialog_selection]
-                    msg = game.talk_complete(renderer.dialog_npc_id, choice)
-                    game.log.add(msg)
 
-                    # force ability rebuild to reflect new generator unlock,
-                    # using the shared abilities system
-                    renderer.abilities = build_abilities(game)
-                    renderer.abilities_signature = compute_abilities_signature(game)
-
-                renderer.dialog_open = False
-                return
-
-            if key == pygame.K_UP and renderer.dialog_options:
-                renderer.dialog_selection = (renderer.dialog_selection - 1) % len(renderer.dialog_options)
-                return
-
-            if key == pygame.K_DOWN and renderer.dialog_options:
-                renderer.dialog_selection = (renderer.dialog_selection + 1) % len(renderer.dialog_options)
-                return
-
-            # Other commands do nothing while dialog is open
-            return
 
         # ------------------------------------------------------------
         # 2) Config overlay (always takes precedence while open)
@@ -374,6 +353,13 @@ class DungeonScene(Scene):
         # ------------------------------------------------------------
         # 3) Terminus targeting mode
         # ------------------------------------------------------------
+        #
+        # While in this mode:
+        # - arrow/WASD/etc ("move") moves the target cursor
+        # - ENTER / SPACE ("confirm") places at the current cursor
+        # - mouse commands are *not* swallowed here; they fall through
+        #   to the generic mouse handler below so clicks can place the
+        #   terminus directly on the map.
 
         if in_terminus_mode:
             if kind == "move" and vec is not None:
@@ -388,10 +374,12 @@ class DungeonScene(Scene):
                 game.try_place_terminus(renderer.target_cursor)
                 return
 
-            # Other commands ignored while choosing terminus
-            # (Escape already handled above.)
-            # Note: we still allow mouse-based placement separately.
-            return
+            # Let mouse_* commands pass through to the mouse handler.
+            if kind not in ("mouse_click", "mouse_move", "mouse_wheel"):
+                # Everything else (examine, pickup, etc.) is ignored
+                # while we're choosing a terminus.
+                return
+
 
         # 4) Aiming mode (activate_all / activate_seed) confirm
 
@@ -448,8 +436,129 @@ class DungeonScene(Scene):
             else:
                 # Start aiming from current mouse position
                 renderer.aim_action = "activate_all"
-                renderer._update_hover(game, pygame.mouse.get_pos())
+                renderer._update_hover(game, renderer._to_surface(pygame.mouse.get_pos()))
             return
+
+
+
+        # ------------------------------------------------------------
+        # 6 1/2) Mouse input (click / move / wheel)
+        # ------------------------------------------------------------
+
+        # Mouse hover updates the fractal aim hover.
+        if kind == "mouse_move" and cmd.mouse_pos is not None:
+            renderer._update_hover(game, renderer._to_surface(cmd.mouse_pos))
+            return
+
+        # Mouse wheel controls zoom around current cursor.
+        if kind == "mouse_wheel":
+            if cmd.wheel_y:
+                renderer._change_zoom(cmd.wheel_y, renderer._to_surface(pygame.mouse.get_pos()))
+            return
+
+        # Mouse click drives ability bar, config overlay, placement, and click-to-move.
+        if kind == "mouse_click" and cmd.mouse_pos is not None and cmd.mouse_button == 1:
+            mx, my = renderer._to_surface(cmd.mouse_pos)
+
+            # Config overlay: click anywhere closes it for now.
+            if renderer.config_open and renderer.config_action:
+                renderer.config_open = False
+                return
+
+            # Ability bar page arrows.
+            if getattr(renderer, "page_prev_rect", None) and renderer.page_prev_rect and renderer.page_prev_rect.collidepoint(mx, my):
+                if renderer.ability_page > 0:
+                    renderer.ability_page -= 1
+                return
+
+            if getattr(renderer, "page_next_rect", None) and renderer.page_next_rect and renderer.page_next_rect.collidepoint(mx, my):
+                items_per_page = 12
+                total_pages = max(1, (len(renderer.abilities) + items_per_page - 1) // items_per_page)
+                if renderer.ability_page < total_pages - 1:
+                    renderer.ability_page += 1
+                return
+
+            # Ability bar buttons.
+            for idx, ability in enumerate(renderer.abilities):
+                if ability.rect and ability.rect.collidepoint(mx, my):
+                    renderer.current_ability_index = idx
+
+                    # +/- radius tweak for activate_all
+                    if ability.plus_rect and ability.plus_rect.collidepoint(mx, my):
+                        changed, msg = game.adjust_param("activate_all", "radius", 1)
+                        if not changed and msg:
+                            renderer._set_flash(msg)
+                        renderer.abilities_signature = None
+                        return
+
+                    if ability.minus_rect and ability.minus_rect.collidepoint(mx, my):
+                        changed, _ = game.adjust_param("activate_all", "radius", -1)
+                        renderer.abilities_signature = None
+                        return
+
+                    # Gear opens config overlay.
+                    if ability.gear_rect and ability.gear_rect.collidepoint(mx, my):
+                        renderer.config_open = True
+                        renderer.config_action = ability.action
+                        renderer.config_selection = 0
+
+                    # Placement ability: enter terminus mode at player.
+                    elif ability.action == "place":
+                        renderer.target_cursor = game.actors[game.player_id].pos
+                        if hasattr(game, "begin_place_mode"):
+                            game.begin_place_mode()
+                        renderer.aim_action = None
+
+                    else:
+                        # Aim-style abilities set aim_action and wait for confirm/click.
+                        if ability.action in ("activate_all", "activate_seed"):
+                            renderer.aim_action = ability.action
+                        else:
+                            renderer.aim_action = None
+                            # Immediate abilities fire immediately.
+                            trigger_ability_effect(game, ability.action)
+
+                    return
+
+            # Map / world clicks.
+            tx = int((mx - renderer.origin_x) // renderer.tile)
+            ty = int((my - renderer.origin_y) // renderer.tile)
+            if not game.world.in_bounds(tx, ty):
+                return
+
+            # Terminus placement via click.
+            if getattr(game, "awaiting_terminus", False):
+                renderer.target_cursor = (tx, ty)
+                game.try_place_terminus((tx, ty))
+                return
+
+            # Aim-mode click to fire activate_all / activate_seed.
+            if renderer.aim_action in ("activate_all", "activate_seed"):
+                # Convert click to world-coordinates (in pattern space) and pick nearest vertex
+                wx = (mx - renderer.origin_x) / renderer.tile
+                wy = (my - renderer.origin_y) / renderer.tile
+                target_idx = game.nearest_vertex((wx, wy))
+                if target_idx is not None:
+                    trigger_ability_effect(
+                        game,
+                        renderer.aim_action,
+                        hover_vertex=target_idx,
+                    )
+                renderer.aim_action = None
+                return
+
+
+            # Default: click-to-move / use stairs.
+            player = game.actors[game.player_id]
+            px, py = player.pos
+            dx = tx - px
+            dy = ty - py
+            if tx == px and ty == py:
+                game.use_stairs()
+            elif max(abs(dx), abs(dy)) == 1:
+                game.queue_player_move((int(dx), int(dy)))
+            return
+
 
         # ------------------------------------------------------------
         # 6) High-level game actions (non-movement)
@@ -529,14 +638,13 @@ class DungeonScene(Scene):
             return
 
         if kind == "talk":
-            dlg = game.talk_start()
-            if dlg:
-                renderer.dialog_open = True
-                renderer.dialog_options = dlg.get("choices", [])
-                renderer.dialog_selection = 0
-                renderer.dialog_lines = dlg.get("lines", [])
-                renderer.dialog_npc_id = dlg.get("npc_id")
+            # Temporary: reuse yawp behaviour until scene-based dialogue is wired in.
+            if hasattr(game, "queue_player_action"):
+                game.queue_player_action("yawp")
+            else:
+                game.log.add("You yawp, but in a civilized manner.")
             return
+
 
         # ------------------------------------------------------------
         # 7) Movement (no special modes active)

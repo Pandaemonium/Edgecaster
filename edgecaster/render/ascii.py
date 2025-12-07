@@ -67,12 +67,7 @@ class AsciiRenderer:
         self.config_open = False
         self.config_action: str | None = None
         self.config_selection: int = 0
-        # dialogue state
-        self.dialog_open = False
-        self.dialog_options: List[str] = []
-        self.dialog_selection: int = 0
-        self.dialog_lines: List[str] = []
-        self.dialog_npc_id: str | None = None
+
         # transient flash message
         self.flash_text: str | None = None
         self.flash_color: Tuple[int, int, int] = (255, 120, 120)
@@ -1009,72 +1004,6 @@ class AsciiRenderer:
             self.abilities_signature = sig
 
 
-    # ------------------------------------------------------------------ #
-    # Event handling (still lives in renderer for now, but callable from scenes)
-    # ------------------------------------------------------------------ #
-
-    def handle_dungeon_keydown(self, game: Game, event: pygame.event.Event) -> None:
-        """
-        Handle a KEYDOWN event while in the dungeon.
-        This is now primarily for the legacy .render() loop.
-        """
-        key = event.key
-
-        if key == pygame.K_ESCAPE:
-            if self.dialog_open:
-                self.dialog_open = False
-            elif getattr(game, "awaiting_terminus", False):
-                game.awaiting_terminus = False
-            elif self.config_open:
-                self.config_open = False
-            else:
-                # Normal ESC in the dungeon: request pause
-                self.pause_requested = True
-                self.quit_requested = True
-            return
-
-        if key == pygame.K_F11:
-            self.toggle_fullscreen()
-            return
-
-        # Legacy path: delegate anything else to the renderer's local handler.
-        self._handle_input(game, key)
-
-
-        # '?' help popup (use unicode because there is no K_QUESTION)
-        if getattr(event, "unicode", "") == "?":
-            # Only if we're not in some special modal state
-            if (
-                not self.dialog_open
-                and not self.config_open
-                and not getattr(game, "awaiting_terminus", False)
-                and self.aim_action is None
-            ):
-                if hasattr(game, "show_help"):
-                    game.show_help()
-            # Don't pass '?' into the normal input handler
-            return
-
-        # Delegate to the existing high-level input handler
-        self._handle_input(game, key)
-
-    def handle_dungeon_mouse_button_down(self, game: Game, event: pygame.event.Event) -> None:
-        if event.button != 1:
-            return
-        pos = self._to_surface(event.pos)
-        if self.config_open and self.config_action:
-            # clicking outside just closes
-            self.config_open = False
-        elif self.dialog_open:
-            self.dialog_open = False
-        else:
-            self._handle_click(game, pos)
-
-    def handle_dungeon_mouse_motion(self, game: Game, event: pygame.event.Event) -> None:
-        self._update_hover(game, self._to_surface(event.pos))
-
-    def handle_dungeon_mouse_wheel(self, game: Game, event: pygame.event.Event) -> None:
-        self._change_zoom(event.y, self._to_surface(pygame.mouse.get_pos()))
 
     # ------------------------------------------------------------------ #
     # Per-frame drawing
@@ -1107,8 +1036,7 @@ class AsciiRenderer:
         self.draw_ability_bar(game)
         if self.config_open and self.config_action:
             self.draw_config_overlay(game)
-        if self.dialog_open:
-            self.draw_dialog_overlay()
+
         # Urgent overlay is now handled by UrgentMessageScene.
         self._present()
 
@@ -1136,175 +1064,12 @@ class AsciiRenderer:
 
 
 
-    def _handle_input(self, game: Game, key: int) -> None:
-        """
-        Legacy keyboard handler used only by AsciiRenderer.render().
-        For the normal game flow (DungeonScene), all real input is
-        handled via GameInput + DungeonScene._handle_command.
-
-        This now only knows about:
-        - Dialog navigation (pure UI)
-        - Config overlay navigation (pure UI-ish)
-        - Ability bar hotkeys and confirm
-        """
-
-        # ---------------- Dialog overlay ----------------
-        if self.dialog_open:
-            if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
-                if key == pygame.K_RETURN and self.dialog_options:
-                    # Confirm current choice
-                    choice = self.dialog_options[self.dialog_selection]
-                    msg = game.talk_complete(self.dialog_npc_id, choice)
-                    game.log.add(msg)
-                    # force ability rebuild to reflect new generator unlock
-                    self._build_abilities(game)
-                    self.abilities_signature = compute_abilities_signature(game)
-                self.dialog_open = False
-                return
-
-            if key == pygame.K_UP and self.dialog_options:
-                self.dialog_selection = (self.dialog_selection - 1) % len(self.dialog_options)
-                return
-
-            if key == pygame.K_DOWN and self.dialog_options:
-                self.dialog_selection = (self.dialog_selection + 1) % len(self.dialog_options)
-                return
-
-            # Other keys are ignored while dialog is open.
-            return
-
-        # ---------------- Config overlay ----------------
-        if self.config_open and self.config_action:
-            params = game.param_view(self.config_action)
-
-            if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
-                self.config_open = False
-                return
-
-            if key == pygame.K_UP:
-                self.config_selection = (self.config_selection - 1) % max(1, len(params))
-                return
-
-            if key == pygame.K_DOWN:
-                self.config_selection = (self.config_selection + 1) % max(1, len(params))
-                return
-
-            if key in (pygame.K_LEFT, pygame.K_RIGHT):
-                if params:
-                    param_key = params[self.config_selection]["key"]
-                    delta = 1 if key == pygame.K_RIGHT else -1
-                    changed, msg = game.adjust_param(self.config_action, param_key, delta)
-                    # msg is available if you want to surface it later
-                return
-
-            # Other keys are ignored while config is open.
-            return
-
-        # ---------------- Ability bar hotkeys ----------------
-        # NOTE: this is only for the legacy AsciiRenderer.render() path.
-        # In the normal DungeonScene flow, number keys are handled via
-        # GameInput + DungeonScene._handle_command.
-        if pygame.K_1 <= key <= pygame.K_9:
-            hk = key - pygame.K_0
-            for idx, ability in enumerate(self.abilities):
-                if ability.hotkey == hk:
-                    self.current_ability_index = idx
-                    if ability.action == "place":
-                        self.target_cursor = game.actors[game.player_id].pos
-                        if hasattr(game, "begin_place_mode"):
-                            game.begin_place_mode()
-                        self.aim_action = None
-                    else:
-                        if ability.action in ("activate_all", "activate_seed"):
-                            self.aim_action = ability.action
-                        else:
-                            self.aim_action = None
-                            # Immediate abilities still go through _trigger_action,
-                            # which uses the generic action system when available.
-                            trigger_ability_effect(game, ability.action)
-                    return
-
-        # ---------------- Default confirm: trigger current ability ----------------
-        if key in (pygame.K_RETURN, pygame.K_SPACE):
-            self._trigger_current(game)
-
-
-    def _trigger_current(self, game: Game) -> None:
-        ability = self.abilities[self.current_ability_index]
-        trigger_ability_effect(game, ability.action)
 
 
 
 
-    def _handle_click(self, game: Game, pos) -> None:
-        if self.dialog_open:
-            return
-        mx, my = pos
-        # page arrows
-        if hasattr(self, "page_prev_rect") and self.page_prev_rect and self.page_prev_rect.collidepoint(mx, my):
-            if self.ability_page > 0:
-                self.ability_page -= 1
-            return
-        if hasattr(self, "page_next_rect") and self.page_next_rect and self.page_next_rect.collidepoint(mx, my):
-            items_per_page = 12
-            total_pages = max(1, (len(self.abilities) + items_per_page - 1) // items_per_page)
-            if self.ability_page < total_pages - 1:
-                self.ability_page += 1
-            return
 
-        for idx, ability in enumerate(self.abilities):
-            if ability.rect and ability.rect.collidepoint(mx, my):
-                self.current_ability_index = idx
-                if ability.plus_rect and ability.plus_rect.collidepoint(mx, my):
-                    changed, msg = game.adjust_param("activate_all", "radius", 1)
-                    if not changed and msg:
-                        self._set_flash(msg)
-                    self.abilities_signature = None
-                    return
-                if ability.minus_rect and ability.minus_rect.collidepoint(mx, my):
-                    changed, _ = game.adjust_param("activate_all", "radius", -1)
-                    self.abilities_signature = None
-                    return
-                if ability.gear_rect and ability.gear_rect.collidepoint(mx, my):
-                    self.config_open = True
-                    self.config_action = ability.action
-                    self.config_selection = 0
-                elif ability.action == "place":
-                    self.target_cursor = game.actors[game.player_id].pos
-                    game.begin_place_mode()
-                    self.aim_action = None
-                else:
-                    if ability.action in ("activate_all", "activate_seed"):
-                        self.aim_action = ability.action
-                    else:
-                        self.aim_action = None
-                    if ability.action not in ("activate_all", "activate_seed"):
-                        trigger_ability_effect(game, ability.action)
 
-                return
-
-        tx = int((mx - self.origin_x) // self.tile)
-        ty = int((my - self.origin_y) // self.tile)
-        if not game.world.in_bounds(tx, ty):
-            return
-        if game.awaiting_terminus:
-            self.target_cursor = (tx, ty)
-            game.try_place_terminus((tx, ty))
-        else:
-            if self.aim_action in ("activate_all", "activate_seed"):
-                target_idx = self._current_hover_vertex(game)
-                if target_idx is not None:
-                    trigger_ability_effect(game, self.aim_action, hover_vertex=target_idx)
-                self.aim_action = None
-
-            else:
-                px, py = game.actors[game.player_id].pos
-                dx = tx - px
-                dy = ty - py
-                if tx == px and ty == py:
-                    game.use_stairs()
-                elif max(abs(dx), abs(dy)) == 1:
-                    game.queue_player_move((int(dx), int(dy)))
 
 
 
@@ -1747,32 +1512,7 @@ class AsciiRenderer:
     def big_label(self, text: str) -> pygame.Surface:
         return pygame.font.SysFont("consolas", 24, bold=True).render(text, True, self.fg)
 
-    def draw_dialog_overlay(self) -> None:
-        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 160))
-        panel_w = int(self.width * 0.55)
-        panel_h = 200
-        panel_x = (self.width - panel_w) // 2
-        panel_y = (self.height - panel_h) // 2
-        pygame.draw.rect(overlay, (25, 25, 45, 230), pygame.Rect(panel_x, panel_y, panel_w, panel_h))
-        pygame.draw.rect(overlay, (200, 200, 230, 240), pygame.Rect(panel_x, panel_y, panel_w, panel_h), 2)
-        y = panel_y + 12
-        for line in self.dialog_lines:
-            txt = self.font.render(line, True, self.fg)
-            overlay.blit(txt, (panel_x + 12, y))
-            y += txt.get_height() + 4
-        if self.dialog_options:
-            y += 8
-            for idx, opt in enumerate(self.dialog_options):
-                sel = (idx == self.dialog_selection)
-                col = self.sel if sel else self.fg
-                bullet = "> " if sel else "  "
-                txt = self.font.render(f"{bullet}{opt.title()}", True, col)
-                overlay.blit(txt, (panel_x + 20, y))
-                y += txt.get_height() + 4
-        hint = self.small_font.render("Up/Down choose, Enter confirm, Esc close", True, self.fg)
-        overlay.blit(hint, (panel_x + 12, panel_y + panel_h - 26))
-        self.surface.blit(overlay, (0, 0))
+
 
     def _present(self) -> None:
         """Blit render surface to display with letterboxing (no stretch, aspect preserved)."""
