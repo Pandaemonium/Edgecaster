@@ -305,3 +305,8 @@ SECTION 5 — TL;DR FOR THE NEXT GUY
 - The renderer will eventually be 100% pure view code.  
 
 Welcome aboard — KEEP THE RENDERER CLEAN.
+
+# Recent Increment
+- Game input bindings are now data-driven in `scenes/game_input.py` (constructor accepts custom bindings/move_bindings). Use the GameCommand layer for new inputs; avoid hardcoding keys in renderers.
+- Introduced an `engine.py` scaffold to own the top-level run; currently delegates to SceneManager.run() while we continue peeling loops/logic out of scenes/renderers. Next steps: move event/update/render loop into Engine and make scenes pure command/update producers with view models for the renderer.
+- Scene base now exposes optional live-loop hooks (`uses_live_loop`, `handle_event`, `update`, `render`). SceneManager will drive scenes that set `uses_live_loop=True` via a unified event/update/render loop; legacy scenes keep their `run()` method. This is the path to a single engine-owned loop and a draw-only renderer.

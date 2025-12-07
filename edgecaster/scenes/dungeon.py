@@ -1,0 +1,568 @@
+from __future__ import annotations
+
+import threading
+import pygame
+
+from .base import Scene
+from edgecaster.game import Game
+from .urgent_message_scene import UrgentMessageScene
+from .game_input import GameInput, GameCommand
+from edgecaster.systems.abilities import (
+    build_abilities,
+    compute_abilities_signature,
+    trigger_ability_effect,
+)
+
+
+class DungeonScene(Scene):
+    """The main roguelike dungeon scene."""
+
+    uses_live_loop = True
+
+    def __init__(self) -> None:
+        # Keep the Game instance across pauses/inventory.
+        self.game: Game | None = None
+        # Scene-level input mapper for "pure game" actions
+        self.input = GameInput()
+        self._started = False
+        self._old_urgent_cb = None
+
+    # ------------------------------------------------------------------ #
+    # Live-loop hooks
+    def handle_event(self, event, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        game, renderer = self._ensure_game(manager)
+        if game is None:
+            manager.set_scene(None)
+            return
+
+        if event.type == pygame.QUIT:
+            manager.set_scene(None)
+            return
+
+        if event.type == pygame.KEYDOWN:
+            cmds = self.input.handle_keydown(event)
+            for cmd in cmds:
+                self._handle_command(game, renderer, cmd, manager)
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            renderer.handle_dungeon_mouse_button_down(game, event)
+        elif event.type == pygame.MOUSEMOTION:
+            renderer.handle_dungeon_mouse_motion(game, event)
+        elif event.type == pygame.MOUSEWHEEL:
+            renderer.handle_dungeon_mouse_wheel(game, event)
+
+    def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        game, renderer = self._ensure_game(manager)
+        if game is None:
+            manager.set_scene(None)
+            return
+
+        # Legacy flags still respected
+        if getattr(renderer, "quit_requested", False) or getattr(renderer, "pause_requested", False):
+            renderer.quit_requested = False
+
+        # Process any transitions (death, map, inventory, etc.)
+        self._process_transitions(game, renderer, manager)
+
+    def render(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        if self.game is None:
+            return
+        renderer.draw_dungeon_frame(self.game)
+
+    # Legacy compatibility: if SceneManager falls back to run()
+    def run(self, manager: "SceneManager") -> None:  # pragma: no cover - legacy path
+        clock = pygame.time.Clock()
+        while manager.scene_stack and manager.scene_stack[-1] is self:
+            for event in pygame.event.get():
+                self.handle_event(event, manager)
+            self.update(clock.tick(60), manager)
+            self.render(manager.renderer, manager)
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    def _ensure_game(self, manager: "SceneManager"):
+        """Lazily build game + renderer state and attach callbacks."""
+        from .main_menu import MainMenuScene
+
+        cfg = manager.cfg
+        renderer = manager.renderer
+        char = manager.character
+
+        if self.game is None:
+            seed = None
+            if hasattr(char, "use_random_seed") and char.use_random_seed:
+                seed = None  # random
+            else:
+                seed = getattr(char, "seed", None) or getattr(cfg, "seed", None)
+            rng = manager.rng_factory(seed)
+            self.game = Game(cfg, rng, character=char)
+
+            # Precompute world map cache in the background
+            if not getattr(self.game, "world_map_thread_started", False):
+                self.game.world_map_thread_started = True
+                self.game.world_map_rendering = True
+
+                def worker(game_ref: Game, width: int, height: int) -> None:
+                    try:
+                        from .world_map_scene import WorldMapScene
+
+                        wm = WorldMapScene(game_ref, span=16)
+                        class Stub:
+                            def __init__(self, w, h) -> None:
+                                self.width = w
+                                self.height = h
+
+                        stub = Stub(width, height)
+                        surf, view = wm._render_overmap(stub)
+                        game_ref.world_map_cache = {"surface": surf, "view": view, "key": (width, height, wm.span)}
+                        game_ref.world_map_ready = True
+                    except Exception:
+                        game_ref.world_map_ready = False
+                    finally:
+                        game_ref.world_map_rendering = False
+
+                threading.Thread(target=worker, args=(self.game, renderer.width, renderer.height), daemon=True).start()
+
+        game = self.game
+        if game is None:
+            return None, renderer
+
+        # expose to manager for options display
+        manager.current_game = game
+        setattr(game, "scene_manager", manager)
+
+        # If a fractal edit result is waiting, absorb it into custom patterns
+        if getattr(manager, "fractal_edit_result", None):
+            res = manager.fractal_edit_result
+            manager.fractal_edit_result = None
+            pts = res.get("vertices") if isinstance(res, dict) else None
+            if pts and len(pts) >= 2:
+                game.custom_patterns.append(pts)
+                game.character.custom_pattern = pts
+                renderer.abilities_signature = None
+
+        # Save any previous hook (in case we ever call DungeonScene from another scene)
+        if self._old_urgent_cb is None:
+            self._old_urgent_cb = getattr(game, "urgent_callback", None)
+
+            def show_urgent(text: str) -> None:
+                # Build popup from game's structured urgent fields.
+                title = getattr(game, "urgent_title", "") or ""
+                body = getattr(game, "urgent_body", text)
+                choices = getattr(game, "urgent_choices", None) or ["Continue..."]
+
+                def handle_choice(idx, _manager) -> None:
+                    # Look up any effect the Game attached to this urgent event.
+                    effect = getattr(game, "urgent_choice_effect", None)
+                    if effect is not None:
+                        effect(idx, game)
+                        # Clear it so it doesn't leak to the next popup.
+                        game.urgent_choice_effect = None
+
+                manager.push_scene(
+                    UrgentMessageScene(
+                        game,
+                        body,
+                        title=title,
+                        choices=choices,
+                        on_choice=handle_choice,
+                    )
+                )
+
+            game.urgent_callback = show_urgent
+
+        # Clear flags before rendering
+        if not self._started:
+            renderer.quit_requested = False
+            if hasattr(renderer, "pause_requested"):
+                renderer.pause_requested = False
+            if hasattr(game, "inventory_requested"):
+                game.inventory_requested = False
+            renderer.start_dungeon(game)
+            self._started = True
+
+        # Death fallback: if somehow dead on entry, bounce to main menu
+        if hasattr(game, "player_alive") and not game.player_alive:
+            self.game = None
+            manager.current_game = None
+            manager.set_scene(MainMenuScene())
+            return None, renderer
+
+        return game, renderer
+
+    def _process_transitions(self, game: Game, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        from .main_menu import MainMenuScene
+        from .pause_menu_scene import PauseMenuScene
+        from .inventory_scene import InventoryScene
+
+        # 0) If an UrgentMessageScene was pushed from inside the game logic,
+        #    it will already be on top of the stack. In that case, just yield.
+        if manager.scene_stack and isinstance(manager.scene_stack[-1], UrgentMessageScene):
+            return
+
+        # 1) Fallback / generalisation for legacy urgent_message flag:
+        if getattr(game, "urgent_message", None) and not getattr(game, "urgent_resolved", True):
+            body = getattr(game, "urgent_body", None) or game.urgent_message or ""
+            title = getattr(game, "urgent_title", "") or ""
+            choices = getattr(game, "urgent_choices", None) or ["Continue..."]
+
+            manager.push_scene(
+                UrgentMessageScene(
+                    game,
+                    body,
+                    title=title,
+                    choices=choices,
+                )
+            )
+            return
+
+        # 2) Death -> go back to main menu, discard the run
+        if not getattr(game, "player_alive", True):
+            self.game = None
+            manager.current_game = None
+            manager.set_scene(MainMenuScene())
+            return
+
+        # 3) Inventory requested -> push overlay, keep dungeon scene on stack
+        if getattr(game, "inventory_requested", False):
+            game.inventory_requested = False
+            manager.push_scene(InventoryScene(game))
+            return
+
+        # 4) Fractal editor requested -> open editor scene
+        if getattr(game, "fractal_editor_requested", False):
+            game.fractal_editor_requested = False
+            from .fractal_editor_scene import FractalEditorScene, FractalEditorState
+            state = getattr(game, "fractal_editor_state", None) or FractalEditorState()
+            manager.push_scene(FractalEditorScene(state=state, window_rect=None))
+            return
+
+        # 5) Pause requested -> push pause menu overlay
+        if getattr(renderer, "pause_requested", False):
+            renderer.pause_requested = False
+            manager.push_scene(PauseMenuScene())
+            return
+
+        # 6) World map requested -> push world map scene (keep game instance)
+        if getattr(game, "map_requested", False):
+            game.map_requested = False
+            from .world_map_scene import WorldMapScene
+            manager.push_scene(WorldMapScene(game, span=16))
+            return
+
+    # ------------------------------------------------------------------ #
+    # Command handling (unchanged from legacy loop)
+    def _handle_command(
+        self,
+        game: Game,
+        renderer,
+        cmd: GameCommand,
+        manager: "SceneManager",  # type: ignore[name-defined]
+    ) -> None:
+        """
+        Apply a high-level GameCommand to the current game + renderer.
+
+        This is where scene-level logic lives: we can query game/renderer
+        state (e.g. awaiting_terminus, dialogs, targeting) and decide
+        whether to act or ignore the command.
+        """
+        import pygame  # local to avoid circulars in some environments
+
+        kind = cmd.kind
+        key = cmd.raw_key
+        vec = cmd.vector
+
+        in_terminus_mode = bool(getattr(game, "awaiting_terminus", False))
+        in_aim_mode = renderer.aim_action in ("activate_all", "activate_seed")
+
+        # ------------------------------------------------------------
+        # 0) Global-ish keys: Escape, fullscreen, help
+        # ------------------------------------------------------------
+
+        if kind == "escape":
+            # Mirror old renderer logic:
+            if renderer.dialog_open:
+                renderer.dialog_open = False
+            elif in_terminus_mode:
+                game.awaiting_terminus = False
+            elif renderer.config_open:
+                renderer.config_open = False
+            else:
+                # Normal ESC in the dungeon: request pause
+                renderer.pause_requested = True
+                renderer.quit_requested = True
+            return
+
+        if kind == "toggle_fullscreen":
+            renderer.toggle_fullscreen()
+            return
+
+        if kind == "show_help":
+            # Only if we're not in some special modal state
+            if (
+                not renderer.dialog_open
+                and not renderer.config_open
+                and not in_terminus_mode
+                and not in_aim_mode
+            ):
+                if hasattr(game, "show_help"):
+                    game.show_help()
+            return
+
+        # ------------------------------------------------------------
+        # 1) Dialog overlay (always takes precedence while open)
+        # ------------------------------------------------------------
+
+        if renderer.dialog_open:
+            if key in (pygame.K_RETURN, pygame.K_SPACE):
+                # Confirm current choice
+                if renderer.dialog_options:
+                    choice = renderer.dialog_options[renderer.dialog_selection]
+                    msg = game.talk_complete(renderer.dialog_npc_id, choice)
+                    game.log.add(msg)
+
+                    # force ability rebuild to reflect new generator unlock,
+                    # using the shared abilities system
+                    renderer.abilities = build_abilities(game)
+                    renderer.abilities_signature = compute_abilities_signature(game)
+
+                renderer.dialog_open = False
+                return
+
+            if key == pygame.K_UP and renderer.dialog_options:
+                renderer.dialog_selection = (renderer.dialog_selection - 1) % len(renderer.dialog_options)
+                return
+
+            if key == pygame.K_DOWN and renderer.dialog_options:
+                renderer.dialog_selection = (renderer.dialog_selection + 1) % len(renderer.dialog_options)
+                return
+
+            # Other commands do nothing while dialog is open
+            return
+
+        # ------------------------------------------------------------
+        # 2) Config overlay (always takes precedence while open)
+        # ------------------------------------------------------------
+
+        if renderer.config_open and renderer.config_action:
+            params = game.param_view(renderer.config_action)
+
+            if key in (pygame.K_RETURN, pygame.K_SPACE):
+                renderer.config_open = False
+                return
+
+            if key == pygame.K_UP:
+                renderer.config_selection = (renderer.config_selection - 1) % max(1, len(params))
+                return
+
+            if key == pygame.K_DOWN:
+                renderer.config_selection = (renderer.config_selection + 1) % max(1, len(params))
+                return
+
+            if key in (pygame.K_LEFT, pygame.K_RIGHT):
+                if params:
+                    param_key = params[renderer.config_selection]["key"]
+                    delta = 1 if key == pygame.K_RIGHT else -1
+                    changed, msg = game.adjust_param(renderer.config_action, param_key, delta)
+                    # msg is available if you want to surface it later
+                return
+
+            # Other commands do nothing while config overlay is open
+            return
+
+        # ------------------------------------------------------------
+        # 3) Terminus targeting mode
+        # ------------------------------------------------------------
+
+        if in_terminus_mode:
+            if kind == "move" and vec is not None:
+                tx, ty = renderer.target_cursor
+                dx, dy = vec
+                nt = (tx + dx, ty + dy)
+                if game.world.in_bounds(*nt):
+                    renderer.target_cursor = nt
+                return
+
+            if kind == "confirm":
+                game.try_place_terminus(renderer.target_cursor)
+                return
+
+            # Other commands ignored while choosing terminus
+            # (Escape already handled above.)
+            # Note: we still allow mouse-based placement separately.
+            return
+
+        # 4) Aiming mode (activate_all / activate_seed) confirm
+
+        if in_aim_mode and kind == "confirm":
+            target_idx = renderer._current_hover_vertex(game)
+            if target_idx is not None and renderer.aim_action in ("activate_all", "activate_seed"):
+                trigger_ability_effect(
+                    game,
+                    renderer.aim_action,
+                    hover_vertex=target_idx,
+                )
+            renderer.aim_action = None
+            return
+
+        # ------------------------------------------------------------
+        # 5) Ability bar: hotkeys + quick 'f'
+        # ------------------------------------------------------------
+
+        if kind == "ability_hotkey" and cmd.hotkey is not None:
+            hk = cmd.hotkey
+            for idx, ability in enumerate(renderer.abilities):
+                if ability.hotkey == hk:
+                    renderer.current_ability_index = idx
+
+                    if ability.action == "place":
+                        renderer.target_cursor = game.actors[game.player_id].pos
+                        if hasattr(game, "begin_place_mode"):
+                            game.begin_place_mode()
+                        renderer.aim_action = None
+
+                    else:
+                        # Aim-style abilities set aim_action and wait for confirm / click
+                        if ability.action in ("activate_all", "activate_seed"):
+                            renderer.aim_action = ability.action
+                        else:
+                            renderer.aim_action = None
+                            # Immediate abilities: go straight to the shared effect function
+                            trigger_ability_effect(game, ability.action)
+
+                    return
+            return
+
+        if kind == "quick_activate_all":
+            # If we're already in activate_all aim mode, treat this as confirm
+            if renderer.aim_action == "activate_all":
+                target_idx = renderer._current_hover_vertex(game)
+                if target_idx is not None:
+                    trigger_ability_effect(
+                        game,
+                        "activate_all",
+                        hover_vertex=target_idx,
+                    )
+                renderer.aim_action = None
+            else:
+                # Start aiming from current mouse position
+                renderer.aim_action = "activate_all"
+                renderer._update_hover(game, pygame.mouse.get_pos())
+            return
+
+        # ------------------------------------------------------------
+        # 6) High-level game actions (non-movement)
+        # ------------------------------------------------------------
+
+        if kind == "examine":
+            if not in_aim_mode:
+                if hasattr(game, "describe_current_tile"):
+                    game.describe_current_tile()
+            return
+
+        if kind == "pickup":
+            if not in_aim_mode:
+                if hasattr(game, "player_pick_up"):
+                    game.player_pick_up()
+            return
+
+        if kind == "possess_nearest":
+            level = game._level()
+            player = level.actors.get(game.player_id)
+            if player is not None:
+                px, py = player.pos
+                best_id = None
+                best_d2 = 1e18
+                for actor in level.actors.values():
+                    if not actor.alive or actor.id == game.player_id:
+                        continue
+                    ax, ay = actor.pos
+                    dx = ax - px
+                    dy = ay - py
+                    d2 = dx * dx + dy * dy
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_id = actor.id
+                if best_id is not None:
+                    game.possess_actor(best_id)
+            return
+
+        if kind == "open_inventory":
+            if not in_aim_mode:
+                setattr(game, "inventory_requested", True)
+                renderer.quit_requested = True
+            return
+
+        if kind == "yawp":
+            if hasattr(game, "queue_player_action"):
+                game.queue_player_action("yawp")
+            else:
+                game.log.add("You yawp! 'Yawp!'")
+            return
+
+        if kind == "wait":
+            if hasattr(game, "queue_player_wait"):
+                game.queue_player_wait()
+            return
+
+        if kind == "stairs_down":
+            if hasattr(game, "use_stairs_down"):
+                game.use_stairs_down()
+            return
+
+        if kind == "stairs_up_or_map":
+            tile = game.world.get_tile(*game.actors[game.player_id].pos)
+            zone = getattr(game, "zone_coord", getattr(game, "zone", (0, 0, game.level_index)))
+            depth = zone[2] if len(zone) > 2 else getattr(game, "level_index", 0)
+            if depth == 0 and (not tile or tile.glyph != "<"):
+                game.map_requested = True
+                renderer.quit_requested = True
+                return
+            if hasattr(game, "use_stairs_up"):
+                game.use_stairs_up()
+            return
+
+        if kind == "open_fractal_editor":
+            setattr(game, "fractal_editor_requested", True)
+            renderer.quit_requested = True
+            return
+
+        if kind == "talk":
+            dlg = game.talk_start()
+            if dlg:
+                renderer.dialog_open = True
+                renderer.dialog_options = dlg.get("choices", [])
+                renderer.dialog_selection = 0
+                renderer.dialog_lines = dlg.get("lines", [])
+                renderer.dialog_npc_id = dlg.get("npc_id")
+            return
+
+        # ------------------------------------------------------------
+        # 7) Movement (no special modes active)
+        # ------------------------------------------------------------
+
+        if kind == "move" and vec is not None:
+            if hasattr(game, "queue_player_move"):
+                game.queue_player_move(vec)
+            return
+
+        # ------------------------------------------------------------
+        # 8) Default confirm: trigger current ability
+        # ------------------------------------------------------------
+
+        if kind == "confirm":
+            ability = renderer.abilities[renderer.current_ability_index]
+
+            if ability.action == "place":
+                renderer.target_cursor = game.actors[game.player_id].pos
+                game.begin_place_mode()
+                renderer.aim_action = None
+            else:
+                if ability.action in ("activate_all", "activate_seed"):
+                    renderer.aim_action = ability.action
+                else:
+                    renderer.aim_action = None
+                    trigger_ability_effect(game, ability.action)
+
+            return
+
+        # Any other kinds are currently ignored.

@@ -10,14 +10,37 @@ from typing import Optional
 
 
 class Scene:
-    """Abstract base for all scenes."""
+    """
+    Abstract base for all scenes.
+
+    Legacy scenes still implement run(); newer scenes can opt-in to the
+    unified engine loop by setting uses_live_loop = True and overriding
+    handle_event / update / render. The SceneManager will call the live
+    hooks when available and otherwise fall back to run().
+    """
+
+    # Opt-in flag for the new engine-driven loop.
+    uses_live_loop: bool = False
 
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         """
-        Run this scene. When done, call manager.set_scene(...) to choose what
-        comes next.
+        Legacy entry point. When done, call manager.set_scene(...) to choose
+        what comes next. New scenes should prefer the live-loop hooks.
         """
         raise NotImplementedError("Scene subclasses must implement run()")
+
+    # ---- Live-loop hooks (optional) ------------------------------------ #
+    def handle_event(self, event, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """Process a single pygame event. Override if uses_live_loop=True."""
+        return None
+
+    def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """Advance scene state by dt_ms. Override if uses_live_loop=True."""
+        return None
+
+    def render(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """Draw the scene. Override if uses_live_loop=True."""
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -678,4 +701,3 @@ class PopupMenuScene(MenuScene):
         panel.blit(footer_text, (fx, fy))
 
         surface.blit(panel, rect.topleft)
-
