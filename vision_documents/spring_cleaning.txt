@@ -33,3 +33,18 @@ Tests/dev quality
 -----------------
 - Add smoke tests or sanity checks for template loading (enemy YAML) so missing IDs fail loudly in dev, not at runtime.
 - Periodically review `debug.log` usage; keep it small and rotated/cleared each run as now.
+
+Lorenz butterflies
+-----------------
+- Hacky old system. Replace butterflies with proper entities (possibly some sort of spell effect, along with runes etc.?)
+- Better isolate the Lorenz code away from the core files.
+
+Targeting system
+----------------
+- Generalize runecasting "target mode" so it can be used in other contexts, e.g. "looking" from afar or aiming projectiles
+
+Adjacent screens
+-----------
+- Adjacent "parasangs" should be simulated to allow for pursuing monsters, projectiles, relativistic space distortion (??), etc.
+- In general for our fractal scheme, computation in the grand energy queue is determined by scale -- we care more about what's going on this parasang than next parasang, but we care more about that than about court intrigue in the faraway bird kingdom.
+- Unify fast travel with on-edge screen transitions, to trigger random events etc.
