@@ -9,17 +9,14 @@ from edgecaster.game import Game
 from edgecaster.state.actors import Actor
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
+from edgecaster.systems.abilities import (
+    Ability,              # the dataclass
+    build_abilities,
+    compute_abilities_signature,
+    trigger_ability_effect,
+)
 
 
-class Ability:
-    def __init__(self, name: str, hotkey: int, action: str) -> None:
-        self.name = name
-        self.hotkey = hotkey  # 1-based numeric
-        self.action = action
-        self.rect: pygame.Rect | None = None
-        self.gear_rect: pygame.Rect | None = None
-        self.plus_rect: pygame.Rect | None = None
-        self.minus_rect: pygame.Rect | None = None
 
 
 class AsciiRenderer:
@@ -986,109 +983,175 @@ class AsciiRenderer:
         elif self.flash_text:
             self.flash_text = None
 
-    def render(self, game: Game) -> None:
-        clock = pygame.time.Clock()
-        running = True
+
+
+    def start_dungeon(self, game: Game) -> None:
+        """
+        Prepare renderer state for entering the dungeon loop.
+        Called once per DungeonScene.run() before the frame loop.
+        """
         self.quit_requested = False
-        self.target_cursor = game.actors[game.player_id].pos
-        gen_list = tuple(getattr(game, "unlocked_generators", [getattr(game.character, "generator", "koch")]))
-        illum_sig = getattr(game.character, "illuminator", "radius")
-        if self.abilities_signature != (gen_list, illum_sig) or not self.abilities:
-            self._build_abilities(game)
-            self.abilities_signature = (gen_list, illum_sig)
+        # Some callers already set pause_requested; make sure it's consistent.
+        if not hasattr(self, "pause_requested"):
+            self.pause_requested = False
+        else:
+            self.pause_requested = False
+
+        # Start target cursor at player position
+        player = game.actors[game.player_id]
+        self.target_cursor = player.pos
+
+        # Ensure ability bar is up to date (delegate to systems/abilities)
+        sig = compute_abilities_signature(game)
+        if self.abilities_signature != sig or not self.abilities:
+            self.abilities = build_abilities(game)
+            self.ability_page = 0
+            self.abilities_signature = sig
+
+
+    # ------------------------------------------------------------------ #
+    # Event handling (still lives in renderer for now, but callable from scenes)
+    # ------------------------------------------------------------------ #
+
+    def handle_dungeon_keydown(self, game: Game, event: pygame.event.Event) -> None:
+        """
+        Handle a KEYDOWN event while in the dungeon.
+        This is now primarily for the legacy .render() loop.
+        """
+        key = event.key
+
+        if key == pygame.K_ESCAPE:
+            if self.dialog_open:
+                self.dialog_open = False
+            elif getattr(game, "awaiting_terminus", False):
+                game.awaiting_terminus = False
+            elif self.config_open:
+                self.config_open = False
+            else:
+                # Normal ESC in the dungeon: request pause
+                self.pause_requested = True
+                self.quit_requested = True
+            return
+
+        if key == pygame.K_F11:
+            self.toggle_fullscreen()
+            return
+
+        # Legacy path: delegate anything else to the renderer's local handler.
+        self._handle_input(game, key)
+
+
+        # '?' help popup (use unicode because there is no K_QUESTION)
+        if getattr(event, "unicode", "") == "?":
+            # Only if we're not in some special modal state
+            if (
+                not self.dialog_open
+                and not self.config_open
+                and not getattr(game, "awaiting_terminus", False)
+                and self.aim_action is None
+            ):
+                if hasattr(game, "show_help"):
+                    game.show_help()
+            # Don't pass '?' into the normal input handler
+            return
+
+        # Delegate to the existing high-level input handler
+        self._handle_input(game, key)
+
+    def handle_dungeon_mouse_button_down(self, game: Game, event: pygame.event.Event) -> None:
+        if event.button != 1:
+            return
+        pos = self._to_surface(event.pos)
+        if self.config_open and self.config_action:
+            # clicking outside just closes
+            self.config_open = False
+        elif self.dialog_open:
+            self.dialog_open = False
+        else:
+            self._handle_click(game, pos)
+
+    def handle_dungeon_mouse_motion(self, game: Game, event: pygame.event.Event) -> None:
+        self._update_hover(game, self._to_surface(event.pos))
+
+    def handle_dungeon_mouse_wheel(self, game: Game, event: pygame.event.Event) -> None:
+        self._change_zoom(event.y, self._to_surface(pygame.mouse.get_pos()))
+
+    # ------------------------------------------------------------------ #
+    # Per-frame drawing
+    # ------------------------------------------------------------------ #
+
+    def draw_dungeon_frame(self, game: Game) -> None:
+        """
+        Draw one dungeon frame (no event polling, no main loop).
+        Scenes call this once per tick.
+        """
+        # continuous hover update if no motion event (keep in sync)
+        if self.aim_action:
+            self._update_hover(game, self._to_surface(pygame.mouse.get_pos()))
+
+        self.draw_world(game.world)
+        self.draw_lorenz_overlay(game)
+
+        self.draw_pattern_overlay(game)
+        self.draw_place_overlay(game)
+        self.draw_activation_overlay(game)
+        self.draw_aim_overlay(game)
+        # Unified entity rendering: items + actors together.
+        renderables = game.renderables_current()
+        self.draw_entities(game.world, renderables)
+        self.draw_target_cursor(game)
+        self.draw_status(game)
+        self.draw_log(game)
+        self.draw_ability_bar(game)
+        if self.config_open and self.config_action:
+            self.draw_config_overlay(game)
+        if self.dialog_open:
+            self.draw_dialog_overlay()
+        # Urgent overlay is now handled by UrgentMessageScene.
+        self._present()
+
+
+
+
+
+
+    def render(self, game: Game) -> None:
+        """
+        Legacy main loop for the dungeon, kept as a thin wrapper so older
+        callers still work. New code should let DungeonScene own the loop
+        and call start_dungeon/handle_dungeon_* and draw_dungeon_frame().
+        """
+        clock = pygame.time.Clock()
+        self.start_dungeon(game)
+        running = True
+
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                    # Let the caller decide how to interpret this
+                    self.quit_requested = True
+
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        if self.dialog_open:
-                            self.dialog_open = False
-                        elif game.awaiting_terminus:
-                            game.awaiting_terminus = False
-                        elif self.config_open:
-                            self.config_open = False
-                        else:
-                            # Normal ESC in the dungeon: request pause
-                            self.pause_requested = True
-                            self.quit_requested = True   # ensure the loop exits
+                    self.handle_dungeon_keydown(game, event)
 
-                    elif event.key == pygame.K_F11:
-                        self.toggle_fullscreen()
-
-                    else:
-                        # '?' help popup (use unicode because there is no K_QUESTION)
-                        if getattr(event, "unicode", "") == "?":
-                            # Only if we're not in some special modal state
-                            if (
-                                not self.dialog_open
-                                and not self.config_open
-                                and not getattr(game, "awaiting_terminus", False)
-                                and self.aim_action is None
-                            ):
-                                if hasattr(game, "show_help"):
-                                    game.show_help()
-                            # Don't pass '?' into the normal input handler
-                            continue
-
-                        # Urgent messages are now handled by UrgentMessageScene, so the
-                        # renderer no longer consumes input specially here.
-                        self._handle_input(game, event.key)
-
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    pos = self._to_surface(event.pos)
-                    if self.config_open and self.config_action:
-                        # clicking outside just closes
-                        self.config_open = False
-                    elif self.dialog_open:
-                        self.dialog_open = False
-                    else:
-                        self._handle_click(game, pos)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    self.handle_dungeon_mouse_button_down(game, event)
 
                 elif event.type == pygame.MOUSEMOTION:
-                    self._update_hover(game, self._to_surface(event.pos))
+                    self.handle_dungeon_mouse_motion(game, event)
+
                 elif event.type == pygame.MOUSEWHEEL:
-                    self._change_zoom(event.y, self._to_surface(pygame.mouse.get_pos()))
+                    self.handle_dungeon_mouse_wheel(game, event)
 
-            # continuous hover update if no motion event (keep in sync)
-            if self.aim_action:
-                self._update_hover(game, self._to_surface(pygame.mouse.get_pos()))
-
-            self.draw_world(game.world)
-            self.draw_lorenz_overlay(game)
-
-            self.draw_pattern_overlay(game)
-            self.draw_place_overlay(game)
-            self.draw_activation_overlay(game)
-            self.draw_aim_overlay(game)
-            # Unified entity rendering: items + actors together.
-            renderables = game.renderables_current()
-            self.draw_entities(game.world, renderables)
-            self.draw_target_cursor(game)
-            self.draw_status(game)
-            self.draw_log(game)
-            self.draw_ability_bar(game)
-            if self.config_open and self.config_action:
-                self.draw_config_overlay(game)
-            if self.dialog_open:
-                self.draw_dialog_overlay()
-            # Urgent overlay is now handled by UrgentMessageScene.
-            self._present()
-
+            self.draw_dungeon_frame(game)
             clock.tick(60)
-            # If some input handler requested that we quit the dungeon loop
-            # (e.g. to open the inventory), honor that here.
-            if self.quit_requested:
-                running = False
-                continue
-            # If something (like pause) requested we leave the dungeon loop, do so.
+
+            # Exit conditions: mirror what DungeonScene currently expects
             if self.quit_requested or getattr(self, "pause_requested", False):
                 running = False
                 continue
 
-
-            # If the player is dead, leave the dungeon loop so the scene manager
-            # can transition to a game-over / urgent popup scene.
             if hasattr(game, "player_alive") and not game.player_alive:
                 running = False
 
@@ -1096,141 +1159,81 @@ class AsciiRenderer:
 
 
     def _handle_input(self, game: Game, key: int) -> None:
+        """
+        Legacy keyboard handler used only by AsciiRenderer.render().
+        For the normal game flow (DungeonScene), all real input is
+        handled via GameInput + DungeonScene._handle_command.
+
+        This now only knows about:
+        - Dialog navigation (pure UI)
+        - Config overlay navigation (pure UI-ish)
+        - Ability bar hotkeys and confirm
+        """
+
+        # ---------------- Dialog overlay ----------------
         if self.dialog_open:
             if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
                 if key == pygame.K_RETURN and self.dialog_options:
+                    # Confirm current choice
                     choice = self.dialog_options[self.dialog_selection]
                     msg = game.talk_complete(self.dialog_npc_id, choice)
                     game.log.add(msg)
                     # force ability rebuild to reflect new generator unlock
                     self._build_abilities(game)
-                    gen_list = tuple(getattr(game, "unlocked_generators", [getattr(game.character, "generator", "koch")]))
+                    gen_list = tuple(
+                        getattr(
+                            game,
+                            "unlocked_generators",
+                            [getattr(game.character, "generator", "koch")],
+                        )
+                    )
                     illum_sig = getattr(game.character, "illuminator", "radius")
                     self.abilities_signature = (gen_list, illum_sig)
                 self.dialog_open = False
                 return
+
             if key == pygame.K_UP and self.dialog_options:
                 self.dialog_selection = (self.dialog_selection - 1) % len(self.dialog_options)
                 return
+
             if key == pygame.K_DOWN and self.dialog_options:
                 self.dialog_selection = (self.dialog_selection + 1) % len(self.dialog_options)
                 return
 
+            # Other keys are ignored while dialog is open.
+            return
+
+        # ---------------- Config overlay ----------------
         if self.config_open and self.config_action:
             params = game.param_view(self.config_action)
+
             if key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
                 self.config_open = False
                 return
+
             if key == pygame.K_UP:
                 self.config_selection = (self.config_selection - 1) % max(1, len(params))
                 return
+
             if key == pygame.K_DOWN:
                 self.config_selection = (self.config_selection + 1) % max(1, len(params))
                 return
+
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
                 if params:
                     param_key = params[self.config_selection]["key"]
                     delta = 1 if key == pygame.K_RIGHT else -1
                     changed, msg = game.adjust_param(self.config_action, param_key, delta)
-                    # we could show msg if needed
+                    # msg is available if you want to surface it later
                 return
 
-        mapping = {
-            pygame.K_UP: (0, -1),
-            pygame.K_DOWN: (0, 1),
-            pygame.K_LEFT: (-1, 0),
-            pygame.K_RIGHT: (1, 0),
-            pygame.K_w: (0, -1),
-            pygame.K_s: (0, 1),
-            pygame.K_a: (-1, 0),
-            pygame.K_d: (1, 0),
-            pygame.K_q: (-1, -1),
-            pygame.K_e: (1, -1),
-            pygame.K_z: (-1, 1),
-            pygame.K_c: (1, 1),
-            pygame.K_KP1: (-1, 1),
-            pygame.K_KP2: (0, 1),
-            pygame.K_KP3: (1, 1),
-            pygame.K_KP4: (-1, 0),
-            pygame.K_KP5: (0, 0),
-            pygame.K_KP6: (1, 0),
-            pygame.K_KP7: (-1, -1),
-            pygame.K_KP8: (0, -1),
-            pygame.K_KP9: (1, -1),
-        }
-        
-        # --- Examine current tile ---
-        # For now, 'x' just examines the tile under the player's feet.
-        if key == pygame.K_x:
-            # Don’t interfere with targeting / special modes
-            if not getattr(game, "awaiting_terminus", False) and self.aim_action is None:
-                game.describe_current_tile()
+            # Other keys are ignored while config is open.
             return
 
-
-        # --- Pick up item on current tile ---
-        if key == pygame.K_g:
-            if not getattr(game, "awaiting_terminus", False) and self.aim_action is None:
-                if hasattr(game, "player_pick_up"):
-                    game.player_pick_up()
-            return
-
-
-        # --- Epiphenomenal debug: body-hop into the nearest other actor ---
-        if key == pygame.K_p:
-            level = game._level()
-            player = level.actors.get(game.player_id)
-            if player is not None:
-                px, py = player.pos
-                best_id = None
-                best_d2 = 1e18
-                for actor in level.actors.values():
-                    if not actor.alive or actor.id == game.player_id:
-                        continue
-                    ax, ay = actor.pos
-                    dx = ax - px
-                    dy = ay - py
-                    d2 = dx * dx + dy * dy
-                    if d2 < best_d2:
-                        best_d2 = d2
-                        best_id = actor.id
-                if best_id is not None:
-                    game.possess_actor(best_id)
-            return
-
-            
-        # --- Inventory toggle (dungeon-level) ---
-        # Press 'i' to open the inventory. We mark a flag on the Game and
-        # request that the dungeon render loop exit. The DungeonScene will
-        # see this and push the InventoryScene on the scene stack.
-        if key == pygame.K_i:
-            # Avoid opening inventory while in place/aim modes, etc.
-            if not game.awaiting_terminus and self.aim_action is None:
-                setattr(game, "inventory_requested", True)
-                self.quit_requested = True
-            return
-
-        
-        if game.awaiting_terminus:
-            if key in mapping:
-                tx, ty = self.target_cursor
-                dx, dy = mapping[key]
-                nt = (tx + dx, ty + dy)
-                if game.world.in_bounds(*nt):
-                    self.target_cursor = nt
-            elif key in (pygame.K_RETURN, pygame.K_SPACE):
-                game.try_place_terminus(self.target_cursor)
-            return
-
-        if self.aim_action in ("activate_all", "activate_seed") and key in (pygame.K_RETURN, pygame.K_SPACE):
-            target_idx = self._current_hover_vertex(game)
-            if self.aim_action == "activate_all":
-                game.queue_player_activate(target_idx)
-            else:
-                game.queue_player_activate_seed(target_idx)
-            self.aim_action = None
-            return
-
+        # ---------------- Ability bar hotkeys ----------------
+        # NOTE: this is only for the legacy AsciiRenderer.render() path.
+        # In the normal DungeonScene flow, number keys are handled via
+        # GameInput + DungeonScene._handle_command.
         if pygame.K_1 <= key <= pygame.K_9:
             hk = key - pygame.K_0
             for idx, ability in enumerate(self.abilities):
@@ -1238,65 +1241,30 @@ class AsciiRenderer:
                     self.current_ability_index = idx
                     if ability.action == "place":
                         self.target_cursor = game.actors[game.player_id].pos
-                        game.begin_place_mode()
+                        if hasattr(game, "begin_place_mode"):
+                            game.begin_place_mode()
                         self.aim_action = None
                     else:
                         if ability.action in ("activate_all", "activate_seed"):
                             self.aim_action = ability.action
                         else:
                             self.aim_action = None
-                        if ability.action not in ("activate_all", "activate_seed"):
-                            self._trigger_action(game, ability.action)
+                            # Immediate abilities still go through _trigger_action,
+                            # which uses the generic action system when available.
+                            trigger_ability_effect(game, ability.action)
                     return
-        if key == pygame.K_KP5:
-            game.queue_player_wait()
-            return
 
-        # Test: generic action system hook – press 'y' to Yawp!
-        if key == pygame.K_y:
-            # If we've wired up the generic action API, use it.
-            if hasattr(game, "queue_player_action"):
-                game.queue_player_action("yawp")
-            else:
-                # Fallback so this doesn't hard-crash if you haven't added it yet.
-                game.log.add("You yawp! 'Yawp!'")
-            return
-
-
-        if key == pygame.K_t:
-            dlg = game.talk_start()
-            if dlg:
-                self.dialog_open = True
-                self.dialog_options = dlg.get("choices", [])
-                self.dialog_selection = 0
-                self.dialog_lines = dlg.get("lines", [])
-                self.dialog_npc_id = dlg.get("npc_id")
-            return
-
-        if key in mapping:
-            game.queue_player_move(mapping[key])
-            return
-        if key == pygame.K_f:
-            self._trigger_action(game, "activate_all")
-            return
-        if key in (pygame.K_PERIOD, pygame.K_GREATER):
-            game.use_stairs_down()
-            return
-        if key in (pygame.K_COMMA, pygame.K_LESS, pygame.K_m):
-            # On surface without upstairs, open world map; otherwise try to go up.
-            tile = game.world.get_tile(*game.actors[game.player_id].pos)
-            if game.zone_coord[2] == 0 and (not tile or tile.glyph != "<"):
-                game.map_requested = True
-                self.quit_requested = True
-                return
-            game.use_stairs_up()
-            return
-        if key in (pygame.K_PLUS, pygame.K_EQUALS):
-            game.fractal_editor_requested = True
-            self.quit_requested = True
-            return
+        # ---------------- Default confirm: trigger current ability ----------------
         if key in (pygame.K_RETURN, pygame.K_SPACE):
             self._trigger_current(game)
+
+
+    def _trigger_current(self, game: Game) -> None:
+        ability = self.abilities[self.current_ability_index]
+        trigger_ability_effect(game, ability.action)
+
+
+
 
     def _handle_click(self, game: Game, pos) -> None:
         if self.dialog_open:
@@ -1341,7 +1309,8 @@ class AsciiRenderer:
                     else:
                         self.aim_action = None
                     if ability.action not in ("activate_all", "activate_seed"):
-                        self._trigger_action(game, ability.action)
+                        trigger_ability_effect(game, ability.action)
+
                 return
 
         tx = int((mx - self.origin_x) // self.tile)
@@ -1354,14 +1323,10 @@ class AsciiRenderer:
         else:
             if self.aim_action in ("activate_all", "activate_seed"):
                 target_idx = self._current_hover_vertex(game)
-                if hasattr(game, "queue_player_action"):
-                    game.queue_player_action(self.aim_action, target_vertex=target_idx)
-                else:
-                    if self.aim_action == "activate_all":
-                        game.queue_player_activate(target_idx)
-                    else:
-                        game.queue_player_activate_seed(target_idx)
+                if target_idx is not None:
+                    trigger_ability_effect(game, self.aim_action, hover_vertex=target_idx)
                 self.aim_action = None
+
             else:
                 px, py = game.actors[game.player_id].pos
                 dx = tx - px
@@ -1371,61 +1336,9 @@ class AsciiRenderer:
                 elif max(abs(dx), abs(dy)) == 1:
                     game.queue_player_move((int(dx), int(dy)))
 
-    def _trigger_current(self, game: Game) -> None:
-        ability = self.abilities[self.current_ability_index]
-        self._trigger_action(game, ability.action)
 
-    def _trigger_action(self, game: Game, action: str) -> None:
-        # helper: prefer generic action system if available
-        def do_action(action_name: str, **kwargs):
-            if hasattr(game, "queue_player_action"):
-                game.queue_player_action(action_name, **kwargs)
-            else:
-                # Fallbacks for older builds
-                if action_name in ("subdivide", "koch", "branch", "extend", "zigzag") or action_name.startswith("custom"):
-                    game.queue_player_fractal(action_name)
-                elif action_name == "activate_all":
-                    target_idx = self._current_hover_vertex(game)
-                    game.queue_player_activate(target_idx)
-                elif action_name == "activate_seed":
-                    target_idx = self._current_hover_vertex(game)
-                    game.queue_player_activate_seed(target_idx)
-                elif action_name == "reset":
-                    game.reset_pattern()
-                elif action_name == "meditate":
-                    game.queue_meditate()
 
-        if action == "place":
-            self.target_cursor = game.actors[game.player_id].pos
-            # Place is a free mode-toggle-ish action; we can still send it
-            # through the generic system, but keep the legacy behavior.
-            if hasattr(game, "queue_player_action"):
-                game.queue_player_action("place")
-            else:
-                game.begin_place_mode()
-            self.aim_action = None
 
-        elif action in ("subdivide", "koch", "branch", "extend", "zigzag") or action.startswith("custom"):
-            self.aim_action = None
-            do_action(action)
-
-        elif action == "activate_all":
-            # keep aim/hover logic, but actual action now goes through the
-            # generic hook in _handle_click when we’ve picked a target
-            self.aim_action = "activate_all"
-            self._update_hover(game, pygame.mouse.get_pos())
-
-        elif action == "activate_seed":
-            self.aim_action = "activate_seed"
-            self._update_hover(game, pygame.mouse.get_pos())
-
-        elif action == "reset":
-            self.aim_action = None
-            do_action("reset")
-
-        elif action == "meditate":
-            self.aim_action = None
-            do_action("meditate")
 
 
     def _current_hover_vertex(self, game: Game) -> int | None:

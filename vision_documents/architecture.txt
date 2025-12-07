@@ -1,118 +1,307 @@
-Project Architecture Reference
-==============================
+# EDGECASTER ARCHITECTURE GUIDE  
+# High-Level Overview and Current Refactor Status  
+# Updated: 2025-12-07
 
-Purpose
--------
-This document is the first place to check when adding or modifying features. It describes where each responsibility lives, how data flows, and highlights any current fragmentation so we avoid duplicating logic in different places.
+This document describes the large-scale structure of Edgecaster, 
+with special focus on the ongoing 2024–2025 disentangling 
+of ascii.py. It is the authoritative orientation file 
+for any contributor joining mid-refactor.
 
-High-Level Overview
--------------------
-- Runtime loop & scenes: `edgecaster/scenes/` (scene manager, dungeon, world map, character creation, fractal editor, options, urgent messages, etc.).
-- Rendering: `edgecaster/render/` (ASCII/pygame renderer, UI, ability bar, cursor/zoom logic).
-- Game state & systems: `edgecaster/game.py` (core game state, pattern system integration, turns/energy), `edgecaster/systems/` (actions, ai, effects, turns).
-- Data/content: `edgecaster/content/` (factions, items, npcs, enemies YAML, etc.).
-- Patterns/fractals: `edgecaster/patterns/` (builder, activation, library, queries).
-- Map generation: `edgecaster/mapgen.py`, world map scene, fractal map tools in `tools/`.
-- Enemies: data-driven templates in `edgecaster/content/enemies.yaml`, loader/factory in `edgecaster/enemies/`.
-- Entities/Actors: `edgecaster/state/entities.py`, `edgecaster/state/actors.py`, plus supporting state in `edgecaster/state/`.
-- Tools/scripts: `v1/Edgecaster/tools/` (julia path/miner/sweeper, thumbnails) — generated artifacts should be ignored in git.
-- Vision docs: `vision_documents/` (strategy references: architecture, map generation, enemy strategy, fractal lab).
+============================================================
+SECTION 1 — TOP-LEVEL RESPONSIBILITIES
+============================================================
 
-Key Responsibilities by Area
-----------------------------
-- Scenes (`edgecaster/scenes/`):
-  - `manager.py`: scene stack, main loop dispatch.
-  - `dungeon.py`: main play scene (local map, input dispatch to game, urgent messages).
-  - `world_map_scene.py`: overworld map view, fast travel.
-  - `character_creation_scene.py`: character creation flow.
-  - `fractal_editor_scene.py`: full-screen fractal editor (custom pattern builder).
-  - `dialogue_scene.py`, `urgent_message_scene.py`: modal interactions/messages.
+Edgecaster is divided into five major layers:
 
-- Rendering (`edgecaster/render/`):
-  - `ascii.py`: main renderer, map drawing, UI (ability bar, HUD, message log), zoom, cursor, world map UI.
-  - `ui.py`: shared UI helpers.
+------------------------------------------------------------
+1. SCENES  (edgecaster/scenes/)
+------------------------------------------------------------
+Scenes own:
+    - event loops
+    - input interpretation (via GameCommand)
+    - scene transitions (push/pop)
+    - high-level UI state (dialog open, config open, aim mode)
+    - all game-facing interactions (“intent” level)
 
-- Game core (`edgecaster/game.py`):
-  - Holds world/levels, actors, pattern state, parameters, coherence/mana/HP, turn processing entry points.
-  - Pattern operations: queue fractals/activations, time cost.
-  - Level transitions (stairs, world map requests).
-  - Custom patterns list and ability bar signature invalidation.
+They DO NOT:
+    - draw pixels
+    - hold game state
+    - know about Pygame rendering details
 
-- Systems (`edgecaster/systems/`):
-  - `actions.py`: actions that actors can perform (movement, attacks, abilities).
-  - `ai.py`: behavior scripts to choose next action (behavior ids referenced by actors/enemies).
-  - `effects.py`, `turns.py`: effect processing, turn/energy handling.
+Key scenes:
+    manager.py          → scene stack + main loop
+    dungeon.py          → central gameplay loop
+    inventory_scene.py  → item UI
+    urgent_message_scene.py
+    dialogue_scene.py
+    world_map_scene.py
+    fractal_editor_scene.py
 
-- Entities & Actors (`edgecaster/state/`):
-  - `entities.py`: base Entity (id, name, pos, glyph, color, kind, tags, statuses).
-  - `actors.py`: Actor extends Entity with Stats, faction, actions, disposition/affiliations.
-  - `world.py`, `patterns.py`, `saves.py`, `factions.py`, etc.: supporting state containers.
+DungeonScene today owns:
+    ✓ All keyboard input
+    ✓ Ability-hotkey interpretation
+    ✓ Click → command routing (in progress)
+    ✓ Targeting/aim confirmation
+    ✓ Player movement, actions, transitions
 
-- Content/data (`edgecaster/content/`):
-  - `factions_data.py`, `items.py`, `npcs.py`, `actions_catalog.py`, `monsters.py` (legacy stub).
-  - **Enemies**: `enemies.yaml` (templates; ids, glyph, color, stats, faction, ai, tags).
+------------------------------------------------------------
+2. RENDERERS  (edgecaster/render/)
+------------------------------------------------------------
+Renderers are VIEW ONLY.
 
-- Enemies (`edgecaster/enemies/`):
-  - `templates.py`: EnemyTemplate dataclass, YAML loader, registry.
-  - `factory.py`: spawn_enemy(tmpl_id, pos) builds Actor with stats/faction/ai tags.
-  - Integration: AI behavior_id in tags → handled by `systems/ai.py`; spawning hooked via mapgen/spawner (to be wired).
+ascii.py:
+    - draws the world, entities, overlays
+    - draws the ability bar (using supplied data)
+    - draws dialog/config boxes (until new scenes fully take over)
+    - computes hitboxes for mouse interactions
 
-- Patterns (`edgecaster/patterns/`):
-  - `builder.py`, `activation.py`, `library.py`, `queries.py`: pattern representation, fractal generators, activations.
+Renderers DO NOT:
+    - read keyboard input
+    - perform game logic
+    - mutate game state
+    - perform ability routing
 
-- Map generation / world map:
-  - `mapgen.py`: local zone generation; fractal-overworld integration.
-  - `world_map_scene.py`: rendering and interaction with overmap, fast travel.
-  - `tools/`: julia path/miner/sweeper; generated thumbnails are not source.
+ascii.py now holds only minimal UI state:
+    - which ability is highlighted
+    - which dialog/config option is selected
+    - visual hover states
+    - pagination of ability bar
 
-- Fractal editor(s):
-  - Current: `fractal_editor_scene.py` (full-screen, modes: draw/delete/flip, undo, per-edge gradient). Used for custom patterns, invoked from dungeon or lab.
-  - Legacy/chargen custom fractal: character creation uses a simplified custom fractal flow; goal is to reuse the scene for both to avoid duplication.
+The renderer should be fully swappable 
+(ASCII → tiles) with no changes to game logic.
 
-Current Fragmentation / Watchpoints
------------------------------------
-- **Nested repository**: `C:\Games\Edgecaster\Edgecaster` is an old embedded git repo; should be ignored/removed from index to avoid conflicts.
-- **Generated thumbnails**: `v1/Edgecaster/tools/thumbnails/` and `path_thumbnails/` are outputs; ensure they stay in `.gitignore`.
-- **Enemy data**: legacy monster manual was removed; enemy data now lives in `content/enemies.yaml` with loader/factory in `edgecaster/enemies/`. Use the YAML → templates → factory path exclusively.
-- **Fractal editors**: character creation has a custom fractal flow; a more capable editor lives in `fractal_editor_scene.py`. Goal: single editor scene reused in both places to avoid duplicate logic.
-- **Actions/AI**: actions live in `systems/actions.py`; AI scripts in `systems/ai.py`. Friend’s note: actors (imps/player) are “Actors” in the energy queue; some entities (berries, etc.) are plain Entities. Keep behaviors referenced by id in data (enemies.yaml) to avoid subclass sprawl.
-- **Ability bar**: currently built in `render/ascii.py`, keyed off unlocked generators/illuminator; now supports multiple custom patterns. If adding new special actions, extend the builder there rather than duplicating UI elsewhere.
+------------------------------------------------------------
+3. INPUT SYSTEM  (edgecaster/scenes/game_input.py)
+------------------------------------------------------------
+GameInput translates raw Pygame events into semantic commands:
 
-Direction & Guidelines
-----------------------
-- Data-first content: use YAML/JSON in `content/` (enemies, factions, items, actions catalog) and load via registries.
-- Behavior by id: AI and actions are selected by string ids; avoid subclassing per-enemy. Add behaviors to `systems/ai.py`, actions to `systems/actions.py`.
-- Single source of truth:
-  - Enemy templates: `content/enemies.yaml` → `enemies/templates.py` → `enemies/factory.py`.
-  - Fractal editor: `scenes/fractal_editor_scene.py` reused wherever custom patterns are edited.
-  - Map/overmap: `mapgen.py` + `world_map_scene.py`.
-- Keep generated assets out of git: thumbnails, screenshots, caches go to ignored paths.
-- When adding features:
-  - Find the owning layer here first to avoid duplication.
-  - For UI, prefer extending renderer/scene rather than creating parallel interfaces.
-  - For game logic, prefer extending systems (actions/ai/effects) and data (content) rather than branching game.py.
-- Entity-centric model: everything can be an `Entity` (walls, items, props, actors). Only `Actor` instances participate in turns/energy; others stay lightweight. Use tags/components (`blocks_movement`, `pickupable`, `flammable`, etc.) and `kind` to drive systems rather than subclassing. Keep templates/data as the source of truth; attach components at spawn time.
+    GameCommand(
+        kind="move" | "confirm" | "ability_hotkey" | "quick_activate_all" | ...
+        vector=...
+        hotkey=...
+    )
 
-Where to Add New Things
------------------------
-- New enemy: add entry to `content/enemies.yaml`; ensure behavior id exists in `systems/ai.py`; spawn via `enemies/factory.spawn_enemy`.
-- New AI behavior: add function in `systems/ai.py` keyed by behavior_id; reference the id in data.
-- New action: add to `systems/actions.py`, expose in actions_catalog/content if data-driven, and wire into UI if player-usable.
-- New pattern/fractal op: add generator/activation in `patterns/`; hook into `game.queue_player_fractal` and renderer ability bar.
-- New scene/UI flow: add in `scenes/` and register via scene manager; reuse renderer/UI helpers.
-- Map changes: local generation in `mapgen.py`; overworld visuals/interactions in `world_map_scene.py`.
+This unified input layer:
+    ✓ keeps scenes clean
+    ✓ enables future key rebinding
+    ✓ ensures renderer never handles raw events
 
-Friend’s Notes (alignment)
---------------------------
-- Actors (imps, player) are `Actor` instances in the energy queue; some Entities are non-Actors (e.g., berries).
-+- `systems/actions.py` now contains many assignable actions; `systems/ai.py` has scripts used by NPC Actors.
-- `monster_manual` (legacy) defines generic human; actual stats assigned at creation. We aim to move to YAML-driven templates.
-- Action bar at bottom (renderer) should be generalizable for other special actions; extend `_build_abilities` in `render/ascii.py`.
+------------------------------------------------------------
+4. GAME CORE  (edgecaster/game.py)
+------------------------------------------------------------
+The authoritative state machine.
 
-Action Items to Reduce Fragmentation
-------------------------------------
-- Ignore/remove embedded repo `Edgecaster/Edgecaster` from outer index.
-- Keep generated thumbnails/caches out of git.
-- Migrate any remaining monster data from `content/monsters.py` to `content/enemies.yaml`; retire the stub.
-- Consolidate fractal editing flows on `fractal_editor_scene.py` (use in character creation).
-- Document new behaviors/actions in this file when adding them to avoid duplication.
+Owns:
+    - actor registry & turn queue
+    - movement + interactions
+    - level transitions
+    - fractal systems integration
+    - unlocked abilities
+    - world state, player character, etc.
+
+Does NOT:
+    - handle input
+    - know about renderers
+
+------------------------------------------------------------
+5. SYSTEMS LAYER  (edgecaster/systems/)
+------------------------------------------------------------
+Pure game logic modules:
+    - actions.py       → atomic actions
+    - ai.py            → behavior scripts
+    - patterns/
+    - rules, effects, turn logic
+
+NEW (2025):
+    systems/abilities.py
+        - central source of truth for ability definitions
+        - computes ability bar from game state
+        - routes ability effects into game via generic action API
+        - USED BY SCENES, not renderer
+
+
+============================================================
+SECTION 2 — CURRENT STATUS OF THE GREAT ASCII.PY PURGE
+============================================================
+
+The original ascii.py contained:
+    - rendering
+    - input handling
+    - mouse logic
+    - ability bar construction
+    - ability bar ACTION routing (!!)
+    - dialog/config state control
+    - targeting/aim logic
+    - some gameplay logic (!)
+
+As of December 2025:
+
+------------------------------------------------------------
+✔ Input is fully removed from ascii.py
+------------------------------------------------------------
+DungeonScene now handles all keyboard-based gameplay input.
+
+Legacy ascii hotkeys remain only for fallback render() mode 
+(not used in normal play).
+
+------------------------------------------------------------
+✔ Ability bar LOGIC is extracted into systems/abilities.py
+------------------------------------------------------------
+systems/abilities.py now owns:
+    ✓ Ability dataclass (renderer-agnostic)
+    ✓ build_abilities(game)
+    ✓ compute_abilities_signature(game)
+    ✓ trigger_ability_effect(game, action, hover_vertex=None)
+
+Renderer now:
+    - receives a list of Ability objects
+    - does NOT know how actions work internally
+    - never calls game.* directly
+
+Scenes now call:
+    trigger_ability_effect(...)
+instead of `renderer._trigger_action`, which is deleted.
+
+------------------------------------------------------------
+✔ DungeonScene integrates the new ability system
+------------------------------------------------------------
+DungeonScene now:
+    - rebuilds ability lists when needed
+    - handles ability hotkeys (numbers)
+    - handles quick-activate
+    - handles confirm/targeting with generic abilities API
+
+Renderer is now a “view model” host only.
+
+------------------------------------------------------------
+✔ Targeting and aim mode have moved out of renderer
+------------------------------------------------------------
+Renderer:
+    - computes hover vertex
+    - draws cursor
+
+DungeonScene:
+    - decides when to enter aim mode
+    - decides when to fire an activation
+    - calls trigger_ability_effect
+
+------------------------------------------------------------
+✔ ascii.py has no more direct game logic
+------------------------------------------------------------
+Remaining TODOs (see Section 3):
+    - move dialog logic out
+    - move config menu out
+    - unify mouse routing
+    - remove the last legacy input paths
+
+
+============================================================
+SECTION 3 — REMAINING REFACTOR WORK
+============================================================
+
+These items are open and prioritized:
+
+------------------------------------------------------------
+TODO 1 — Move dialog UI into DialogueScene fully
+------------------------------------------------------------
+Currently ascii.py still:
+    - stores dialog_selection
+    - draws the dialog box
+    - handles dialog hover
+    - receives scene commands to adjust dialog_selection
+
+Goal:
+    DialogueScene owns:
+        - full dialog state
+        - prompt/choices
+        - input logic
+
+Renderer draws a DialogViewModel describing:
+    - header
+    - text
+    - options
+    - selection index
+
+------------------------------------------------------------
+TODO 2 — Move config overlay out of ascii.py
+------------------------------------------------------------
+Pattern configuration (gear icon) is still renderer-owned.
+
+Goal:
+    PatternConfigScene owns:
+        - selection index
+        - generator config state
+
+Renderer draws it.
+
+------------------------------------------------------------
+TODO 3 — Mouse input unification
+------------------------------------------------------------
+Currently ascii.py computes hitboxes AND handles click behaviors.
+
+Goal:
+    ascii.py: produces hitboxes and hover info.
+    GameInput: produces click commands.
+    Scenes: interpret commands and call abilities/effects.
+
+------------------------------------------------------------
+TODO 4 — Remove legacy ascii.render() input path
+------------------------------------------------------------
+Once dialog/config/mouse are scene-owned:
+    - ascii._handle_input becomes dead code
+    - ascii.render() becomes view-only
+    - entire renderer is pure
+
+------------------------------------------------------------
+TODO 5 — Final ability bar model extraction
+------------------------------------------------------------
+Renderer still tracks:
+    - ability_page
+    - current_ability_index
+
+Goal:
+    Create AbilityBarModel:
+        page
+        active_index
+        ability_list (from systems)
+        hit-test rectangles (computed by renderer but stored externally)
+
+This can live in DungeonScene or in a dedicated UI scene.
+
+------------------------------------------------------------
+TODO 6 — Renderer swapability
+------------------------------------------------------------
+Once complete, a second renderer (tiles or shader-based) 
+can be implemented with zero changes to game logic or scenes.
+
+
+============================================================
+SECTION 4 — GUIDELINES FOR NEW CONTRIBUTORS
+============================================================
+
+1. Input NEVER belongs in renderers.
+2. Game logic NEVER belongs in renderers.
+3. Scenes own all:
+       - input → command → action translation
+       - UI state machines (dialog, config, targeting)
+4. Renderer consumes view models and draws them.
+5. systems/* implements pure game logic.
+6. game.py holds authoritative state.
+7. Content (YAML) defines gameplay data, not code.
+8. Always check this document before adding new code.
+
+
+============================================================
+SECTION 5 — TL;DR FOR THE NEXT GUY
+============================================================
+
+- ascii.py used to do everything.  
+- We are removing everything from ascii.py except drawing.  
+- All ability logic has already moved to systems/abilities.py.  
+- All keyboard input has already moved to DungeonScene.  
+- Targeting & aim confirmation now live in scenes.  
+- Dialog/config still need to be extracted next.  
+- Mouse routing will soon become scene-owned.  
+- The renderer will eventually be 100% pure view code.  
+
+Welcome aboard — KEEP THE RENDERER CLEAN.
