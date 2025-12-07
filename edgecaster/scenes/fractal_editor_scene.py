@@ -57,6 +57,9 @@ class FractalEditorScene(Scene):
         window_rect: Optional[pygame.Rect] = None,
     ) -> None:
         self.state = state or FractalEditorState()
+        # Ensure a starting root at (0,0) so the generated pattern aligns with expected anchors
+        if (0, 0) not in self.state.vertices:
+            self.state.vertices.insert(0, (0, 0))
         self.window_rect = window_rect
         self.panel_rect: Optional[pygame.Rect] = None
         self.selected_vertex: Optional[int] = None
@@ -222,6 +225,11 @@ class FractalEditorScene(Scene):
                 return verts, remapped
 
             pts, edges = ensure_with_remap()
+            # If no edge connects the root, add a default root->first edge
+            if pts and len(pts) > 1:
+                has_root_edge = any(a == 0 or b == 0 for (a, b) in edges)
+                if not has_root_edge:
+                    edges.insert(0, (0, 1))
             manager.fractal_edit_result = {
                 "vertices": pts,
                 "edges": edges,
