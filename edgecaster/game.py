@@ -249,22 +249,73 @@ class Game:
         player.pos = (px, py)
         player.faction = "player"      # make sure this is canonical
         player.stats = player_stats    # use character-derived stats
-        player.actions = ("move", "wait")
+
+        # --- Class kit / action set -----------------------------------
+        # Everyone gets the boring core verbs (never shown on the bar):
+        actions = ["move", "wait"]
+
+        # Determine the class as chosen in character creation.
+        player_class = (
+            getattr(self.character, "player_class", None)
+            or getattr(self.character, "char_class", None)
+        )
+
+        # Fractal config from character creation
+        generator_choice = getattr(self.character, "generator", "koch")
+        illuminator_choice = getattr(self.character, "illuminator", "radius")
+
+        if player_class == "Kochbender":
+            # Kochbender standard 7-slot kit (old behaviour):
+            #
+            # 1. Place
+            # 2. Subdivide
+            # 3. Extend
+            # 4. Generator (Koch / Branch / Zigzag / Custom)
+            # 5. Activate (R or N depending on illuminator)
+            # 6. Reset
+            # 7. Meditate
+            #
+            # The bar will render these in order using the ActionDef labels.
+
+            # Core rune operators
+            actions += [
+                "place",
+                "subdivide",
+                "extend",
+                generator_choice,   # e.g. "koch", "branch", "zigzag", "custom"
+            ]
+
+            # Illuminator: choose *one* activator based on char creation
+            if illuminator_choice == "radius":
+                actions.append("activate_all")     # "Activate R"
+            elif illuminator_choice == "neighbors":
+                actions.append("activate_seed")    # "Activate N"
+            else:
+                # Fallback: default to radius-style activator
+                actions.append("activate_all")
+
+            # Meta slots
+            actions.append("reset")
+            actions.append("meditate")
+
+        # For now, all other classes keep only move/wait (empty ability bar).
+        player.actions = tuple(actions)
 
         # Tag as 'the player'
         player.tags.setdefault("is_player", True)
-        if getattr(self.character, "player_class", None):
-            player.tags.setdefault("class", self.character.player_class)
+        if player_class:
+            player.tags.setdefault("class", player_class)
+
 
         self.player_id = player.id
         lvl = self._level()
         lvl.actors[player.id] = player
         lvl.entities[player.id] = player
 
- 
         # DEBUG: spawn a few Inventory entities near the starting position so we
         # can pick them up and test nested containers / recursion.
         self.debug_spawn_inventory_near_player(count=3)
+
 
  
 
