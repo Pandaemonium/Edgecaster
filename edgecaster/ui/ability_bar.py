@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple, TYPE_CHECKING
+from typing import List, Optional, Dict, Tuple, TYPE_CHECKING, Callable
 
 import pygame
 
@@ -11,6 +11,15 @@ from edgecaster.systems.abilities import Ability, build_abilities, compute_abili
 
 if TYPE_CHECKING:  # avoids import cycles at runtime
     from edgecaster.game import Game
+
+from edgecaster.systems.actions import ACTION_SUB_BUTTONS, SubButtonMeta  # UI metadata for sub-buttons
+
+
+
+
+
+
+
 
 
 # ---------------------------------------------------------------------
@@ -223,22 +232,73 @@ class AbilityBarState:
 
 class AbilityBarRenderer:
     """
-    Pure drawing helper for the ability bar.
+    View-only renderer for the ability bar.
 
     Responsibilities:
-    - Draw background bar + "Abilities" button + page arrows
-    - Draw ability tiles, labels, and hotkeys
-    - Attach hit-test rects to Ability instances:
-        ability.rect, ability.gear_rect, ability.plus_rect, ability.minus_rect
-    - Draw the ability reorder overlay when game.ability_reorder_open is True
+    - Lay out ability slots within bar_rect
+    - Draw backgrounds, labels, main icon
+    - Draw per-action sub-buttons (from action metadata)
+    - Attach pygame.Rects to Ability objects for hit-testing
 
-    Contains no game logic: it never calls game.* mutators or queue actions.
+    It does *not* decide what abilities exist or what they do.
     """
 
     def __init__(self) -> None:
+        # Hitboxes for the "Abilities" button and page arrows.
         self.abilities_button_rect: Optional[pygame.Rect] = None
         self.page_prev_rect: Optional[pygame.Rect] = None
         self.page_next_rect: Optional[pygame.Rect] = None
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _layout_bar(
+        self,
+        bar_rect: pygame.Rect,
+        count: int,
+    ) -> List[pygame.Rect]:
+        """
+        Compute a list of equally spaced slot rects inside bar_rect
+        for `count` abilities.
+        """
+        if count <= 0:
+            return []
+
+        # leave a little padding on left/right for the "Abilities" button & arrows
+        left_margin = 120
+        right_margin = 60
+        top_margin = 4
+        bottom_margin = 4
+
+        inner = pygame.Rect(
+            bar_rect.x + left_margin,
+            bar_rect.y + top_margin,
+            max(0, bar_rect.w - left_margin - right_margin),
+            max(0, bar_rect.h - top_margin - bottom_margin),
+        )
+
+        gap = 6
+        total_gap = gap * (count - 1)
+        slot_w = (inner.w - total_gap) // max(1, count)
+        slot_w = max(40, slot_w)  # don't collapse too hard
+        slot_h = inner.h
+
+        rects: List[pygame.Rect] = []
+        x = inner.x
+        for _ in range(count):
+            rects.append(pygame.Rect(x, inner.y, slot_w, slot_h))
+            x += slot_w + gap
+
+        return rects
+
+    # ------------------------------------------------------------------
+    # Main draw
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Main draw
+    # ------------------------------------------------------------------
 
     def draw(
         self,
@@ -250,76 +310,98 @@ class AbilityBarRenderer:
         small_font: pygame.font.Font,
         fg: Tuple[int, int, int],
         width: int,
+        icon_drawer: Callable[[pygame.Surface, pygame.Rect, str, "Game"], None] | None = None,
     ) -> None:
-        # --- Background bar is already drawn by caller; just decorate. ---
+        """
+        Render the bar into bar_rect.
 
-        vis = bar_state.visible_abilities()
-        total_pages = bar_state.total_pages
+        - `icon_drawer(surface, rect, action_name, game)` is provided by the
+          renderer (ascii.py) and may be None if you don't want icons.
+        """
+        # --- sync model from game -------------------------------------
+        bar_state.sync_from_game(game)
 
-        # "Abilities" manager button (bottom-left)
-        btn_w, btn_h = 88, 26
-        self.abilities_button_rect = pygame.Rect(6, bar_rect.top + 6, btn_w, btn_h)
-        pygame.draw.rect(surface, (30, 30, 55), self.abilities_button_rect)
-        pygame.draw.rect(surface, (120, 120, 170), self.abilities_button_rect, 1)
-        label_surf = small_font.render("Abilities", True, fg)
-        surface.blit(label_surf, label_surf.get_rect(center=self.abilities_button_rect.center))
-
-        # Page arrows
+        # Clear legacy hitboxes
+        self.abilities_button_rect = None
         self.page_prev_rect = None
         self.page_next_rect = None
-        if total_pages > 1:
-            btn_h = 22
-            self.page_prev_rect = pygame.Rect(self.abilities_button_rect.right + 6, bar_rect.top + 6, 22, btn_h)
-            self.page_next_rect = pygame.Rect(self.page_prev_rect.right + 4, bar_rect.top + 6, 22, btn_h)
-            for rect, dir_sign in ((self.page_prev_rect, -1), (self.page_next_rect, 1)):
-                pygame.draw.rect(surface, (35, 35, 60), rect)
-                pygame.draw.rect(surface, (150, 150, 190), rect, 1)
-                if dir_sign < 0:
-                    pts = [
-                        (rect.right - 6, rect.top + 4),
-                        (rect.left + 6, rect.centery),
-                        (rect.right - 6, rect.bottom - 4),
-                    ]
-                else:
-                    pts = [
-                        (rect.left + 6, rect.top + 4),
-                        (rect.right - 6, rect.centery),
-                        (rect.left + 6, rect.bottom - 4),
-                    ]
-                pygame.draw.polygon(surface, (200, 200, 230), pts)
 
-        # Ability tiles for current page: reset rects
-        for ab in vis:
-            # The Ability dataclass itself doesn't have these, but the
-            # renderer is allowed to hang dynamic attributes on instances
-            # for hit-testing.
-            ab.rect = ab.gear_rect = ab.plus_rect = ab.minus_rect = None  # type: ignore[attr-defined]
+        for ab in bar_state.abilities:
+            # We deliberately only clear the attributes we own.
+            for attr in ("rect", "plus_rect", "minus_rect", "gear_rect"):
+                if hasattr(ab, attr):
+                    setattr(ab, attr, None)
 
-        margin = 120  # leave room for abilities button/controls
-        gap = 6
-        n = max(1, len(vis))
-        avail_w = width - 2 * margin
-        box_w = (avail_w - gap * (n - 1)) / max(1, n)
-        x = margin
+            # Reset sub-button mapping per frame
+            # (even if it didn't exist before, this is safe)
+            ab.sub_button_rects = {}  # type: ignore[attr-defined]
 
-        for idx_on_page, ability in enumerate(vis):
-            rect = pygame.Rect(int(x), bar_rect.top + 8, int(box_w), bar_rect.height - 16)
-            ability.rect = rect  # type: ignore[attr-defined]
-            ability.plus_rect = None  # type: ignore[attr-defined]
-            ability.minus_rect = None  # type: ignore[attr-defined]
-            ability.gear_rect = None  # type: ignore[attr-defined]
 
-            is_active = bar_state.active_action == ability.action
+        # --- draw bar background --------------------------------------
+        pygame.draw.rect(surface, (10, 10, 10), bar_rect)
+        pygame.draw.rect(surface, fg, bar_rect, 1)
 
-            if is_active:
-                border = (255, 255, 180)
-                fill = (45, 45, 70)
+        # --- "Abilities" button on the left ---------------------------
+        label_surf = small_font.render("Abilities", True, fg)
+        label_rect = label_surf.get_rect()
+        label_rect.left = bar_rect.left + 8
+        label_rect.centery = bar_rect.centery
+        surface.blit(label_surf, label_rect)
+        self.abilities_button_rect = label_rect.inflate(8, 4)
+
+        # --- page arrows on the right ---------------------------------
+        page_text = f"{bar_state.page + 1}/{bar_state.total_pages}"
+        page_surf = small_font.render(page_text, True, fg)
+        page_rect = page_surf.get_rect()
+        page_rect.right = bar_rect.right - 8
+        page_rect.centery = bar_rect.centery
+        surface.blit(page_surf, page_rect)
+
+        arrow_y = bar_rect.centery
+        # prev "<"
+        if bar_state.page > 0:
+            prev_surf = small_font.render("<", True, fg)
+            prev_rect = prev_surf.get_rect()
+            prev_rect.right = page_rect.left - 8
+            prev_rect.centery = arrow_y
+            surface.blit(prev_surf, prev_rect)
+            self.page_prev_rect = prev_rect
+        else:
+            self.page_prev_rect = None
+
+        # next ">"
+        if bar_state.page < bar_state.total_pages - 1:
+            next_surf = small_font.render(">", True, fg)
+            next_rect = next_surf.get_rect()
+            next_rect.left = page_rect.right + 8
+            next_rect.centery = arrow_y
+            surface.blit(next_surf, next_rect)
+            self.page_next_rect = next_rect
+        else:
+            self.page_next_rect = None
+
+        # --- visible abilities ----------------------------------------
+        vis = bar_state.visible_abilities()
+        slot_rects = self._layout_bar(bar_rect, len(vis))
+
+        for ability, rect in zip(vis, slot_rects):
+            # Attach the main rect for hit-testing
+            ability.rect = rect
+
+            # Background
+            is_active = ability.action == bar_state.active_action
+            bg_color = (40, 40, 60) if is_active else (25, 25, 35)
+            pygame.draw.rect(surface, bg_color, rect)
+            pygame.draw.rect(surface, fg, rect, 1)
+
+            # Main icon on the left
+            icon_area = pygame.Rect(rect.x + 3, rect.y + 3, rect.height - 6, rect.height - 6)
+            if icon_drawer is not None:
+                # ascii.AsciiRenderer._draw_ability_icon_for_bar(surface, rect, action, game)
+                icon_drawer(surface, icon_area, ability.action, game)
             else:
-                border = (120, 120, 160)
-                fill = (25, 25, 45)
-
-            pygame.draw.rect(surface, fill, rect)
-            pygame.draw.rect(surface, border, rect, 2)
+                # tiny fallback glyph
+                pygame.draw.rect(surface, (90, 90, 120), icon_area, 1)
 
             # Label (with radius hint for activate_all)
             label = ability.name
@@ -334,16 +416,68 @@ class AbilityBarRenderer:
                 label = f"{ability.hotkey}:{label}"
 
             text = small_font.render(label, True, fg)
-            text_x = rect.x + (rect.w - text.get_width()) // 2
-            text_y = rect.y + (rect.h - text.get_height()) // 2
+            text_x = icon_area.right + 4
+            text_y = rect.y + (rect.height - text.get_height()) // 2
             surface.blit(text, (text_x, text_y))
 
-            # (Icons intentionally omitted for now to avoid coupling to AsciiRenderer.)
-            x += box_w + gap
+            # Sub-buttons (from ACTION_SUB_BUTTONS metadata)
+            sub_specs = ACTION_SUB_BUTTONS.get(ability.action, [])
+            if sub_specs:
+                sub_size = min(rect.height - 10, 22)
+                sub_size = max(14, sub_size)
+                sub_gap = 4
+                cur_x = rect.right - 4
 
-        # Ability reorder overlay (centered panel above the bar)
+                # Lay out sub-buttons from right to left
+                for spec in reversed(sub_specs):
+                    cur_x -= sub_size
+                    sub_rect = pygame.Rect(cur_x, rect.y + 4, sub_size, sub_size)
+
+                    # Draw tiny button background + border
+                    pygame.draw.rect(surface, (35, 35, 65), sub_rect)
+                    pygame.draw.rect(surface, (150, 150, 200), sub_rect, 1)
+
+                    # icon text: support both SubButtonMeta.icon and any legacy "glyph"
+                    icon_txt = getattr(spec, "icon", getattr(spec, "glyph", "")) or ""
+                    if icon_txt:
+                        icon_surf = small_font.render(icon_txt, True, fg)
+                        surface.blit(icon_surf, icon_surf.get_rect(center=sub_rect.center))
+
+                    # Generic mapping: id -> rect for future consumers
+                    mapping = getattr(ability, "sub_button_rects", None)
+                    if mapping is None:
+                        mapping = {}
+                        ability.sub_button_rects = mapping  # type: ignore[attr-defined]
+                    mapping[spec.id] = sub_rect
+
+                    # Backwards-compat: specific attrs used by DungeonScene
+                    kind = getattr(spec, "kind", "")
+                    if kind == "param_delta":
+                        delta = getattr(spec, "delta", None)
+                        if delta is not None and delta > 0:
+                            ability.plus_rect = sub_rect  # type: ignore[attr-defined]
+                        elif delta is not None and delta < 0:
+                            ability.minus_rect = sub_rect  # type: ignore[attr-defined]
+                    elif kind == "open_config":
+                        ability.gear_rect = sub_rect  # type: ignore[attr-defined]
+
+                    cur_x -= sub_gap
+
+        # After drawing the base bar, optionally paint the reorder overlay on top.
         if getattr(game, "ability_reorder_open", False):
-            self._draw_reorder_overlay(surface, bar_state, small_font, fg, width, bar_rect)
+            self._draw_reorder_overlay(
+                surface=surface,
+                bar_state=bar_state,
+                small_font=small_font,
+                fg=fg,
+                width=width,
+                bar_rect=bar_rect,
+            )
+
+
+
+
+
 
     # -----------------------------------------------------------------
     # Reorder overlay

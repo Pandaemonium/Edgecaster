@@ -894,7 +894,29 @@ class AsciiRenderer:
             small_font=self.small_font,
             fg=self.fg,
             width=self.width,
+            icon_drawer=self._draw_ability_icon_for_bar,
         )
+
+    def _draw_ability_icon(self, rect: pygame.Rect, action: str, game: Game) -> None:
+        surf = self._render_action_icon(action, game, (rect.w, rect.h))
+        self.surface.blit(surf, rect.topleft)
+
+    def _draw_ability_icon_for_bar(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        action: str,
+        game: Game,
+    ) -> None:
+        """Adapter so AbilityBarRenderer can remain decoupled from this renderer.
+
+        The bar passes us a target surface and rect; we re-use the same
+        icon rendering logic but blit onto the provided surface instead of
+        assuming self.surface.
+        """
+        surf = self._render_action_icon(action, game, (rect.w, rect.h))
+        surface.blit(surf, rect.topleft)
+
 
 
 
@@ -1342,6 +1364,20 @@ class AsciiRenderer:
     def _draw_ability_icon(self, rect: pygame.Rect, action: str, game: Game) -> None:
         surf = self._render_action_icon(action, game, (rect.w, rect.h))
         self.surface.blit(surf, rect.topleft)
+
+
+    def _draw_ability_icon_for_bar(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        action: str,
+        game: Game,
+    ) -> None:
+        # The existing helper already knows how to render a Surface for this action
+        # and blit it onto self.surface; we ignore the passed surface because the
+        # ability bar is drawn on self.surface.
+        self._draw_ability_icon(rect, action, game)
+
 
     def teardown(self) -> None:
         pygame.quit()

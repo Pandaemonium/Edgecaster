@@ -59,10 +59,17 @@ Does NOT:
 
 SYSTEMS (edgecaster/systems/)
 Pure logic modules:
-- actions.py → atomic actions + metadata (show_in_bar)
+- actions.py → atomic actions + metadata (show_in_bar, icon, sub-buttons)
 - abilities.py → ability building + effect routing
 - patterns/* → fractal generation
 - ai.py → behavior logic
+
+NOTE ON ACTION METADATA (NEW):
+Action UI metadata—icons, hover text, and optional sub-buttons—is defined
+centrally in actions.py. The AbilityBarRenderer imports these values and
+constructs its visual elements dynamically. No UI configuration is stored inside
+the renderer or scene code. This allows actions to be extended or reskinned
+purely through content-layer definitions.
 
 ===============================================================================
 SECTION 2 — STATE OF THE ASCII PURGE
@@ -76,6 +83,7 @@ Current status:
 ✓ AbilityBarState + AbilityBarRenderer implemented (scene model + renderer view)
 ✓ DungeonScene handles all activations + hotkeys
 ✓ Targeting logic partially moved out; renderer only draws cursor/hover
+✓ Action icons + sub-buttons now driven entirely by actions.py metadata
 
 Remaining impurities:
 - Dialog overlay logic still partially embedded in ascii.py
@@ -98,9 +106,16 @@ DungeonScene._handle_command → trigger_ability_effect / queue_player_action
 
 Highlights:
 ✓ Actions declare show_in_bar metadata
+✓ Icons, colors, and sub-button definitions now originate in actions.py
+✓ Renderer becomes a pure consumer of metadata instead of storing UI logic
 ✓ Hosts (imps, future classes) automatically expose abilities
 ✓ Ability bar is dynamic and reorderable
-✓ Renderer knows only about drawing
+
+NEW: ACTION SUB-BUTTONS
+Actions may optionally define sub-buttons (e.g. +/–, gear icons, parameter
+adjusters). These are declared in actions.py, and AbilityBarRenderer generates
+the corresponding hitboxes and icon renderings automatically. DungeonScene
+receives click events and routes them based on spec.id and spec.kind.
 
 ===============================================================================
 SECTION 4 — TARGETING REWRITE (NEXT PIVOTAL TASK)
@@ -150,13 +165,14 @@ For new contributors:
 - Game holds state; systems/* holds logic.
 - View models (AbilityBarState, TargetState, DialogViewModel) travel from scenes
   to renderer, never the reverse.
+- Actions define their own UI metadata; renderer simply reflects it.
 
 ===============================================================================
 SECTION 7 — TL;DR FOR THE NEXT GUY
 
 ascii.py is almost pure view code.
 Ability system is fully extracted.
+Action icons + sub-buttons come from actions.py.
 Next: implement unified TargetMode in DungeonScene.
 Keep renderer clean. Keep game pure. Keep scenes in control.
 
-:contentReference[oaicite:1]{index=1}

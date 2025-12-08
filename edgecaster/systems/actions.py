@@ -32,8 +32,119 @@ class ActionDef:
     show_in_bar: bool = False
 
 
+
+
+
+
+
+
 # Global registry of all actions by name.
 _action_registry: Dict[str, ActionDef] = {}
+
+
+
+# ---------------------------------------------------------------------------
+# UI metadata (ability bar icons, sub-buttons, etc.)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SubButtonMeta:
+    """Metadata for a small sub-button attached to an action in the ability bar.
+
+    This keeps all "what this button *means*" information close to the
+    action definition layer, while the UI decides *how* to draw it.
+    """
+    id: str               # stable identifier, e.g. "radius_plus"
+    icon: str             # short text/icon rendered in the tiny button ("+", "-", "⚙"...)
+    kind: str             # semantic kind, e.g. "param_delta", "open_config"
+    param_key: str | None = None   # which parameter this manipulates (if any)
+    delta: int | None = None       # integer delta for param_delta buttons (if any)
+
+
+# Mapping from action name -> list of sub-button metadata.
+# The UI is free to ignore this or to lay these out however it likes.
+ACTION_SUB_BUTTONS: Dict[str, list[SubButtonMeta]] = {
+    # Radius-based activator gets +/- for the radius, plus a gear for config.
+    "activate_all": [
+        SubButtonMeta(
+            id="radius_minus",
+            icon="-",
+            kind="param_delta",
+            param_key="radius",
+            delta=-1,
+        ),
+        SubButtonMeta(
+            id="radius_plus",
+            icon="+",
+            kind="param_delta",
+            param_key="radius",
+            delta=1,
+        ),
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    # Seed activator just exposes its config for now.
+    "activate_seed": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    # Generators (and custom patterns) expose their config.
+    "subdivide": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "extend": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "koch": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "branch": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "zigzag": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "custom": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+}
+
+
+def action_sub_buttons(action_name: str) -> list[SubButtonMeta]:
+    """Return UI sub-button metadata for a given action name (may be empty)."""
+    return ACTION_SUB_BUTTONS.get(action_name, [])
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +350,8 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         "waves his rump alluringly",
         "screeches",
         "crows",
+        "barks",
+        
     ]
 
     TAUNTS = [

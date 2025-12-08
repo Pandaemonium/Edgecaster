@@ -22,41 +22,43 @@ Goal: renderer-agnostic ability system driven entirely by Actions.
 
 Current status:
 ✓ AbilityBarState implemented and scene-owned
-✓ AbilityBarRenderer view-only, ascii.py just calls draw()
+✓ AbilityBarRenderer view-only; ascii.py just calls draw()
 ✓ systems/actions.py defines canonical actions (with show_in_bar)
-✓ systems/abilities.py builds abilities from game + host actor
-✓ DungeonScene handles ALL ability activation logic
+
+NEW (IMPORTANT):
+Actions ALSO define:
+- icon / glyph
+- color hints
+- sub-button metadata (e.g. parameter +/–, gear/config buttons)
+AbilityBarRenderer imports the metadata and builds all UI elements dynamically.
+Scenes only handle routing; renderer does not embed UI rules.
 
 Next micro-steps:
 - Remove remaining legacy renderer ability code (icon helpers optional)
-- Add a small AbilityConfigScene in the future if needed
+- Add a small AbilityConfigScene for advanced per-ability settings if needed
 
 ===============================================================================
 SLICE 3: Targeting System Generalization [CLEANUP/BEHAVIOR] — NEXT PRIORITY
-Goal: a single TargetMode for all targeted actions (terminus placement, activate-all,
-activate-seed, future “look”, projectiles, teleports, etc.)
+Goal: unified TargetMode for all targeted actions.
 
 Plan:
-1) Introduce a TargetState model on DungeonScene:
-   active, kind ("tile" | "vertex"), action, cursor tile, origin, optional range
-2) While active → movement keys move cursor, not player
-3) Confirm (Enter/Space/click) → route to appropriate action
-4) Cancel (Esc/right-click) → exit target mode
-5) Renderer draws target cursor but owns no targeting logic
+1) Introduce a TargetState model on DungeonScene
+2) While active → movement keys move cursor
+3) Confirm → resolve + dispatch
+4) Cancel → exit
+5) Renderer draws target cursor only
 
 When complete:
 - No special-case “terminus mode” or “aim mode”
-- Keyboard + mouse parity for ALL targeted actions
+- Keyboard + mouse parity for all targeted actions
 
 ===============================================================================
 SLICE 4: Custom Fractal Pipeline [CLEANUP]
-Goal: unified editor, correct click alignment, consistent saves.
-
 Current status:
-✓ Ability bar responds to custom fractals through signature invalidation
+✓ Ability bar correctly triggers custom fractal editor via action metadata
 Next:
-- Factor editor to return definitive vertices/edges dict
-- Ensure click-to-world alignment is identical in windowed/fullscreen
+- Ensure editor returns unified vertices/edges dict
+- Confirm identical click alignment for all window modes
 
 ===============================================================================
 SLICE 5: Inventory Cleanup [CLEANUP]
@@ -71,13 +73,13 @@ Next:
 
 ===============================================================================
 SLICE 6: Data-Driven Entities [CLEANUP/BEHAVIOR]
-Goal: all entities (items, berries, containers, objects) defined by YAML.
+Goal: all entities defined by YAML.
 
 Current status:
 ✓ entities.yaml + factory in place
 ✓ Berries/containers generated from templates
 Next:
-- Expand component-style properties (HP, tags, behaviors)
+- Expand component-style properties
 - Move remaining hardcoded objects into content layer
 
 ===============================================================================
@@ -90,6 +92,6 @@ Deferred / Vision Targets
 ===============================================================================
 Current tactical focus:
 → IMPLEMENT UNIFIED TARGETMODE (SLICE 3)
-Everything else builds more cleanly once targeting is consistent.
+Dynamic ability sub-buttons + action metadata are now stable; targeting is the
+main structural piece that benefits from unification.
 
-:contentReference[oaicite:0]{index=0}
