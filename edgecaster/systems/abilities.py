@@ -80,98 +80,39 @@ def compute_abilities_signature(game: Game) -> Tuple[
 
 def build_abilities(game: Game) -> List[Ability]:
     """
-    Build the ability list based on the character + game state + host actor.
+    Build the ability bar directly from the current host actor's actions.
 
-    This is basically the old AsciiRenderer._build_abilities logic,
-    but renderer-agnostic and without Rects, and now augmented with
-    host-specific actions (e.g. imp_taunt) that are flagged as
-    show_in_bar=True on their ActionDef.
+    Any ActionDef with show_in_bar=True that appears in host.actions
+    becomes an Ability in the bar, in that order.
     """
-    from edgecaster.systems.actions import get_action  # local to avoid circulars
-
-    char = getattr(game, "character", None)
-    generator_choice = "koch"
-    illuminator_choice = "radius"
-    if char:
-        generator_choice = getattr(char, "generator", "koch")
-        illuminator_choice = getattr(char, "illuminator", "radius")
-
-    unlocked = getattr(game, "unlocked_generators", [generator_choice])
-
-    # keep order but de-dupe, while ensuring the chosen generator is first
-    seen = set()
-    gens_ordered: list[str] = []
-    for g in unlocked:
-        if g in seen:
-            continue
-        seen.add(g)
-        gens_ordered.append(g)
-    if generator_choice not in seen:
-        gens_ordered.insert(0, generator_choice)
-
     abilities: List[Ability] = []
     hotkey = 1
 
-    def add(name: str, action: str) -> None:
-        nonlocal hotkey
-        abilities.append(Ability(name=name, hotkey=hotkey, action=action))
-        hotkey += 1
-
-    # Core rune kit
-    add("Place", "place")
-    add("Subdivide", "subdivide")
-    add("Extend", "extend")
-
-    # generator-specific (all unlocked)
-    for g in gens_ordered:
-        gen_label = {"koch": "Koch", "branch": "Branch", "zigzag": "Zigzag", "custom": "Custom"}.get(g, g)
-        if g in ("koch", "branch", "zigzag", "custom"):
-            add(gen_label, g)
-
-    # additional custom patterns (beyond the first)
-    customs = getattr(game, "custom_patterns", [])
-    for idx, _pts in enumerate(customs):
-        action = "custom" if idx == 0 else f"custom_{idx}"
-        label = "Custom" if idx == 0 else f"Custom {idx+1}"
-        # first custom is already covered if "custom" is in gens_ordered
-        if idx == 0 and "custom" in gens_ordered:
-            continue
-        add(label, action)
-
-    # Host-specific actions (e.g. Taunt for imps, future class kit)
-    existing_actions = {ab.action for ab in abilities}
+    # Find the current "host" actor (whoever the player is currently driving).
     try:
         level = game._level()
         host = level.actors.get(game.player_id)
     except Exception:
         host = None
 
-    if host is not None:
-        for name in getattr(host, "actions", ()) or ():
-            if name in existing_actions:
-                continue
-            try:
-                adef = get_action(name)
-            except Exception:
-                continue
-            if not getattr(adef, "show_in_bar", False):
-                continue
-            # Use the ActionDef's label as the button name.
-            add(adef.label, adef.name)
-            existing_actions.add(name)
+    if host is None:
+        return abilities
 
-    # illuminator choice
-    if illuminator_choice == "radius":
-        add("Activate R", "activate_all")
-    elif illuminator_choice == "neighbors":
-        add("Activate N", "activate_seed")
-    else:
-        add("Activate R", "activate_all")
-        add("Activate N", "activate_seed")
+    def add_from_action_name(name: str) -> None:
+        nonlocal hotkey
+        try:
+            adef = get_action(name)
+        except Exception:
+            # Unknown / unregistered action; ignore for the bar.
+            return
+        if not getattr(adef, "show_in_bar", False):
+            return
+        abilities.append(Ability(name=adef.label, hotkey=hotkey, action=adef.name))
+        hotkey += 1
 
-    # meta
-    add("Reset", "reset")
-    add("Meditate", "meditate")
+    # Preserve order: whatever is in host.actions is the bar order.
+    for name in getattr(host, "actions", ()) or ():
+        add_from_action_name(name)
 
     return abilities
 
