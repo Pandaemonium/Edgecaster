@@ -9,12 +9,8 @@ from edgecaster.game import Game
 from edgecaster.state.actors import Actor
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
-from edgecaster.systems.abilities import (
-    Ability,              # the dataclass
-    build_abilities,
-    compute_abilities_signature,
-    trigger_ability_effect,
-)
+from edgecaster.ui.ability_bar import AbilityBarRenderer
+
 
 
 
@@ -60,8 +56,8 @@ class AsciiRenderer:
         self.ability_bar_height = 72
         self.top_bar_height = 64
         self.log_panel_width = 320
-        self.abilities: List[Ability] = []
-        self.current_ability_index = 0
+        self.ability_bar_view = AbilityBarRenderer()
+
         self.target_cursor = (0, 0)
         self.aim_action: str | None = None
         self.hover_vertex: int | None = None
@@ -91,9 +87,6 @@ class AsciiRenderer:
 
         # cached glow sprites: key = (radius_px, color_tuple)
         self.glow_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
-        self.abilities_signature = None
-        self.ability_page = 0
-        self.abilities_button_rect = None
         self.quit_requested = False
         self.pause_requested = False   # NEW: used by DungeonScene to decide on pause
         self.lorenz_center_x: float | None = None
@@ -889,144 +882,19 @@ class AsciiRenderer:
         pygame.draw.rect(self.surface, (15, 15, 28), bar_rect)
 
         bar_state = getattr(game, "ability_bar_state", None)
-        if bar_state:
-            bar_state.sync_from_game(game)
-            vis = bar_state.visible_abilities()
-            self.abilities = vis
-            total_pages = bar_state.total_pages
-            self.ability_page = bar_state.page
-            active_idx = bar_state.active_index_on_page()
-            self.current_ability_index = active_idx if active_idx is not None else 0
-        else:
-            vis = self.abilities
-            total_pages = 1
-            self.ability_page = 0
+        if not bar_state:
+            return
 
-        # "Abilities" manager button (bottom-left)
-        btn_w, btn_h = 88, 26
-        self.abilities_button_rect = pygame.Rect(6, bar_rect.top + 6, btn_w, btn_h)
-        pygame.draw.rect(self.surface, (30, 30, 55), self.abilities_button_rect)
-        pygame.draw.rect(self.surface, (120, 120, 170), self.abilities_button_rect, 1)
-        label_surf = self.small_font.render("Abilities", True, self.fg)
-        self.surface.blit(label_surf, label_surf.get_rect(center=self.abilities_button_rect.center))
-
-        # page arrows
-        self.page_prev_rect = None
-        self.page_next_rect = None
-        if total_pages > 1:
-            btn_h = 22
-            self.page_prev_rect = pygame.Rect(self.abilities_button_rect.right + 6, bar_rect.top + 6, 22, btn_h)
-            self.page_next_rect = pygame.Rect(self.page_prev_rect.right + 4, bar_rect.top + 6, 22, btn_h)
-            for rect, dir_sign in ((self.page_prev_rect, -1), (self.page_next_rect, 1)):
-                pygame.draw.rect(self.surface, (35, 35, 60), rect)
-                pygame.draw.rect(self.surface, (150, 150, 190), rect, 1)
-                if dir_sign < 0:
-                    pts = [(rect.right - 6, rect.top + 4), (rect.left + 6, rect.centery), (rect.right - 6, rect.bottom - 4)]
-                else:
-                    pts = [(rect.left + 6, rect.top + 4), (rect.right - 6, rect.centery), (rect.left + 6, rect.bottom - 4)]
-                pygame.draw.polygon(self.surface, (200, 200, 230), pts)
-
-        # ability tiles for current page
-        for ab in vis:
-            ab.rect = ab.gear_rect = ab.plus_rect = ab.minus_rect = None
-
-        margin = 120  # leave room for abilities button/controls
-        gap = 6
-        n = max(1, len(vis))
-        avail_w = self.width - 2 * margin
-        box_w = (avail_w - gap * (n - 1)) / max(1, n)
-        x = margin
-        for idx_on_page, ability in enumerate(vis):
-            rect = pygame.Rect(int(x), bar_rect.top + 8, int(box_w), bar_rect.height - 16)
-            ability.rect = rect
-            ability.plus_rect = None
-            ability.minus_rect = None
-            ability.gear_rect = None
-
-            is_active = False
-            if bar_state and bar_state.active_action == ability.action:
-                is_active = True
-            elif not bar_state and idx_on_page == self.current_ability_index:
-                is_active = True
-
-            if is_active:
-                border = (255, 255, 180)
-                fill = (45, 45, 70)
-            else:
-                border = (120, 120, 160)
-                fill = (25, 25, 45)
-            pygame.draw.rect(self.surface, fill, rect)
-            pygame.draw.rect(self.surface, border, rect, 2)
-
-            label = ability.name
-            if ability.action == "activate_all":
-                try:
-                    radius = game.get_param_value("activate_all", "radius")
-                    label = f"Activate R ({radius})"
-                except Exception:
-                    label = "Activate R"
-            if ability.hotkey:
-                label = f"{ability.hotkey}:{label}"
-            text = self.small_font.render(label, True, self.fg)
-            text_x = rect.x + (rect.w - text.get_width()) // 2
-            text_y = rect.y + 2
-            self.surface.blit(text, (text_x, text_y))
-            # icon area below text
-            icon_top = text_y + text.get_height() + 4
-            icon_height = rect.bottom - icon_top - 4
-            icon_height = max(12, icon_height)
-            icon_rect = pygame.Rect(rect.x + 6, icon_top, rect.w - 12, icon_height)
-            self._draw_ability_icon(icon_rect, ability.action, game)
-
-            if ability.action == "activate_all":
-                box_size = 14
-                ability.minus_rect = pygame.Rect(rect.x + 4, rect.centery - box_size // 2, box_size, box_size)
-                ability.plus_rect = pygame.Rect(rect.right - box_size - 4, rect.centery - box_size // 2, box_size, box_size)
-                pygame.draw.rect(self.surface, (90, 120, 160), ability.minus_rect, 1)
-                pygame.draw.rect(self.surface, (90, 120, 160), ability.plus_rect, 1)
-                minus_txt = self.small_font.render("-", True, self.fg)
-                plus_txt = self.small_font.render("+", True, self.fg)
-                self.surface.blit(minus_txt, minus_txt.get_rect(center=ability.minus_rect.center))
-                self.surface.blit(plus_txt, plus_txt.get_rect(center=ability.plus_rect.center))
-            else:
-                # tiny gear
-                gear_size = 14
-                ability.gear_rect = pygame.Rect(rect.right - gear_size - 4, rect.top + 4, gear_size, gear_size)
-                pygame.draw.rect(self.surface, (120, 120, 160), ability.gear_rect, width=1)
-                pygame.draw.circle(
-                    self.surface,
-                    (200, 200, 220),
-                    (ability.gear_rect.centerx, ability.gear_rect.centery),
-                    ability.gear_rect.width // 3,
-                    width=1,
-                )
-            x += box_w + gap
-
-        # Optional reorder overlay
-        if getattr(game, "ability_reorder_open", False) and bar_state:
-            overlay = pygame.Surface((320, min(300, self.height - self.ability_bar_height - 60)), pygame.SRCALPHA)
-            overlay.fill((20, 20, 30, 230))
-            ox, oy = 20, 20
-            title = self.small_font.render("Reorder abilities (Up/Down select, Left/Right move, Enter to close)", True, self.fg)
-            overlay.blit(title, (8, 6))
-            y = 30
-            for idx, act in enumerate(bar_state.order):
-                ab = next((a for a in bar_state.abilities if a.action == act), None)
-                name = ab.name if ab else act
-                txt_color = self.sel if idx == bar_state.selected_index else self.fg
-                line = f"{idx+1}. {name}"
-                surf = self.small_font.render(line, True, txt_color)
-                overlay.blit(surf, (12, y))
-                y += surf.get_height() + 4
-            self.surface.blit(overlay, (8, self.top_bar_height + 8))
-
-        # flash message
-        now_ms = pygame.time.get_ticks()
-        if self.flash_text and now_ms < self.flash_until_ms:
-            msg = self.small_font.render(self.flash_text, True, self.flash_color)
-            self.surface.blit(msg, (bar_rect.centerx - msg.get_width() // 2, bar_rect.top - msg.get_height() - 4))
-        elif self.flash_text:
-            self.flash_text = None
+        # Model is maintained by DungeonScene/AbilityBarState; renderer is view-only.
+        self.ability_bar_view.draw(
+            surface=self.surface,
+            game=game,
+            bar_state=bar_state,
+            bar_rect=bar_rect,
+            small_font=self.small_font,
+            fg=self.fg,
+            width=self.width,
+        )
 
 
 
@@ -1042,18 +910,10 @@ class AsciiRenderer:
         else:
             self.pause_requested = False
 
-        # refactor: init should be scene-owned; renderer should be passive.
         # Start target cursor at player position
         player = game.actors[game.player_id]
         self.target_cursor = player.pos
 
-        # refactor: ability rebuild belongs to scene/UIState; remove from renderer.
-        # Ensure ability bar is up to date (delegate to systems/abilities)
-        sig = compute_abilities_signature(game)
-        if self.abilities_signature != sig or not self.abilities:
-            self.abilities = build_abilities(game)
-            self.ability_page = 0
-            self.abilities_signature = sig
 
 
 
@@ -1101,15 +961,6 @@ class AsciiRenderer:
         # Ensure fonts/surfaces are ready, then draw a single frame.
         self.start_dungeon(game)
         self.draw_dungeon_frame(game)
-
-    def _ensure_abilities(self, game: Game) -> None:
-        """Rebuild abilities if the signature changed or list is empty."""
-        # refactor: this refresh belongs to scene/UIState (or AbilityBarState builder) instead of renderer.
-        sig = compute_abilities_signature(game)
-        if self.abilities_signature != sig or not self.abilities:
-            self.abilities = build_abilities(game)
-            self.ability_page = 0
-            self.abilities_signature = sig
 
 
 

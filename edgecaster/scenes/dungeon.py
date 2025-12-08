@@ -7,11 +7,7 @@ from .base import Scene
 from edgecaster.game import Game
 from .urgent_message_scene import UrgentMessageScene
 from .game_input import GameInput, GameCommand
-from edgecaster.systems.abilities import (
-    build_abilities,
-    compute_abilities_signature,
-    trigger_ability_effect,
-)
+from edgecaster.systems.abilities import trigger_ability_effect
 from edgecaster.ui.ability_bar import AbilityBarState
 
 
@@ -60,7 +56,6 @@ class DungeonScene(Scene):
             cmds = self.input.handle_mousewheel(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)
-
 
     def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         game, renderer = self._ensure_game(manager)
@@ -154,13 +149,14 @@ class DungeonScene(Scene):
                 pattern = {"vertices": verts, "edges": edges}
                 game.custom_patterns.append(pattern)
                 game.character.custom_pattern = pattern
-                renderer.abilities_signature = None
+                # New custom pattern can change available abilities; force resync.
+                if hasattr(game, "ability_bar_state"):
+                    game.ability_bar_state.invalidate()
 
         # Sync ability bar state with current game abilities
         if not hasattr(game, "ability_bar_state"):
             game.ability_bar_state = AbilityBarState()
         game.ability_bar_state.sync_from_game(game)
-        renderer.ability_page = game.ability_bar_state.page
 
         # Save any previous hook (in case we ever call DungeonScene from another scene)
         if self._old_urgent_cb is None:
@@ -201,8 +197,6 @@ class DungeonScene(Scene):
                 game.inventory_requested = False
             renderer.start_dungeon(game)
             self._started = True
-
-
 
         return game, renderer
 
@@ -287,6 +281,9 @@ class DungeonScene(Scene):
         kind = cmd.kind
         key = cmd.raw_key
         vec = cmd.vector
+
+        # AbilityBarState is the single source of truth for ability ordering
+        # and selection; renderer only draws via AbilityBarRenderer.
         bar = getattr(game, "ability_bar_state", None)
         if bar is None:
             bar = AbilityBarState()
@@ -347,7 +344,6 @@ class DungeonScene(Scene):
                 bar.page = bar.selected_index // bar.page_size
             return
 
-
         if kind == "toggle_fullscreen":
             renderer.toggle_fullscreen()
             return
@@ -363,12 +359,9 @@ class DungeonScene(Scene):
                     game.show_help()
             return
 
-
         # ------------------------------------------------------------
         # 1) Dialog overlay (always takes precedence while open) !! LEGACY, REMOVED !!
         # ------------------------------------------------------------
-
-
 
         # ------------------------------------------------------------
         # 2) Config overlay (always takes precedence while open)
@@ -431,7 +424,6 @@ class DungeonScene(Scene):
                 # while we're choosing a terminus.
                 return
 
-
         # 4) Aiming mode (activate_all / activate_seed) confirm
 
         if in_aim_mode and kind == "confirm":
@@ -452,10 +444,9 @@ class DungeonScene(Scene):
         if kind == "ability_hotkey" and cmd.hotkey is not None:
             hk = cmd.hotkey
             vis = bar.visible_abilities()
-            for idx, ability in enumerate(vis):
+            for ability in vis:
                 if ability.hotkey == hk:
                     bar.set_active(ability.action)
-                    renderer.current_ability_index = idx
 
                     if ability.action == "place":
                         renderer.target_cursor = game.actors[game.player_id].pos
@@ -492,8 +483,6 @@ class DungeonScene(Scene):
                 renderer._update_hover(game, renderer._to_surface(pygame.mouse.get_pos()))
             return
 
-
-
         # ------------------------------------------------------------
         # 6 1/2) Mouse input (click / move / wheel)
         # ------------------------------------------------------------
@@ -520,47 +509,51 @@ class DungeonScene(Scene):
                 return
 
             # Ability bar page arrows.
-            # refactor: page navigation + hit-testing should move into an AbilityBar view/controller.
-            if getattr(renderer, "page_prev_rect", None) and renderer.page_prev_rect and renderer.page_prev_rect.collidepoint(mx, my):
-                bar.prev_page()
-                renderer.ability_page = bar.page
-                return
+            bar_view = getattr(renderer, "ability_bar_view", None)
+            if bar_view is not None:
+                if bar_view.page_prev_rect and bar_view.page_prev_rect.collidepoint(mx, my):
+                    bar.prev_page()
+                    return
 
-            if getattr(renderer, "page_next_rect", None) and renderer.page_next_rect and renderer.page_next_rect.collidepoint(mx, my):
-                bar.next_page()
-                renderer.ability_page = bar.page
-                return
+                if bar_view.page_next_rect and bar_view.page_next_rect.collidepoint(mx, my):
+                    bar.next_page()
+                    return
 
             # Open ability reorder manager.
-            if getattr(renderer, "abilities_button_rect", None) and renderer.abilities_button_rect and renderer.abilities_button_rect.collidepoint(mx, my):
+            if (
+                bar_view is not None
+                and bar_view.abilities_button_rect
+                and bar_view.abilities_button_rect.collidepoint(mx, my)
+            ):
                 game.ability_reorder_open = True
                 if bar.active_action and bar.active_action in bar.order:
                     bar.selected_index = bar.order.index(bar.active_action)
-                    bar.page = bar.selected_index // bar.page_size
+                    bar.page = bar.selected_index // bar.page_size if bar.page_size else 0
                 return
 
-            # refactor: move ability bar hit-testing into a dedicated AbilityBarScene/manager.
-            # Ability bar buttons.
-            for idx, ability in enumerate(renderer.abilities):
-                if ability.rect and ability.rect.collidepoint(mx, my):
-                    renderer.current_ability_index = idx
+            # Ability bar buttons: rects are attached to Ability instances by the AbilityBarRenderer.
+            for ability in bar.visible_abilities():
+                rect = getattr(ability, "rect", None)
+                if rect and rect.collidepoint(mx, my):
                     bar.set_active(ability.action)
 
                     # +/- radius tweak for activate_all
-                    if ability.plus_rect and ability.plus_rect.collidepoint(mx, my):
+                    plus_rect = getattr(ability, "plus_rect", None)
+                    minus_rect = getattr(ability, "minus_rect", None)
+                    gear_rect = getattr(ability, "gear_rect", None)
+
+                    if plus_rect and plus_rect.collidepoint(mx, my):
                         changed, msg = game.adjust_param("activate_all", "radius", 1)
                         if not changed and msg:
                             renderer._set_flash(msg)
-                        renderer.abilities_signature = None
                         return
 
-                    if ability.minus_rect and ability.minus_rect.collidepoint(mx, my):
+                    if minus_rect and minus_rect.collidepoint(mx, my):
                         changed, _ = game.adjust_param("activate_all", "radius", -1)
-                        renderer.abilities_signature = None
                         return
 
                     # Gear opens config overlay.
-                    if ability.gear_rect and ability.gear_rect.collidepoint(mx, my):
+                    if gear_rect and gear_rect.collidepoint(mx, my):
                         renderer.config_open = True
                         renderer.config_action = ability.action
                         renderer.config_selection = 0
@@ -610,7 +603,6 @@ class DungeonScene(Scene):
                 renderer.aim_action = None
                 return
 
-
             # Default: click-to-move / use stairs.
             player = game.actors[game.player_id]
             px, py = player.pos
@@ -621,7 +613,6 @@ class DungeonScene(Scene):
             elif max(abs(dx), abs(dy)) == 1:
                 game.queue_player_move((int(dx), int(dy)))
             return
-
 
         # ------------------------------------------------------------
         # 6) High-level game actions (non-movement)
@@ -708,7 +699,6 @@ class DungeonScene(Scene):
                 game.log.add("You yawp, but in a civilized manner.")
             return
 
-
         # ------------------------------------------------------------
         # 7) Movement (no special modes active)
         # ------------------------------------------------------------
@@ -723,11 +713,23 @@ class DungeonScene(Scene):
         # ------------------------------------------------------------
 
         if kind == "confirm":
-            ability = renderer.abilities[renderer.current_ability_index]
+            vis = bar.visible_abilities()
+            if not vis:
+                return
+
+            ability = None
+            if bar.active_action:
+                for ab in vis:
+                    if ab.action == bar.active_action:
+                        ability = ab
+                        break
+            if ability is None:
+                ability = vis[0]
 
             if ability.action == "place":
                 renderer.target_cursor = game.actors[game.player_id].pos
-                game.begin_place_mode()
+                if hasattr(game, "begin_place_mode"):
+                    game.begin_place_mode()
                 renderer.aim_action = None
             else:
                 if ability.action in ("activate_all", "activate_seed"):
