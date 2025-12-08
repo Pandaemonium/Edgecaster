@@ -1186,6 +1186,8 @@ class Game:
                 "extropic", "overpopulated", "arbitrary", "cannibalistic",
                 "ecstatic", "carbon-based", "semifluid", "carbonated",
                 "vitamin-rich", "emotionally vulnerable", "disgruntled",
+                "cannibalistic", "vegan-friendly", "emphatic", "ghostly",
+                "cream-filled", "inexcusable", "historically accurate"
             ]
             adj = self.rng.choice(adjectives)
             display_name = f"{adj} Inventory"
@@ -1219,11 +1221,11 @@ class Game:
 
         if spawned > 0:
             if spawned == 1:
-                self.log.add("A strange Inventory shimmers into existence nearby.")
+                self.log.add("That's a nice looking inventory.")
             else:
-                self.log.add(f"{spawned} strange Inventories shimmer into existence nearby.")
+                self.log.add("Inventory sale! Inventory inventory must go!")
         else:
-            self.log.add("The world resists conjuring an Inventory here.")
+            self.log.add("This is no place for an inventory.")
 
 
 

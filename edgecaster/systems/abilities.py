@@ -1,11 +1,10 @@
-# edgecaster/systems/abilities.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
 from edgecaster.game import Game
+from edgecaster.systems.actions import get_action
 
 
 @dataclass
@@ -27,10 +26,18 @@ class Ability:
 # ---------------------------------------------------------------------
 
 
-def compute_abilities_signature(game: Game) -> Tuple[Tuple[str, ...], str, Tuple[Tuple[int, int], ...]]:
+def compute_abilities_signature(game: Game) -> Tuple[
+    Tuple[str, ...],                      # generators
+    str,                                  # illuminator choice
+    Tuple[Tuple[int, int], ...],          # custom pattern "shape"
+    Tuple[str, ...],                      # host-visible actions
+]:
     """
     A small hashable signature for “what abilities should exist?”
     Used so the caller can detect when it needs to rebuild.
+
+    Now includes the set of host-visible actions (names) so that
+    body-swaps and class changes can alter the bar.
     """
     char = getattr(game, "character", None)
     generator_choice = "koch"
@@ -41,21 +48,47 @@ def compute_abilities_signature(game: Game) -> Tuple[Tuple[str, ...], str, Tuple
 
     unlocked = getattr(game, "unlocked_generators", [generator_choice])
     gen_list = tuple(unlocked)
+
     customs = getattr(game, "custom_patterns", [])
     custom_sig: Tuple[Tuple[int, int], ...] = tuple(
         (len(p.get("vertices", p)), len(p.get("edges", []))) if isinstance(p, dict) else (len(p), 0)
         for p in customs
     )
-    return gen_list, illuminator_choice, custom_sig
+
+    # Host-visible actions: any actions on the current host actor that
+    # are marked show_in_bar=True in the action registry.
+    host_actions: List[str] = []
+    try:
+        level = game._level()
+        host = level.actors.get(game.player_id)
+    except Exception:
+        host = None
+
+    if host is not None:
+        for name in getattr(host, "actions", ()) or ():
+            try:
+                adef = get_action(name)
+            except Exception:
+                continue
+            if getattr(adef, "show_in_bar", False):
+                host_actions.append(name)
+
+    host_sig = tuple(sorted(set(host_actions)))
+
+    return gen_list, illuminator_choice, custom_sig, host_sig
 
 
 def build_abilities(game: Game) -> List[Ability]:
     """
-    Build the ability list based on the character + game state.
+    Build the ability list based on the character + game state + host actor.
 
     This is basically the old AsciiRenderer._build_abilities logic,
-    but renderer-agnostic and without Rects.
+    but renderer-agnostic and without Rects, and now augmented with
+    host-specific actions (e.g. imp_taunt) that are flagged as
+    show_in_bar=True on their ActionDef.
     """
+    from edgecaster.systems.actions import get_action  # local to avoid circulars
+
     char = getattr(game, "character", None)
     generator_choice = "koch"
     illuminator_choice = "radius"
@@ -84,7 +117,7 @@ def build_abilities(game: Game) -> List[Ability]:
         abilities.append(Ability(name=name, hotkey=hotkey, action=action))
         hotkey += 1
 
-    # Core
+    # Core rune kit
     add("Place", "place")
     add("Subdivide", "subdivide")
     add("Extend", "extend")
@@ -104,6 +137,28 @@ def build_abilities(game: Game) -> List[Ability]:
         if idx == 0 and "custom" in gens_ordered:
             continue
         add(label, action)
+
+    # Host-specific actions (e.g. Taunt for imps, future class kit)
+    existing_actions = {ab.action for ab in abilities}
+    try:
+        level = game._level()
+        host = level.actors.get(game.player_id)
+    except Exception:
+        host = None
+
+    if host is not None:
+        for name in getattr(host, "actions", ()) or ():
+            if name in existing_actions:
+                continue
+            try:
+                adef = get_action(name)
+            except Exception:
+                continue
+            if not getattr(adef, "show_in_bar", False):
+                continue
+            # Use the ActionDef's label as the button name.
+            add(adef.label, adef.name)
+            existing_actions.add(name)
 
     # illuminator choice
     if illuminator_choice == "radius":
@@ -137,6 +192,10 @@ def trigger_ability_effect(
 
     UI / aim-mode decisions (like setting aim_action or target_cursor)
     should live in the scene/renderer; this just tells the Game what to do.
+
+    Special cases (place / fractal / activation / meta) are handled
+    explicitly; everything else falls back to queue_player_action if
+    available.
     """
 
     def do_action(action_name: str, **kwargs) -> None:
@@ -204,5 +263,9 @@ def trigger_ability_effect(
         do_action("meditate")
         return
 
-    # If someone invents a new action string and forgets to wire it:
-    # fail silently rather than crash the renderer.
+    # Generic fallback: any other ability string is assumed to be the
+    # name of a registered action. If the action system is present,
+    # we let it handle the details (e.g. imp_taunt, class abilities).
+    if hasattr(game, "queue_player_action"):
+        game.queue_player_action(action)
+    # If not, we just no-op rather than crash.

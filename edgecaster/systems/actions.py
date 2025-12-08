@@ -27,10 +27,124 @@ class ActionDef:
     label: str
     speed: SpeedTag
     func: ActionFunc
+    # Whether this action is eligible to appear in the player-facing
+    # ability bar when owned by the current host actor.
+    show_in_bar: bool = False
+
+
+
+
+
+
 
 
 # Global registry of all actions by name.
 _action_registry: Dict[str, ActionDef] = {}
+
+
+
+# ---------------------------------------------------------------------------
+# UI metadata (ability bar icons, sub-buttons, etc.)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SubButtonMeta:
+    """Metadata for a small sub-button attached to an action in the ability bar.
+
+    This keeps all "what this button *means*" information close to the
+    action definition layer, while the UI decides *how* to draw it.
+    """
+    id: str               # stable identifier, e.g. "radius_plus"
+    icon: str             # short text/icon rendered in the tiny button ("+", "-", "⚙"...)
+    kind: str             # semantic kind, e.g. "param_delta", "open_config"
+    param_key: str | None = None   # which parameter this manipulates (if any)
+    delta: int | None = None       # integer delta for param_delta buttons (if any)
+
+
+# Mapping from action name -> list of sub-button metadata.
+# The UI is free to ignore this or to lay these out however it likes.
+ACTION_SUB_BUTTONS: Dict[str, list[SubButtonMeta]] = {
+    # Radius-based activator gets +/- for the radius, plus a gear for config.
+    "activate_all": [
+        SubButtonMeta(
+            id="radius_minus",
+            icon="-",
+            kind="param_delta",
+            param_key="radius",
+            delta=-1,
+        ),
+        SubButtonMeta(
+            id="radius_plus",
+            icon="+",
+            kind="param_delta",
+            param_key="radius",
+            delta=1,
+        ),
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    # Seed activator just exposes its config for now.
+    "activate_seed": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    # Generators (and custom patterns) expose their config.
+    "subdivide": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "extend": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "koch": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "branch": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "zigzag": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+    "custom": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
+}
+
+
+def action_sub_buttons(action_name: str) -> list[SubButtonMeta]:
+    """Return UI sub-button metadata for a given action name (may be empty)."""
+    return ACTION_SUB_BUTTONS.get(action_name, [])
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -42,13 +156,14 @@ def register_action(
     *,
     label: str,
     speed: SpeedTag = "fast",
+    show_in_bar: bool = False,
 ) -> Callable[[ActionFunc], ActionFunc]:
     """
     Decorator to register a function as an Action.
 
     Usage:
 
-        @register_action("yawp", label="Yawp", speed="instant")
+        @register_action("yawp", label="Yawp", speed="instant", show_in_bar=True)
         def yawp_action(game, actor_id, **kwargs):
             ...
 
@@ -60,6 +175,7 @@ def register_action(
             label=label,
             speed=speed,
             func=func,
+            show_in_bar=show_in_bar,
         )
         return func
 
@@ -86,6 +202,7 @@ def get_action(name: str) -> ActionDef:
                 label=base.label,
                 speed=base.speed,
                 func=_custom_n_action,
+                show_in_bar=base.show_in_bar,
             )
         return _action_registry[name]
     try:
@@ -178,6 +295,7 @@ def _debug_yawp(game: Any, actor_id: str, **kwargs: Any) -> None:
         # Fallback: print to stdout if no log is available.
         print(f"{who} yawps! 'Yawp!'")
 
+
 @register_action("wait", label="Wait", speed="fast")
 def _action_wait(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
@@ -190,7 +308,7 @@ def _action_wait(game: Any, actor_id: str, **kwargs: Any) -> None:
     return
 
 
-@register_action("imp_taunt", label="Taunt", speed="fast")
+@register_action("imp_taunt", label="Taunt", speed="fast", show_in_bar=True)
 def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Imp-specific taunt with richer verbs + randomized insults.
@@ -226,6 +344,14 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         "retorts",
         "admonishes",
         "snorts contemptuously",
+        "parades about",
+        "snickers",
+        "catcalls",
+        "waves his rump alluringly",
+        "screeches",
+        "crows",
+        "barks",
+        
     ]
 
     TAUNTS = [
@@ -246,6 +372,8 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         "I hope you get ambushed by an alligator.",
         "Hey look at this guy over here, Mr. Big Deal Fractal guy, ooh la la he's a fancy fucker ain't he?",
         "Berryfucker!"
+        "Your MOM is self-similar!"
+        
     ]
 
     verb = random.choice(VERBS)
@@ -261,7 +389,7 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
 # Fractal / rune actions
 # ---------------------------------------------------------------------------
 
-@register_action("place", label="Place", speed="fast")
+@register_action("place", label="Place", speed="fast", show_in_bar=True)
 def _action_place(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Enter 'place terminus' mode for the acting entity.
@@ -274,7 +402,7 @@ def _action_place(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.begin_place_mode()
 
 
-@register_action("subdivide", label="Subdivide", speed="fast")
+@register_action("subdivide", label="Subdivide", speed="fast", show_in_bar=True)
 def _action_subdivide(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Apply the 'subdivide' fractal generator to the current rune pattern.
@@ -283,7 +411,7 @@ def _action_subdivide(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_fractal(actor_id, "subdivide")
 
 
-@register_action("extend", label="Extend", speed="fast")
+@register_action("extend", label="Extend", speed="fast", show_in_bar=True)
 def _action_extend(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Apply the 'extend' fractal generator to the current rune pattern.
@@ -292,7 +420,7 @@ def _action_extend(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_fractal(actor_id, "extend")
 
 
-@register_action("koch", label="Koch", speed="fast")
+@register_action("koch", label="Koch", speed="fast", show_in_bar=True)
 def _action_koch(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Apply the 'koch' fractal generator to the current rune pattern.
@@ -301,7 +429,7 @@ def _action_koch(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_fractal(actor_id, "koch")
 
 
-@register_action("branch", label="Branch", speed="fast")
+@register_action("branch", label="Branch", speed="fast", show_in_bar=True)
 def _action_branch(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Apply the 'branch' fractal generator to the current rune pattern.
@@ -310,7 +438,7 @@ def _action_branch(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_fractal(actor_id, "branch")
 
 
-@register_action("zigzag", label="Zigzag", speed="fast")
+@register_action("zigzag", label="Zigzag", speed="fast", show_in_bar=True)
 def _action_zigzag(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Apply the 'zigzag' fractal generator to the current rune pattern.
@@ -319,7 +447,7 @@ def _action_zigzag(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_fractal(actor_id, "zigzag")
 
 
-@register_action("custom", label="Custom", speed="fast")
+@register_action("custom", label="Custom", speed="fast", show_in_bar=True)
 def _action_custom(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Apply the base 'custom' fractal pattern (index 0).
@@ -331,14 +459,7 @@ def _action_custom(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_fractal(actor_id, "custom")
 
 
-# Extra custom patterns can be registered on demand if you like, e.g.:
-# @register_action("custom_1", label="Custom 2", speed="fast")
-# def _action_custom_1(game: Any, actor_id: str, **kwargs: Any) -> None:
-#     if hasattr(game, "act_fractal"):
-#         game.act_fractal(actor_id, "custom_1")
-
-
-@register_action("activate_all", label="Activate R", speed="fast")
+@register_action("activate_all", label="Activate R", speed="fast", show_in_bar=True)
 def _action_activate_all(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Activate the rune pattern with a 'radius' illuminator around a vertex.
@@ -351,7 +472,7 @@ def _action_activate_all(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_activate_all(actor_id, target_vertex)
 
 
-@register_action("activate_seed", label="Activate N", speed="fast")
+@register_action("activate_seed", label="Activate N", speed="fast", show_in_bar=True)
 def _action_activate_seed(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Activate the rune pattern using a 'neighbors' illuminator.
@@ -364,7 +485,7 @@ def _action_activate_seed(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_activate_seed(actor_id, target_vertex)
 
 
-@register_action("reset", label="Reset Rune", speed="fast")
+@register_action("reset", label="Reset Rune", speed="fast", show_in_bar=True)
 def _action_reset_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Reset the current rune/pattern and coherence for the acting entity.
@@ -373,7 +494,7 @@ def _action_reset_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_reset_rune(actor_id)
 
 
-@register_action("meditate", label="Meditate", speed="slow")
+@register_action("meditate", label="Meditate", speed="slow", show_in_bar=True)
 def _action_meditate(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Meditate to restore mana / coherence.
