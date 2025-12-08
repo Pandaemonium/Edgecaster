@@ -23,6 +23,7 @@ class DungeonScene(Scene):
         # Keep the Game instance across pauses/inventory.
         self.game: Game | None = None
         # Scene-level input mapper for "pure game" actions
+        # refactor: migrate to a shared input layer; DungeonScene should consume a GameCommand queue only.
         self.input = GameInput()
         self._started = False
         self._old_urgent_cb = None
@@ -349,6 +350,7 @@ class DungeonScene(Scene):
 
             # Other commands do nothing while config overlay is open
             return
+        # refactor: config overlay navigation should be its own scene/UI module; keep renderer stateless.
 
         # ------------------------------------------------------------
         # 3) Terminus targeting mode
@@ -403,6 +405,8 @@ class DungeonScene(Scene):
             for idx, ability in enumerate(renderer.abilities):
                 if ability.hotkey == hk:
                     renderer.current_ability_index = idx
+                    # refactor: Ability selection/activation should flow through AbilityBarState + Ability system,
+                    # not mutate renderer fields directly.
 
                     if ability.action == "place":
                         renderer.target_cursor = game.actors[game.player_id].pos
@@ -445,6 +449,7 @@ class DungeonScene(Scene):
         # 6 1/2) Mouse input (click / move / wheel)
         # ------------------------------------------------------------
 
+        # refactor: hover belongs in scene/UI; move renderer._update_hover helpers into scene utilities.
         # Mouse hover updates the fractal aim hover.
         if kind == "mouse_move" and cmd.mouse_pos is not None:
             renderer._update_hover(game, renderer._to_surface(cmd.mouse_pos))
@@ -466,6 +471,7 @@ class DungeonScene(Scene):
                 return
 
             # Ability bar page arrows.
+            # refactor: page navigation + hit-testing should move into an AbilityBar view/controller.
             if getattr(renderer, "page_prev_rect", None) and renderer.page_prev_rect and renderer.page_prev_rect.collidepoint(mx, my):
                 if renderer.ability_page > 0:
                     renderer.ability_page -= 1
@@ -478,6 +484,7 @@ class DungeonScene(Scene):
                     renderer.ability_page += 1
                 return
 
+            # refactor: move ability bar hit-testing into a dedicated AbilityBarScene/manager.
             # Ability bar buttons.
             for idx, ability in enumerate(renderer.abilities):
                 if ability.rect and ability.rect.collidepoint(mx, my):

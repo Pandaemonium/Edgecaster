@@ -21,6 +21,8 @@ from edgecaster.systems.abilities import (
 
 class AsciiRenderer:
     def __init__(self, width: int, height: int, tile: int) -> None:
+        # refactor: constructor currently owns UI/interaction state; migrate ability/target/config/lorenz state
+        # into a scene-level UIState and keep renderer draw-only.
         pygame.init()
         self.width = width
         self.height = height
@@ -188,6 +190,7 @@ class AsciiRenderer:
         We keep them in continuous 3D space and project x/y onto tiles
         around the player each frame.
         """
+        # refactor: Lorenz particle seeds should be provided by lorenz.py/game, not owned by renderer.
         if self.lorenz_points:
             return
         # Start a cloud of points near the classic Lorenz initial condition.
@@ -199,6 +202,7 @@ class AsciiRenderer:
 
     def _step_lorenz(self) -> None:
         """Advance all Lorenz points a few small timesteps."""
+        # refactor: integration belongs in lorenz.py/system tick; renderer should only draw projected points.
         if not self.lorenz_points:
             return
         pts: List[Tuple[float, float, float]] = []
@@ -215,6 +219,8 @@ class AsciiRenderer:
 
     def draw_lorenz_overlay(self, game: Game) -> None:
         """Draw Lorenz 'butterflies' with short, tapered afterimage trails."""
+        # refactor: replace renderer-managed Lorenz state with a LorenzView from lorenz.py; renderer should
+        # only consume immutable positions/traits.
         
         
         # If the game just re-seeded the storm (stairs / teleport), wipe trails.
@@ -855,6 +861,7 @@ class AsciiRenderer:
         SceneManager level, so this always returns False and the renderer
         never hijacks input or draws its own overlay.
         """
+        # refactor: delete once all callers use UrgentMessageScene; renderer should not gate input.
         return False
 
     def _ack_urgent(self, game: Game) -> None:
@@ -866,6 +873,7 @@ class AsciiRenderer:
         """
         game.urgent_resolved = True
         self.urgent_ok_rect = None
+        # refactor: remove when legacy urgent overlay is removed; acknowledgement should be scene-driven.
 
     def draw_urgent_overlay(self, game: Game) -> None:
         """
@@ -878,6 +886,8 @@ class AsciiRenderer:
     def draw_ability_bar(self, game: Game) -> None:
         bar_rect = pygame.Rect(0, self.height - self.ability_bar_height, self.width, self.ability_bar_height)
         pygame.draw.rect(self.surface, (15, 15, 28), bar_rect)
+        # refactor: consume AbilityBarState (ordered abilities + hitboxes) passed from scene.
+        # This legacy version rebuilds hitboxes internally; move that to the scene/view-model.
         items_per_page = 12
         for ab in self.abilities:
             ab.rect = ab.gear_rect = ab.plus_rect = ab.minus_rect = None
@@ -992,10 +1002,12 @@ class AsciiRenderer:
         else:
             self.pause_requested = False
 
+        # refactor: init should be scene-owned; renderer should be passive.
         # Start target cursor at player position
         player = game.actors[game.player_id]
         self.target_cursor = player.pos
 
+        # refactor: ability rebuild belongs to scene/UIState; remove from renderer.
         # Ensure ability bar is up to date (delegate to systems/abilities)
         sig = compute_abilities_signature(game)
         if self.abilities_signature != sig or not self.abilities:
@@ -1014,11 +1026,7 @@ class AsciiRenderer:
         Draw one dungeon frame (no event polling, no main loop).
         Scenes call this once per tick.
         """
-        # Ensure abilities reflect current game state (customs, unlocks, etc.)
-        self._ensure_abilities(game)
-        # continuous hover update if no motion event (keep in sync)
-        if self.aim_action:
-            self._update_hover(game, self._to_surface(pygame.mouse.get_pos()))
+        # refactor: renderer should consume scene-provided state; drop ability/hover logic here.
 
         self.draw_world(game.world)
         self.draw_lorenz_overlay(game)
@@ -1056,6 +1064,7 @@ class AsciiRenderer:
 
     def _ensure_abilities(self, game: Game) -> None:
         """Rebuild abilities if the signature changed or list is empty."""
+        # refactor: this refresh belongs to scene/UIState (or AbilityBarState builder) instead of renderer.
         sig = compute_abilities_signature(game)
         if self.abilities_signature != sig or not self.abilities:
             self.abilities = build_abilities(game)
@@ -1080,6 +1089,8 @@ class AsciiRenderer:
         return self.hover_vertex
 
     def _update_hover(self, game: Game, mouse_pos: Tuple[int, int]) -> None:
+        # refactor: hover/aim state should be derived in scene/input layer; renderer should receive
+        # a precomputed TargetingState to draw.
         if self.aim_action not in ("activate_all", "activate_seed"):
             self.hover_vertex = None
             self.hover_neighbors = []
@@ -1148,6 +1159,7 @@ class AsciiRenderer:
 
     def _build_abilities(self, game: Game) -> None:
         # build ability list based on character choices
+        # refactor: move to systems/abilities or AbilityBarState factory; renderer should not assemble actions.
         char = getattr(game, "character", None)
         generator_choice = "koch"
         illuminator_choice = "radius"
