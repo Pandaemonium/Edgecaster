@@ -93,6 +93,7 @@ class AsciiRenderer:
         self.glow_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
         self.abilities_signature = None
         self.ability_page = 0
+        self.abilities_button_rect = None
         self.quit_requested = False
         self.pause_requested = False   # NEW: used by DungeonScene to decide on pause
         self.lorenz_center_x: float | None = None
@@ -886,48 +887,69 @@ class AsciiRenderer:
     def draw_ability_bar(self, game: Game) -> None:
         bar_rect = pygame.Rect(0, self.height - self.ability_bar_height, self.width, self.ability_bar_height)
         pygame.draw.rect(self.surface, (15, 15, 28), bar_rect)
-        # refactor: consume AbilityBarState (ordered abilities + hitboxes) passed from scene.
-        # This legacy version rebuilds hitboxes internally; move that to the scene/view-model.
-        items_per_page = 12
-        for ab in self.abilities:
-            ab.rect = ab.gear_rect = ab.plus_rect = ab.minus_rect = None
-        total_pages = max(1, (len(self.abilities) + items_per_page - 1) // items_per_page)
-        self.ability_page = max(0, min(self.ability_page, total_pages - 1))
-        start_idx = self.ability_page * items_per_page
-        end_idx = min(len(self.abilities), start_idx + items_per_page)
-        subset = self.abilities[start_idx:end_idx]
 
-        margin = 32
-        gap = 6
-        n = max(1, len(subset))
-        avail_w = self.width - 2 * margin
-        box_w = (avail_w - gap * (n - 1)) / n
-        x = margin
+        bar_state = getattr(game, "ability_bar_state", None)
+        if bar_state:
+            bar_state.sync_from_game(game)
+            vis = bar_state.visible_abilities()
+            self.abilities = vis
+            total_pages = bar_state.total_pages
+            self.ability_page = bar_state.page
+            active_idx = bar_state.active_index_on_page()
+            self.current_ability_index = active_idx if active_idx is not None else 0
+        else:
+            vis = self.abilities
+            total_pages = 1
+            self.ability_page = 0
+
+        # "Abilities" manager button (bottom-left)
+        btn_w, btn_h = 88, 26
+        self.abilities_button_rect = pygame.Rect(6, bar_rect.top + 6, btn_w, btn_h)
+        pygame.draw.rect(self.surface, (30, 30, 55), self.abilities_button_rect)
+        pygame.draw.rect(self.surface, (120, 120, 170), self.abilities_button_rect, 1)
+        label_surf = self.small_font.render("Abilities", True, self.fg)
+        self.surface.blit(label_surf, label_surf.get_rect(center=self.abilities_button_rect.center))
+
+        # page arrows
         self.page_prev_rect = None
         self.page_next_rect = None
         if total_pages > 1:
-            btn_h = 24
-            self.page_prev_rect = pygame.Rect(4, bar_rect.top + (bar_rect.height - btn_h) // 2, 22, btn_h)
-            self.page_next_rect = pygame.Rect(self.width - 26, bar_rect.top + (bar_rect.height - btn_h) // 2, 22, btn_h)
-            pygame.draw.rect(self.surface, (35, 35, 60), self.page_prev_rect)
-            pygame.draw.rect(self.surface, (150, 150, 190), self.page_prev_rect, 2)
-            pygame.draw.polygon(
-                self.surface, (200, 200, 230), [(self.page_prev_rect.centerx + 4, self.page_prev_rect.top + 6), (self.page_prev_rect.centerx - 4, self.page_prev_rect.centery), (self.page_prev_rect.centerx + 4, self.page_prev_rect.bottom - 6)]
-            )
-            pygame.draw.rect(self.surface, (35, 35, 60), self.page_next_rect)
-            pygame.draw.rect(self.surface, (150, 150, 190), self.page_next_rect, 2)
-            pygame.draw.polygon(
-                self.surface, (200, 200, 230), [(self.page_next_rect.centerx - 4, self.page_next_rect.top + 6), (self.page_next_rect.centerx + 4, self.page_next_rect.centery), (self.page_next_rect.centerx - 4, self.page_next_rect.bottom - 6)]
-            )
+            btn_h = 22
+            self.page_prev_rect = pygame.Rect(self.abilities_button_rect.right + 6, bar_rect.top + 6, 22, btn_h)
+            self.page_next_rect = pygame.Rect(self.page_prev_rect.right + 4, bar_rect.top + 6, 22, btn_h)
+            for rect, dir_sign in ((self.page_prev_rect, -1), (self.page_next_rect, 1)):
+                pygame.draw.rect(self.surface, (35, 35, 60), rect)
+                pygame.draw.rect(self.surface, (150, 150, 190), rect, 1)
+                if dir_sign < 0:
+                    pts = [(rect.right - 6, rect.top + 4), (rect.left + 6, rect.centery), (rect.right - 6, rect.bottom - 4)]
+                else:
+                    pts = [(rect.left + 6, rect.top + 4), (rect.right - 6, rect.centery), (rect.left + 6, rect.bottom - 4)]
+                pygame.draw.polygon(self.surface, (200, 200, 230), pts)
 
-        for idx_global, ability in enumerate(subset, start=start_idx):
+        # ability tiles for current page
+        for ab in vis:
+            ab.rect = ab.gear_rect = ab.plus_rect = ab.minus_rect = None
+
+        margin = 120  # leave room for abilities button/controls
+        gap = 6
+        n = max(1, len(vis))
+        avail_w = self.width - 2 * margin
+        box_w = (avail_w - gap * (n - 1)) / max(1, n)
+        x = margin
+        for idx_on_page, ability in enumerate(vis):
             rect = pygame.Rect(int(x), bar_rect.top + 8, int(box_w), bar_rect.height - 16)
             ability.rect = rect
             ability.plus_rect = None
             ability.minus_rect = None
             ability.gear_rect = None
 
-            if idx_global == self.current_ability_index:
+            is_active = False
+            if bar_state and bar_state.active_action == ability.action:
+                is_active = True
+            elif not bar_state and idx_on_page == self.current_ability_index:
+                is_active = True
+
+            if is_active:
                 border = (255, 255, 180)
                 fill = (45, 45, 70)
             else:
@@ -979,6 +1001,24 @@ class AsciiRenderer:
                     width=1,
                 )
             x += box_w + gap
+
+        # Optional reorder overlay
+        if getattr(game, "ability_reorder_open", False) and bar_state:
+            overlay = pygame.Surface((320, min(300, self.height - self.ability_bar_height - 60)), pygame.SRCALPHA)
+            overlay.fill((20, 20, 30, 230))
+            ox, oy = 20, 20
+            title = self.small_font.render("Reorder abilities (Up/Down select, Left/Right move, Enter to close)", True, self.fg)
+            overlay.blit(title, (8, 6))
+            y = 30
+            for idx, act in enumerate(bar_state.order):
+                ab = next((a for a in bar_state.abilities if a.action == act), None)
+                name = ab.name if ab else act
+                txt_color = self.sel if idx == bar_state.selected_index else self.fg
+                line = f"{idx+1}. {name}"
+                surf = self.small_font.render(line, True, txt_color)
+                overlay.blit(surf, (12, y))
+                y += surf.get_height() + 4
+            self.surface.blit(overlay, (8, self.top_bar_height + 8))
 
         # flash message
         now_ms = pygame.time.get_ticks()

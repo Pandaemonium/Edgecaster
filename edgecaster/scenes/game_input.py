@@ -47,6 +47,7 @@ class GameInput:
             "pickup": [pygame.K_g],
             "possess_nearest": [pygame.K_p],
             "open_inventory": [pygame.K_i],
+            "open_abilities": [],  # reserved for ctrl+A below
             "yawp": [pygame.K_y],
             "wait": [pygame.K_KP5],
             "stairs_down": [pygame.K_PERIOD, pygame.K_GREATER],
@@ -104,6 +105,10 @@ class GameInput:
         # Help ('?')
         if uni == "?":
             return [GameCommand("show_help", raw_key=key)]
+
+        # Ctrl+A to open abilities manager (without stealing plain 'a' movement)
+        if key == pygame.K_a and getattr(event, "mod", 0) & pygame.KMOD_CTRL:
+            return [GameCommand("open_abilities", raw_key=key)]
 
         # --- Ability hotkeys (1-9) ---
         if pygame.K_1 <= key <= pygame.K_9:
