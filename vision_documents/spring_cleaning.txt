@@ -1,88 +1,124 @@
-SPRING CLEANING CHECKLIST
+SPRING CLEANING – ACTIONABLE PLAN (POST-RESET)
 
-Core cleanup
+Legend: [CLEANUP] structural/no-behavior change; [BEHAVIOR] gameplay change; [VISION] future/idea.
 
--   Remove/ignore the embedded repo at C:\Games\Edgecaster\Edgecaster
-    (keep outer repo clean).
--   Keep generated assets out of git:
-    v1/Edgecaster/tools/path_thumbnails/ and other
-    thumbnails/screenshots → ensure in .gitignore.
--   Commit vision docs (vision_documents/*.txt) so they aren’t
-    untracked.
+============================================================
+SLICE 1: Renderer / Input Untangle [CLEANUP]
+Goal: ascii.py is draw-only; scenes own input/state.
+- Files:
+  - edgecaster/render/ascii.py – strip event handling, hover/aim logic, ability rebuilds.
+  - edgecaster/scenes/dungeon.py – route all GameCommand handling; own UI state.
+  - edgecaster/scenes/game_input.py – single source for bindings (include Ctrl+A, etc.).
+  - edgecaster/scenes/ability_bar.py – view-model for abilities.
+- Steps:
+  1) Introduce a tiny view model (e.g., DungeonView) passed to renderer; stop reading game directly where feasible.
+  2) Remove any key/mouse handling from ascii.py (search for pygame events, _update_hover, _ensure_abilities).
+  3) Ensure DungeonScene handles: move/place/aim clicks, ability clicks, zoom, config toggles.
+  4) Renderer should only draw from supplied state (game + UI/bar), no game mutations.
+- Done when:
+  - ascii.py contains only draw_* and helpers; no GameCommand logic.
+  - All input paths flow through GameInput -> DungeonScene._handle_command.
+- Smoke:
+  - Start game -> move with arrows/WASD.
+  - Place rune and activate.
+  - Zoom with wheel; click abilities; toggle fullscreen.
 
-Enemies & AI
+============================================================
+SLICE 2: Ability Bar Overhaul [CLEANUP]
+Goal: single source of truth for abilities; renderer draws only.
+- Files:
+  - edgecaster/scenes/ability_bar.py (AbilityBarState: abilities, order, page, active_index, signature).
+  - edgecaster/systems/abilities.py (build_abilities, compute_abilities_signature).
+  - edgecaster/scenes/dungeon.py (rebuild bar when signature changes; manage order/hotkeys).
+  - edgecaster/render/ascii.py (draw bar from AbilityBarState; expose hitboxes).
+- Steps:
+  1) Rebuild bar in DungeonScene from compute_abilities_signature; store in AbilityBarState; invalidate when custom fractal added.
+  2) Apply AbilityBarState.order when assigning hotkeys; mirror to renderer for now.
+  3) Renderer.draw_ability_bar consumes ordered list and returns hitboxes to scene (or writes into bar.hitboxes).
+  4) Add Abilities manager entry point (button + Ctrl+A) that opens a stub scene or at least rotates order and forces rebuild.
+- Done when:
+  - Creating a custom fractal adds a new button.
+  - 1–9 hotkeys, clicking abilities, page arrows, and Abilities button all work without exceptions.
+- Smoke:
+  - Create custom fractal -> new bar icon appears.
+  - Click ability -> effect fires.
+  - Rotate order via Abilities button/Ctrl+A -> order changes, no crash.
 
--   Confirm all enemies spawn via YAML → templates → factory; remove any
-    lingering references to legacy manual data.
--   Flesh out AI behaviors beyond the current stubs (melee_brute,
-    skirmisher, dive_bite, lunatic chatter, mana_bite).
--   Add proper spawn tables per biome/depth/zone difficulty; drop the
-    debug “spawn lunatic+imps on start” once happy with early game.
--   Hook loot drops (e.g., goblin loot_drop tag) and mana-drain effects
-    for mana_viper into actions/effects.
+============================================================
+SLICE 3: Custom Fractal Pipeline [CLEANUP]
+Goal: one editor, correct click alignment, consistent save path.
+- Files:
+  - edgecaster/scenes/fractal_editor_scene.py (single editor for chargen + in-run).
+  - edgecaster/patterns/builder.py (custom graph generator).
+  - edgecaster/game.py (custom_patterns handling, signature invalidation).
+- Steps:
+  1) Reuse fractal_editor_scene in chargen by parameterizing initial state/vertex cap.
+  2) On save, return {vertices, edges}; append to game.custom_patterns; clear ability bar signature.
+  3) Fix click/render alignment (use shared coord helpers; test fullscreen/windowed).
+- Done when:
+  - Editor clicks map exactly to vertices/edges in both windowed and fullscreen.
+  - Saved custom immediately shows as ability (after slice 2).
+- Smoke:
+  - Open editor, place vertices/edges, save -> ability appears.
+  - Clicks place exactly where rendered in both modes.
 
-Fractal/editor
+============================================================
+SLICE 4: Inventory Cleanup [CLEANUP]
+Goal: per-entity inventories with clear API.
+- Files:
+  - edgecaster/game.py (game.inventories dict; player_inventory accessor).
+  - edgecaster/scenes/inventory_scene.py (nested containers, correct headers).
+  - edgecaster/systems/actions.py (use transfer helpers).
+- Steps:
+  1) Replace flat inventory with game.inventories[entity_id]; add get_inventory/ player_inventory.
+  2) Standardize move/take/eat helpers: take_from_container, move_item_between_inventories, eat_item_from_inventory.
+  3) Update InventoryScene to read/write via helpers; support nested containers.
+- Done when:
+  - Items persist per owner; moving/eating works via helpers.
+  - No direct list mutation in scenes.
+- Tests:
+  - Add tests/inventory/test_transfers.py covering take/move/eat.
 
--   Consolidate character creation custom fractal flow to reuse
-    fractal_editor_scene.py.
--   Tighten click/render alignment QA in the editor; ensure
-    F11/fullscreen works consistently in all scenes.
+============================================================
+SLICE 5: Enemies/Data-Driven Entities [CLEANUP/BEHAVIOR]
+Goal: all enemies/items/entities spawned via templates/factories.
+- Files:
+  - edgecaster/content/enemies.yaml
+  - edgecaster/enemies/factory.py, templates.py
+  - edgecaster/game.py (spawn paths)
+- Steps:
+  1) Search for manual Enemy/Actor instantiation outside factory; remove.
+  2) Ensure all enemy IDs in YAML load into registry; add load-time sanity check.
+  3) (Optional) Introduce spawn tables module for biome/depth; wire spawns through it.
+- Done when:
+  - All spawns come from YAML -> registry -> factory; no “Unknown/???” log lines.
+- Tests:
+  - Add tests/content/test_enemy_yamls.py: load all YAML, assert registry ids, factory spawn succeeds.
 
-Content/data
+============================================================
+SLICE 6: Lorenz Overlay Separation [CLEANUP]
+Goal: renderer draw-only; physics in lorenz.py/Game.
+- Files:
+  - edgecaster/lorenz.py
+  - edgecaster/game.py (advance Lorenz in game time)
+  - edgecaster/render/ascii.py (draw only from provided points/trails)
+- Steps:
+  1) Move any remaining Lorenz state/steps out of ascii.py into lorenz.py/game.
+  2) Renderer consumes precomputed points/trails; no physics.
+- Done when:
+  - ascii.py has no Lorenz physics/state; visuals unchanged.
 
--   Document new behaviors/actions when added (update
-    architecture/strategy docs).
--   Ensure items/factions/data tables are kept in content/ and loaded
-    via registries (avoid scattered hardcoding).
+============================================================
+Deferred / Vision (track separately, not in cleaning slices)
+- [VISION] Spawn tables per biome/depth; balance tuning.
+- [VISION] Adjacent parasang simulation / fast travel events.
+- [VISION] Targeting system generalization (TargetingState/Mode reusable for “look”, projectiles).
+- [VISION] Lorenz reimagined as spell effect entity.
+- [VISION] AI behavior expansions and loot tuning.
 
-UX/renderer
-
--   Ability bar: keep extending in render/ascii.py (no parallel UIs).
--   Message logging: ensure names/tags propagate correctly; consider
-    removing placeholder “Unknown” fallbacks once registry is stable.
-
-Tests/dev quality
-
--   Add smoke tests or sanity checks for template loading (enemy YAML)
-    so missing IDs fail loudly in dev, not at runtime.
--   Periodically review debug.log usage; keep it small and
-    rotated/cleared each run as now.
-
-Lorenz butterflies
-
--   Hacky old system. Replace butterflies with proper entities (possibly
-    some sort of spell effect, along with runes etc.?)
--   Better isolate the Lorenz code away from the core files.
-
-Targeting system
-
--   Generalize runecasting “target mode” so it can be used in other
-    contexts, e.g. “looking” from afar or aiming projectiles
-
-Adjacent screens
-
--   Adjacent “parasangs” should be simulated to allow for pursuing
-    monsters, projectiles, relativistic space distortion (??), etc.
--   In general for our fractal scheme, computation in the grand energy
-    queue is determined by scale – we care more about what’s going on
-    this parasang than next parasang, but we care more about that than
-    about court intrigue in the faraway bird kingdom.
--   Unify fast travel with on-edge screen transitions, to trigger random
-    events etc.
-
-Entities
-
--   The few current entities (berries, inventories) are instantiated ad
-    hoc. Move to a more data-driven structure in line with enemies.yaml
-
-Inventory System Cleanup (2025-12 Upgrade)
-
--   Replace flat game.inventory with per-entity inventories
-    (game.inventories[id]).
--   Use get_inventory(owner_id) and player_inventory accessors.
--   Standardize item transfer: take_from_container,
-    move_item_between_inventories, eat_item_from_inventory.
--   Updated InventoryScene supports nested containers and proper
-    headers.
--   Debug inventory spawner added with random adjectives/colors for
-    testing.
+============================================================
+QA / Smoke checklist after each slice
+- Launch → move (WASD/arrows) → place rune → activate → zoom wheel → click abilities.
+- Create custom fractal → confirm bar icon appears and works.
+- Open inventory → move item → eat item (after inventory slice).
+- Toggle fullscreen (F11) and verify click alignment in editor and dungeon.
