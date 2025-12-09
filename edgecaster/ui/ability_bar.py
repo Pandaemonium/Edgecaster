@@ -310,12 +310,12 @@ class AbilityBarRenderer:
         small_font: pygame.font.Font,
         fg: Tuple[int, int, int],
         width: int,
-        icon_drawer: Callable[[pygame.Surface, pygame.Rect, str, "Game"], None] | None = None,
+        icon_drawer: Callable[[pygame.Surface, pygame.Rect, Ability, "Game"], None] | None = None,
     ) -> None:
         """
         Render the bar into bar_rect.
 
-        - `icon_drawer(surface, rect, action_name, game)` is provided by the
+        - `icon_drawer(surface, rect, ability, game)` is provided by the
           renderer (ascii.py) and may be None if you don't want icons.
         """
         # --- sync model from game -------------------------------------
@@ -397,8 +397,8 @@ class AbilityBarRenderer:
             # Main icon on the left
             icon_area = pygame.Rect(rect.x + 3, rect.y + 3, rect.height - 6, rect.height - 6)
             if icon_drawer is not None:
-                # ascii.AsciiRenderer._draw_ability_icon_for_bar(surface, rect, action, game)
-                icon_drawer(surface, icon_area, ability.action, game)
+                # ascii.AsciiRenderer._draw_ability_icon_for_bar(surface, rect, ability, game)
+                icon_drawer(surface, icon_area, ability, game)
             else:
                 # tiny fallback glyph
                 pygame.draw.rect(surface, (90, 90, 120), icon_area, 1)

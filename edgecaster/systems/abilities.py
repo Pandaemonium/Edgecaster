@@ -5,6 +5,7 @@ from typing import List, Tuple, Optional
 
 from edgecaster.game import Game
 from edgecaster.systems.actions import get_action
+from edgecaster.patterns.library import action_preview_geometry
 
 
 @dataclass
@@ -19,6 +20,7 @@ class Ability:
     name: str
     hotkey: int  # 1-based numeric hotkey
     action: str  # e.g. "place", "subdivide", "koch", "activate_all", ...
+    preview_geom: Optional[dict] = None  # normalized icon geometry from pattern library
 
 
 # ---------------------------------------------------------------------
@@ -107,7 +109,8 @@ def build_abilities(game: Game) -> List[Ability]:
             return
         if not getattr(adef, "show_in_bar", False):
             return
-        abilities.append(Ability(name=adef.label, hotkey=hotkey, action=adef.name))
+        preview = action_preview_geometry(adef.name, game)
+        abilities.append(Ability(name=adef.label, hotkey=hotkey, action=adef.name, preview_geom=preview))
         hotkey += 1
 
     # Preserve order: whatever is in host.actions is the bar order.

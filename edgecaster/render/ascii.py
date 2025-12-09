@@ -8,6 +8,7 @@ from edgecaster.game import Game
 from edgecaster.state.actors import Actor
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
+from edgecaster.patterns.library import action_preview_geometry
 from edgecaster.ui.ability_bar import AbilityBarRenderer
 
 
@@ -802,15 +803,18 @@ class AsciiRenderer:
             icon_drawer=self._draw_ability_icon_for_bar,
         )
 
-    def _draw_ability_icon(self, rect: pygame.Rect, action: str, game: Game) -> None:
-        surf = self._render_action_icon(action, game, (rect.w, rect.h))
+    def _draw_ability_icon(self, rect: pygame.Rect, ability_or_action, game: Game) -> None:
+        """Draw an ability icon from either an Ability or an action name."""
+        action = getattr(ability_or_action, "action", ability_or_action)
+        preview = getattr(ability_or_action, "preview_geom", None)
+        surf = self._render_action_icon(action, game, (rect.w, rect.h), preview_geom=preview)
         self.surface.blit(surf, rect.topleft)
 
     def _draw_ability_icon_for_bar(
         self,
         surface: pygame.Surface,
         rect: pygame.Rect,
-        action: str,
+        ability,
         game: Game,
     ) -> None:
         """Adapter so AbilityBarRenderer can remain decoupled from this renderer.
@@ -819,7 +823,9 @@ class AsciiRenderer:
         icon rendering logic but blit onto the provided surface instead of
         assuming self.surface.
         """
-        surf = self._render_action_icon(action, game, (rect.w, rect.h))
+        action = getattr(ability, "action", ability)
+        preview = getattr(ability, "preview_geom", None)
+        surf = self._render_action_icon(action, game, (rect.w, rect.h), preview_geom=preview)
         surface.blit(surf, rect.topleft)
 
 
@@ -958,7 +964,12 @@ class AsciiRenderer:
         )
 
     def _render_action_icon(
-        self, action: str, game: Game, size: Tuple[int, int], overrides: Dict[str, object] | None = None
+        self,
+        action: str,
+        game: Game,
+        size: Tuple[int, int],
+        overrides: Dict[str, object] | None = None,
+        preview_geom: Dict[str, object] | None = None,
     ) -> pygame.Surface:
         """Render a tiny illustrative icon for an action, respecting current params and optional overrides."""
         pad = 2
@@ -980,169 +991,12 @@ class AsciiRenderer:
             for a, b in segs:
                 pygame.draw.aaline(surf, color, to_px(*points[a]), to_px(*points[b]))
 
-        verts = []
-        segs = []
-        extra = None
+        geom = preview_geom or action_preview_geometry(action, game, overrides)
+        extra = geom or {}
+        verts = geom.get("verts", []) if geom else []
+        segs = geom.get("segs", []) if geom else []
 
-        def g(action_key: str, key: str, default):
-            if overrides and key in overrides:
-                return overrides[key]
-            try:
-                return game.get_param_value(action_key, key)
-            except Exception:
-                return default
-
-        if action == "place":
-            verts = [(0.15, 0.5), (0.85, 0.5)]
-            segs = [(0, 1)]
-            extra = {"strong": [1]}
-        elif action == "subdivide":
-            parts = g("subdivide", "parts", 3)
-            step = 1.0 / max(1, parts)
-            verts = []
-            for i in range(parts + 1):
-                x = 0.1 + 0.8 * i * step
-                verts.append((x, 0.5))
-            segs = [(i, i + 1) for i in range(len(verts) - 1)]
-        elif action == "extend":
-            verts = [(0.1, 0.6), (0.5, 0.6), (0.9, 0.6)]
-            segs = [(0, 1), (1, 2)]
-            extra = {"dotted": [(0, 1)]}
-        elif action == "koch":
-            height = g("koch", "height", 0.25)
-            flip = g("koch", "flip", False)
-            length = 0.8
-            base_y = 0.55
-            # clamp amplitude so both chiralities stay visible inside the icon
-            amp = height * length
-            margin = 0.08
-            max_amp = max(0.05, min(base_y - margin, 1.0 - margin - base_y))
-            if amp > max_amp:
-                amp = max_amp
-            ax, ay = 0.1, base_y
-            bx, by = ax + length, base_y
-            p1 = (ax + length / 3.0, base_y)
-            p3 = (ax + 2.0 * length / 3.0, base_y)
-            # match on-board orientation: non-mirrored shows peak upward on screen
-            dy = amp if not flip else -amp
-            peak = ((p1[0] + p3[0]) * 0.5, base_y + dy)
-            verts = [
-                (ax, ay),
-                p1,
-                peak,
-                p3,
-                (bx, by),
-            ]
-            segs = [(0, 1), (1, 2), (2, 3), (3, 4)]
-        elif action == "branch":
-            angle = g("branch", "angle", 45)
-            count = g("branch", "count", 3)
-            verts = [(0.15, 0.6), (0.5, 0.6)]
-            segs = [(0, 1)]
-            spread = math.radians(angle)
-            base_ang = 0
-            length = 0.35
-            for i in range(count):
-                t = 0 if count == 1 else i / (count - 1)
-                ang = base_ang - spread + 2 * spread * t
-                vx = verts[1][0] + length * math.cos(ang)
-                vy = verts[1][1] - length * math.sin(ang)
-                verts.append((vx, vy))
-                segs.append((1, len(verts) - 1))
-            extra = {"strong": [1]}
-        elif action == "zigzag":
-            parts = g("zigzag", "parts", 5)
-            amp = g("zigzag", "amp", 0.2)
-            verts = []
-            segs = []
-            for i in range(parts + 1):
-                t = i / parts
-                x = 0.1 + 0.8 * t
-                y = 0.55 + ((-1) ** i) * amp * 0.6
-                verts.append((x, y))
-                if i > 0:
-                    segs.append((i - 1, i))
-        elif action.startswith("custom"):
-            pattern = getattr(game.character, "custom_pattern", None) if hasattr(game, "character") else None
-            amp = 1.0
-            try:
-                amp = game.get_param_value("custom", "amplitude")
-            except Exception:
-                pass
-            if hasattr(game, "custom_patterns"):
-                idx = 0
-                if action != "custom":
-                    try:
-                        idx = int(action.split("_", 1)[1])
-                    except Exception:
-                        idx = 0
-                if idx < len(game.custom_patterns):
-                    pattern = game.custom_patterns[idx]
-
-            pts = None
-            edges = []
-            if isinstance(pattern, dict):
-                pts = pattern.get("vertices")
-                edges = pattern.get("edges", [])
-            else:
-                pts = pattern
-
-            if pts and len(pts) >= 2:
-                # normalize and scale uniformly to fit while preserving aspect
-                xs = [p[0] for p in pts]
-                ys = [p[1] for p in pts]
-                min_x, max_x = min(xs), max(xs)
-                min_y, max_y = min(ys), max(ys)
-                width = max(1e-5, max_x - min_x)
-                height = max(1e-5, max_y - min_y)
-                # apply amplitude scaling only to lateral (Y) span
-                height *= amp
-                norm = []
-                for x, y in pts:
-                    nx = (x - min_x) / width
-                    ny = (y - min_y) / height
-                    norm.append((nx, ny))
-                # scale uniformly to available box with padding
-                pad = 0.12
-                avail = 1.0 - 2 * pad
-                # preserve aspect
-                aspect = width / height if height > 0 else 1.0
-                if aspect >= 1:
-                    sx = avail
-                    sy = avail / aspect
-                else:
-                    sx = avail * aspect
-                    sy = avail
-                ox = (1.0 - sx) * 0.5
-                oy = (1.0 - sy) * 0.5
-                verts = [(ox + p[0] * sx, oy + (1 - p[1]) * sy) for p in norm]
-                if edges:
-                    segs = [(a, b) for a, b in edges if a < len(verts) and b < len(verts)]
-                else:
-                    segs = [(i, i + 1) for i in range(len(verts) - 1)]
-            else:
-                verts = [(0.15, 0.5), (0.85, 0.5)]
-                segs = [(0, 1)]
-        elif action == "activate_all":
-            radius = g("activate_all", "radius", 1.5)
-            verts = [(0.25, 0.5), (0.75, 0.5), (0.5, 0.25), (0.5, 0.75)]
-            segs = []
-            extra = {"circle": True, "radius": radius}
-        elif action == "activate_seed":
-            depth = g("activate_seed", "neighbor_depth", 1)
-            verts = [(0.5, 0.5)]
-            # simple plus-shape neighbors; add additional ring if depth >1
-            offsets = [( -0.25, 0), (0.25, 0), (0, -0.25), (0, 0.25)]
-            for dx, dy in offsets:
-                verts.append((0.5 + dx, 0.5 + dy))
-            if depth >= 2:
-                far = 0.45
-                offsets2 = [(-far, 0), (far, 0), (0, -far), (0, far)]
-                for dx, dy in offsets2:
-                    verts.append((0.5 + dx, 0.5 + dy))
-            segs = []
-            extra = {"strong": [0], "boxes": list(range(1, len(verts)))}
-        elif action == "reset":
+        if action == "reset":
             pygame.draw.line(surf, (200, 140, 140), (4, h // 2), (w - 4, h // 2), 2)
             pygame.draw.line(surf, (200, 140, 140), (4, h // 2 + 6), (w - 4, h // 2 + 6), 2)
         elif action == "meditate":
@@ -1186,24 +1040,6 @@ class AsciiRenderer:
                         pygame.draw.rect(surf, (180, 220, 255), rect_box, 1)
 
         return surf
-
-    def _draw_ability_icon(self, rect: pygame.Rect, action: str, game: Game) -> None:
-        surf = self._render_action_icon(action, game, (rect.w, rect.h))
-        self.surface.blit(surf, rect.topleft)
-
-
-    def _draw_ability_icon_for_bar(
-        self,
-        surface: pygame.Surface,
-        rect: pygame.Rect,
-        action: str,
-        game: Game,
-    ) -> None:
-        # The existing helper already knows how to render a Surface for this action
-        # and blit it onto self.surface; we ignore the passed surface because the
-        # ability bar is drawn on self.surface.
-        self._draw_ability_icon(rect, action, game)
-
 
     def teardown(self) -> None:
         pygame.quit()
