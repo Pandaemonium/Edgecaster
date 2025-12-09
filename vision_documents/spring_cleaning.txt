@@ -1,97 +1,99 @@
-SPRING CLEANING – ACTIONABLE PLAN (CURRENT STATUS: ABILITY BAR EXTRACTED)
+SPRING CLEANING – ACTIONABLE PLAN
+(Current Status: Ability Bar Fully Extracted, Abilities Now Entity-Driven)
 Legend: [CLEANUP] structural/no-behavior change; [BEHAVIOR] gameplay change; [VISION] future/idea.
-Updated after refactor of the Ability Bar into a standalone UI widget.
 
 ===============================================================================
 SLICE 1: Renderer / Input Untangle [CLEANUP] — COMPLETE ENOUGH FOR NOW
 Goal: ascii.py is draw-only; scenes own all input and UI logic.
 
-Current status:
+Status:
 ✓ ascii.py now owns NO input
-✓ All input → GameInput → GameCommand → DungeonScene._handle_command
+✓ Input → GameInput → GameCommand → DungeonScene._handle_command
 ✓ Renderer only computes hitboxes and draws
-Remaining impurities: dialog UI + config UI still partly in ascii.py
+Remaining impurities:
+- Dialog + Config UI still have small logic remnants in ascii.py
 
 Next micro-steps:
-- Move dialog/config selection state from ascii.py into dedicated scene models
+- Move dialog/config state out of ascii.py into dedicated small scene models
 - Renderer should receive view-models only
 
 ===============================================================================
-SLICE 2: Ability Bar Overhaul [CLEANUP] — BASELINE COMPLETE
-Goal: renderer-agnostic ability system driven entirely by Actions.
+SLICE 2: Ability Bar Overhaul [CLEANUP] — **MAJOR UPDATE COMPLETE**
+Goal: Ability system renderer-agnostic and driven entirely by Actions defined in actions.py.
 
-Current status:
-✓ AbilityBarState implemented and scene-owned
-✓ AbilityBarRenderer view-only; ascii.py just calls draw()
-✓ systems/actions.py defines canonical actions (with show_in_bar)
+Status:
+✓ AbilityBarState implemented (scene-owned)
+✓ AbilityBarRenderer is pure view
+✓ actions.py defines all action metadata (show_in_bar, icons, colors, sub-buttons)
 
 NEW (IMPORTANT):
-Actions ALSO define:
-- icon / glyph
-- color hints
-- sub-button metadata (e.g. parameter +/–, gear/config buttons)
-AbilityBarRenderer imports the metadata and builds all UI elements dynamically.
-Scenes only handle routing; renderer does not embed UI rules.
+✓ **Ability bar now reflects the current host actor’s `actions` list.**
+  - Body-swapping instantly updates the bar.
+  - Only actions with show_in_bar=True appear.
+  - Future classes and monsters inherit abilities automatically.
+
+✓ **Kochbender fractal kit is now added via entity.actions at spawn time.**
+  - Currently done hackily during player instantiation in game.py.
+  - Ultimately should be expressed via character generation + entity templates.
 
 Next micro-steps:
-- Remove remaining legacy renderer ability code (icon helpers optional)
-- Add a small AbilityConfigScene for advanced per-ability settings if needed
+- Roll class-specific action lists into character generation pipelines
+- Replace hacky player spawn action injection with a clean class component
 
 ===============================================================================
 SLICE 3: Targeting System Generalization [CLEANUP/BEHAVIOR] — NEXT PRIORITY
-Goal: unified TargetMode for all targeted actions.
+Goal: One unified TargetMode for all targeted actions.
 
 Plan:
-1) Introduce a TargetState model on DungeonScene
-2) While active → movement keys move cursor
+1) Introduce a TargetState struct on DungeonScene
+2) Movement keys move cursor while active
 3) Confirm → resolve + dispatch
 4) Cancel → exit
-5) Renderer draws target cursor only
+5) Renderer only draws the cursor; no logic inside ascii.py
 
-When complete:
-- No special-case “terminus mode” or “aim mode”
-- Keyboard + mouse parity for all targeted actions
+Benefits:
+- Removes legacy “terminus mode” and “aim mode”
+- Fully unifies keyboard + mouse targeting
 
 ===============================================================================
 SLICE 4: Custom Fractal Pipeline [CLEANUP]
-Current status:
-✓ Ability bar correctly triggers custom fractal editor via action metadata
+Status:
+✓ Ability bar correctly opens fractal editor via action metadata
 Next:
 - Ensure editor returns unified vertices/edges dict
-- Confirm identical click alignment for all window modes
+- Align all clicks consistently in fullscreen and windowed modes
 
 ===============================================================================
 SLICE 5: Inventory Cleanup [CLEANUP]
-Goal: per-entity inventories with clear helpers.
+Status:
+✓ Nested containers implemented
+✓ InventoryScene functional
 
-Current status:
-✓ Core helper APIs implemented in game.py
-✓ Nested containers supported
 Next:
-- Additional UI polish in InventoryScene
-- Consider simple item stacking
+- UI polish (left-justification, footer clipping fix)
+- Consider stackable items
 
 ===============================================================================
 SLICE 6: Data-Driven Entities [CLEANUP/BEHAVIOR]
-Goal: all entities defined by YAML.
+Goal: All entities via YAML → factory instantiation.
 
-Current status:
-✓ entities.yaml + factory in place
-✓ Berries/containers generated from templates
+Status:
+✓ entities.yaml and enemy_factory fully in place
+✓ All monsters derived from YAML templates
+✓ Containers, berries, environmental objects cleanly data-driven
+
 Next:
-- Expand component-style properties
-- Move remaining hardcoded objects into content layer
+- Expand template “components”
+- Migrate hardcoded actor stats into templates where appropriate
 
 ===============================================================================
 Deferred / Vision Targets
-- [VISION] Full renderer swapability (ASCII → tiles)
-- [VISION] Spell/action effects as “effect entities”
-- [VISION] Procedural spawn tables
-- [VISION] Behavior trees for AI
+- Full renderer swapability (ASCII → tiles)
+- Spell/action effects as entities
+- Procedural spawn tables
+- Behavior-tree AI
 
 ===============================================================================
 Current tactical focus:
-→ IMPLEMENT UNIFIED TARGETMODE (SLICE 3)
-Dynamic ability sub-buttons + action metadata are now stable; targeting is the
-main structural piece that benefits from unification.
-
+→ **IMPLEMENT UNIFIED TARGETMODE (SLICE 3)**  
+Ability bar + action metadata are stable. Targeting is the last big unification step.

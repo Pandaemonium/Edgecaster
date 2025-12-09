@@ -1,178 +1,167 @@
 EDGECASTER ARCHITECTURE GUIDE
 High-Level Overview and Refactor Roadmap
-Updated: 2025-12-08
+Updated: 2025-12-08 (entity-driven abilities update integrated)
 
 This document orients new contributors to the current post-ascii-purge structure.
-It should be kept concise, accurate, and immediately actionable.
+It must remain concise, accurate, and immediately useful as a project primer.
 
 ===============================================================================
 SECTION 1 — LAYER RESPONSIBILITIES
 
 SCENES (edgecaster/scenes/)
-Scenes own:
+Own:
 - Input interpretation (via GameCommand)
-- UI state (dialog, config, ability bar, targeting)
+- UI state (dialogs, config, ability bar, targeting)
 - Scene transitions
-- High-level game intentions (“Player wants to activate this ability”)
+- High-level gameplay intentions (“Player activates this ability”)
 
-Scenes DO NOT:
-- draw pixels
-- embed render logic
-- mutate renderer state
+Do NOT:
+- Draw pixels
+- Contain renderer logic
+- Bypass the GameCore
 
 Key scenes:
-manager.py   → scene stack + transitions
-dungeon.py   → main gameplay; owns ability bar + targeting
-inventory_scene.py
-dialogue_scene.py
-fractal_editor_scene.py
-urgent_message_scene.py
+- manager.py            scene stack + transitions
+- dungeon.py            primary gameplay; owns ability bar + targeting
+- inventory_scene.py    nested inventory UI
+- fractal_editor_scene.py
+- dialogue_scene.py
+- urgent_message_scene.py
 
+-------------------------------------------------------------------------------
 RENDERERS (edgecaster/render/)
-Renderers are PURE VIEW.
+Pure view layer.
 
 ascii.py:
-- Draws world, entities, HUD, overlays
+- Draws everything (map, entities, UI overlays)
 - Computes hitboxes for mouse interactions
-- Holds only lightweight visual state (highlight index, hover info)
+- Holds *only* lightweight visual state
 
-Renderers DO NOT:
-- read keyboard/mouse events
-- route abilities or game actions
-- own gameplay logic
+Renderers do NOT:
+- Read keyboard/mouse events
+- Trigger actions
+- Store gameplay state
 
+-------------------------------------------------------------------------------
 INPUT (edgecaster/scenes/game_input.py)
-Single translation layer:
-Pygame event → GameCommand(kind="move"|"ability_hotkey"|...)
-Scenes respond to GameCommand; renderer is never involved.
+Single input translation layer:
+Pygame Event → GameCommand(kind="move"|"ability_hotkey"|...).
+Scenes interpret commands; renderers never touch input.
 
+-------------------------------------------------------------------------------
 GAME CORE (edgecaster/game.py)
 Authoritative world state:
-- Actors, entities, turn queue
-- Movement, combat, fractal mechanics
-- Custom patterns, illumination, state updates
+- Entities, actors, positions, combat
+- Rune graph, fractal operators, generator/illuminator logic
+- Turn updates, RNG, world state
 
-Does NOT:
-- know about Pygame
-- know about renderer
-- interpret input
+GameCore does NOT:
+- Interpret input
+- Know anything about the renderer
 
+-------------------------------------------------------------------------------
 SYSTEMS (edgecaster/systems/)
 Pure logic modules:
-- actions.py → atomic actions + metadata (show_in_bar, icon, sub-buttons)
-- abilities.py → ability building + effect routing
-- patterns/* → fractal generation
-- ai.py → behavior logic
+- actions.py       → ActionDef registry + metadata (show_in_bar, icons, sub-buttons)
+- abilities.py     → Builds ability list from host actions; routes effects
+- patterns/*       → Fractal generation
+- ai.py            → Behavior logic
 
-NOTE ON ACTION METADATA (NEW):
-Action UI metadata—icons, hover text, and optional sub-buttons—is defined
-centrally in actions.py. The AbilityBarRenderer imports these values and
-constructs its visual elements dynamically. No UI configuration is stored inside
-the renderer or scene code. This allows actions to be extended or reskinned
-purely through content-layer definitions.
+IMPORTANT (NEW):
+✓ Action UIs are driven entirely by metadata in actions.py.  
+✓ AbilityBarRenderer is purely a consumer of ActionDef metadata.  
+✓ Scenes route all activation and per-ability adjustments.
 
 ===============================================================================
-SECTION 2 — STATE OF THE ASCII PURGE
+SECTION 2 — ASCII PURGE STATUS
 
-Originally ascii.py contained input, UI logic, aim mode, ability routing, dialog
-logic, and sometimes gameplay. It is now almost fully purified.
+Originally ascii.py owned input, UI logic, targeting, and sometimes gameplay.
+Now:
 
-Current status:
-✓ All input is in DungeonScene
-✓ Ability system moved to systems/abilities.py
-✓ AbilityBarState + AbilityBarRenderer implemented (scene model + renderer view)
-✓ DungeonScene handles all activations + hotkeys
-✓ Targeting logic partially moved out; renderer only draws cursor/hover
-✓ Action icons + sub-buttons now driven entirely by actions.py metadata
+✓ All input lives in DungeonScene  
+✓ Ability system fully extracted into systems/abilities  
+✓ AbilityBarState (scene) + AbilityBarRenderer (view) are clean  
+✓ Targeting logic partly migrated; renderer now draws cursor only  
+✓ Action icons + sub-buttons driven by actions.py
 
-Remaining impurities:
-- Dialog overlay logic still partially embedded in ascii.py
-- Config gear menu still renderer-owned
 
-Next steps:
-→ Move dialog/config UI into dedicated scenes
-→ Complete TargetMode generalization
+Next:
+→ Complete unified TargetMode
 
 ===============================================================================
-SECTION 3 — ABILITY SYSTEM (CURRENT STATUS)
+SECTION 3 — ABILITY SYSTEM (CURRENT BEHAVIOR)
 
-Abilities are no longer renderer-driven. Pipeline:
-
-Actor.actions (from YAML or class) + Game character state →
-systems/abilities.build_abilities →
-AbilityBarState (scene-owned) →
-AbilityBarRenderer (view-only) →
-DungeonScene._handle_command → trigger_ability_effect / queue_player_action
+Pipeline:
+Actor.actions (from YAML or class)  
+→ systems/abilities.build_abilities  
+→ AbilityBarState (scene)  
+→ AbilityBarRenderer (view)  
+→ DungeonScene._handle_command  
+→ trigger_ability_effect / queue_player_action
 
 Highlights:
-✓ Actions declare show_in_bar metadata
-✓ Icons, colors, and sub-button definitions now originate in actions.py
-✓ Renderer becomes a pure consumer of metadata instead of storing UI logic
-✓ Hosts (imps, future classes) automatically expose abilities
-✓ Ability bar is dynamic and reorderable
+✓ Ability bar now reflects the **current host actor’s actions**  
+✓ show_in_bar=True determines visibility  
+✓ Icons, labels, tooltips, sub-buttons imported from actions.py  
+✓ Body-swapping cleanly switches ability sets  
+✓ Easy extension: add an action to a monster → it appears in the bar if flagged
 
-NEW: ACTION SUB-BUTTONS
-Actions may optionally define sub-buttons (e.g. +/–, gear icons, parameter
-adjusters). These are declared in actions.py, and AbilityBarRenderer generates
-the corresponding hitboxes and icon renderings automatically. DungeonScene
-receives click events and routes them based on spec.id and spec.kind.
+IMPORTANT (NEW):
+**Kochbender kit added via entity.actions during player spawn.**  
+For now, this is implemented directly in game.py (hacky but functional).  
+Long-term: this should be rolled into character generation + template components.
 
 ===============================================================================
-SECTION 4 — TARGETING REWRITE (NEXT PIVOTAL TASK)
+SECTION 4 — TARGETING (NEXT MAJOR REWRITE)
 
 Goal:
-One unified TargetMode used for:
-- Rune terminus placement
-- Activate-all / activate-seed
+One unified TargetMode for everything:
+- Rune terminus / seed
+- Activate (radius / neighbors)
 - Look mode
-- Future ranged attacks, teleports, cone AoEs
+- Ranged attacks
+- Teleports
 
-TargetState will include:
-active, kind ("tile"/"vertex"), action, cursor, origin, optional range.
+TargetState (scene-owned):
+- active, kind ("tile"/"vertex"), action_name
+- cursor, origin, optional range
 
-Rules:
-- While active → movement keys move cursor, not player
-- Confirm → dispatch correct action with resolved target data
-- Cancel → exit TargetMode
-- Renderer → draws cursor only; no logic
+Renderer: just draws cursor.  
+Game: receives final target on confirm.  
 
-This is the next major refactor before introducing class action sets or advanced UI.
+This is the next major structural refactor.
 
 ===============================================================================
 SECTION 5 — DATA-DRIVEN ENTITIES
 
-items, berries, containers, and environmental objects are now defined in
-entities.yaml. A factory (mirroring enemies.yaml) instantiates Entities with:
-
-id, glyph/color, layer, physics flags, tags, statuses.
+Entities and actors created via YAML templates using a factory.  
+Supports:
+✓ Monsters with custom AI + action sets  
+✓ Items with HP, tags, container behavior  
+✓ Procedural or mythic biological systems
 
 Vision:
-Everything in the world is an Entity; subclasses (Object → Organism → Animal)
-become composable behaviors instead of hard-coded Python.
-
-Supports:
-✓ Sentient berries
-✓ HP for items
-✓ Procedurally mixed biology / myth / material entities
+- Retire hardcoded stats in game.py
+- Move to component-style behaviors in templates
 
 ===============================================================================
 SECTION 6 — PRACTICAL ONBOARDING NOTES
 
 For new contributors:
-- Renderer is draw-only; NEVER handle input or call game logic there.
-- Scenes own UI and command routing.
-- Use GameCommand for all new inputs.
+- Renderer is view-only; never handle input here.
+- Scenes own UI and all state machines (ability bar, targeting, dialogs).
 - Game holds state; systems/* holds logic.
-- View models (AbilityBarState, TargetState, DialogViewModel) travel from scenes
-  to renderer, never the reverse.
-- Actions define their own UI metadata; renderer simply reflects it.
+- View-models flow from scenes → renderer only.
+- Actions define all UI metadata; the renderer never invents any.
 
 ===============================================================================
 SECTION 7 — TL;DR FOR THE NEXT GUY
 
-ascii.py is almost pure view code.
-Ability system is fully extracted.
-Action icons + sub-buttons come from actions.py.
-Next: implement unified TargetMode in DungeonScene.
-Keep renderer clean. Keep game pure. Keep scenes in control.
+ascii.py: pure renderer  
+Scene: owns UI, input, and routing  
+Game: pure world state  
+Actions: define ability metadata  
+AbilityBar: driven by entity.actions  
+Next priority: Unified TargetMode
 
+Keep the geometry weird and the scenes clean.
