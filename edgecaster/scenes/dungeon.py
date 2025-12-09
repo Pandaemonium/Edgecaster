@@ -139,42 +139,6 @@ class DungeonScene(Scene):
         manager.current_game = game
         setattr(game, "scene_manager", manager)
 
-        def _build_player_actions_for_customs(game_obj) -> list[str]:
-            """Minimal action builder that mirrors the Kochbender kit and appends customs."""
-            actions: list[str] = ["move", "wait"]
-            player_class = getattr(game_obj.character, "player_class", None) or getattr(game_obj.character, "char_class", None)
-            generator_choice = getattr(game_obj.character, "generator", "koch")
-            illuminator_choice = getattr(game_obj.character, "illuminator", "radius")
-            customs = getattr(game_obj, "custom_patterns", []) or []
-
-            if player_class == "Kochbender":
-                actions += ["place", "subdivide", "extend", generator_choice]
-                for idx in range(len(customs)):
-                    actions.append("custom" if idx == 0 else f"custom_{idx}")
-                if illuminator_choice == "radius":
-                    actions.append("activate_all")
-                elif illuminator_choice == "neighbors":
-                    actions.append("activate_seed")
-                else:
-                    actions.append("activate_all")
-                actions.append("reset")
-                actions.append("meditate")
-            return actions
-
-        # Scene-local helpers (avoid touching Game internals)
-        def _apply_actions_to_player(game_obj, actions: list[str]) -> None:
-            try:
-                lvl = game_obj._level()
-                player = lvl.actors.get(game_obj.player_id)
-            except Exception:
-                player = None
-            if player is not None:
-                player.actions = tuple(actions)
-
-        self._refresh_player_actions_for_customs = lambda g: _apply_actions_to_player(
-            g, _build_player_actions_for_customs(g)
-        )
-
         # If a fractal edit result is waiting, absorb it into custom patterns
         if getattr(manager, "fractal_edit_result", None):
             res = manager.fractal_edit_result
@@ -188,7 +152,11 @@ class DungeonScene(Scene):
                 # New custom pattern can change available abilities; force resync.
                 if hasattr(game, "ability_bar_state"):
                     game.ability_bar_state.invalidate()
-                self._refresh_player_actions_for_customs(game)
+                # Grant the corresponding custom ability (custom, custom_1, ...)
+                new_idx = len(game.custom_patterns) - 1
+                ab_name = "custom" if new_idx == 0 else f"custom_{new_idx}"
+                if hasattr(game, "grant_ability"):
+                    game.grant_ability(ab_name)
                 # Reset editor state after applying result so '+' uses defaults next time.
                 setattr(game, "fractal_editor_state", None)
 

@@ -29,6 +29,7 @@ class Entity:
     # Metadata
     tags: Dict[str, Any] = field(default_factory=dict)
     statuses: Dict[str, int] = field(default_factory=dict)
+    cooldowns: Dict[str, int] = field(default_factory=dict)
 
     @property
     def x(self) -> int:

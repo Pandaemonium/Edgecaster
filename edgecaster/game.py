@@ -599,8 +599,39 @@ class Game:
         action_def = get_action(action_name)
         delay = action_delay(self.cfg, action_def)  # use cfg, not 'config'
 
+        # Determine cooldown origin: first item in inventory that grants this ability, else actor.
+        origin = None
+        actor = None
+        try:
+            actor = self._level().actors.get(actor_id)
+        except Exception:
+            actor = None
+        if actor is not None:
+            inv = self.inventories.get(actor_id, [])
+            for item in inv:
+                if getattr(item, "tags", {}).get("grants_ability") == action_name:
+                    origin = item
+                    break
+        if origin is None and actor is not None:
+            origin = actor
+
+        # Cooldown gate
+        if origin is not None:
+            cd = getattr(origin, "cooldowns", {}).get(action_name, 0)
+            if cd > 0:
+                if actor_id == self.player_id:
+                    self.log.add("That ability is recharging.")
+                return
+
         # Do the actual action right now.
         action_def.func(self, actor_id, **kwargs)
+
+        # Apply cooldown if defined
+        if origin is not None and action_def.cooldown_ticks > 0:
+            try:
+                origin.cooldowns[action_name] = action_def.cooldown_ticks
+            except Exception:
+                pass
 
         # Advance game time by the appropriate amount.
         self._advance_time(lvl, delay)
@@ -608,6 +639,35 @@ class Game:
     def queue_player_action(self, action_name: str, **kwargs) -> None:
         """Convenience wrapper to queue an action for the current player."""
         self.queue_actor_action(self.player_id, action_name, **kwargs)
+
+    # --- ability / actions helpers -------------------------------------------------
+
+    def grant_ability(self, action_name: str) -> bool:
+        """
+        Add an action to the current player's action list if not already present.
+
+        Returns True if added. Also invalidates the ability bar state when present.
+        """
+        try:
+            lvl = self._level()
+            player = lvl.actors.get(self.player_id)
+        except Exception:
+            player = None
+        if player is None:
+            return False
+
+        current = list(getattr(player, "actions", ()) or [])
+        if action_name in current:
+            return False
+        current.append(action_name)
+        player.actions = tuple(current)
+
+        if hasattr(self, "ability_bar_state"):
+            try:
+                self.ability_bar_state.invalidate()
+            except Exception:
+                pass
+        return True
 
 
 
@@ -827,6 +887,24 @@ class Game:
         # scatter some test berries on overworld levels
         if coord[2] == 0:  # depth == 0
             self._scatter_test_berries(lvl, count=10)
+            # Place a destabilizer near entry for testing/availability.
+            try:
+                ex, ey = lvl.world.entry
+                offsets = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (0, 2), (-2, 0), (0, -2)]
+                for dx, dy in offsets:
+                    tx, ty = ex + dx, ey + dy
+                    if not lvl.world.in_bounds(tx, ty):
+                        continue
+                    if not lvl.world.is_walkable(tx, ty):
+                        continue
+                    if self._entity_at(lvl, (tx, ty)):
+                        continue
+                    ent = self._spawn_entity_from_template("destabilizer", (tx, ty))
+                    if ent:
+                        lvl.entities[ent.id] = ent
+                        break
+            except Exception:
+                pass
 
         return lvl
 
@@ -1427,6 +1505,8 @@ class Game:
 
         # NEW: coherence drain based on vertices
         self._coherence_tick(level, delta)
+        # NEW: cooldowns tick down
+        self._cooldown_tick(level, delta)
 
 
     def _coherence_tick(self, level: LevelState, delta: int) -> None:
@@ -1451,6 +1531,38 @@ class Game:
             self.log.add("Your pattern loses coherence and unravels.")
             stats.coherence = stats.max_coherence
 
+
+
+    def _cooldown_tick(self, level: LevelState, delta: int) -> None:
+        """Tick down cooldowns on actors, ground entities, and inventory items."""
+        seen: set[str] = set()
+
+        def tick_entity(ent) -> None:
+            if not hasattr(ent, "cooldowns"):
+                return
+            ent_id = getattr(ent, "id", None)
+            if ent_id and ent_id in seen:
+                return
+            if ent_id:
+                seen.add(ent_id)
+            cds = getattr(ent, "cooldowns", {})
+            to_delete = []
+            for name, val in list(cds.items()):
+                new_val = max(0, val - delta)
+                if new_val <= 0:
+                    to_delete.append(name)
+                else:
+                    cds[name] = new_val
+            for name in to_delete:
+                del cds[name]
+
+        for act in level.actors.values():
+            tick_entity(act)
+        for ent in level.entities.values():
+            tick_entity(ent)
+        for items in getattr(self, "inventories", {}).values():
+            for ent in items:
+                tick_entity(ent)
 
 
     # --- Lorenz / strange-attractor aura, game-side ---
@@ -1829,10 +1941,16 @@ class Game:
         inv = self.player_inventory
         inv.append(ent)
 
-
         name = getattr(ent, "name", None) or "item"
         article = "an" if name and name[0].lower() in "aeiou" else "a"
         self.log.add(f"You pick up {article} {name.lower()}.")
+
+        # Grant abilities tagged on the item (general hook)
+        grants = ent.tags.get("grants_ability") if hasattr(ent, "tags") else None
+        if grants:
+            added = self.grant_ability(grants)
+            if added:
+                self.log.add(f"You learned how to {grants.replace('_', ' ')}.")
     def drop_inventory_item(self, index: int) -> None:
         """Drop an item from the inventory onto the player's current tile."""
         inv = self.player_inventory
@@ -2637,6 +2755,51 @@ class Game:
         """Generic action entry point: activate neighbors around a seed vertex."""
         level = self._level()
         self._activate_pattern_seed_neighbors(level, target_vertex)
+
+    def act_destabilize(self, actor_id: str) -> None:
+        """Teleport randomly within 10 tiles; 50% chance to take 10% max HP."""
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+        px, py = actor.pos
+        radius = 10
+        rng = getattr(self, "rng", None)
+
+        candidates = []
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) > radius:
+                    continue
+                tx, ty = px + dx, py + dy
+                if not level.world.in_bounds(tx, ty):
+                    continue
+                if not level.world.is_walkable(tx, ty):
+                    continue
+                candidates.append((tx, ty))
+
+        if candidates:
+            dest = rng.choice(candidates) if rng else candidates[0]
+            actor.pos = dest
+            if actor_id == self.player_id:
+                self.log.add(f"You destabilize and reappear at {dest[0]},{dest[1]}.")
+            else:
+                self.log.add(f"{actor.name} flickers and reappears elsewhere.")
+            level.need_fov = True
+
+        # Damage roll: 50% chance
+        if (rng.random() < 0.5) if rng else True:
+            dmg = max(1, int(actor.stats.max_hp * 0.1))
+            actor.stats.hp -= dmg
+            actor.stats.clamp()
+            if actor_id == self.player_id:
+                self.log.add(f"Chaos bites! You take {dmg} damage.")
+                if actor.stats.hp <= 0:
+                    self.set_urgent("by way of destabilization", title="You unravel...", choices=["Continue..."])
+            else:
+                self.log.add(f"{actor.name} shudders from the destabilization.")
+                if actor.stats.hp <= 0:
+                    self._kill_actor(level, actor)
 
 
     def act_fractal(self, actor_id: str, kind: str) -> None:

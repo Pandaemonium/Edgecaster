@@ -162,6 +162,7 @@ Scene: owns UI, input, and routing
 Game: pure world state  
 Actions: define ability metadata  
 AbilityBar: driven by entity.actions  
+Dynamic abilities: use `Game.grant_ability` when unlocking actions (items, customs, NPC rewards) so the bar stays in sync.  
 Next priority: Unified TargetMode
 
 Keep the geometry weird and the scenes clean.

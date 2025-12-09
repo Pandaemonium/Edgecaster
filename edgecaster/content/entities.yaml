@@ -45,3 +45,15 @@
   tags:
     container: true
     item_type: inventory
+
+# --- DESTABILIZER --------------------------------------------
+- id: destabilizer
+  name: Destabilizer
+  glyph: "*"
+  color: [180, 120, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  tags:
+    item_type: destabilizer
+    grants_ability: destabilize

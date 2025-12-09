@@ -30,6 +30,7 @@ class ActionDef:
     # Whether this action is eligible to appear in the player-facing
     # ability bar when owned by the current host actor.
     show_in_bar: bool = False
+    cooldown_ticks: int = 0
 
 
 
@@ -157,6 +158,7 @@ def register_action(
     label: str,
     speed: SpeedTag = "fast",
     show_in_bar: bool = False,
+    cooldown_ticks: int = 0,
 ) -> Callable[[ActionFunc], ActionFunc]:
     """
     Decorator to register a function as an Action.
@@ -176,6 +178,7 @@ def register_action(
             speed=speed,
             func=func,
             show_in_bar=show_in_bar,
+            cooldown_ticks=cooldown_ticks,
         )
         return func
 
@@ -203,6 +206,7 @@ def get_action(name: str) -> ActionDef:
                 speed=base.speed,
                 func=_custom_n_action,
                 show_in_bar=base.show_in_bar,
+                cooldown_ticks=base.cooldown_ticks,
             )
         return _action_registry[name]
     try:
@@ -457,6 +461,13 @@ def _action_custom(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_fractal"):
         game.act_fractal(actor_id, "custom")
+
+
+@register_action("destabilize", label="Destabilize", speed="fast", show_in_bar=True, cooldown_ticks=15)
+def _action_destabilize(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Teleport randomly within 10 tiles; risky HP backlash."""
+    if hasattr(game, "act_destabilize"):
+        game.act_destabilize(actor_id)
 
 
 @register_action("activate_all", label="Activate R", speed="fast", show_in_bar=True)
