@@ -698,11 +698,34 @@ class DungeonScene(Scene):
             return
 
         if kind == "talk":
-            # Temporary: reuse yawp behaviour until scene-based dialogue is wired in.
-            if hasattr(game, "queue_player_action"):
-                game.queue_player_action("yawp")
+            convo = game.talk_start() if hasattr(game, "talk_start") else None
+            if convo:
+                title = convo.get("name", "Conversation") if isinstance(convo, dict) else "Conversation"
+                lines = []
+                if isinstance(convo, dict):
+                    lines = convo.get("lines", [])
+                body = "\n".join(lines) if lines else ""
+                choices = convo.get("choices", ["Continue..."]) if isinstance(convo, dict) else ["Continue..."]
+                npc_id = convo.get("npc_id") if isinstance(convo, dict) else None
+
+                def on_choice(idx: int, mgr) -> None:
+                    choice = choices[idx] if 0 <= idx < len(choices) else None
+                    if hasattr(game, "talk_complete"):
+                        summary = game.talk_complete(npc_id, choice)
+                        if summary:
+                            game.log.add(summary)
+
+                manager.push_scene(
+                    UrgentMessageScene(
+                        game,
+                        body or title,
+                        title=title,
+                        choices=choices,
+                        on_choice=on_choice,
+                    )
+                )
             else:
-                game.log.add("You yawp, but in a civilized manner.")
+                game.log.add("No one nearby to talk to.")
             return
 
         # ------------------------------------------------------------

@@ -1,0 +1,18 @@
+academy:
+  coord: [1, 0, 0]
+  npcs:
+    - npc_id: mentor
+      name: Mentor
+      glyph: "@"
+      color: [230, 230, 255]
+      offsets: [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]
+    - npc_id: hexmage
+      name: The Hexmage
+      glyph: "&"
+      color: [120, 200, 255]
+      offsets: [[1, 1], [-1, 1], [2, 1], [-2, 1], [1, -1]]
+    - npc_id: cartographer
+      name: The Cartographer
+      glyph: "&"
+      color: [255, 200, 120]
+      offsets: [[-1, 1], [2, -1], [-2, -1], [1, 2], [-1, 2]]

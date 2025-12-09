@@ -8,12 +8,13 @@ import yaml
 
 from edgecaster import config, events
 from edgecaster.state.world import World
-from edgecaster.state.actors import Actor, Stats
+from edgecaster.state.actors import Actor, Stats, Human
 from edgecaster.state.entities import Entity
 from edgecaster.enemies import factory as enemy_factory
 
 
 from edgecaster import mapgen
+from edgecaster.content import pois as poi_content
 from edgecaster.patterns.activation import project_vertices, damage_from_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
@@ -143,6 +144,11 @@ class Game:
 
         # character info
         self.character: Character = character or default_character()
+
+        # Known POI markers (zone coords) for world map rendering / hints
+        self.poi_locations: Dict[str, Tuple[int, int, int]] = {
+            pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()
+        }
 
         # What the HUD should call the thing-you-are:
         # initially your class, later overwritten by body-hops.
@@ -785,8 +791,10 @@ class Game:
                 )
                 lab_state = None
         else:
-            mapgen.generate_basic(world, self.rng, up_pos=up_pos)
+            mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
             lab_state = None
+        # Apply POIs (records ids on world)
+        mapgen.apply_pois(world, coord)
         lvl = LevelState(
             world=world,
             actors={},
@@ -806,9 +814,15 @@ class Game:
             coord=coord,
             lab_state=lab_state,
         )
-        # mentor on starting overworld tile
-        if coord == (0, 0, 0):
-            self._spawn_mentor(lvl)
+        # Spawn NPCs/entities from any POIs for this level (e.g., starting NPCs)
+        self._spawn_poi_contents(lvl, coord)
+
+        if coord == (0, 0, 0) and not getattr(self, "_academy_hint_shown", False):
+            self._academy_hint_shown = True
+            academy = self.poi_locations.get("academy")
+            if academy:
+                ax, ay, _ = academy
+                self.log.add(f"You hear of an Academy at ({ax},{ay}).")
 
         # scatter some test berries on overworld levels
         if coord[2] == 0:  # depth == 0
@@ -993,7 +1007,7 @@ class Game:
             if self._actor_at(level, (tx, ty)):
                 continue
             aid = self._new_id()
-            mentor = Actor(
+            mentor = Human(
                 id=aid,
                 name="Mentor",
                 pos=(tx, ty),
@@ -1006,6 +1020,114 @@ class Game:
             level.actors[aid] = mentor
             level.entities[aid] = mentor
             break
+
+    def _spawn_intro_npcs(self, level: LevelState) -> None:
+        """Place the Hexmage and Cartographer near the entry if space allows."""
+        entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
+        x, y = entry
+        offsets = [
+            (1, 1),
+            (-1, 1),
+            (2, 1),
+            (-2, 1),
+            (1, -1),
+            (-1, -1),
+            (2, -1),
+            (-2, -1),
+        ]
+        npc_specs = [
+            ("hexmage", "The Hexmage"),
+            ("cartographer", "The Cartographer"),
+        ]
+        placed = 0
+        for npc_id, name in npc_specs:
+            for dx, dy in offsets:
+                tx, ty = x + dx + placed, y + dy  # small shift per NPC to avoid collisions
+                if not level.world.in_bounds(tx, ty):
+                    continue
+                if not level.world.is_walkable(tx, ty):
+                    continue
+                if self._actor_at(level, (tx, ty)):
+                    continue
+                aid = self._new_id()
+                npc = Human(
+                    id=aid,
+                    name=name,
+                    pos=(tx, ty),
+                    faction="npc",
+                    stats=Stats(hp=1, max_hp=1),
+                    tags={"npc_id": npc_id},
+                    disposition=5,
+                    affiliations=("edgecasters",),
+                    glyph="&",
+                )
+                level.actors[aid] = npc
+                level.entities[aid] = npc
+                placed += 1
+                break
+            # continue loop to next npc even if not placed; failure to place is tolerated
+
+    def _spawn_poi_contents(self, level: LevelState, coord: Tuple[int, int, int]) -> None:
+        """Spawn NPCs defined by any POIs attached to this level."""
+        poi_ids = getattr(level.world, "poi_ids", [])
+        if not poi_ids:
+            return
+        entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
+
+        def nearest_walkable(origin: Tuple[int, int], max_radius: int = 12) -> Optional[Tuple[int, int]]:
+            ox, oy = origin
+            if level.world.in_bounds(ox, oy) and level.world.is_walkable(ox, oy) and not self._actor_at(level, (ox, oy)):
+                return origin
+            for r in range(1, max_radius + 1):
+                for dy in range(-r, r + 1):
+                    for dx in range(-r, r + 1):
+                        tx, ty = ox + dx, oy + dy
+                        if not level.world.in_bounds(tx, ty):
+                            continue
+                        if not level.world.is_walkable(tx, ty):
+                            continue
+                        if self._actor_at(level, (tx, ty)):
+                            continue
+                        return (tx, ty)
+            return None
+
+        for pid in poi_ids:
+            poi = poi_content.POIS.get(pid)
+            if not poi:
+                continue
+            for spec in poi.npcs:
+                npc_def = npcs.NPC_DEFS.get(spec.npc_id, {})
+                name = spec.name or npc_def.get("name", spec.npc_id.title())
+                glyph = spec.glyph or npc_def.get("glyph", "@")
+                color = spec.color or tuple(npc_def.get("color", (255, 255, 255)))
+                offsets = spec.offsets or [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+                # Try explicit offsets first
+                spawn_pos = None
+                for dx, dy in offsets:
+                    candidate = (entry[0] + dx, entry[1] + dy)
+                    spot = nearest_walkable(candidate)
+                    if spot:
+                        spawn_pos = spot
+                        break
+                if spawn_pos is None:
+                    spawn_pos = nearest_walkable(entry)
+                if spawn_pos is None:
+                    continue
+                aid = self._new_id()
+                actor = Human(
+                    id=aid,
+                    name=name,
+                    pos=spawn_pos,
+                    faction="npc",
+                    stats=Stats(hp=1, max_hp=1),
+                    tags={"npc_id": spec.npc_id},
+                    disposition=npc_def.get("base_disposition", 0),
+                    affiliations=tuple(npc_def.get("factions", [])),
+                    glyph=glyph,
+                    color=color,  # type: ignore[arg-type]
+                )
+                level.actors[aid] = actor
+                level.entities[aid] = actor
 
     def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
         if count <= 0:
@@ -1023,7 +1145,7 @@ class Game:
             if not level.world.is_walkable(x, y) or self._actor_at(level, (x, y)):
                 continue
             aid = self._new_id()
-            actor = Actor(
+            actor = Human(
                 id=aid,
                 name=npc_data.get("name", "NPC"),
                 pos=(x, y),
@@ -2123,6 +2245,9 @@ class Game:
         npc_id = npc.tags.get("npc_id")
         data = npcs.NPC_DEFS.get(npc_id, {})
         lines = data.get("dialogue", [f"{npc.name} waits patiently."])
+        if npc_id in ("hexmage", "cartographer"):
+            choices = ["Let's draft", "Maybe later"]
+            return {"npc_id": npc_id, "name": npc.name, "lines": lines, "choices": choices}
         # Offer a generator you don't already have
         all_gens = ["koch", "branch", "zigzag"]
         owned = set(self.unlocked_generators)
@@ -2136,6 +2261,30 @@ class Game:
         """Apply the selected reward, return a summary line."""
         if not choice:
             return "You end the conversation."
+        if npc_id in ("hexmage", "cartographer"):
+            if choice.lower().startswith("let"):
+                from edgecaster.scenes.fractal_editor_scene import FractalEditorState
+
+                if npc_id == "hexmage":
+                    self.fractal_editor_state = FractalEditorState(
+                        grid_kind="hex",
+                        max_vertices=4,
+                        max_edges=None,
+                    )
+                    note = "The Hexmage opens a hexagonal drafting grid."
+                else:
+                    self.fractal_editor_state = FractalEditorState(
+                        grid_x_min=-5,
+                        grid_x_max=15,
+                        grid_y_min=-10,
+                        grid_y_max=10,
+                        grid_kind="rect",
+                        max_edges=None,
+                    )
+                    note = "The Cartographer unrolls a wide rectangular grid."
+                self.fractal_editor_requested = True
+                return note
+            return "Maybe another time."
         all_gens = {"koch", "branch", "zigzag"}
         if choice not in all_gens:
             return "That knowledge eludes you."

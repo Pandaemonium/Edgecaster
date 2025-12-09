@@ -91,6 +91,17 @@ class WorldMapScene(Scene):
                 lx, ly = self._world_to_map(lab_wx, lab_wy, map_surface.get_size())
                 pygame.draw.circle(surf, (200, 120, 255), (ox + lx, oy + ly), 4)
 
+            # markers for POIs (e.g., Academy)
+            if getattr(self.game, "poi_locations", None):
+                for pid, (pz_x, pz_y, _pz_z) in self.game.poi_locations.items():
+                    total_w = self.game.cfg.world_map_screens * self.game.cfg.world_width
+                    total_h = self.game.cfg.world_map_screens * self.game.cfg.world_height
+                    wx = pz_x * self.game.cfg.world_width + self.game.cfg.world_width // 2
+                    wy = pz_y * self.game.cfg.world_height + self.game.cfg.world_height // 2
+                    mx, my = self._world_to_map(wx, wy, map_surface.get_size())
+                    color = (120, 210, 240) if pid == "academy" else (180, 180, 200)
+                    pygame.draw.circle(surf, color, (ox + mx, oy + my), 3)
+
             title = renderer.big_label("World Map")
             surf.blit(title, (ox, oy - 36))
             hint = renderer.small_font.render("Esc/Enter/< to return", True, renderer.fg)

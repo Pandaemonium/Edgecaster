@@ -26,6 +26,7 @@ class FractalEditorState:
     grid_x_max: int = 10
     grid_y_min: int = -5
     grid_y_max: int = 5
+    grid_kind: str = "rect"  # "rect" | "hex"
 
     vertices: List[Vec2] | None = None
     edges: List[Tuple[int, int]] | None = None
@@ -84,6 +85,8 @@ class FractalEditorScene(Scene):
         self._small_font: Optional[pygame.font.Font] = None
         self.margin = 40
         self.cell_size = 0  # computed per render
+        self._hex_min_x: float = 0.0
+        self._hex_min_y: float = 0.0
 
         # Status line (e.g. for constraint failures on accept)
         self.status_msg: str = ""
@@ -107,32 +110,70 @@ class FractalEditorScene(Scene):
     def _grid_to_screen(self, gx: float, gy: float, panel: pygame.Rect) -> Tuple[int, int]:
         if self.cell_size <= 0:
             self._compute_cell_size(panel)
-        sx = panel.left + self.margin + int((gx - self.state.grid_x_min) * self.cell_size)
-        # invert y for screen
-        sy = panel.top + self.margin + int((self.state.grid_y_max - gy) * self.cell_size)
-        return sx, sy
+        if self.state.grid_kind == "hex":
+            size = self.cell_size
+            root_x = panel.left + self.margin
+            root_y = panel.top + self.margin
+            sqrt3 = math.sqrt(3)
+            px = (sqrt3 * gx + (sqrt3 / 2.0) * gy - self._hex_min_x) * size
+            py = ((1.5) * gy - self._hex_min_y) * size
+            return int(root_x + px), int(root_y + py)
+        else:
+            sx = panel.left + self.margin + int((gx - self.state.grid_x_min) * self.cell_size)
+            # invert y for screen
+            sy = panel.top + self.margin + int((self.state.grid_y_max - gy) * self.cell_size)
+            return sx, sy
 
     def _screen_to_grid(self, sx: int, sy: int, panel: pygame.Rect) -> Vec2:
         if self.cell_size <= 0:
             self._compute_cell_size(panel)
-        gx = self.state.grid_x_min + (sx - (panel.left + self.margin)) / float(self.cell_size)
-        gy = self.state.grid_y_max - (sy - (panel.top + self.margin)) / float(self.cell_size)
-        return gx, gy
+        if self.state.grid_kind == "hex":
+            size = float(self.cell_size)
+            root_x = panel.left + self.margin
+            root_y = panel.top + self.margin
+            sqrt3 = math.sqrt(3)
+            x = (sx - root_x) / size + self._hex_min_x
+            y = (sy - root_y) / size + self._hex_min_y
+            r = y / 1.5
+            q = (x - (sqrt3 / 2.0) * r) / sqrt3
+            return (q, r)
+        else:
+            gx = self.state.grid_x_min + (sx - (panel.left + self.margin)) / float(self.cell_size)
+            gy = self.state.grid_y_max - (sy - (panel.top + self.margin)) / float(self.cell_size)
+            return gx, gy
 
     def _nearest_grid_point(self, gx: float, gy: float) -> Vec2:
-        # For now: rectangular grid snapping
-        return (
-            round(gx),
-            round(gy),
-        )
+        if self.state.grid_kind == "hex":
+            return self._nearest_hex_point(gx, gy)
+        # rectangular grid snapping
+        return (round(gx), round(gy))
 
     def _compute_cell_size(self, panel: pygame.Rect) -> None:
-        w = self.state.grid_x_max - self.state.grid_x_min
-        h = self.state.grid_y_max - self.state.grid_y_min
-        self.cell_size = min(
-            max(8, (panel.width - 2 * self.margin) // max(1, w)),
-            max(8, (panel.height - 2 * self.margin) // max(1, h)),
-        )
+        if self.state.grid_kind == "hex":
+            qmin, qmax = self.state.grid_x_min, self.state.grid_x_max
+            rmin, rmax = self.state.grid_y_min, self.state.grid_y_max
+            sqrt3 = math.sqrt(3)
+            corners = [(qmin, rmin), (qmin, rmax), (qmax, rmin), (qmax, rmax)]
+            xs = [sqrt3 * q + (sqrt3 / 2.0) * r for q, r in corners]
+            ys = [1.5 * r for _, r in corners]
+            min_x = min(xs) - sqrt3
+            max_x = max(xs) + sqrt3
+            min_y = min(ys) - 2.0
+            max_y = max(ys) + 2.0
+            span_x = max_x - min_x
+            span_y = max_y - min_y
+            size_by_w = (panel.width - 2 * self.margin) / max(1e-6, span_x)
+            size_by_h = (panel.height - 2 * self.margin) / max(1e-6, span_y)
+            self.cell_size = int(max(8, min(size_by_w, size_by_h)))
+            self._hex_min_x = min_x
+            self._hex_min_y = min_y
+        else:
+            w = self.state.grid_x_max - self.state.grid_x_min
+            h = self.state.grid_y_max - self.state.grid_y_min
+            self.cell_size = min(
+                max(8, (panel.width - 2 * self.margin) // max(1, w)),
+                max(8, (panel.height - 2 * self.margin) // max(1, h)),
+            )
 
     def _vertex_at_screen(self, sx: int, sy: int, panel: pygame.Rect) -> Optional[int]:
         hit_radius = max(6, self.cell_size // 2)
@@ -153,6 +194,42 @@ class FractalEditorScene(Scene):
             if self._point_seg_dist(sx, sy, pax, pay, pbx, pby) <= thresh:
                 return i
         return None
+
+    # --- hex helpers ---------------------------------------------------
+
+    def _nearest_hex_point(self, q: float, r: float) -> Vec2:
+        """Round axial coordinates to the nearest hex center."""
+        x = q
+        z = r
+        y = -x - z
+
+        rx, ry, rz = round(x), round(y), round(z)
+
+        dx = abs(rx - x)
+        dy = abs(ry - y)
+        dz = abs(rz - z)
+
+        if dx > dy and dx > dz:
+            rx = -ry - rz
+        elif dy > dz:
+            ry = -rx - rz
+        else:
+            rz = -rx - ry
+
+        return (rx, rz)
+
+    def _hex_corners(self, q: float, r: float, panel: pygame.Rect) -> List[Tuple[int, int]]:
+        """Return pixel coords for the corners of a hex at axial q,r."""
+        cx, cy = self._grid_to_screen(q, r, panel)
+        size = self.cell_size
+        sqrt3 = math.sqrt(3)
+        corners = []
+        for i in range(6):
+            angle = math.radians(30 + 60 * i)  # pointy-top orientation
+            x = cx + size * math.cos(angle)
+            y = cy + size * math.sin(angle)
+            corners.append((int(x), int(y)))
+        return corners
 
     def _point_seg_dist(self, px, py, x1, y1, x2, y2) -> float:
         # distance from point to segment
@@ -192,6 +269,10 @@ class FractalEditorScene(Scene):
         surface = renderer.surface
         clock = pygame.time.Clock()
         running = True
+
+        # ensure attribute exists for downstream checks
+        if not hasattr(manager, "fractal_edit_result"):
+            manager.fractal_edit_result = None
 
         if self._font is None:
             base_size = max(16, renderer.base_tile)
@@ -282,6 +363,7 @@ class FractalEditorScene(Scene):
                     self.state.grid_y_min,
                     self.state.grid_y_max,
                 ),
+                "grid_kind": self.state.grid_kind,
             }
             manager.pop_scene()
 
@@ -313,7 +395,7 @@ class FractalEditorScene(Scene):
                         accept()
                         # Only exit loop if accept() actually popped the scene;
                         # if constraints fail, running stays True.
-                        if manager.fractal_edit_result is not None:
+                        if getattr(manager, "fractal_edit_result", None) is not None:
                             running = False
                         break
                     if event.key == pygame.K_1:
@@ -567,17 +649,23 @@ class FractalEditorScene(Scene):
         pygame.draw.rect(overlay, (200, 200, 220, 255), overlay.get_rect(), 2)
 
         # grid
-        w = self.state.grid_x_max - self.state.grid_x_min
-        h = self.state.grid_y_max - self.state.grid_y_min
         self._compute_cell_size(panel)
-        for gx in range(self.state.grid_x_min, self.state.grid_x_max + 1):
-            x, _ = self._grid_to_screen(gx, self.state.grid_y_min, panel)
-            _, y_top = self._grid_to_screen(gx, self.state.grid_y_max, panel)
-            pygame.draw.line(overlay, (40, 50, 70), (x, y_top), (x, y_top + h * self.cell_size))
-        for gy in range(self.state.grid_y_min, self.state.grid_y_max + 1):
-            x_left, y = self._grid_to_screen(self.state.grid_x_min, gy, panel)
-            x_right, _ = self._grid_to_screen(self.state.grid_x_max, gy, panel)
-            pygame.draw.line(overlay, (40, 50, 70), (x_left, y), (x_right, y))
+        if self.state.grid_kind == "hex":
+            for q in range(self.state.grid_x_min, self.state.grid_x_max + 1):
+                for r in range(self.state.grid_y_min, self.state.grid_y_max + 1):
+                    corners = self._hex_corners(q, r, panel)
+                    pygame.draw.polygon(overlay, (40, 50, 70), corners, 1)
+        else:
+            w = self.state.grid_x_max - self.state.grid_x_min
+            h = self.state.grid_y_max - self.state.grid_y_min
+            for gx in range(self.state.grid_x_min, self.state.grid_x_max + 1):
+                x, _ = self._grid_to_screen(gx, self.state.grid_y_min, panel)
+                _, y_top = self._grid_to_screen(gx, self.state.grid_y_max, panel)
+                pygame.draw.line(overlay, (40, 50, 70), (x, y_top), (x, y_top + h * self.cell_size))
+            for gy in range(self.state.grid_y_min, self.state.grid_y_max + 1):
+                x_left, y = self._grid_to_screen(self.state.grid_x_min, gy, panel)
+                x_right, _ = self._grid_to_screen(self.state.grid_x_max, gy, panel)
+                pygame.draw.line(overlay, (40, 50, 70), (x_left, y), (x_right, y))
 
         # edges
         for i, (a_idx, b_idx) in enumerate(self.state.edges):

@@ -55,3 +55,12 @@ class Actor(Entity):
     @actor_id.setter
     def actor_id(self, value: str) -> None:
         self.id = value
+
+
+@dataclass
+class Human(Actor):
+    """Simple human actor subtype for NPCs and player-adjacent humans."""
+
+    glyph: str = "@"
+    color: Tuple[int, int, int] = (200, 200, 220)
+    kind: str = "human"

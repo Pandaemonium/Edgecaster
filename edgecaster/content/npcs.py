@@ -9,5 +9,23 @@ NPC_DEFS = {
             "Ah, another step along the recursion.",
             "Choose a new pattern to weave into your repertoire.",
         ],
-    }
+    },
+    "hexmage": {
+        "name": "The Hexmage",
+        "factions": ["edgecasters"],
+        "base_disposition": 5,
+        "dialogue": [
+            "Weave your sigils on a lattice of hexes.",
+            "I'll open the hex drafting grid for you.",
+        ],
+    },
+    "cartographer": {
+        "name": "The Cartographer",
+        "factions": ["edgecasters"],
+        "base_disposition": 5,
+        "dialogue": [
+            "Need more room to sketch? I can unroll a wide parchment.",
+            "Let's draft on a spacious rectangular grid.",
+        ],
+    },
 }

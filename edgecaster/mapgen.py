@@ -2,6 +2,7 @@ from typing import Tuple, Optional
 import math
 import random
 from typing import Tuple, Optional, Dict, List
+from edgecaster.content import pois
 
 from edgecaster.state.world import World
 
@@ -74,7 +75,17 @@ def generate_lab(world: World, rng) -> None:
     world.down_stairs = None
     world.is_lab = True
 
-def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) -> None:
+def apply_pois(world: World, coord: Tuple[int, int, int]) -> List[str]:
+    """Return list of POI ids that apply to this coord."""
+    hits = []
+    for pid, poi in pois.POIS.items():
+        if tuple(poi.coord) == tuple(coord):
+            hits.append(pid)
+    world.poi_ids = hits  # type: ignore[attr-defined]
+    return hits
+
+
+def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None, coord: Tuple[int, int, int] = (0, 0, 0)) -> None:
     """Simple rectangular rooms connected by halls, with optional stairs."""
     # start filled with walls
     for y in range(world.height):
