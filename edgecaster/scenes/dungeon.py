@@ -376,8 +376,8 @@ class DungeonScene(Scene):
             # Mirror old renderer logic, minus legacy dialog:
             if in_terminus_mode:
                 game.awaiting_terminus = False
-            elif renderer.config_open:
-                renderer.config_open = False
+            elif self.ui_state.config_open:
+                _set_ui("config_open", False)
             else:
                 # Normal ESC in the dungeon: request pause
                 renderer.pause_requested = True
@@ -399,7 +399,7 @@ class DungeonScene(Scene):
         if kind == "show_help":
             # Only if we're not in some special modal state
             if (
-                not renderer.config_open
+                not self.ui_state.config_open
                 and not in_terminus_mode
                 and not in_aim_mode
             ):
@@ -415,26 +415,26 @@ class DungeonScene(Scene):
         # 2) Config overlay (always takes precedence while open)
         # ------------------------------------------------------------
 
-        if renderer.config_open and renderer.config_action:
-            params = game.param_view(renderer.config_action)
+        if self.ui_state.config_open and self.ui_state.config_action:
+            params = game.param_view(self.ui_state.config_action)
 
             if key in (pygame.K_RETURN, pygame.K_SPACE):
-                renderer.config_open = False
+                _set_ui("config_open", False)
                 return
 
             if key == pygame.K_UP:
-                renderer.config_selection = (renderer.config_selection - 1) % max(1, len(params))
+                _set_ui("config_selection", (self.ui_state.config_selection - 1) % max(1, len(params)))
                 return
 
             if key == pygame.K_DOWN:
-                renderer.config_selection = (renderer.config_selection + 1) % max(1, len(params))
+                _set_ui("config_selection", (self.ui_state.config_selection + 1) % max(1, len(params)))
                 return
 
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
                 if params:
-                    param_key = params[renderer.config_selection]["key"]
+                    param_key = params[self.ui_state.config_selection]["key"]
                     delta = 1 if key == pygame.K_RIGHT else -1
-                    changed, msg = game.adjust_param(renderer.config_action, param_key, delta)
+                    changed, msg = game.adjust_param(self.ui_state.config_action, param_key, delta)
                     # msg is available if you want to surface it later
                 return
 
@@ -558,8 +558,8 @@ class DungeonScene(Scene):
             mx, my = renderer._to_surface(cmd.mouse_pos)
 
             # Config overlay: click anywhere closes it for now.
-            if renderer.config_open and renderer.config_action:
-                renderer.config_open = False
+            if self.ui_state.config_open and self.ui_state.config_action:
+                _set_ui("config_open", False)
                 return
 
             # Ability bar page arrows.
