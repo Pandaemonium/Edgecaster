@@ -108,8 +108,17 @@ class AsciiRenderer:
         # Remember which game tick we last captured a frame for, so trails
         # represent *turns* rather than raw render frames.
         self.lorenz_last_tick: int | None = None
-        # urgent message state (renderer-side button hitbox)
-        self.urgent_ok_rect: pygame.Rect | None = None
+
+    # ------------------------------------------------------------------ #
+    # UI state access (scene-owned view-model preferred)                 #
+    # ------------------------------------------------------------------ #
+
+    def _ui_attr(self, name: str, default=None):
+        """Prefer a scene-provided ui_state if attached; fallback to renderer fields."""
+        ui = getattr(self, "ui_state", None)
+        if ui is not None and hasattr(ui, name):
+            return getattr(ui, name, default)
+        return getattr(self, name, default)
 
     def _to_surface(self, pos: Tuple[int, int]) -> Tuple[int, int]:
         """Convert display-space mouse coords to surface-space, accounting for letterbox and scale."""
@@ -494,26 +503,28 @@ class AsciiRenderer:
         self.surface.blit(self.verts_surface, (0, 0))
 
     def draw_aim_overlay(self, game: Game) -> None:
-        if self.aim_action not in ("activate_all", "activate_seed"):
+        aim_action = self._ui_attr("aim_action", self.aim_action)
+        if aim_action not in ("activate_all", "activate_seed"):
             return
         origin = game.pattern_anchor
         if origin is None or not game.pattern.vertices:
             return
         verts = project_vertices(game.pattern, origin)
-        if self.hover_vertex is None or self.hover_vertex >= len(verts):
+        hover_vertex = self._ui_attr("hover_vertex", self.hover_vertex)
+        if hover_vertex is None or hover_vertex >= len(verts):
             return
         # precompute strength fail chance and damage map for preview
         dmg_map: Dict[Tuple[int, int], int] = {}
         fail_text: str | None = None
         pulse_alpha = lambda: int(80 + 60 * abs(((pygame.time.get_ticks() / 600.0) % 2) - 1))
-        if self.aim_action == "activate_all":
+        if aim_action == "activate_all":
             try:
                 radius = game.get_param_value("activate_all", "radius")
                 dmg_per_vertex = game.get_param_value("activate_all", "damage")
             except Exception:
                 radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
                 dmg_per_vertex = 1
-            center = verts[self.hover_vertex]
+            center = verts[hover_vertex]
             # strength fail preview
             try:
                 str_limit = game._strength_limit()
@@ -548,7 +559,7 @@ class AsciiRenderer:
                 if dmg <= 0:
                     continue
                 dmg_map[(tx, ty)] = dmg_map.get((tx, ty), 0) + dmg
-            center = verts[self.hover_vertex]
+            center = verts[hover_vertex]
             cx = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
             cy = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
@@ -561,11 +572,12 @@ class AsciiRenderer:
                     py = int(v[1] * self.tile + self.tile * 0.5 + self.origin_y)
                     pygame.draw.circle(self.surface, (200, 240, 255), (px, py), max(3, self.tile // 5))
         else:  # activate_seed
-            center = verts[self.hover_vertex]
+            center = verts[hover_vertex]
             px = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
             py = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
-            targets = [self.hover_vertex] + [idx for idx in self.hover_neighbors if idx is not None]
+            hover_neighbors = self._ui_attr("hover_neighbors", self.hover_neighbors) or []
+            targets = [hover_vertex] + [idx for idx in hover_neighbors if idx is not None]
             seen = set()
             ordered_targets = []
             for idx in targets:
@@ -579,7 +591,7 @@ class AsciiRenderer:
                 vx, vy = verts[idx]
                 px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
                 py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
-                color = (200, 220, 255) if idx != self.hover_vertex else (255, 230, 120)
+                color = (200, 220, 255) if idx != hover_vertex else (255, 230, 120)
                 pygame.draw.circle(self.surface, color, (px, py), max(3, self.tile // 5))
                 tx = int(round(vx))
                 ty = int(round(vy))
@@ -622,7 +634,7 @@ class AsciiRenderer:
             self.surface.blit(surf, (px - dmg_surf.get_width() // 2, py - self.tile // 2 - dmg_surf.get_height()))
         if fail_text:
             # show near hover target
-            vx, vy = verts[self.hover_vertex]
+            vx, vy = verts[hover_vertex]
             px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
             py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
             txt = self.small_font.render(fail_text, True, (255, 180, 140))
@@ -652,7 +664,8 @@ class AsciiRenderer:
     def draw_target_cursor(self, game: Game) -> None:
         if not game.awaiting_terminus:
             return
-        tx, ty = self.target_cursor
+        tc = self._ui_attr("target_cursor", self.target_cursor)
+        tx, ty = tc if tc else (0, 0)
         if not game.world.in_bounds(tx, ty):
             return
         px = tx * self.tile
@@ -847,36 +860,6 @@ class AsciiRenderer:
             lines.append(" ".join(cur))
         return lines or [text]
 
-    def _urgent_active(self, game: Game) -> bool:
-        """
-        Legacy renderer-side urgent popup.
-
-        Urgent messages are now handled by UrgentMessageScene at the
-        SceneManager level, so this always returns False and the renderer
-        never hijacks input or draws its own overlay.
-        """
-        # refactor: delete once all callers use UrgentMessageScene; renderer should not gate input.
-        return False
-
-    def _ack_urgent(self, game: Game) -> None:
-        """
-        Legacy helper. Kept for compatibility but no longer used.
-
-        UrgentMessageScene is responsible for setting urgent_resolved
-        and clearing urgent_message.
-        """
-        game.urgent_resolved = True
-        self.urgent_ok_rect = None
-        # refactor: remove when legacy urgent overlay is removed; acknowledgement should be scene-driven.
-
-    def draw_urgent_overlay(self, game: Game) -> None:
-        """
-        Deprecated: urgent popups are handled by UrgentMessageScene now.
-        Left as a no-op for backward compatibility.
-        """
-        return
-
-
     def draw_ability_bar(self, game: Game) -> None:
         bar_rect = pygame.Rect(0, self.height - self.ability_bar_height, self.width, self.ability_bar_height)
         pygame.draw.rect(self.surface, (15, 15, 28), bar_rect)
@@ -935,6 +918,9 @@ class AsciiRenderer:
         # Start target cursor at player position
         player = game.actors[game.player_id]
         self.target_cursor = player.pos
+        ui = getattr(self, "ui_state", None)
+        if ui is not None:
+            ui.target_cursor = player.pos
 
 
 
@@ -964,7 +950,9 @@ class AsciiRenderer:
         self.draw_status(game)
         self.draw_log(game)
         self.draw_ability_bar(game)
-        if self.config_open and self.config_action:
+        config_open = self._ui_attr("config_open", self.config_open)
+        config_action = self._ui_attr("config_action", self.config_action)
+        if config_open and config_action:
             self.draw_config_overlay(game)
 
         # Urgent overlay is now handled by UrgentMessageScene.
@@ -999,25 +987,34 @@ class AsciiRenderer:
 
 
     def _current_hover_vertex(self, game: Game) -> int | None:
-        return self.hover_vertex
+        return self._ui_attr("hover_vertex", self.hover_vertex)
 
     def _update_hover(self, game: Game, mouse_pos: Tuple[int, int]) -> None:
         # refactor: hover/aim state should be derived in scene/input layer; renderer should receive
         # a precomputed TargetingState to draw.
-        if self.aim_action not in ("activate_all", "activate_seed"):
+        aim_action = self._ui_attr("aim_action", self.aim_action)
+        ui = getattr(self, "ui_state", None)
+        if aim_action not in ("activate_all", "activate_seed"):
             self.hover_vertex = None
             self.hover_neighbors = []
+            if ui is not None:
+                ui.hover_vertex = None
+                ui.hover_neighbors = []
             return
         mx, my = mouse_pos
         wx = (mx - self.origin_x) / self.tile
         wy = (my - self.origin_y) / self.tile
         idx = game.nearest_vertex((wx, wy))
         self.hover_vertex = idx
-        if idx is not None and self.aim_action == "activate_seed":
+        if ui is not None:
+            ui.hover_vertex = idx
+        if idx is not None and aim_action == "activate_seed":
             depth = game.get_param_value("activate_seed", "neighbor_depth")
             self.hover_neighbors = game.neighbor_set_depth(idx, depth)
         else:
             self.hover_neighbors = []
+        if ui is not None:
+            ui.hover_neighbors = list(self.hover_neighbors)
 
     def _change_zoom(self, delta_steps: int, pos: Tuple[int, int]) -> None:
         # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
@@ -1383,14 +1380,15 @@ class AsciiRenderer:
         pygame.quit()
 
     def draw_config_overlay(self, game: Game) -> None:
-        if not self.config_action:
+        action_name = self._ui_attr("config_action", self.config_action)
+        if not action_name:
             return
-        params = game.param_view(self.config_action)
+        params = game.param_view(action_name)
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         row_heights = []
         for p in params:
-            if self.config_action == "koch" and p["key"] == "flip":
+            if action_name == "koch" and p["key"] == "flip":
                 row_heights.append(80)
             else:
                 row_heights.append(36)
@@ -1400,14 +1398,15 @@ class AsciiRenderer:
         panel_y = (self.height - panel_h) // 2
         pygame.draw.rect(overlay, (20, 20, 40, 230), pygame.Rect(panel_x, panel_y, panel_w, panel_h))
         pygame.draw.rect(overlay, (200, 200, 240, 240), pygame.Rect(panel_x, panel_y, panel_w, panel_h), 2)
-        title = self.big_label(f"Configure {self.config_action}")
+        title = self.big_label(f"Configure {action_name}")
         overlay.blit(title, (panel_x + 16, panel_y + 12))
         y = panel_y + 50
+        sel_idx = self._ui_attr("config_selection", self.config_selection)
         for i, p in enumerate(params):
-            sel = (i == self.config_selection)
+            sel = (i == sel_idx)
             col = self.sel if sel else self.fg
             # custom render for Koch mirror flag
-            if self.config_action == "koch" and p["key"] == "flip":
+            if action_name == "koch" and p["key"] == "flip":
                 label = self.font.render("Mirror", True, col)
                 overlay.blit(label, (panel_x + 20, y))
                 icon_size = 48

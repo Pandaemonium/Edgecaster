@@ -163,6 +163,9 @@ Game: pure world state
 Actions: define ability metadata  
 AbilityBar: driven by entity.actions  
 Dynamic abilities: use `Game.grant_ability` when unlocking actions (items, customs, NPC rewards) so the bar stays in sync.  
+Cooldowns: ActionDef.cooldown_ticks; cooldowns live on the action origin (actor or item) and tick down in game-time so item-bound abilities keep their cooldown across owners.  
+POIs: content/pois.yaml defines point-of-interest data (coords, NPC/item spawns). mapgen.apply_pois tags worlds; Game._spawn_poi_contents populates NPCs/items when a zone is built (e.g., Academy NPCs).  
+Renderer purge (in progress): move hover/aim/config state and Lorenz integration out of ascii.py; renderer should consume view-models only (legacy urgent overlay removed).  
 Next priority: Unified TargetMode
 
 Keep the geometry weird and the scenes clean.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import pygame
+from dataclasses import dataclass
 
 from .base import Scene
 from edgecaster.game import Game
@@ -9,6 +10,22 @@ from .urgent_message_scene import UrgentMessageScene
 from .game_input import GameInput, GameCommand
 from edgecaster.systems.abilities import trigger_ability_effect
 from edgecaster.ui.ability_bar import AbilityBarState
+
+
+@dataclass
+class DungeonUIState:
+    """Scene-owned view-model for UI state previously held by the renderer."""
+    target_cursor: tuple[int, int] = (0, 0)
+    aim_action: str | None = None
+    hover_vertex: int | None = None
+    hover_neighbors: list[int] = None  # initialized in __post_init__
+    config_open: bool = False
+    config_action: str | None = None
+    config_selection: int = 0
+
+    def __post_init__(self) -> None:
+        if self.hover_neighbors is None:
+            self.hover_neighbors = []
 
 
 class DungeonScene(Scene):
@@ -19,6 +36,7 @@ class DungeonScene(Scene):
     def __init__(self) -> None:
         # Keep the Game instance across pauses/inventory.
         self.game: Game | None = None
+        self.ui_state = DungeonUIState()
         # Scene-level input mapper for "pure game" actions
         # refactor: migrate to a shared input layer; DungeonScene should consume a GameCommand queue only.
         self.input = GameInput()
@@ -164,6 +182,21 @@ class DungeonScene(Scene):
         if not hasattr(game, "ability_bar_state"):
             game.ability_bar_state = AbilityBarState()
         game.ability_bar_state.sync_from_game(game)
+        # Attach and sync UI state to renderer (temporary bridge while moving state out of renderer).
+        if renderer is not None:
+            renderer.ui_state = self.ui_state  # type: ignore[attr-defined]
+            # pull renderer-local fields into scene ui_state for compatibility
+            for attr in (
+                "target_cursor",
+                "aim_action",
+                "hover_vertex",
+                "hover_neighbors",
+                "config_open",
+                "config_action",
+                "config_selection",
+            ):
+                if hasattr(renderer, attr):
+                    setattr(self.ui_state, attr, getattr(renderer, attr))
 
         # Save any previous hook (in case we ever call DungeonScene from another scene)
         if self._old_urgent_cb is None:
