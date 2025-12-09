@@ -493,7 +493,7 @@ class DungeonScene(Scene):
         # 4) Aiming mode (activate_all / activate_seed) confirm
 
         if in_aim_mode and kind == "confirm":
-            target_idx = renderer._current_hover_vertex(game)
+            target_idx = self.ui_state.hover_vertex
             if target_idx is not None and aim_action in ("activate_all", "activate_seed"):
                 trigger_ability_effect(
                     game,

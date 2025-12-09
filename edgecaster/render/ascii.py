@@ -58,14 +58,6 @@ class AsciiRenderer:
         self.log_panel_width = 320
         self.ability_bar_view = AbilityBarRenderer()
 
-        self.target_cursor = (0, 0)
-        self.aim_action: str | None = None
-        self.hover_vertex: int | None = None
-        self.hover_neighbors: List[int] = []
-        self.config_open = False
-        self.config_action: str | None = None
-        self.config_selection: int = 0
-
         # transient flash message
         self.flash_text: str | None = None
         self.flash_color: Tuple[int, int, int] = (255, 120, 120)
@@ -462,14 +454,14 @@ class AsciiRenderer:
         self.surface.blit(self.verts_surface, (0, 0))
 
     def draw_aim_overlay(self, game: Game) -> None:
-        aim_action = self._ui_attr("aim_action", self.aim_action)
+        aim_action = self._ui_attr("aim_action", None)
         if aim_action not in ("activate_all", "activate_seed"):
             return
         origin = game.pattern_anchor
         if origin is None or not game.pattern.vertices:
             return
         verts = project_vertices(game.pattern, origin)
-        hover_vertex = self._ui_attr("hover_vertex", self.hover_vertex)
+        hover_vertex = self._ui_attr("hover_vertex", None)
         if hover_vertex is None or hover_vertex >= len(verts):
             return
         # precompute strength fail chance and damage map for preview
@@ -535,7 +527,7 @@ class AsciiRenderer:
             px = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
             py = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
-            hover_neighbors = self._ui_attr("hover_neighbors", self.hover_neighbors) or []
+            hover_neighbors = self._ui_attr("hover_neighbors", None) or []
             targets = [hover_vertex] + [idx for idx in hover_neighbors if idx is not None]
             seen = set()
             ordered_targets = []
@@ -623,7 +615,7 @@ class AsciiRenderer:
     def draw_target_cursor(self, game: Game) -> None:
         if not game.awaiting_terminus:
             return
-        tc = self._ui_attr("target_cursor", self.target_cursor)
+        tc = self._ui_attr("target_cursor", None)
         tx, ty = tc if tc else (0, 0)
         if not game.world.in_bounds(tx, ty):
             return
@@ -874,12 +866,10 @@ class AsciiRenderer:
         else:
             self.pause_requested = False
 
-        # Start target cursor at player position
+        # Start target cursor at player position (scene/ui_state drives it)
         player = game.actors[game.player_id]
-        self.target_cursor = player.pos
-        ui = getattr(self, "ui_state", None)
-        if ui is not None:
-            ui.target_cursor = player.pos
+        if getattr(self, "ui_state", None) is not None:
+            self.ui_state.target_cursor = player.pos  # type: ignore[attr-defined]
 
 
 
@@ -909,8 +899,8 @@ class AsciiRenderer:
         self.draw_status(game)
         self.draw_log(game)
         self.draw_ability_bar(game)
-        config_open = self._ui_attr("config_open", self.config_open)
-        config_action = self._ui_attr("config_action", self.config_action)
+        config_open = self._ui_attr("config_open", None)
+        config_action = self._ui_attr("config_action", None)
         if config_open and config_action:
             self.draw_config_overlay(game)
 
@@ -946,7 +936,7 @@ class AsciiRenderer:
 
 
     def _current_hover_vertex(self, game: Game) -> int | None:
-        return self._ui_attr("hover_vertex", self.hover_vertex)
+        return self._ui_attr("hover_vertex", None)
 
     def _change_zoom(self, delta_steps: int, pos: Tuple[int, int]) -> None:
         # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
