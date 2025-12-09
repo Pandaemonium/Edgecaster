@@ -325,6 +325,24 @@ class DungeonScene(Scene):
             if renderer is not None and hasattr(renderer, attr):
                 setattr(renderer, attr, value)
 
+        def _update_hover(surface_pos: tuple[int, int]) -> None:
+            """Scene-side hover resolver; updates ui_state (and renderer for compatibility)."""
+            aim = ui.aim_action
+            if aim not in ("activate_all", "activate_seed"):
+                _set_ui("hover_vertex", None)
+                _set_ui("hover_neighbors", [])
+                return
+            mx, my = surface_pos
+            wx = (mx - renderer.origin_x) / renderer.tile
+            wy = (my - renderer.origin_y) / renderer.tile
+            idx = game.nearest_vertex((wx, wy))
+            _set_ui("hover_vertex", idx)
+            if idx is not None and aim == "activate_seed":
+                depth = game.get_param_value("activate_seed", "neighbor_depth")
+                _set_ui("hover_neighbors", game.neighbor_set_depth(idx, depth))
+            else:
+                _set_ui("hover_neighbors", [])
+
         kind = cmd.kind
         key = cmd.raw_key
         vec = cmd.vector
@@ -528,7 +546,7 @@ class DungeonScene(Scene):
             else:
                 # Start aiming from current mouse position
                 _set_ui("aim_action", "activate_all")
-                renderer._update_hover(game, renderer._to_surface(pygame.mouse.get_pos()))
+                _update_hover(renderer._to_surface(pygame.mouse.get_pos()))
             return
 
         # ------------------------------------------------------------
@@ -538,7 +556,7 @@ class DungeonScene(Scene):
         # refactor: hover belongs in scene/UI; move renderer._update_hover helpers into scene utilities.
         # Mouse hover updates the fractal aim hover.
         if kind == "mouse_move" and cmd.mouse_pos is not None:
-            renderer._update_hover(game, renderer._to_surface(cmd.mouse_pos))
+            _update_hover(renderer._to_surface(cmd.mouse_pos))
             return
 
         # Mouse wheel controls zoom around current cursor.

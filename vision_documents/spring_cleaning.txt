@@ -11,11 +11,12 @@ Status:
 ✓ Input → GameInput → GameCommand → DungeonScene._handle_command
 ✓ Renderer only computes hitboxes and draws
 Remaining impurities:
-- Dialog + Config UI still have small logic remnants in ascii.py
+- Dialog + Config UI still have small logic remnants in ascii.py (UI state now mirrored via DungeonUIState)
+- Hover/aim still read from renderer fallbacks; Lorenz integration still renderer-owned
 
 Next micro-steps:
-- Move dialog/config state out of ascii.py into dedicated small scene models
-- Renderer should receive view-models only
+- Finish moving hover/aim/config into scene-owned UI state; drop renderer fallbacks
+- Push Lorenz integration/state into lorenz.py/game; renderer consumes view-only positions
 
 ===============================================================================
 SLICE 2: Ability Bar Overhaul [CLEANUP] — **MAJOR UPDATE COMPLETE**

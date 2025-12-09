@@ -75,12 +75,7 @@ class AsciiRenderer:
         self.verts_surface = pygame.Surface((width, height), pygame.SRCALPHA)
         # Lorenz attractor overlay
         self.lorenz_surface = pygame.Surface((width, height), pygame.SRCALPHA)
-        self.lorenz_points: List[Tuple[float, float, float]] = []
-        self.lorenz_sigma = 10.0
-        self.lorenz_rho = 28.0
-        self.lorenz_beta = 8.0 / 3.0
-        self.lorenz_dt = 0.01
-        self.lorenz_steps_per_frame = 5   # how many Euler steps per frame
+        # Lorenz view defaults; simulation state now lives in game/lorenz.py
         self.lorenz_scale = 0.18          # maps x,y to tile offsets
         self.lorenz_radius_tiles = 7      # max aura radius in tiles
         # cached glow sprites: key = (radius_px, col
@@ -105,9 +100,6 @@ class AsciiRenderer:
         # Each entry = one frame's list of (cx_px, cy_px, z)
         self.lorenz_trail_frames: list[list[tuple[int, int, float]]] = []
         self.lorenz_trail_max_frames = 3  # keep trails very short
-        # Remember which game tick we last captured a frame for, so trails
-        # represent *turns* rather than raw render frames.
-        self.lorenz_last_tick: int | None = None
 
     # ------------------------------------------------------------------ #
     # UI state access (scene-owned view-model preferred)                 #
@@ -186,39 +178,6 @@ class AsciiRenderer:
                 if px >= self.width - self.log_panel_width or py >= self.height - self.ability_bar_height:
                     continue
                 self.surface.blit(text, (px, py))
-
-    def _init_lorenz_points(self) -> None:
-        """Initialize Lorenz attractor particles around the origin.
-
-        We keep them in continuous 3D space and project x/y onto tiles
-        around the player each frame.
-        """
-        # refactor: Lorenz particle seeds should be provided by lorenz.py/game, not owned by renderer.
-        if self.lorenz_points:
-            return
-        # Start a cloud of points near the classic Lorenz initial condition.
-        for _ in range(2):
-            x = 0.1 * (random.random() - 0.5)
-            y = 1.0 + 0.1 * (random.random() - 0.5)
-            z = 1.05 + 0.1 * (random.random() - 0.5)
-            self.lorenz_points.append((x, y, z))
-
-    def _step_lorenz(self) -> None:
-        """Advance all Lorenz points a few small timesteps."""
-        # refactor: integration belongs in lorenz.py/system tick; renderer should only draw projected points.
-        if not self.lorenz_points:
-            return
-        pts: List[Tuple[float, float, float]] = []
-        for (x, y, z) in self.lorenz_points:
-            for _ in range(self.lorenz_steps_per_frame):
-                dx = self.lorenz_sigma * (y - x)
-                dy = x * (self.lorenz_rho - z) - y
-                dz = x * y - self.lorenz_beta * z
-                x += dx * self.lorenz_dt
-                y += dy * self.lorenz_dt
-                z += dz * self.lorenz_dt
-            pts.append((x, y, z))
-        self.lorenz_points = pts
 
     def draw_lorenz_overlay(self, game: Game) -> None:
         """Draw Lorenz 'butterflies' with short, tapered afterimage trails."""
@@ -988,33 +947,6 @@ class AsciiRenderer:
 
     def _current_hover_vertex(self, game: Game) -> int | None:
         return self._ui_attr("hover_vertex", self.hover_vertex)
-
-    def _update_hover(self, game: Game, mouse_pos: Tuple[int, int]) -> None:
-        # refactor: hover/aim state should be derived in scene/input layer; renderer should receive
-        # a precomputed TargetingState to draw.
-        aim_action = self._ui_attr("aim_action", self.aim_action)
-        ui = getattr(self, "ui_state", None)
-        if aim_action not in ("activate_all", "activate_seed"):
-            self.hover_vertex = None
-            self.hover_neighbors = []
-            if ui is not None:
-                ui.hover_vertex = None
-                ui.hover_neighbors = []
-            return
-        mx, my = mouse_pos
-        wx = (mx - self.origin_x) / self.tile
-        wy = (my - self.origin_y) / self.tile
-        idx = game.nearest_vertex((wx, wy))
-        self.hover_vertex = idx
-        if ui is not None:
-            ui.hover_vertex = idx
-        if idx is not None and aim_action == "activate_seed":
-            depth = game.get_param_value("activate_seed", "neighbor_depth")
-            self.hover_neighbors = game.neighbor_set_depth(idx, depth)
-        else:
-            self.hover_neighbors = []
-        if ui is not None:
-            ui.hover_neighbors = list(self.hover_neighbors)
 
     def _change_zoom(self, delta_steps: int, pos: Tuple[int, int]) -> None:
         # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
