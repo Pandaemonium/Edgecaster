@@ -1592,6 +1592,10 @@ class Game:
         # Then apply contact damage from butterflies to nearby hostiles
         self._lorenz_contact_damage(level)
 
+        # Clear reset flag after consumers have had a chance to react.
+        if self.lorenz_reset_trails:
+            self.lorenz_reset_trails = False
+
 
 
     def _lorenz_contact_damage(self, level: LevelState) -> None:

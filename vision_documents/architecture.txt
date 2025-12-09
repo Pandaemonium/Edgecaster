@@ -169,3 +169,7 @@ Renderer purge (in progress): move hover/aim/config state and Lorenz integration
 Next priority: Unified TargetMode
 
 Keep the geometry weird and the scenes clean.
+
+ƒo" Hover/aim/config state now scene-owned (DungeonUIState); renderer consumes view-model only
+
+ƒo" Lorenz: simulation/state in game/lorenz; renderer draws from game.lorenz_* view data (trails only).

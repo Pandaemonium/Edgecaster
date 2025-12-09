@@ -11,12 +11,11 @@ Status:
 ✓ Input → GameInput → GameCommand → DungeonScene._handle_command
 ✓ Renderer only computes hitboxes and draws
 Remaining impurities:
-- Dialog + Config UI still have small logic remnants in ascii.py (UI state now mirrored via DungeonUIState)
-- Hover/aim still read from renderer fallbacks; Lorenz integration still renderer-owned
+- Dialog/config drawing still lives in ascii.py but state is now scene-owned (DungeonUIState)
+- Lorenz integration/trails still renderer-owned
 
 Next micro-steps:
-- Finish moving hover/aim/config into scene-owned UI state; drop renderer fallbacks
-- Push Lorenz integration/state into lorenz.py/game; renderer consumes view-only positions
+- Move Lorenz integration/state into lorenz.py/game; renderer consumes view-only positions
 
 ===============================================================================
 SLICE 2: Ability Bar Overhaul [CLEANUP] — **MAJOR UPDATE COMPLETE**
@@ -98,3 +97,5 @@ Deferred / Vision Targets
 Current tactical focus:
 → **IMPLEMENT UNIFIED TARGETMODE (SLICE 3)**  
 Ability bar + action metadata are stable. Targeting is the last big unification step.
+
+- Lorenz integration moved to game/lorenz; renderer now only draws provided points/trails

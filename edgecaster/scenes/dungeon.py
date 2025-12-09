@@ -535,7 +535,7 @@ class DungeonScene(Scene):
         if kind == "quick_activate_all":
             # If we're already in activate_all aim mode, treat this as confirm
             if aim_action == "activate_all":
-                target_idx = renderer._current_hover_vertex(game)
+                target_idx = self.ui_state.hover_vertex
                 if target_idx is not None:
                     trigger_ability_effect(
                         game,

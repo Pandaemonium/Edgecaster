@@ -1,7 +1,6 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
-import random
 from typing import Tuple, List, Dict
 
 
@@ -182,7 +181,6 @@ class AsciiRenderer:
             self.lorenz_surface.fill((0, 0, 0, 0))
             self.lorenz_trail_frames.clear()
             self.lorenz_last_tick = None
-            game.lorenz_reset_trails = False
         # OPTIONAL: only Strange Attractors get the storm
         if not getattr(game, "has_lorenz_aura", False):
             # Clear trails if we swap to a non-storm character
@@ -934,9 +932,6 @@ class AsciiRenderer:
 
 
 
-
-    def _current_hover_vertex(self, game: Game) -> int | None:
-        return self._ui_attr("hover_vertex", None)
 
     def _change_zoom(self, delta_steps: int, pos: Tuple[int, int]) -> None:
         # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
