@@ -2415,6 +2415,11 @@ class Game:
         # teach new generator (replaces primary generator selection)
         self.unlocked_generators.append(choice)
         self.character.generator = choice
+        # Grant the corresponding ability so it appears on the bar.
+        try:
+            self.grant_ability(choice)
+        except Exception:
+            pass
         return f"{choice.title()} added to your repertoire."
 
 
@@ -2476,7 +2481,12 @@ class Game:
         if target_id == self.player_id:
             return
         target = level.actors.get(target_id)
-        if target is None or not target.alive:
+        if target is None:
+            # Fall back to any Actor tracked in entities (if it somehow wasn't in actors).
+            maybe_ent = level.entities.get(target_id) if hasattr(level, "entities") else None
+            if isinstance(maybe_ent, Actor):
+                target = maybe_ent
+        if target is None or not getattr(target, "alive", False):
             self.log.add("Your consciousness finds no purchase.")
             return
 
