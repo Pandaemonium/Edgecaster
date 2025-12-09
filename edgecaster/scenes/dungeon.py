@@ -318,6 +318,13 @@ class DungeonScene(Scene):
         """
         import pygame  # local to avoid circulars in some environments
 
+        ui = self.ui_state
+
+        def _set_ui(attr: str, value) -> None:
+            setattr(ui, attr, value)
+            if renderer is not None and hasattr(renderer, attr):
+                setattr(renderer, attr, value)
+
         kind = cmd.kind
         key = cmd.raw_key
         vec = cmd.vector
@@ -331,7 +338,8 @@ class DungeonScene(Scene):
         bar.sync_from_game(game)
 
         in_terminus_mode = bool(getattr(game, "awaiting_terminus", False))
-        in_aim_mode = renderer.aim_action in ("activate_all", "activate_seed")
+        aim_action = ui.aim_action
+        in_aim_mode = aim_action in ("activate_all", "activate_seed")
 
         # ------------------------------------------------------------
         # Ability reordering overlay (when open, swallow most commands)
@@ -447,15 +455,15 @@ class DungeonScene(Scene):
 
         if in_terminus_mode:
             if kind == "move" and vec is not None:
-                tx, ty = renderer.target_cursor
+                tx, ty = ui.target_cursor
                 dx, dy = vec
                 nt = (tx + dx, ty + dy)
                 if game.world.in_bounds(*nt):
-                    renderer.target_cursor = nt
+                    _set_ui("target_cursor", nt)
                 return
 
             if kind == "confirm":
-                game.try_place_terminus(renderer.target_cursor)
+                game.try_place_terminus(ui.target_cursor)
                 return
 
             # Let mouse_* commands pass through to the mouse handler.
@@ -468,13 +476,13 @@ class DungeonScene(Scene):
 
         if in_aim_mode and kind == "confirm":
             target_idx = renderer._current_hover_vertex(game)
-            if target_idx is not None and renderer.aim_action in ("activate_all", "activate_seed"):
+            if target_idx is not None and aim_action in ("activate_all", "activate_seed"):
                 trigger_ability_effect(
                     game,
-                    renderer.aim_action,
+                    aim_action,
                     hover_vertex=target_idx,
                 )
-            renderer.aim_action = None
+            _set_ui("aim_action", None)
             return
 
         # ------------------------------------------------------------
@@ -489,17 +497,17 @@ class DungeonScene(Scene):
                     bar.set_active(ability.action)
 
                     if ability.action == "place":
-                        renderer.target_cursor = game.actors[game.player_id].pos
+                        _set_ui("target_cursor", game.actors[game.player_id].pos)
                         if hasattr(game, "begin_place_mode"):
                             game.begin_place_mode()
-                        renderer.aim_action = None
+                        _set_ui("aim_action", None)
 
                     else:
                         # Aim-style abilities set aim_action and wait for confirm / click
                         if ability.action in ("activate_all", "activate_seed"):
-                            renderer.aim_action = ability.action
+                            _set_ui("aim_action", ability.action)
                         else:
-                            renderer.aim_action = None
+                            _set_ui("aim_action", None)
                             # Immediate abilities: go straight to the shared effect function
                             trigger_ability_effect(game, ability.action)
 
@@ -508,7 +516,7 @@ class DungeonScene(Scene):
 
         if kind == "quick_activate_all":
             # If we're already in activate_all aim mode, treat this as confirm
-            if renderer.aim_action == "activate_all":
+            if aim_action == "activate_all":
                 target_idx = renderer._current_hover_vertex(game)
                 if target_idx is not None:
                     trigger_ability_effect(
@@ -516,10 +524,10 @@ class DungeonScene(Scene):
                         "activate_all",
                         hover_vertex=target_idx,
                     )
-                renderer.aim_action = None
+                _set_ui("aim_action", None)
             else:
                 # Start aiming from current mouse position
-                renderer.aim_action = "activate_all"
+                _set_ui("aim_action", "activate_all")
                 renderer._update_hover(game, renderer._to_surface(pygame.mouse.get_pos()))
             return
 
@@ -600,23 +608,23 @@ class DungeonScene(Scene):
 
                     # Gear opens config overlay.
                     if gear_rect and gear_rect.collidepoint(mx, my):
-                        renderer.config_open = True
-                        renderer.config_action = ability.action
-                        renderer.config_selection = 0
+                        _set_ui("config_open", True)
+                        _set_ui("config_action", ability.action)
+                        _set_ui("config_selection", 0)
 
                     # Placement ability: enter terminus mode at player.
                     elif ability.action == "place":
-                        renderer.target_cursor = game.actors[game.player_id].pos
+                        _set_ui("target_cursor", game.actors[game.player_id].pos)
                         if hasattr(game, "begin_place_mode"):
                             game.begin_place_mode()
-                        renderer.aim_action = None
+                        _set_ui("aim_action", None)
 
                     else:
                         # Aim-style abilities set aim_action and wait for confirm/click.
                         if ability.action in ("activate_all", "activate_seed"):
-                            renderer.aim_action = ability.action
+                            _set_ui("aim_action", ability.action)
                         else:
-                            renderer.aim_action = None
+                            _set_ui("aim_action", None)
                             # Immediate abilities fire immediately.
                             trigger_ability_effect(game, ability.action)
 
@@ -630,12 +638,12 @@ class DungeonScene(Scene):
 
             # Terminus placement via click.
             if getattr(game, "awaiting_terminus", False):
-                renderer.target_cursor = (tx, ty)
+                _set_ui("target_cursor", (tx, ty))
                 game.try_place_terminus((tx, ty))
                 return
 
             # Aim-mode click to fire activate_all / activate_seed.
-            if renderer.aim_action in ("activate_all", "activate_seed"):
+            if aim_action in ("activate_all", "activate_seed"):
                 # Convert click to world-coordinates (in pattern space) and pick nearest vertex
                 wx = (mx - renderer.origin_x) / renderer.tile
                 wy = (my - renderer.origin_y) / renderer.tile
@@ -643,10 +651,10 @@ class DungeonScene(Scene):
                 if target_idx is not None:
                     trigger_ability_effect(
                         game,
-                        renderer.aim_action,
+                        aim_action,
                         hover_vertex=target_idx,
                     )
-                renderer.aim_action = None
+                _set_ui("aim_action", None)
                 return
 
             # Default: click-to-move / use stairs.
@@ -798,15 +806,15 @@ class DungeonScene(Scene):
                 ability = vis[0]
 
             if ability.action == "place":
-                renderer.target_cursor = game.actors[game.player_id].pos
+                _set_ui("target_cursor", game.actors[game.player_id].pos)
                 if hasattr(game, "begin_place_mode"):
                     game.begin_place_mode()
-                renderer.aim_action = None
+                _set_ui("aim_action", None)
             else:
                 if ability.action in ("activate_all", "activate_seed"):
-                    renderer.aim_action = ability.action
+                    _set_ui("aim_action", ability.action)
                 else:
-                    renderer.aim_action = None
+                    _set_ui("aim_action", None)
                     trigger_ability_effect(game, ability.action)
 
             return
