@@ -26,9 +26,16 @@ class FractalEditorState:
     grid_x_max: int = 10
     grid_y_min: int = -5
     grid_y_max: int = 5
-    vertices: List[Vec2] = None
-    edges: List[Tuple[int, int]] = None
+
+    vertices: List[Vec2] | None = None
+    edges: List[Tuple[int, int]] | None = None
+
+    # Soft constraints: enforced on accept() / Enter, not during drawing.
+    # Defaults match old behavior (no real limits).
+    min_vertices: int = 1
     max_vertices: Optional[int] = None
+    min_edges: int = 0
+    max_edges: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.vertices is None:
@@ -49,6 +56,11 @@ class FractalEditorScene(Scene):
     - F: flip selected edge direction
     - Del: delete selected vertex/edge
     - Enter: accept; Esc: cancel
+
+    Grid can be larger than the "baseline" segment from (0,0) to (10,0).
+    That baseline is still used to normalize the custom graph when building
+    the generator, so you can draw vertices beyond it (e.g. -5..15) and
+    get patterns that extend beyond each original segment.
     """
 
     def __init__(
@@ -65,13 +77,16 @@ class FractalEditorScene(Scene):
         self.selected_vertex: Optional[int] = None
         self.selected_edge: Optional[int] = None
         self.current_root: Optional[int] = None  # None uses implicit root at (0,0)
-        self.mode: str = "draw"  # draw | delete | flip
+        self.mode: str = "draw"  # draw | delete | flip | edge
         self.undo_stack: List[Tuple[List[Vec2], List[Tuple[int, int]], Optional[int], str]] = []
         self._background: Optional[pygame.Surface] = None
         self._font: Optional[pygame.font.Font] = None
         self._small_font: Optional[pygame.font.Font] = None
         self.margin = 40
         self.cell_size = 0  # computed per render
+
+        # Status line (e.g. for constraint failures on accept)
+        self.status_msg: str = ""
 
     # ------------------------------------------------------------
     # Utility helpers
@@ -105,6 +120,7 @@ class FractalEditorScene(Scene):
         return gx, gy
 
     def _nearest_grid_point(self, gx: float, gy: float) -> Vec2:
+        # For now: rectangular grid snapping
         return (
             round(gx),
             round(gy),
@@ -139,7 +155,7 @@ class FractalEditorScene(Scene):
         return None
 
     def _point_seg_dist(self, px, py, x1, y1, x2, y2) -> float:
-        # from stackoverflow "distance point to segment"
+        # distance from point to segment
         dx, dy = x2 - x1, y2 - y1
         if dx == dy == 0:
             return math.hypot(px - x1, py - y1)
@@ -148,6 +164,26 @@ class FractalEditorScene(Scene):
         proj_x = x1 + t * dx
         proj_y = y1 + t * dy
         return math.hypot(px - proj_x, py - proj_y)
+
+    # ------------------------------------------------------------
+    # Constraint checking
+
+    def _validate_constraints(self) -> Tuple[bool, str]:
+        """Check vertex/edge counts against the state's soft constraints."""
+        v_count = len(self.state.vertices)
+        e_count = len(self.state.edges)
+
+        if v_count < self.state.min_vertices:
+            return False, f"Need at least {self.state.min_vertices} vertices (have {v_count})."
+        if self.state.max_vertices is not None and v_count > self.state.max_vertices:
+            return False, f"Can only save with ≤ {self.state.max_vertices} vertices (have {v_count})."
+
+        if e_count < self.state.min_edges:
+            return False, f"Need at least {self.state.min_edges} edges (have {e_count})."
+        if self.state.max_edges is not None and e_count > self.state.max_edges:
+            return False, f"Can only save with ≤ {self.state.max_edges} edges (have {e_count})."
+
+        return True, ""
 
     # ------------------------------------------------------------
 
@@ -174,6 +210,13 @@ class FractalEditorScene(Scene):
             )
 
         def accept() -> None:
+            # Enforce soft constraints on save
+            ok, msg = self._validate_constraints()
+            if not ok:
+                # Stay in the editor, show a message, and do not pop the scene
+                self.status_msg = msg
+                return
+
             orig_verts = list(self.state.vertices)
             orig_edges = list(self.state.edges)
 
@@ -212,13 +255,13 @@ class FractalEditorScene(Scene):
                         verts.insert(target_idx, pos)
                         mapping = {old: new + (1 if new >= target_idx else 0) for old, new in mapping.items()}
 
-                # Ensure root at index 0
+                # Ensure root at index 0: baseline start at (0,0)
                 move_vertex_to((0, 0), 0)
-                # Ensure terminus at end
+                # Ensure terminus at end: baseline end at (10,0)
                 move_vertex_to((10, 0), len(verts))
 
                 # Remap edges using mapping; drop edges referencing missing vertices
-                remapped = []
+                remapped: List[Tuple[int, int]] = []
                 for a, b in edges:
                     if a in mapping and b in mapping:
                         remapped.append((mapping[a], mapping[b]))
@@ -268,16 +311,23 @@ class FractalEditorScene(Scene):
                         continue
                     if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
                         accept()
-                        running = False
+                        # Only exit loop if accept() actually popped the scene;
+                        # if constraints fail, running stays True.
+                        if manager.fractal_edit_result is not None:
+                            running = False
                         break
                     if event.key == pygame.K_1:
                         self.mode = "draw"
+                        self.status_msg = ""
                     if event.key == pygame.K_2:
                         self.mode = "delete"
+                        self.status_msg = ""
                     if event.key == pygame.K_3:
                         self.mode = "flip"
+                        self.status_msg = ""
                     if event.key == pygame.K_4:
                         self.mode = "edge"
+                        self.status_msg = ""
                     if event.key == pygame.K_z and (event.mod & pygame.KMOD_CTRL):
                         if self.undo_stack:
                             verts, edges, root, mode = self.undo_stack.pop()
@@ -285,6 +335,7 @@ class FractalEditorScene(Scene):
                             self.state.edges = edges
                             self.current_root = root
                             self.mode = mode
+                            self.status_msg = ""
                     if event.key == pygame.K_f and self.selected_edge is not None:
                         push_undo()
                         a, b = self.state.edges[self.selected_edge]
@@ -304,9 +355,11 @@ class FractalEditorScene(Scene):
                         mx, my = event.pos
                     if event.button == 1:
                         push_undo()
+                        self.status_msg = ""
                         self._handle_left_click(mx, my)
                     elif event.button == 3:
                         push_undo()
+                        self.status_msg = ""
                         self._handle_right_click(mx, my)
 
             # Update panel if full-screen and size changed
@@ -351,8 +404,10 @@ class FractalEditorScene(Scene):
                 and self.state.grid_y_min <= gy <= self.state.grid_y_max
             ):
                 return
-            if self.state.max_vertices is not None and len(self.state.vertices) >= self.state.max_vertices:
-                return
+
+            # NOTE: we no longer block drawing when over max_vertices;
+            # constraints are enforced only on accept/save.
+
             # avoid duplicate vertex positions
             if (gx, gy) in self.state.vertices:
                 idx = self.state.vertices.index((gx, gy))
@@ -384,17 +439,15 @@ class FractalEditorScene(Scene):
                 self.selected_edge = e_hit
                 self.selected_vertex = None
                 return
-            # optional: clicking a vertex in flip mode could clear selection, but not required
 
         elif self.mode == "edge":
             # Add-edge mode: click vertex A, then vertex B to add A->B
             self._handle_add_edge_click(v_hit)
 
-
     def _handle_add_edge_click(self, v_hit: Optional[int]) -> None:
         """Handle clicks in 'edge' mode to add edges between existing vertices."""
         if v_hit is None:
-            # Click not on a vertex: optionally clear selection or ignore
+            # Click not on a vertex: ignore
             return
 
         if self.selected_vertex is None:
@@ -410,7 +463,6 @@ class FractalEditorScene(Scene):
                     self.selected_edge = len(self.state.edges) - 1
             # For ease of chaining, treat the last clicked vertex as the new start
             self.selected_vertex = end
-
 
     def _handle_right_click(self, mx: int, my: int) -> None:
         panel = self.panel_rect
@@ -486,7 +538,6 @@ class FractalEditorScene(Scene):
         # Edge indices and ordering have changed, so clear selected_edge.
         self.selected_edge = None
 
-
     def _delete_edge(self, idx: int) -> None:
         if idx < 0 or idx >= len(self.state.edges):
             return
@@ -557,20 +608,22 @@ class FractalEditorScene(Scene):
             outline = CYAN if self.selected_vertex == idx else WHITE
             pygame.draw.circle(overlay, outline, (px, py), radius + 2, 1)
 
-        # root/terminus markers
-        root_px, root_py = self._grid_to_screen(self.state.grid_x_min, 0, panel)
-        term_px, term_py = self._grid_to_screen(self.state.grid_x_max, 0, panel)
+        # root/terminus markers: always at baseline (0,0) -> (10,0),
+        # even if the grid extends beyond that.
+        root_px, root_py = self._grid_to_screen(0, 0, panel)
+        term_px, term_py = self._grid_to_screen(10, 0, panel)
         pygame.draw.circle(overlay, YELLOW, (root_px, root_py), max(5, self.cell_size // 2), 2)
         pygame.draw.circle(overlay, PURPLE, (term_px, term_py), max(5, self.cell_size // 2), 2)
+
         # highlight current root if set
         if self.current_root is not None and 0 <= self.current_root < len(self.state.vertices):
             rx, ry = self.state.vertices[self.current_root]
             rpx, rpy = self._grid_to_screen(rx, ry, panel)
             pygame.draw.circle(overlay, (255, 255, 255), (rpx, rpy), max(7, self.cell_size // 2), 2)
 
-        # instructions
+        # instructions + counts + status
         if self._small_font:
-            lines = [
+            lines: List[str] = [
                 f"Mode: {self.mode.upper()} (1 draw, 2 delete, 3 flip, 4 edge)",
                 "Draw: click grid to add vertex & auto-edge from current root",
                 "Edge: click vertex A then vertex B to add edge A->B",
@@ -578,9 +631,31 @@ class FractalEditorScene(Scene):
                 "Flip: click edge to swap direction | Ctrl+Z: undo",
                 "Enter: accept | Esc: cancel",
             ]
+
+            # Counts + constraint targets
+            v = len(self.state.vertices)
+            e = len(self.state.edges)
+            if self.state.max_vertices is not None:
+                v_lim = f"{self.state.min_vertices}–{self.state.max_vertices}"
+            else:
+                v_lim = f"≥{self.state.min_vertices}"
+
+            if self.state.max_edges is not None:
+                e_lim = f"{self.state.min_edges}–{self.state.max_edges}"
+            else:
+                e_lim = f"≥{self.state.min_edges}"
+
+            lines.append(f"Vertices: {v} (target {v_lim})  |  Edges: {e} (target {e_lim})")
+
+            if self.status_msg:
+                lines.append(self.status_msg)
+
             y = panel.height - 20 * len(lines) - 10
             for ln in lines:
-                txt = self._small_font.render(ln, True, WHITE)
+                color = WHITE
+                if ln == self.status_msg:
+                    color = RED
+                txt = self._small_font.render(ln, True, color)
                 overlay.blit(txt, (16, y))
                 y += txt.get_height() + 2
 

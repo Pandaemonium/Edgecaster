@@ -496,7 +496,13 @@ class DungeonScene(Scene):
         # Mouse wheel controls zoom around current cursor.
         if kind == "mouse_wheel":
             if cmd.wheel_y:
-                renderer._change_zoom(cmd.wheel_y, renderer._to_surface(pygame.mouse.get_pos()))
+                if bar.active_action == "activate_all":
+                    delta = 1 if cmd.wheel_y > 0 else -1
+                    changed, msg = game.adjust_param("activate_all", "radius", delta)
+                    if not changed and delta > 0 and msg:
+                        renderer._set_flash(msg)
+                else:
+                    renderer._change_zoom(cmd.wheel_y, renderer._to_surface(pygame.mouse.get_pos()))
             return
 
         # Mouse click drives ability bar, config overlay, placement, and click-to-move.
