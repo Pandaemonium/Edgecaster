@@ -1,4 +1,4 @@
-EDGECASTER ARCHITECTURE GUIDE
+﻿EDGECASTER ARCHITECTURE GUIDE
 High-Level Overview and Refactor Roadmap
 Updated: 2025-12-08 (entity-driven abilities update integrated)
 
@@ -82,7 +82,9 @@ Now:
 ✓ Ability system fully extracted into systems/abilities  
 ✓ AbilityBarState (scene) + AbilityBarRenderer (view) are clean  
 ✓ Targeting logic partly migrated; renderer now draws cursor only  
-✓ Action icons + sub-buttons driven by actions.py
+✓ Action icons + sub-buttons driven by actions.py  
+✓ UI state (aim/hover/target/config) is scene-owned (DungeonUIState); renderer consumes view-model only  
+✓ Lorenz simulation lives in game/lorenz; renderer draws from game-provided points/trails
 
 
 Next:
@@ -170,6 +172,7 @@ Next priority: Unified TargetMode
 
 Keep the geometry weird and the scenes clean.
 
-�o" Hover/aim/config state now scene-owned (DungeonUIState); renderer consumes view-model only
+�o" Hover/aim/config state now scene-owned (DungeonUIState); renderer consumes view-model only
 
-�o" Lorenz: simulation/state in game/lorenz; renderer draws from game.lorenz_* view data (trails only).
+�o" Lorenz: simulation/state in game/lorenz; renderer draws from game.lorenz_* view data (trails only).
+
