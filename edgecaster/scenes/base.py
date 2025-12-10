@@ -3,6 +3,8 @@ from __future__ import annotations
 import pygame
 from typing import Optional
 
+from edgecaster.visuals import VisualProfile
+
 
 # ---------------------------------------------------------------------------
 # Base Scene
@@ -21,6 +23,7 @@ class Scene:
 
     # Opt-in flag for the new engine-driven loop.
     uses_live_loop: bool = False
+    visual_profile: VisualProfile | None = None
 
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         """

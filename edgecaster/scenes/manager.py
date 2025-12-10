@@ -7,6 +7,7 @@ from pygame import Rect
 
 from edgecaster import config
 from edgecaster.render.ascii import AsciiRenderer
+from edgecaster.visuals import VisualProfile
 from edgecaster.rng import new_rng
 from edgecaster.character import Character, default_character
 from .game_input import load_bindings_full
@@ -98,6 +99,7 @@ class SceneManager:
         scale: float = 0.6,
         parent: Optional[Rect] = None,
         offset: int = 0,
+        visual: VisualProfile | None = None,
         **kwargs,
     ) -> Scene:
         """
@@ -109,6 +111,8 @@ class SceneManager:
         """
         window_rect = self.compute_child_window_rect(scale, parent, offset)
         scene = scene_cls(window_rect=window_rect, **kwargs)  # type: ignore[arg-type]
+        if visual is not None:
+            scene.visual_profile = visual
         # Tag the scene so we know it's windowed
         scene.window_rect = window_rect  # type: ignore[attr-defined]
         self.window_stack.append(window_rect)
