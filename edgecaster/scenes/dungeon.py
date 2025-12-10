@@ -537,6 +537,7 @@ class DungeonScene(Scene):
         # Clear target + legacy flags
         self.cancel_target_mode(game)
 
+
     def _confirm_look(self, game: Game, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         """Resolve a 'look' target into an inspect popup.
 
@@ -800,8 +801,19 @@ class DungeonScene(Scene):
                 if bar.selected_index // bar.page_size != bar.page:
                     bar.page = bar.selected_index // bar.page_size
                 return
+
+            if kind == "ability_page_prev":
+                bar.prev_page()
+                # Snap selection to first slot on the new page
+                bar.selected_index = bar.page * bar.page_size
+                return
+            if kind == "ability_page_next":
+                bar.next_page()
+                bar.selected_index = bar.page * bar.page_size
+                return
             # ignore other commands while reorder UI is active
             return
+
 
         # ------------------------------------------------------------
         # 0) Global-ish keys: Escape, fullscreen, help
@@ -932,6 +944,89 @@ class DungeonScene(Scene):
                 return
 
         # ------------------------------------------------------------
+        # 4b) Position targeting mode (push_pattern)
+        #      - Arrow/WASD/numpad move the push target
+        #      - Q/E rotate the push direction
+        #      While active, player movement is frozen.
+        # ------------------------------------------------------------
+        if push_mode and t and t.kind == "position":
+            # Keyboard rotation with Q/E
+            if key in (pygame.K_q, pygame.K_e):
+                delta_deg = 15 if key == pygame.K_e else -15
+                ui.push_rotation = (ui.push_rotation + delta_deg) % 360
+
+                if self.ui_state.push_target and t and t.constraints:
+                    lvl = game._level()
+                    pattern = getattr(lvl, "pattern", None)
+                    anchor = getattr(lvl, "pattern_anchor", None)
+                    max_range = getattr(t.constraints, "max_range", 5.0)
+                    if pattern and anchor and getattr(pattern, "vertices", None):
+                        self.ui_state.push_preview = pattern_motion.build_push_preview(
+                            pattern,
+                            anchor,
+                            self.ui_state.push_target,
+                            self.ui_state.push_rotation,
+                            max_range,
+                        )
+
+                # Swallow Q/E so they don’t do anything else while targeting
+                return
+
+            # Keyboard translation of the push target
+            if kind == "move" and vec is not None:
+                dx, dy = vec
+
+                # Get current pattern center-of-mass in world coords
+                lvl = game._level()
+                pattern = getattr(lvl, "pattern", None)
+                anchor = getattr(lvl, "pattern_anchor", None)
+                if pattern and anchor and getattr(pattern, "vertices", None):
+                    com = pattern_motion.center_of_mass(pattern)
+                    com_world = (com[0] + anchor[0], com[1] + anchor[1])
+
+                    # Current displacement from COM → target
+                    cur_tgt = self.ui_state.push_target or com_world
+                    cur_dx = cur_tgt[0] - com_world[0]
+                    cur_dy = cur_tgt[1] - com_world[1]
+
+                    # Step by 1 tile in the requested direction
+                    new_dx = cur_dx + dx
+                    new_dy = cur_dy + dy
+
+                    # Clamp to max_range if needed
+                    max_range = getattr(t.constraints, "max_range", None) if t.constraints else None
+                    if max_range is None:
+                        max_range = 5.0
+                    dist = (new_dx * new_dx + new_dy * new_dy) ** 0.5
+                    if dist > max_range and dist > 0:
+                        scale = max_range / dist
+                        new_dx *= scale
+                        new_dy *= scale
+
+                    tgt = (com_world[0] + new_dx, com_world[1] + new_dy)
+                    self.ui_state.push_target = tgt
+
+                    # Update preview geometry
+                    self.ui_state.push_preview = pattern_motion.build_push_preview(
+                        pattern,
+                        anchor,
+                        tgt,
+                        self.ui_state.push_rotation,
+                        max_range,
+                    )
+
+                    # Keep the tile highlight roughly on the target
+                    tx = int(round(tgt[0]))
+                    ty = int(round(tgt[1]))
+                    if game.world.in_bounds(tx, ty):
+                        t.cursor_tile = (tx, ty)
+                        self.ui_state.target_cursor = (tx, ty)
+
+                # Always swallow movement while in push-mode targeting
+                return
+
+
+        # ------------------------------------------------------------
         # Look targeting mode (tile-based inspect cursor)
         # ------------------------------------------------------------
         if in_look_mode and t:
@@ -950,34 +1045,47 @@ class DungeonScene(Scene):
                 return
 
         # ------------------------------------------------------------
-        # 5) Ability bar: hotkeys + quick 'f'
+        # 5) Ability bar: page cycling + hotkeys + quick 'f'
         # ------------------------------------------------------------
+
+        # Page cycling: PgUp/PgDn/Tab switch ability bar pages
+        if kind == "ability_page_prev":
+            bar.prev_page()
+            # Snap selection + active ability to the first slot on the new page.
+            start = bar.page * bar.page_size
+            if 0 <= start < len(bar.order):
+                bar.selected_index = start
+                act = bar.action_at_index(start)
+                if act:
+                    bar.active_action = act
+            return
+
+        if kind == "ability_page_next":
+            bar.next_page()
+            # Same behavior going forward: first slot of the new page.
+            start = bar.page * bar.page_size
+            if 0 <= start < len(bar.order):
+                bar.selected_index = start
+                act = bar.action_at_index(start)
+                if act:
+                    bar.active_action = act
+            return
 
         if kind == "ability_hotkey" and cmd.hotkey is not None:
             hk = cmd.hotkey
             vis = bar.visible_abilities()
-            for ability in vis:
-                if ability.hotkey == hk:
+
+            # Dynamic page-local hotkeys: 1..N for the current page.
+            for idx, ability in enumerate(vis):
+                # Keep the model's hotkey in sync with row number, so
+                # the renderer's labels match this logic.
+                if hasattr(ability, "hotkey"):
+                    ability.hotkey = idx + 1
+
+                if idx + 1 == hk:
                     bar.set_active(ability.action)
                     self._begin_action_from_def(game, ability)
                     return
-            return
-
-        if kind == "quick_activate_all":
-            # If we're already in activate_all aim mode, treat this as confirm
-            if aim_action == "activate_all":
-                target_idx = self.ui_state.hover_vertex
-                if target_idx is not None:
-                    trigger_ability_effect(
-                        game,
-                        "activate_all",
-                        hover_vertex=target_idx,
-                    )
-                _set_aim_action(None)
-            else:
-                # Start aiming from current mouse position
-                _set_aim_action("activate_all")
-                _update_hover(renderer._to_surface(pygame.mouse.get_pos()))
             return
 
         # ------------------------------------------------------------
@@ -1150,16 +1258,34 @@ class DungeonScene(Scene):
                 game.try_place_terminus((tx, ty))
                 return
 
-            # Default: click-to-move / use stairs.
+            # Default: click-to-move / stairs / wait.
             player = game.actors[game.player_id]
             px, py = player.pos
             dx = tx - px
             dy = ty - py
+
             if tx == px and ty == py:
-                game.use_stairs()
+                # Clicked on the player: use stairs if present, otherwise wait.
+                tile = game.world.get_tile(tx, ty) if hasattr(game, "world") else None
+                glyph = getattr(tile, "glyph", None) if tile is not None else None
+
+                if glyph == ">":
+                    # Stairs down
+                    if hasattr(game, "use_stairs_down"):
+                        game.use_stairs_down()
+                elif glyph == "<":
+                    # Stairs up
+                    if hasattr(game, "use_stairs_up"):
+                        game.use_stairs_up()
+                else:
+                    # No stairs here: treat click-on-self as a wait.
+                    if hasattr(game, "queue_player_wait"):
+                        game.queue_player_wait()
             elif max(abs(dx), abs(dy)) == 1:
+                # Clicked on an adjacent tile: move there.
                 game.queue_player_move((int(dx), int(dy)))
             return
+
 
         # ------------------------------------------------------------
         # 6) High-level game actions (non-movement)

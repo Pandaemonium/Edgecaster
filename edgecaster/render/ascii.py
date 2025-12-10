@@ -926,6 +926,12 @@ class AsciiRenderer:
         if not bar_state:
             return
 
+        # Dynamic hotkeys: renumber visible abilities 1..N every frame
+        visible = bar_state.visible_abilities()
+        for idx, ability in enumerate(visible):
+            if hasattr(ability, "hotkey"):
+                ability.hotkey = idx + 1
+
         # Model is maintained by DungeonScene/AbilityBarState; renderer is view-only.
         self.ability_bar_view.draw(
             surface=self.surface,
@@ -937,6 +943,7 @@ class AsciiRenderer:
             width=self.width,
             icon_drawer=self._draw_ability_icon_for_bar,
         )
+
 
     def _draw_ability_icon(self, rect: pygame.Rect, ability_or_action, game: Game) -> None:
         """Draw an ability icon from either an Ability or an action name."""

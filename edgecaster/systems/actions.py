@@ -546,8 +546,8 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         "I hate you!!! A lot!!!",
         "I hope you get ambushed by an alligator.",
         "Hey look at this guy over here, Mr. Big Deal Fractal guy, ooh la la he's a fancy fucker ain't he?",
-        "Berryfucker!"
-        "Your MOM is self-similar!"
+        "Berryfucker!",
+        "Your MOM is self-similar!",
         
     ]
 
