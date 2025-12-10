@@ -13,6 +13,7 @@ class NPCSpawnSpec:
     glyph: Optional[str] = None
     color: Optional[Tuple[int, int, int]] = None
     offsets: List[Tuple[int, int]] = field(default_factory=list)
+    description: Optional[str] = None  
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,11 @@ class POI:
     coord: Tuple[int, int, int]  # exact match for now
     npcs: List[NPCSpawnSpec] = field(default_factory=list)
     # Future: entities, items, layout overrides
+
+
+
+
+
 
 
 def _load_pois() -> Dict[str, POI]:
@@ -44,6 +50,7 @@ def _load_pois() -> Dict[str, POI]:
                     glyph=npc.get("glyph"),
                     color=color,  # type: ignore[arg-type]
                     offsets=offsets,
+                    description=npc.get("description"),  # NEW
                 )
             )
         out[pid] = POI(id=pid, coord=coord, npcs=npc_specs)

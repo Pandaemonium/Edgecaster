@@ -1,102 +1,110 @@
-﻿SPRING CLEANING â€“ ACTIONABLE PLAN
-(Current Status: Ability Bar Fully Extracted, Abilities Now Entity-Driven)
-Legend: [CLEANUP] structural/no-behavior change; [BEHAVIOR] gameplay change; [VISION] future/idea.
+﻿SPRING CLEANING — ACTIONABLE PLAN
+(Current Status: Action-driven abilities, unified TargetMode, hierarchical entities)
+
+Legend: [CLEANUP] structural/no-behavior change; [BEHAVIOR] gameplay change;  
+        [VISION] long-term design direction.
 
 ===============================================================================
-SLICE 1: Renderer / Input Untangle [CLEANUP] â€” COMPLETE ENOUGH FOR NOW
-Goal: ascii.py is draw-only; scenes own all input and UI logic.
+SLICE 1: Renderer / Input Untangle [CLEANUP] — COMPLETE ENOUGH FOR NOW
+Goal: ascii.py is draw-only; scenes own input + UI logic.
 
-Status:
-âœ“ ascii.py now owns NO input
-âœ“ Input â†’ GameInput â†’ GameCommand â†’ DungeonScene._handle_command
-âœ“ Renderer only computes hitboxes and draws
+✓ ascii.py owns no input  
+✓ Input → GameInput → GameCommand → DungeonScene._handle_command  
+✓ Renderer only draws, computes hitboxes  
+
 Remaining impurities:
-- Dialog/config drawing still lives in ascii.py but state is now scene-owned (DungeonUIState)
-- Lorenz integration/trails still renderer-owned
+- A few UI overlays still styled directly in ascii.py
+- Lorenz trail state now correctly lives in game/lorenz
 
-Next micro-steps:
-- Move Lorenz integration/state into lorenz.py/game; renderer consumes view-only positions
-
-===============================================================================
-SLICE 2: Ability Bar Overhaul [CLEANUP] â€” **MAJOR UPDATE COMPLETE**
-Goal: Ability system renderer-agnostic and driven entirely by Actions defined in actions.py.
-
-Status:
-âœ“ AbilityBarState implemented (scene-owned)
-âœ“ AbilityBarRenderer is pure view
-âœ“ actions.py defines all action metadata (show_in_bar, icons, colors, sub-buttons)
-
-NEW (IMPORTANT):
-âœ“ **Ability bar now reflects the current host actorâ€™s `actions` list.**
-  - Body-swapping instantly updates the bar.
-  - Only actions with show_in_bar=True appear.
-  - Future classes and monsters inherit abilities automatically.
-
-âœ“ **Kochbender fractal kit is now added via entity.actions at spawn time.**
-  - Currently done hackily during player instantiation in game.py.
-  - Ultimately should be expressed via character generation + entity templates.
-
-Next micro-steps:
-- Roll class-specific action lists into character generation pipelines
-- Replace hacky player spawn action injection with a clean class component
+Next micro-step:
+- Fine-grain separation of visual-only UI effects vs scene logic
 
 ===============================================================================
-SLICE 3: Targeting System Generalization [CLEANUP/BEHAVIOR] â€” NEXT PRIORITY
-Goal: One unified TargetMode for all targeted actions.
+SLICE 2: Ability Bar Overhaul [CLEANUP] — COMPLETE
+Goal: Metadata-driven ability bar (icons, labels, sub-buttons).
 
-Plan:
-1) Introduce a TargetState struct on DungeonScene
-2) Movement keys move cursor while active
-3) Confirm â†’ resolve + dispatch
-4) Cancel â†’ exit
-5) Renderer only draws the cursor; no logic inside ascii.py
+✓ AbilityBarState scene-owned  
+✓ AbilityBarRenderer view-only  
+✓ actions.py defines all metadata  
+✓ Bar updates automatically when host actor changes  
+✓ Kochbender kit added via entity.actions (to be moved to character gen templates)
 
-Benefits:
-- Removes legacy â€œterminus modeâ€ and â€œaim modeâ€
-- Fully unifies keyboard + mouse targeting
-
-===============================================================================
-SLICE 4: Custom Fractal Pipeline [CLEANUP]
-Status:
-âœ“ Ability bar correctly opens fractal editor via action metadata
-Next:
-- Ensure editor returns unified vertices/edges dict
-- Align all clicks consistently in fullscreen and windowed modes
+Next steps:
+- Integrate class templates / origins into the entity-spawn pipeline  
+- Clean ability injection at player creation
 
 ===============================================================================
-SLICE 5: Inventory Cleanup [CLEANUP]
-Status:
-âœ“ Nested containers implemented
-âœ“ InventoryScene functional
+SLICE 3: Unified TargetMode [CLEANUP/BEHAVIOR] — COMPLETE (FOUNDATION)
+Goal: One targeting system for everything.
 
-Next:
-- UI polish (left-justification, footer clipping fix)
-- Consider stackable items
+✓ TargetState implemented (tile / vertex / look)  
+✓ Keyboard + mouse unified  
+✓ Confirm/cancel fully routed through DungeonScene  
+✓ Renderer only draws cursor + overlays  
+✓ Actions declare targeting rules via TargetingSpec
 
-===============================================================================
-SLICE 6: Data-Driven Entities [CLEANUP/BEHAVIOR]
-Goal: All entities via YAML â†’ factory instantiation.
-
-Status:
-âœ“ entities.yaml and enemy_factory fully in place
-âœ“ All monsters derived from YAML templates
-âœ“ Containers, berries, environmental objects cleanly data-driven
-
-Next:
-- Expand template â€œcomponentsâ€
-- Migrate hardcoded actor stats into templates where appropriate
+Next steps:
+- Add ranged, teleport, cone, and line targeting  
+- Add graph-neighbor cycling for vertex mode  
+- Add preview layers for more complex target shapes
 
 ===============================================================================
-Deferred / Vision Targets
-- Full renderer swapability (ASCII â†’ tiles)
-- Spell/action effects as entities
-- Procedural spawn tables
-- Behavior-tree AI
+SLICE 4: Look / Inspect System [BEHAVIOR] — NEWLY COMPLETE
+Goal: Roguelike-style examination with entity inheritance.
+
+✓ `look_action` triggers look-style TargetMode  
+✓ Hover shows yellow entity label  
+✓ Confirm shows UrgentMessage popup with:
+    - Title (name)
+    - Big glyph (colored)
+    - Inherited description via prototype chain  
+✓ Look mode remains active after closing popup for smooth multi-inspection  
+✓ Foundation for lore / ecology / procedural biology
+
+Next steps:
+- Dedicated InspectScene with scrollable stats, abilities, materials  
+- Auto-inspection on targeting (aim-preview)
+
+===============================================================================
+SLICE 5: Entity Inheritance System [CLEANUP/BEHAVIOR] — NEW CORE SUBSYSTEM
+Goal: Every entity derives from a parent; child overrides fields.
+
+✓ YAML prototypes define `parent`, `glyph`, `color`, `description`, stats  
+✓ Loader resolves inheritance into flattened prototypes  
+✓ Runtime entities tagged with their archetype  
+✓ Hierarchical lookup used for inspection and future AI
+
+Next steps:
+- Add component flags (AI, materials, interactions)  
+- Add biological attributes (size, tissues, metabolism)  
+- Make items & actors share more systems (unified physics/HP/etc.)
+
+===============================================================================
+SLICE 6: Inventory Cleanup [CLEANUP] — PARTIALLY COMPLETE
+✓ Nested containers  
+✓ InventoryScene stable  
+Remaining:
+- UI polish  
+- Stacking and weight systems  
+- Auto-sort modes
+
+===============================================================================
+SLICE 7: Data-Driven Everything [VISION]
+- Move combat stats, resistances, speeds into templates  
+- Add behavior components (aggressive, curious, brittle, fractal)  
+- Spawners use prototype metadata  
+- Entities become fully component-based
+
+===============================================================================
+DEFERRED / LONG-TERM VISION
+- Optional tile/sprite renderer  
+- Behavior-tree AI  
+- Procedural pantheons + god-planets (Yggen long-term)  
+- Lore generation using hierarchical entity metadata  
+- Full action-economy redesign (interrupts, reactions, timings)
 
 ===============================================================================
 Current tactical focus:
-â†’ **IMPLEMENT UNIFIED TARGETMODE (SLICE 3)**  
-Ability bar + action metadata are stable. Targeting is the last big unification step.
-
-- Lorenz integration moved to game/lorenz; renderer now only draws provided points/trails
-
+→ Extend unified TargetMode  
+→ Expand entity prototype components  
+→ Stabilize inheritance + inspection for future systems  

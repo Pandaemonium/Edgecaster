@@ -13,3 +13,5 @@
 -Using keyboard controls to select the location of placed rune node doesn't always work right.
 
 -Beggarly Vagrant can't accept a berry, likely due to inventory system changes
+
+-Clicking on the player one time in the dungeon led to a crash, tried to use the stairs??

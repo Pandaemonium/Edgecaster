@@ -255,6 +255,7 @@ class Game:
         player.pos = (px, py)
         player.faction = "player"      # make sure this is canonical
         player.stats = player_stats    # use character-derived stats
+        player.description = "You attempt to perceive yourself, but can do so only incompletely."
 
         # --- Class kit / action set -----------------------------------
         # Everyone gets the boring core verbs (never shown on the bar):
@@ -1095,9 +1096,14 @@ class Game:
                 disposition=10,
                 affiliations=("edgecasters",),
             )
+            # Custom look/inspect description
+            mentor.description = "Old, one-eyed, and syphilitic, yet unerringly optimistic."
+            
+
             level.actors[aid] = mentor
             level.entities[aid] = mentor
             break
+
 
     def _spawn_intro_npcs(self, level: LevelState) -> None:
         """Place the Hexmage and Cartographer near the entry if space allows."""
@@ -1139,11 +1145,20 @@ class Game:
                     affiliations=("edgecasters",),
                     glyph="&",
                 )
+
+                # Custom per-NPC description for the look system
+                if npc_id == "hexmage":
+                    npc.description = "This runecaster is swarming with bees."
+                elif npc_id == "cartographer":
+                    npc.description = "This chick is WAY too hot to be a cartographer."
+                    
+
                 level.actors[aid] = npc
                 level.entities[aid] = npc
                 placed += 1
                 break
             # continue loop to next npc even if not placed; failure to place is tolerated
+
 
     def _spawn_poi_contents(self, level: LevelState, coord: Tuple[int, int, int]) -> None:
         """Spawn NPCs defined by any POIs attached to this level."""
@@ -1204,6 +1219,10 @@ class Game:
                     glyph=glyph,
                     color=color,  # type: ignore[arg-type]
                 )
+                # NEW: wire through POI / NPC_DEF description for look/inspect
+                desc = getattr(spec, "description", None) or npc_def.get("description")
+                if desc:
+                    actor.description = desc
                 level.actors[aid] = actor
                 level.entities[aid] = actor
 
@@ -1458,6 +1477,7 @@ class Game:
                     "color": color,
                 },
             )
+            ent.description = "Definitely NOT a bag, it's much more Platonic than that."
             level.entities[ent.id] = ent
 
 

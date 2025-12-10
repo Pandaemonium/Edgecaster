@@ -5,6 +5,7 @@ NPC_DEFS = {
         "name": "Mentor",
         "factions": ["edgecasters"],
         "base_disposition": 10,
+        "description": "Old, one-eyed and syphilitic, yet unerringly optimistic.",
         "dialogue": [
             "Ah, another step along the recursion.",
             "Choose a new pattern to weave into your repertoire.",
@@ -14,6 +15,7 @@ NPC_DEFS = {
         "name": "The Hexmage",
         "factions": ["edgecasters"],
         "base_disposition": 5,
+        "description": "This runecaster is swarming with bees.",
         "dialogue": [
             "Weave your sigils on a lattice of hexes.",
             "I'll open the hex drafting grid for you.",
@@ -23,6 +25,7 @@ NPC_DEFS = {
         "name": "The Cartographer",
         "factions": ["edgecasters"],
         "base_disposition": 5,
+        "description": "This chick is WAY too hot to be a cartographer.",
         "dialogue": [
             "Need more room to sketch? I can unroll a wide parchment.",
             "Let's draft on a spacious rectangular grid.",

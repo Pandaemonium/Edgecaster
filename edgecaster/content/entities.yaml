@@ -1,5 +1,30 @@
 # edgecaster/content/entities.yaml
 
+# --- ROOT ENTITY TEMPLATE ------------------------------------
+- id: entity
+  name: Entity
+  glyph: "?"
+  color: [255, 255, 255]
+  kind: generic
+  render_layer: 1
+  blocks_movement: false
+  parent: null
+  description: "A thing. In a place. Don't like it? Try a new place. At a different time."
+  tags: {}
+
+# --- BERRY TEMPLATE ------------------------------------------
+- id: berry
+  name: Berry
+  glyph: "b"
+  color: [200, 80, 200]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: entity
+  description: "It's one of these things like, you think it's a berry but it's not, or vice versa. Is an orange a berry?"
+  tags:
+    item_type: berry
+
 # --- BERRIES -------------------------------------------------
 - id: blueberry
   name: Blueberry
@@ -8,6 +33,8 @@
   kind: item
   render_layer: 1
   blocks_movement: false
+  parent: berry
+  description: "Strangely blue. Not many other foods are blue."
   tags:
     item_type: blueberry
     test_berry: true
@@ -19,6 +46,8 @@
   kind: item
   render_layer: 1
   blocks_movement: false
+  parent: berry
+  description: "Controversially tart. Prone to molding. Makes for excellent jam."
   tags:
     item_type: raspberry
     test_berry: true
@@ -30,6 +59,8 @@
   kind: item
   render_layer: 1
   blocks_movement: false
+  parent: berry
+  description: "The queen of berries. Succulent and dream-like."
   tags:
     item_type: strawberry
     test_berry: true
@@ -42,6 +73,8 @@
   kind: item
   render_layer: 1
   blocks_movement: false
+  parent: entity
+  description: "No, it's not a bag. It's much more Platonic than that."
   tags:
     container: true
     item_type: inventory
@@ -54,6 +87,8 @@
   kind: item
   render_layer: 1
   blocks_movement: false
+  parent: entity
+  description: "Holy shit, don't touch that thing!"
   tags:
     item_type: destabilizer
     grants_ability: destabilize
