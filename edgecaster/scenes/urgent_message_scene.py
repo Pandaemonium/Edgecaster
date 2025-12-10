@@ -4,6 +4,8 @@ from typing import Optional, Callable, List
 
 import pygame
 
+from edgecaster.visuals import VisualProfile, apply_visual_panel
+
 from .base import PopupMenuScene
 
 if False:  # type checking only
@@ -214,80 +216,19 @@ class UrgentMessageScene(PopupMenuScene):
           [Choices (small)...]
           (no footer)
         """
+        assert self.window_rect is not None
+
+        rect = self.window_rect
         renderer = manager.renderer
-        surface = renderer.surface
 
         # Fonts: title larger, body + choices same smaller size
         title_font = renderer.font
         body_font = renderer.small_font
 
-        # --- First pass: estimate size we need for a snug panel ---
-
         padding_x = 24
         padding_y = 16
 
-        # Wrap body with a reasonable maximum width guess (useful for sizing).
-        max_body_width_guess = int(renderer.width * 0.6)
-        if self.message:
-            body_lines_for_size = self._wrap_text(self.message, body_font, max_body_width_guess)
-        else:
-            body_lines_for_size = []
-
-        widths: list[int] = []
-        total_height = padding_y  # top padding
-
-        # Title
-        if self.title:
-            tw, th = title_font.size(self.title)
-            widths.append(tw)
-            total_height += th + 8  # small gap after title
-
-        # Body lines
-        for line in body_lines_for_size:
-            text_line = line if line else " "
-            w, h = body_font.size(text_line)
-            widths.append(w)
-            total_height += h + 2
-
-        if body_lines_for_size:
-            total_height += 12  # gap before choices if we had a body
-        else:
-            total_height += 4   # minimal gap if no body text
-
-        # Choices (use same font as body so they match)
-        for label in options:
-            prefix_label = "▶ " + label  # worst-case width with selection arrow
-            w, h = body_font.size(prefix_label)
-            widths.append(w)
-            total_height += h + 4
-
-        total_height += padding_y  # bottom padding
-
-        # Guard against empty widths (no title, no body, no options)
-        content_width = max(widths) if widths else 100
-
-        # Constrain panel size to screen
-        max_panel_width = renderer.width - 40
-        max_panel_height = renderer.height - 40
-
-        panel_width = min(content_width + 2 * padding_x, max_panel_width)
-        panel_height = min(total_height, max_panel_height)
-
-        # Center the panel
-        x = (renderer.width - panel_width) // 2
-        y = (renderer.height - panel_height) // 2
-
-        rect = pygame.Rect(x, y, panel_width, panel_height)
-        self.window_rect = rect
-
-        # Keep the manager's window_stack in sync if this is a windowed scene
-        stack = getattr(manager, "window_stack", None)
-        if stack and stack[-1] is not None:
-            stack[-1] = rect
-
-        # --- Second pass: actually render using the final rect ---
-
-        panel = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
 
         # Panel background + border (same visual language as other popups)
         panel.fill((10, 10, 20, 240))
@@ -327,7 +268,7 @@ class UrgentMessageScene(PopupMenuScene):
             y += 4
 
         # Choices (same size as body text)
-        self._option_rects = []  # global rects used for mouse hit-testing
+        self._option_rects = []  # panel-local rects used for mouse hit-testing
         for idx, label in enumerate(options):
             selected = (idx == self.selected_idx)
             color = renderer.player_color if selected else renderer.fg
@@ -337,17 +278,15 @@ class UrgentMessageScene(PopupMenuScene):
             local_x = (panel.get_width() - text_surf.get_width()) // 2
             local_y = y
 
-            # Local rect on the panel
             local_rect = text_surf.get_rect(topleft=(local_x, local_y))
             panel.blit(text_surf, local_rect.topleft)
 
-            # Convert to global coords for hit-testing
-            global_rect = local_rect.move(rect.left, rect.top)
-            self._option_rects.append(global_rect)
+            # Store panel-local rects for hit-testing via unprojected mouse coords
+            self._option_rects.append(local_rect)
 
             y += text_surf.get_height() + 4
 
         # Note: no footer hint for urgent messages.
 
-        # Blit panel to the logical surface
-        surface.blit(panel, rect.topleft)
+        visual = self.visual_profile or VisualProfile()
+        apply_visual_panel(renderer.surface, panel, rect, visual)
