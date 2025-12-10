@@ -4,14 +4,10 @@
 
 -Mapgen takes a long time, more for some seeds than others it would seem, and causes slowdown until it's done. Understandable no doubt for such an intensive process. Eventually work on a more streamlined process of worldgen a la Dwarf Fortress where worlds can be created and saved, then loaded and reused more quickly and easily.
 
--When adjusting things in a PopupMenu, the faded background does not change. So for example, if you adjust a global option in the Options menu a few stacks deep, it won't update on the levels higher up. If you eat a berry in the inventory, it doesn't update your HP bar until you exit out of the inventory screen.
+-When adjusting things in a PopupMenu, the faded background does not change. So for example, if you adjust a global option in the Options menu a few stacks deep, it won't update on the levels higher up. If you eat a berry in the inventory, it doesn't update your HP bar until you exit out of the inventory screen. (HP bar etc. as "widget" a la Ability bar?)
 
 -Imps can taunt you from offscreen. Will require a more sophisticated overhaul of enemy vision and AI.
 
 -Under some circumstances that I'm not sure, the inventory / get items functionality stops working. Other actions like Yawp still work.
 
--Using keyboard controls to select the location of placed rune node doesn't always work right.
-
 -Beggarly Vagrant can't accept a berry, likely due to inventory system changes
-
--Clicking on the player one time in the dungeon led to a crash, tried to use the stairs??

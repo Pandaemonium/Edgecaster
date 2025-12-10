@@ -56,8 +56,11 @@ class GameInput:
             "talk": [pygame.K_t],
             "quick_activate_all": [pygame.K_f],
             "look_action": [pygame.K_l],
-
+            # NEW: ability bar page cycling
+            "ability_page_prev": [pygame.K_PAGEUP],
+            "ability_page_next": [pygame.K_PAGEDOWN, pygame.K_TAB],
         }
+
         if bindings:
             for k, vals in bindings.items():
                 self.bindings[k] = list(vals)
@@ -104,6 +107,18 @@ class GameInput:
         if key in self.bindings.get("toggle_fullscreen", []):
             return [GameCommand("toggle_fullscreen", raw_key=key)]
 
+        # Fullscreen toggle
+        if key in self.bindings.get("toggle_fullscreen", []):
+            return [GameCommand("toggle_fullscreen", raw_key=key)]
+
+        # Ability bar page cycling
+        if key in self.bindings.get("ability_page_prev", []):
+            return [GameCommand("ability_page_prev", raw_key=key)]
+        if key in self.bindings.get("ability_page_next", []):
+            return [GameCommand("ability_page_next", raw_key=key)]
+
+
+
         # Help ('?')
         if uni == "?":
             return [GameCommand("show_help", raw_key=key)]
@@ -112,10 +127,13 @@ class GameInput:
         if key == pygame.K_a and getattr(event, "mod", 0) & pygame.KMOD_CTRL:
             return [GameCommand("open_abilities", raw_key=key)]
 
-        # --- Ability hotkeys (1-9) ---
+        # --- Ability hotkeys (1–10; '0' => 10) ---
         if pygame.K_1 <= key <= pygame.K_9:
             hk = key - pygame.K_0
             return [GameCommand("ability_hotkey", hotkey=hk, raw_key=key)]
+        if key == pygame.K_0:
+            return [GameCommand("ability_hotkey", hotkey=10, raw_key=key)]
+
 
         # --- Confirm keys (ENTER / SPACE) ---
         if key in (pygame.K_RETURN, pygame.K_SPACE):

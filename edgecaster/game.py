@@ -309,7 +309,6 @@ class Game:
             actions.append("rainbow_edges")
             actions.append("verdant_edges")
             actions.append("push_pattern")
-            actions.append("rainbow_edges")
 
         # For now, all other classes keep only move/wait (empty ability bar).
         player.actions = tuple(actions)
