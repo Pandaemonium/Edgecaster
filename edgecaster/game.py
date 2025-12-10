@@ -2814,6 +2814,9 @@ class Game:
         dx = target_pos[0] - com_world[0]
         dy = target_pos[1] - com_world[1]
         dist = (dx * dx + dy * dy) ** 0.5
+        # Allow pure rotation if targeting the current tile (avoid half-tile drift).
+        if dist < 0.51:
+            dx = dy = 0.0
         max_range = 5.0
         if dist > max_range and dist > 0:
             scale = max_range / dist

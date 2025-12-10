@@ -115,7 +115,10 @@ def build_push_preview(pattern: Pattern, anchor: Vec2, target: Vec2, rotation_de
     dx = target[0] - com_world[0]
     dy = target[1] - com_world[1]
     dist = math.hypot(dx, dy)
-    if dist > max_range and dist > 0:
+    # Allow pure rotation in-place if aiming very close to the COM.
+    if dist < 0.51:
+        dx = dy = 0.0
+    elif dist > max_range and dist > 0:
         scale = max_range / dist
         dx *= scale
         dy *= scale

@@ -164,6 +164,11 @@ class SceneManager:
                 if event.type == pygame.QUIT:
                     self.set_scene(None)
                     return
+                # Global fullscreen toggle
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                    renderer.toggle_fullscreen()
+                    # Do not forward to scene; handled globally.
+                    continue
                 scene.handle_event(event, self)
 
             # Update
@@ -176,4 +181,3 @@ class SceneManager:
             if getattr(renderer, "quit_requested", False):
                 renderer.quit_requested = False
                 return
-

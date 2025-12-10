@@ -699,9 +699,10 @@ class AsciiRenderer:
             return
 
         def _to_px(pt: Tuple[float, float]) -> Tuple[int, int]:
+            # Align to tile centers so ghost matches where the pattern will land.
             return (
-                int(pt[0] * self.tile + self.origin_x),
-                int(pt[1] * self.tile + self.origin_y),
+                int(pt[0] * self.tile + self.tile * 0.5 + self.origin_x),
+                int(pt[1] * self.tile + self.tile * 0.5 + self.origin_y),
             )
 
         def _draw_box(center: Tuple[int, int], color_top, color_bottom) -> None:
