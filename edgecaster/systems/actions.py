@@ -60,6 +60,12 @@ def _load_prototype_index() -> None:
 # Build the cache at import time (best-effort).
 _load_prototype_index()
 
+# Optional: pattern colors (only imported when used to avoid extra deps elsewhere)
+try:
+    from edgecaster.patterns import colors as pattern_colors
+except Exception:  # pragma: no cover - keep fail-soft for minimal envs/tests
+    pattern_colors = None
+
 
 def _lookup_proto_id_for_entity(ent: Any) -> str | None:
     """
@@ -645,6 +651,17 @@ def _action_destabilize(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Teleport randomly within 10 tiles; risky HP backlash."""
     if hasattr(game, "act_destabilize"):
         game.act_destabilize(actor_id)
+
+
+@register_action("rainbow_edges", label="Rainbow", speed="fast", show_in_bar=True)
+def _action_rainbow_edges(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Color current pattern edges in ROYGBIV order starting from the root.
+    """
+    if pattern_colors and hasattr(pattern_colors, "apply_rainbow_edges"):
+
+        pattern_colors.apply_rainbow_edges(game)
+
 
 
 @register_action(

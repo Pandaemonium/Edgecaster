@@ -166,4 +166,10 @@ def action_preview_geometry(action: str, game: Any = None, overrides: Dict[str, 
                 verts.append((0.5 + dx, 0.5 + dy))
         return {"verts": verts, "segs": [], "strong": [0], "boxes": list(range(1, len(verts)))}
 
+    if action == "rainbow_edges":
+        verts = [(0.2, 0.5), (0.4, 0.5), (0.6, 0.5), (0.8, 0.5)]
+        segs = [(0, 1), (1, 2), (2, 3)]
+        # Simple gradient colors mapped via extra for renderer draw
+        return {"verts": verts, "segs": segs, "rainbow": True}
+
     return None

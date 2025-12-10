@@ -413,7 +413,8 @@ class AsciiRenderer:
             v_radius = max(1, int(self.vertex_base_radius * self.zoom))
         v_radius = max(1, v_radius)
 
-        # edges with gradient, thicker AA line (no halo)
+        # edges with gradient (or colored), thicker AA line (no halo)
+        edge_colors = getattr(game.pattern, "edge_colors", {}) or {}
         for e in game.pattern.edges:
             try:
                 a = verts[e.a]
@@ -435,7 +436,10 @@ class AsciiRenderer:
                 y0 = ay + dy * t0
                 x1 = ax + dx * t1
                 y1 = ay + dy * t1
-                col = self._lerp_color(self.pattern_color, self.pattern_color_end, (t0 + t1) * 0.5)
+                edge_key = (min(e.a, e.b), max(e.a, e.b))
+                col = edge_colors.get(edge_key)
+                if not col:
+                    col = self._lerp_color(self.pattern_color, self.pattern_color_end, (t0 + t1) * 0.5)
                 core_col = (*col, 220)
                 pygame.draw.line(self.edges_surface, core_col, (x0, y0), (x1, y1), width=self.edge_width_base)
                 pygame.draw.aaline(self.edges_surface, core_col, (x0, y0), (x1, y1))
@@ -1091,11 +1095,28 @@ class AsciiRenderer:
                         t1 = (i + 1) / steps
                         px0 = ax + (bx - ax) * t0
                         py0 = ay + (by - ay) * t0
-                        px1 = ax + (bx - ax) * t1
-                        py1 = ay + (by - ay) * t1
-                        pygame.draw.aaline(surf, (180, 230, 255), to_px(px0, py0), to_px(px1, py1))
-                else:
-                    pygame.draw.aaline(surf, (180, 230, 255), to_px(*verts[a]), to_px(*verts[b]))
+                    px1 = ax + (bx - ax) * t1
+                    py1 = ay + (by - ay) * t1
+                    pygame.draw.aaline(surf, (180, 230, 255), to_px(px0, py0), to_px(px1, py1))
+                    continue
+                color = (180, 230, 255)
+                if extra and extra.get("rainbow"):
+                    # Map along-segment gradient based on index
+                    try:
+                        idx = segs.index((a, b))
+                    except ValueError:
+                        idx = 0
+                    colors = [
+                        (255, 0, 0),
+                        (255, 165, 0),
+                        (255, 255, 0),
+                        (0, 128, 0),
+                        (0, 0, 255),
+                        (75, 0, 130),
+                        (238, 130, 238),
+                    ]
+                    color = colors[idx % len(colors)]
+                pygame.draw.aaline(surf, color, to_px(*verts[a]), to_px(*verts[b]))
             if extra and extra.get("circle"):
                 rad_norm = extra.get("radius", 1.5) if extra else 1.5
                 max_rad_norm = 4.0

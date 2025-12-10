@@ -20,6 +20,7 @@ from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
 from edgecaster.content import npcs
 from edgecaster.systems.actions import get_action, action_delay
+from edgecaster.patterns import colors as pattern_colors
 from edgecaster.systems import ai
 import edgecaster.enemies.templates as enemy_templates
 from . import lorenz
@@ -304,6 +305,7 @@ class Game:
             # Meta slots
             actions.append("reset")
             actions.append("meditate")
+            actions.append("rainbow_edges")
 
         # For now, all other classes keep only move/wait (empty ability bar).
         player.actions = tuple(actions)
