@@ -15,6 +15,7 @@ from .base import (
     MENU_ACTION_BACK,
     MENU_ACTION_FULLSCREEN,
 )
+from edgecaster.visuals import VisualProfile, apply_visual_panel
 from .keybinds_scene import KeybindsScene
 from .game_input import load_bindings_full, save_bindings_file
 
@@ -63,6 +64,9 @@ class OptionsScene(Scene):
 
         # Standardized menu input (with key-repeat + numpad)
         self._menu_input = MenuInput()
+
+        # Panel hitboxes (panel-local rects)
+        self.item_rects: List[pygame.Rect] = []
 
         # How THIS menu is drawn
         if applied_visual is None:
@@ -201,6 +205,10 @@ class OptionsScene(Scene):
         rect = self.window_rect
         assert rect is not None
 
+        ui_font = self.ui_font
+        small_font = self.small_font
+        assert ui_font is not None and small_font is not None
+
         # Shared boolean options
         toggles: Dict[str, bool] = manager.options
         toggle_keys: List[str] = list(toggles.keys())
@@ -226,9 +234,12 @@ class OptionsScene(Scene):
         logical_scale_x = logical_w / renderer.width
         logical_scale_y = logical_h / renderer.height
 
-        ui_font = self.ui_font
-        small_font = self.small_font
-        assert ui_font is not None and small_font is not None
+        # Precompute some static text
+        title_str = "Options" if self.depth == 0 else f"Options (depth {self.depth})"
+        title_text = ui_font.render(title_str, True, renderer.fg)
+
+        seed_str = "Use child menus to tweak visuals"
+        seed_text = small_font.render(seed_str, True, renderer.dim)
 
         running = True
 
@@ -399,7 +410,6 @@ class OptionsScene(Scene):
                 break
 
             # ----------------- DRAW -----------------
-
             # Restore snapshot (which already contains deeper stack)
             if self._background is not None:
                 surface.blit(self._background, (0, 0))
@@ -409,16 +419,15 @@ class OptionsScene(Scene):
             overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
             if self.depth == 0:
                 overlay.fill((0, 0, 0, 140))  # dim at root only
+            surface.blit(overlay, (0, 0))
 
-            panel_x, panel_y, panel_w, panel_h = rect
-
-            # ---- Draw panel to logical surface (for anisotropic scaling + rotation) ----
+            # ---- Draw panel to logical surface (for anisotropic scaling) ----
             logical_surface = pygame.Surface((logical_w, logical_h), pygame.SRCALPHA)
+
+            # Panel background + border
             border_thickness = max(
                 1, int(2 * min(logical_scale_x, logical_scale_y))
             )
-
-            # Panel background + border
             pygame.draw.rect(
                 logical_surface,
                 (20, 20, 40, 235),
@@ -431,122 +440,82 @@ class OptionsScene(Scene):
                 border_thickness,
             )
 
-            # Title
-            title_str = "Options"
-            title_text = ui_font.render(title_str, True, renderer.fg)
-            title_y = int(16 * logical_scale_y)
-            logical_surface.blit(
-                title_text,
-                ((logical_w - title_text.get_width()) // 2, title_y),
-            )
+            y = 20
+            logical_surface.blit(title_text, (20, y))
+            y += title_text.get_height() + 10
 
-            # World seed display
-            seed_val = None
-            if getattr(manager, "current_game", None):
-                seed_val = getattr(manager.current_game, "fractal_seed", None)
-            if seed_val is None and getattr(manager, "character", None):
-                seed_val = getattr(manager.character, "seed", None)
+            logical_surface.blit(seed_text, (20, y))
+            y += seed_text.get_height() + 15
 
-            seed_line = f"World Seed: {seed_val if seed_val is not None else 'random'}"
-            seed_text = small_font.render(seed_line, True, renderer.fg)
-            seed_y = int(54 * logical_scale_y)
-            seed_x = int(24 * logical_scale_x)
-            logical_surface.blit(seed_text, (seed_x, seed_y))
+            # Build display options list (labels + values)
+            self.item_rects = []
+            for idx in range(num_items):
+                is_selected = (idx == self.selected_idx)
+                color = renderer.player_color if is_selected else renderer.fg
 
-            # Options list
-            y = int(90 * logical_scale_y)
-            line_gap = max(1, int(6 * logical_scale_y))
-            base_x = int(32 * logical_scale_x)
+                if idx < num_toggles:
+                    label = toggle_keys[idx]
+                    value = "On" if toggles[label] else "Off"
+                elif idx == options_index:
+                    label = "Options"
+                    value = ""
+                elif idx == options_options_index:
+                    label = "Options Options"
+                    value = ""
+                elif idx == controls_index:
+                    label = "Controls"
+                    value = ""
+                elif idx == dev_index:
+                    label = "Developer mode"
+                    value = ""
+                else:
+                    label = "Back"
+                    value = ""
 
-            # Toggles
-            for i, key in enumerate(toggle_keys):
-                val = toggles[key]
-                selected = i == self.selected_idx
-                color = renderer.player_color if selected else renderer.fg
-                prefix = "▶ " if selected else "  "
-                status = "ON" if val else "OFF"
-                line = f"{prefix}{key}: {status}"
-                text = ui_font.render(line, True, color)
-                logical_surface.blit(text, (base_x, y))
-                y += text.get_height() + line_gap
+                left_text = ui_font.render(label, True, color)
+                logical_surface.blit(left_text, (40, y))
 
-            # "Options"
-            selected = self.selected_idx == options_index
-            if self.depth < self.MAX_DEPTH:
-                label = "Options"
-                color = renderer.player_color if selected else renderer.fg
-            else:
-                label = "Options (max depth)"
-                color = renderer.dim
-            prefix = "-> " if selected else "  "
-            opt_text = ui_font.render(prefix + label, True, color)
-            logical_surface.blit(opt_text, (base_x, y))
-            y += opt_text.get_height() + line_gap
+                if value:
+                    value_text = ui_font.render(str(value), True, color)
+                    vx = logical_w - value_text.get_width() - 40
+                    logical_surface.blit(value_text, (vx, y))
+                else:
+                    value_text = None
 
-            # "Options Options"
-            selected = self.selected_idx == options_options_index
-            color = renderer.player_color if selected else renderer.fg
-            prefix = "-> " if selected else "  "
-            oo_text = ui_font.render(prefix + "Options Options", True, color)
-            logical_surface.blit(oo_text, (base_x, y))
-            y += oo_text.get_height() + line_gap
+                # Store panel-local rect
+                self.item_rects.append(
+                    pygame.Rect(
+                        40,
+                        y,
+                        logical_w - 80,
+                        left_text.get_height(),
+                    )
+                )
 
-            # "Controls"
-            selected = self.selected_idx == controls_index
-            color = renderer.player_color if selected else renderer.fg
-            prefix = "-> " if selected else "  "
-            ctrl_text = ui_font.render(prefix + "Controls", True, color)
-            logical_surface.blit(ctrl_text, (base_x, y))
-            y += ctrl_text.get_height() + line_gap
+                y += left_text.get_height() + 10
 
-            # "Developer mode"
-            selected = self.selected_idx == dev_index
-            color = renderer.player_color if selected else renderer.fg
-            prefix = "-> " if selected else "  "
-            dev_text = ui_font.render(prefix + "Developer mode", True, color)
-            logical_surface.blit(dev_text, (base_x, y))
-            y += dev_text.get_height() + line_gap + line_gap
-
-            # "Back"
-            selected = self.selected_idx == back_index
-            color = renderer.player_color if selected else renderer.fg
-            prefix = "-> " if selected else "  "
-            back_label = "Back to Main Menu" if self.depth == 0 else "Back"
-            back_text = ui_font.render(prefix + back_label, True, color)
-            logical_surface.blit(back_text, (base_x, y))
-
-            # Hint (updated with numpad + fullscreen)
+            # Footer hint
             hint = small_font.render(
-                "↑/↓, W/S, or Numpad 8/2 to move • "
-                "←/→, A/D, or Numpad 4/6 to change • "
-                "Enter/Space/KP Enter to toggle • Esc to return • F11 fullscreen",
+                "↑/↓ to move • ←/→ or Enter to change • Esc to return • F11 fullscreen",
                 True,
                 renderer.dim,
             )
-            hint_y = logical_h - int(32 * logical_scale_y)
+            hint_y = logical_h - hint.get_height() - 16
             hint_x = (logical_w - hint.get_width()) // 2
             logical_surface.blit(hint, (hint_x, hint_y))
 
-            # Anisotropic scale logical panel to this menu's rect
-            scaled_panel = pygame.transform.smoothscale(
-                logical_surface, (panel_w, panel_h)
+            # ---- Anisotropic scale logical panel to this menu's rect ----
+            panel = pygame.transform.smoothscale(
+                logical_surface, rect.size
             )
 
-            # Rotation for THIS menu uses applied_visual.angle
+            # ---- Blit via VisualProfile ----
             angle = float(self.applied_visual.get("angle", 0.0))
-            rotated = pygame.transform.rotozoom(scaled_panel, angle, 1.0)
-            rot_rect = rotated.get_rect(
-                center=(panel_x + panel_w // 2, panel_y + panel_h // 2)
-            )
+            alpha = float(self.applied_visual.get("alpha", 1.0))
+            visual = self.visual_profile or VisualProfile(angle=angle, alpha=alpha)
 
-            # Opacity for THIS menu: 1.0 = solid, 0.05 = still faintly visible.
-            applied_alpha = float(self.applied_visual.get("alpha", 1.0))
-            applied_alpha = max(0.05, min(1.0, applied_alpha))
-            rotated.set_alpha(int(applied_alpha * 255))
+            apply_visual_panel(surface, panel, rect, visual)
 
-            overlay.blit(rotated, rot_rect.topleft)
-
-            surface.blit(overlay, (0, 0))
             renderer.present()
             clock.tick(60)
 
