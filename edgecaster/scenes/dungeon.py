@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import pygame
 from dataclasses import dataclass
+from typing import Literal, Optional
 
 from .base import Scene
 from edgecaster.game import Game
@@ -11,15 +12,48 @@ from .game_input import GameInput, GameCommand
 from edgecaster.systems.abilities import trigger_ability_effect
 from edgecaster.systems.targeting import predict_aim_preview
 from edgecaster.ui.ability_bar import AbilityBarState
+from edgecaster.systems.actions import get_action, describe_entity_for_look
+
+
+TargetKind = Literal["tile", "vertex", "look"]
+
+
+@dataclass
+class TargetConstraints:
+    # Tile-geometry constraints
+    max_range: Optional[int] = None
+    allowed_offsets: list[tuple[int, int]] | None = None
+    require_passable: bool = False
+    require_visible: bool = False
+
+    # Graph-geometry constraints (for fractal / vertex modes)
+    neighbor_depth_param: str | None = None   # e.g. "neighbor_depth" for activate_seed
+    use_param_radius: str | None = None       # e.g. "radius" for activate_all
+
+
+@dataclass
+class TargetState:
+    action: str
+    kind: TargetKind
+    origin_actor_id: str | None
+    cursor_tile: tuple[int, int] | None = None
+    cursor_vertex: int | None = None
+    constraints: TargetConstraints | None = None
+    mode: str | None = None  # "terminus" or "aim" or None
+
+    def __post_init__(self) -> None:
+        if self.constraints is None:
+            self.constraints = TargetConstraints()
 
 
 @dataclass
 class DungeonUIState:
     """Scene-owned view-model for UI state previously held by the renderer."""
+    target: TargetState | None = None
     target_cursor: tuple[int, int] = (0, 0)
     aim_action: str | None = None
     hover_vertex: int | None = None
-    hover_neighbors: list[int] = None  # initialized in __post_init__
+    hover_neighbors: list[int] | None = None
     config_open: bool = False
     config_action: str | None = None
     config_selection: int = 0
@@ -38,13 +72,26 @@ class DungeonScene(Scene):
     def _refresh_aim_prediction(self, game: Game) -> None:
         """Compute aim preview data in logic layer so renderer only draws."""
         ui = self.ui_state
-        if ui.aim_action not in ("activate_all", "activate_seed") or ui.hover_vertex is None:
+        action_name = ui.aim_action
+        if not action_name or ui.hover_vertex is None:
             ui.aim_prediction = None
             return
+
+        try:
+            action_def = get_action(action_name)
+        except KeyError:
+            ui.aim_prediction = None
+            return
+
+        spec = getattr(action_def, "targeting", None)
+        if not spec or spec.kind != "vertex" or spec.mode != "aim":
+            ui.aim_prediction = None
+            return
+
         try:
             ui.aim_prediction = predict_aim_preview(
                 game,
-                ui.aim_action,
+                action_name,
                 ui.hover_vertex,
                 neighbors=ui.hover_neighbors or [],
             )
@@ -154,6 +201,7 @@ class DungeonScene(Scene):
                         from .world_map_scene import WorldMapScene
 
                         wm = WorldMapScene(game_ref, span=16)
+
                         class Stub:
                             def __init__(self, w, h) -> None:
                                 self.width = w
@@ -161,14 +209,22 @@ class DungeonScene(Scene):
 
                         stub = Stub(width, height)
                         surf, view = wm._render_overmap(stub)
-                        game_ref.world_map_cache = {"surface": surf, "view": view, "key": (width, height, wm.span)}
+                        game_ref.world_map_cache = {
+                            "surface": surf,
+                            "view": view,
+                            "key": (width, height, wm.span),
+                        }
                         game_ref.world_map_ready = True
                     except Exception:
                         game_ref.world_map_ready = False
                     finally:
                         game_ref.world_map_rendering = False
 
-                threading.Thread(target=worker, args=(self.game, renderer.width, renderer.height), daemon=True).start()
+                threading.Thread(
+                    target=worker,
+                    args=(self.game, renderer.width, renderer.height),
+                    daemon=True,
+                ).start()
 
         game = self.game
         if game is None:
@@ -203,6 +259,7 @@ class DungeonScene(Scene):
         if not hasattr(game, "ability_bar_state"):
             game.ability_bar_state = AbilityBarState()
         game.ability_bar_state.sync_from_game(game)
+
         # Attach and sync UI state to renderer (temporary bridge while moving state out of renderer).
         if renderer is not None:
             renderer.ui_state = self.ui_state  # type: ignore[attr-defined]
@@ -304,6 +361,7 @@ class DungeonScene(Scene):
         if getattr(game, "fractal_editor_requested", False):
             game.fractal_editor_requested = False
             from .fractal_editor_scene import FractalEditorScene, FractalEditorState
+
             state = getattr(game, "fractal_editor_state", None) or FractalEditorState()
             manager.push_scene(FractalEditorScene(state=state, window_rect=None))
             return
@@ -318,11 +376,249 @@ class DungeonScene(Scene):
         if getattr(game, "map_requested", False):
             game.map_requested = False
             from .world_map_scene import WorldMapScene
+
             manager.push_scene(WorldMapScene(game, span=16))
             return
 
     # ------------------------------------------------------------------ #
-    # Command handling (unchanged from legacy loop)
+    # Unified TargetMode helpers
+    # ------------------------------------------------------------------ #
+    def begin_target_mode(
+        self,
+        game: Game,
+        *,
+        action: str,
+        kind: TargetKind,
+        mode: str | None = None,
+        origin_actor_id: str | None = None,
+        constraints: TargetConstraints | None = None,
+    ) -> None:
+        if constraints is None:
+            constraints = TargetConstraints()
+        actor_id = origin_actor_id or getattr(game, "player_id", None)
+        origin_tile = None
+        if actor_id is not None and getattr(game, "actors", None):
+            origin_tile = game.actors[actor_id].pos
+
+        tstate = TargetState(
+            action=action,
+            kind=kind,
+            origin_actor_id=actor_id,
+            cursor_tile=origin_tile,
+            constraints=constraints,
+            mode=mode,
+        )
+        self.ui_state.target = tstate
+
+        # Look-style generic tile cursor (no legacy flags, no game.awaiting_terminus).
+        if kind == "look":
+            if origin_tile is not None:
+                tstate.cursor_tile = origin_tile
+                self.ui_state.target_cursor = origin_tile
+            return
+
+        # Backwards-compat bridge for rune terminus targeting:
+        if kind == "tile" and mode == "terminus":
+            if hasattr(game, "begin_place_mode"):
+                # Ensure game-side place state (e.g. place_range) is initialized.
+                game.begin_place_mode()
+            game.awaiting_terminus = True
+            self.ui_state.target_cursor = origin_tile or (0, 0)
+
+        if kind == "vertex":
+            # Enter generic vertex targeting (e.g. activate_all / activate_seed).
+            self.ui_state.aim_action = action
+
+            # Seed hover at nearest vertex to the origin tile (usually the player).
+            idx = None
+            if origin_tile is not None:
+                tx, ty = origin_tile
+                wx = tx + 0.5
+                wy = ty + 0.5
+                idx = game.nearest_vertex((wx, wy))
+
+            tstate.cursor_vertex = idx
+            self.ui_state.hover_vertex = idx
+
+            # Seed the neighbor set if this action has a neighbor-depth constraint.
+            if idx is not None and tstate.constraints and tstate.constraints.neighbor_depth_param:
+                depth = game.get_param_value(action, tstate.constraints.neighbor_depth_param)
+                self.ui_state.hover_neighbors = game.neighbor_set_depth(idx, depth)
+            else:
+                self.ui_state.hover_neighbors = []
+
+            self._refresh_aim_prediction(game)
+
+    def cancel_target_mode(self, game: Game) -> None:
+        t = self.ui_state.target
+        self.ui_state.target = None
+        self.ui_state.aim_action = None
+        self.ui_state.hover_vertex = None
+        self.ui_state.hover_neighbors = []
+        self.ui_state.aim_prediction = None
+        # Clear legacy terminus flag for any tile/terminus targeting.
+        if t and t.kind == "tile" and getattr(t, "mode", None) == "terminus":
+            game.awaiting_terminus = False
+
+    def confirm_target(self, game: Game) -> None:
+        """Apply the currently selected target to the action that requested it."""
+        t = self.ui_state.target
+        if not t:
+            return
+
+        # TILE TARGETING (e.g. Kochbender 'place' / rune terminus)
+        if t.kind == "tile":
+            if t.cursor_tile is None:
+                return
+
+            if getattr(t, "mode", None) == "terminus":
+                # Generic "terminus" semantics: place a rune terminus at the tile.
+                if hasattr(game, "try_place_terminus"):
+                    game.try_place_terminus(t.cursor_tile)
+            else:
+                # Future: tile-based ranged attacks, teleports, etc.
+                trigger_ability_effect(
+                    game,
+                    t.action,
+                    target_tile=t.cursor_tile,
+                )
+
+        # VERTEX TARGETING (e.g. activate_all / activate_seed)
+        elif t.kind == "vertex":
+            if t.cursor_vertex is None:
+                return
+
+            # Pass a generic vertex target; the action implementation decides how to use it.
+            trigger_ability_effect(
+                game,
+                t.action,
+                hover_vertex=t.cursor_vertex,
+            )
+
+        # Clear target + legacy flags
+        self.cancel_target_mode(game)
+
+    def _confirm_look(self, game: Game, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """Resolve a 'look' target into an inspect popup.
+
+        Uses the new inheritance-aware description system:
+        - Prefer any entity on the targeted tile (actors, items, features).
+        - Resolve its description via prototype parents (entity -> actor -> humanoid, etc.).
+        - Fall back to a tile description if no entity is present.
+        """
+        t = self.ui_state.target
+        if not t or t.cursor_tile is None:
+            self.cancel_target_mode(game)
+            return
+
+        tx, ty = t.cursor_tile
+        level = game._level() if hasattr(game, "_level") else None
+
+        title = "You look around..."
+        body: str | None = None
+
+        if level is not None:
+            # Prefer any renderable entities on this tile (actors, items, features, etc.).
+            try:
+                renderables = game.renderables_current()
+            except Exception:
+                renderables = []
+
+            entities_here = [
+                e for e in renderables
+                if getattr(e, "pos", None) == (tx, ty)
+            ]
+
+            if entities_here:
+                # For now just inspect the first visible entity on this tile.
+                primary = entities_here[0]
+                info = describe_entity_for_look(primary)
+
+                title = info.get("name", title) or title
+                glyph = info.get("glyph", "?")
+                desc = info.get("description", "") or "You see nothing remarkable about it."
+
+                # Layout:
+                #  [glyph]
+                #  (blank line)
+                #  [description]
+                lines: list[str] = []
+                if glyph:
+                    # Later we could teach UrgentMessageScene to draw this big & colored,
+                    # using info["color"]; for now it's just a plain line.
+                    lines.append(str(glyph))
+                    lines.append("")
+                lines.append(str(desc))
+                body = "\n".join(lines)
+            else:
+                # No entities here: fall back to a tile description if available.
+                if hasattr(game, "describe_tile_at"):
+                    body = game.describe_tile_at((tx, ty))
+                else:
+                    body = f"You look at the tile at {tx}, {ty}."
+        else:
+            body = f"You look at the tile at {tx}, {ty}."
+
+        if not body:
+            body = "You see nothing of interest."
+
+        manager.push_scene(
+            UrgentMessageScene(
+                game,
+                body,
+                title=title,
+                choices=["OK"],
+            )
+        )
+
+        # Note: we deliberately DO NOT cancel target mode here.
+        # Look targeting stays active underneath the popup, so when
+        # the UrgentMessageScene is dismissed, you're still in look
+        # mode. Press ESC again to exit look mode back to normal.
+
+
+
+    def _update_hover_from_mouse(
+        self,
+        game: Game,
+        renderer,
+        surface_pos: tuple[int, int],
+    ) -> None:
+        t = self.ui_state.target
+        if not t:
+            # no targeting, also clear old vertex preview
+            self.ui_state.hover_vertex = None
+            self.ui_state.hover_neighbors = []
+            self._refresh_aim_prediction(game)
+            return
+
+        mx, my = surface_pos
+        wx = (mx - renderer.origin_x) / renderer.tile
+        wy = (my - renderer.origin_y) / renderer.tile
+
+        if t.kind in ("tile", "look"):
+            tx = int((mx - renderer.origin_x) // renderer.tile)
+            ty = int((my - renderer.origin_y) // renderer.tile)
+            if game.world.in_bounds(tx, ty):
+                t.cursor_tile = (tx, ty)
+                self.ui_state.target_cursor = (tx, ty)
+
+        elif t.kind == "vertex":
+            idx = game.nearest_vertex((wx, wy))
+            self.ui_state.hover_vertex = idx
+            t.cursor_vertex = idx
+
+            if idx is not None and t.constraints and t.constraints.neighbor_depth_param:
+                depth = game.get_param_value(t.action, t.constraints.neighbor_depth_param)
+                self.ui_state.hover_neighbors = game.neighbor_set_depth(idx, depth)
+            else:
+                self.ui_state.hover_neighbors = []
+
+            self._refresh_aim_prediction(game)
+
+    # ------------------------------------------------------------------ #
+    # Command handling
+    # ------------------------------------------------------------------ #
     def _handle_command(
         self,
         game: Game,
@@ -353,18 +649,34 @@ class DungeonScene(Scene):
         def _update_hover(surface_pos: tuple[int, int]) -> None:
             """Scene-side hover resolver; updates ui_state (and renderer for compatibility)."""
             aim = ui.aim_action
-            if aim not in ("activate_all", "activate_seed"):
+            if not aim:
                 _set_ui("hover_vertex", None)
                 _set_ui("hover_neighbors", [])
                 self._refresh_aim_prediction(game)
                 return
+
+            try:
+                action_def = get_action(aim)
+            except KeyError:
+                _set_ui("hover_vertex", None)
+                _set_ui("hover_neighbors", [])
+                self._refresh_aim_prediction(game)
+                return
+
+            spec = getattr(action_def, "targeting", None)
+            if not spec or spec.kind != "vertex":
+                _set_ui("hover_vertex", None)
+                _set_ui("hover_neighbors", [])
+                self._refresh_aim_prediction(game)
+                return
+
             mx, my = surface_pos
             wx = (mx - renderer.origin_x) / renderer.tile
             wy = (my - renderer.origin_y) / renderer.tile
             idx = game.nearest_vertex((wx, wy))
             _set_ui("hover_vertex", idx)
-            if idx is not None and aim == "activate_seed":
-                depth = game.get_param_value("activate_seed", "neighbor_depth")
+            if idx is not None and spec.neighbor_depth_param:
+                depth = game.get_param_value(aim, spec.neighbor_depth_param)
                 _set_ui("hover_neighbors", game.neighbor_set_depth(idx, depth))
             else:
                 _set_ui("hover_neighbors", [])
@@ -382,9 +694,25 @@ class DungeonScene(Scene):
             game.ability_bar_state = bar
         bar.sync_from_game(game)
 
-        in_terminus_mode = bool(getattr(game, "awaiting_terminus", False))
+        t = getattr(self.ui_state, "target", None)
+        in_target_mode = t is not None
+        in_terminus_mode = bool(
+            in_target_mode and t.kind == "tile" and getattr(t, "mode", None) == "terminus"
+        )
+        in_aim_mode = bool(
+            in_target_mode and t.kind == "vertex" and getattr(t, "mode", None) == "aim"
+        )
         aim_action = ui.aim_action
-        in_aim_mode = aim_action in ("activate_all", "activate_seed")
+
+        in_look_mode = bool(in_target_mode and t and t.kind == "look")
+
+        # If we're in unified TargetMode and the user presses confirm, resolve it here.
+        if in_target_mode and kind == "confirm":
+            if t and t.kind == "look":
+                self._confirm_look(game, renderer, manager)
+            else:
+                self.confirm_target(game)
+            return
 
         # ------------------------------------------------------------
         # Ability reordering overlay (when open, swallow most commands)
@@ -416,21 +744,20 @@ class DungeonScene(Scene):
         # ------------------------------------------------------------
         # 0) Global-ish keys: Escape, fullscreen, help
         # ------------------------------------------------------------
-
         if kind == "escape":
-            # Mirror old renderer logic, minus legacy dialog:
-            if in_aim_mode:
-                _set_aim_action(None)
-                _set_ui("hover_vertex", None)
-                _set_ui("hover_neighbors", [])
-            elif in_terminus_mode:
-                game.awaiting_terminus = False
-            elif self.ui_state.config_open:
+            # First: cancel unified target mode if active.
+            if in_target_mode:
+                self.cancel_target_mode(game)
+                return
+
+            # Next: close config overlay if open.
+            if self.ui_state.config_open:
                 _set_ui("config_open", False)
-            else:
-                # Normal ESC in the dungeon: request pause
-                renderer.pause_requested = True
-                renderer.quit_requested = True
+                return
+
+            # Otherwise: normal ESC in the dungeon → request pause.
+            renderer.pause_requested = True
+            renderer.quit_requested = True
             return
 
         if kind == "open_abilities":
@@ -440,25 +767,6 @@ class DungeonScene(Scene):
                 bar.selected_index = bar.order.index(bar.active_action)
                 bar.page = bar.selected_index // bar.page_size
             return
-
-        if kind == "toggle_fullscreen":
-            renderer.toggle_fullscreen()
-            return
-
-        if kind == "show_help":
-            # Only if we're not in some special modal state
-            if (
-                not self.ui_state.config_open
-                and not in_terminus_mode
-                and not in_aim_mode
-            ):
-                if hasattr(game, "show_help"):
-                    game.show_help()
-            return
-
-        # ------------------------------------------------------------
-        # 1) Dialog overlay (always takes precedence while open) !! LEGACY, REMOVED !!
-        # ------------------------------------------------------------
 
         # ------------------------------------------------------------
         # 2) Config overlay (always takes precedence while open)
@@ -472,47 +780,49 @@ class DungeonScene(Scene):
                 return
 
             if key == pygame.K_UP:
-                _set_ui("config_selection", (self.ui_state.config_selection - 1) % max(1, len(params)))
+                _set_ui(
+                    "config_selection",
+                    (self.ui_state.config_selection - 1) % max(1, len(params)),
+                )
                 return
 
             if key == pygame.K_DOWN:
-                _set_ui("config_selection", (self.ui_state.config_selection + 1) % max(1, len(params)))
+                _set_ui(
+                    "config_selection",
+                    (self.ui_state.config_selection + 1) % max(1, len(params)),
+                )
                 return
 
             if key in (pygame.K_LEFT, pygame.K_RIGHT):
                 if params:
                     param_key = params[self.ui_state.config_selection]["key"]
                     delta = 1 if key == pygame.K_RIGHT else -1
-                    changed, msg = game.adjust_param(self.ui_state.config_action, param_key, delta)
+                    changed, msg = game.adjust_param(
+                        self.ui_state.config_action,
+                        param_key,
+                        delta,
+                    )
                     # msg is available if you want to surface it later
                 return
 
             # Other commands do nothing while config overlay is open
             return
-        # refactor: config overlay navigation should be its own scene/UI module; keep renderer stateless.
 
         # ------------------------------------------------------------
         # 3) Terminus targeting mode
         # ------------------------------------------------------------
-        #
-        # While in this mode:
-        # - arrow/WASD/etc ("move") moves the target cursor
-        # - ENTER / SPACE ("confirm") places at the current cursor
-        # - mouse commands are *not* swallowed here; they fall through
-        #   to the generic mouse handler below so clicks can place the
-        #   terminus directly on the map.
-
         if in_terminus_mode:
-            if kind == "move" and vec is not None:
-                tx, ty = ui.target_cursor
+            if kind == "move" and vec is not None and in_target_mode and t.kind == "tile":
+                tx, ty = t.cursor_tile or game.actors[game.player_id].pos
                 dx, dy = vec
                 nt = (tx + dx, ty + dy)
                 if game.world.in_bounds(*nt):
-                    _set_ui("target_cursor", nt)
+                    t.cursor_tile = nt
+                    self.ui_state.target_cursor = nt
                 return
 
-            if kind == "confirm":
-                game.try_place_terminus(ui.target_cursor)
+            if kind == "confirm" and in_target_mode:
+                self.confirm_target(game)
                 return
 
             # Let mouse_* commands pass through to the mouse handler.
@@ -521,18 +831,61 @@ class DungeonScene(Scene):
                 # while we're choosing a terminus.
                 return
 
-        # 4) Aiming mode (activate_all / activate_seed) confirm
+        # ------------------------------------------------------------
+        # 4) Vertex targeting mode (activate_all / activate_seed)
+        # ------------------------------------------------------------
+        if in_target_mode and t and t.kind == "vertex":
+            # Arrow / WASD: move a logical tile cursor and pick nearest vertex.
+            if kind == "move" and vec is not None:
+                tx, ty = t.cursor_tile or game.actors[game.player_id].pos
+                dx, dy = vec
+                nt = (tx + dx, ty + dy)
+                if game.world.in_bounds(*nt):
+                    t.cursor_tile = nt
 
-        if in_aim_mode and kind == "confirm":
-            target_idx = self.ui_state.hover_vertex
-            if target_idx is not None and aim_action in ("activate_all", "activate_seed"):
-                trigger_ability_effect(
-                    game,
-                    aim_action,
-                    hover_vertex=target_idx,
-                )
-            _set_aim_action(None)
-            return
+                    # Aim at the vertex nearest to the center of this tile.
+                    wx = nt[0] + 0.5
+                    wy = nt[1] + 0.5
+                    idx = game.nearest_vertex((wx, wy))
+                    t.cursor_vertex = idx
+                    ui.hover_vertex = idx
+
+                    # Update neighbor halo if this action has depth-based neighbors.
+                    if idx is not None and t.constraints and t.constraints.neighbor_depth_param:
+                        depth = game.get_param_value(
+                            t.action,
+                            t.constraints.neighbor_depth_param,
+                        )
+                        ui.hover_neighbors = game.neighbor_set_depth(idx, depth)
+                    else:
+                        ui.hover_neighbors = []
+
+                    self._refresh_aim_prediction(game)
+
+                # Always swallow movement while targeting, even if we hit a boundary.
+                return
+
+            # Swallow any other 'move' events so they never reach player movement.
+            if kind == "move":
+                return
+
+        # ------------------------------------------------------------
+        # Look targeting mode (tile-based inspect cursor)
+        # ------------------------------------------------------------
+        if in_look_mode and t:
+            if kind == "move" and vec is not None:
+                tx, ty = t.cursor_tile or game.actors[game.player_id].pos
+                dx, dy = vec
+                nt = (tx + dx, ty + dy)
+                if game.world.in_bounds(*nt):
+                    t.cursor_tile = nt
+                    self.ui_state.target_cursor = nt
+                # Swallow movement so the player never walks in look mode.
+                return
+
+            # Swallow any 'move' commands even if we didn’t step (e.g. boundary).
+            if kind == "move":
+                return
 
         # ------------------------------------------------------------
         # 5) Ability bar: hotkeys + quick 'f'
@@ -544,22 +897,7 @@ class DungeonScene(Scene):
             for ability in vis:
                 if ability.hotkey == hk:
                     bar.set_active(ability.action)
-
-                    if ability.action == "place":
-                        _set_ui("target_cursor", game.actors[game.player_id].pos)
-                        if hasattr(game, "begin_place_mode"):
-                            game.begin_place_mode()
-                        _set_aim_action(None)
-
-                    else:
-                        # Aim-style abilities set aim_action and wait for confirm / click
-                        if ability.action in ("activate_all", "activate_seed"):
-                            _set_aim_action(ability.action)
-                        else:
-                            _set_aim_action(None)
-                            # Immediate abilities: go straight to the shared effect function
-                            trigger_ability_effect(game, ability.action)
-
+                    self._begin_action_from_def(game, ability)
                     return
             return
 
@@ -584,33 +922,60 @@ class DungeonScene(Scene):
         # 6 1/2) Mouse input (click / move / wheel)
         # ------------------------------------------------------------
 
-        # refactor: hover belongs in scene/UI; move renderer._update_hover helpers into scene utilities.
-        # Mouse hover updates the fractal aim hover.
+        # Mouse hover: update tile/vertex cursor & aim preview.
         if kind == "mouse_move" and cmd.mouse_pos is not None:
-            _update_hover(renderer._to_surface(cmd.mouse_pos))
+            self._update_hover_from_mouse(
+                game,
+                renderer,
+                renderer._to_surface(cmd.mouse_pos),
+            )
             return
 
-        # Mouse wheel controls zoom around current cursor.
+        # Mouse wheel controls zoom or activate_all radius.
         if kind == "mouse_wheel":
             if cmd.wheel_y:
-                if bar.active_action == "activate_all":
+                active_name = bar.active_action
+                spec = None
+                if active_name:
+                    try:
+                        action_def = get_action(active_name)
+                        spec = getattr(action_def, "targeting", None)
+                    except KeyError:
+                        spec = None
+
+                if spec and spec.radius_param:
                     delta = 1 if cmd.wheel_y > 0 else -1
-                    changed, msg = game.adjust_param("activate_all", "radius", delta)
+                    changed, msg = game.adjust_param(
+                        active_name,
+                        spec.radius_param,
+                        delta,
+                    )
                     if not changed and delta > 0 and msg:
                         renderer._set_flash(msg)
                     self._refresh_aim_prediction(game)
                 else:
-                    renderer._change_zoom(cmd.wheel_y, renderer._to_surface(pygame.mouse.get_pos()))
+                    renderer._change_zoom(
+                        cmd.wheel_y,
+                        renderer._to_surface(pygame.mouse.get_pos()),
+                    )
             return
 
-        # Mouse click drives ability bar, config overlay, placement, and click-to-move.
+        # Mouse click drives target confirm, ability bar, config, placement, and click-to-move.
         if kind == "mouse_click" and cmd.mouse_pos is not None and cmd.mouse_button == 1:
-            mx, my = renderer._to_surface(cmd.mouse_pos)
-
-            # Config overlay: click anywhere closes it for now.
-            if self.ui_state.config_open and self.ui_state.config_action:
-                _set_ui("config_open", False)
+            # If we’re in target mode, treat click as confirm after updating hover.
+            if in_target_mode:
+                self._update_hover_from_mouse(
+                    game,
+                    renderer,
+                    renderer._to_surface(cmd.mouse_pos),
+                )
+                if t and t.kind == "look":
+                    self._confirm_look(game, renderer, manager)
+                else:
+                    self.confirm_target(game)
                 return
+
+            mx, my = renderer._to_surface(cmd.mouse_pos)
 
             # Ability bar page arrows.
             bar_view = getattr(renderer, "ability_bar_view", None)
@@ -618,7 +983,6 @@ class DungeonScene(Scene):
                 if bar_view.page_prev_rect and bar_view.page_prev_rect.collidepoint(mx, my):
                     bar.prev_page()
                     return
-
                 if bar_view.page_next_rect and bar_view.page_next_rect.collidepoint(mx, my):
                     bar.next_page()
                     return
@@ -641,45 +1005,58 @@ class DungeonScene(Scene):
                 if rect and rect.collidepoint(mx, my):
                     bar.set_active(ability.action)
 
-                    # +/- radius tweak for activate_all
                     plus_rect = getattr(ability, "plus_rect", None)
                     minus_rect = getattr(ability, "minus_rect", None)
                     gear_rect = getattr(ability, "gear_rect", None)
 
+                    # +/- param tweak using sub-button metadata.
                     if plus_rect and plus_rect.collidepoint(mx, my):
-                        changed, msg = game.adjust_param("activate_all", "radius", 1)
-                        if not changed and msg:
-                            renderer._set_flash(msg)
-                        self._refresh_aim_prediction(game)
+                        from edgecaster.systems.actions import action_sub_buttons
+
+                        for meta in action_sub_buttons(ability.action):
+                            if (
+                                meta.kind == "param_delta"
+                                and (meta.delta or 0) > 0
+                                and meta.param_key
+                            ):
+                                changed, msg = game.adjust_param(
+                                    ability.action,
+                                    meta.param_key,
+                                    meta.delta,
+                                )
+                                if not changed and msg:
+                                    renderer._set_flash(msg)
+                                self._refresh_aim_prediction(game)
+                                break
                         return
 
                     if minus_rect and minus_rect.collidepoint(mx, my):
-                        changed, _ = game.adjust_param("activate_all", "radius", -1)
-                        self._refresh_aim_prediction(game)
+                        from edgecaster.systems.actions import action_sub_buttons
+
+                        for meta in action_sub_buttons(ability.action):
+                            if (
+                                meta.kind == "param_delta"
+                                and (meta.delta or 0) < 0
+                                and meta.param_key
+                            ):
+                                changed, _ = game.adjust_param(
+                                    ability.action,
+                                    meta.param_key,
+                                    meta.delta,
+                                )
+                                self._refresh_aim_prediction(game)
+                                break
                         return
 
-                    # Gear opens config overlay.
+                    # Gear opens config overlay (still generic).
                     if gear_rect and gear_rect.collidepoint(mx, my):
                         _set_ui("config_open", True)
                         _set_ui("config_action", ability.action)
                         _set_ui("config_selection", 0)
+                        return
 
-                    # Placement ability: enter terminus mode at player.
-                    elif ability.action == "place":
-                        _set_ui("target_cursor", game.actors[game.player_id].pos)
-                        if hasattr(game, "begin_place_mode"):
-                            game.begin_place_mode()
-                        _set_aim_action(None)
-
-                    else:
-                        # Aim-style abilities set aim_action and wait for confirm/click.
-                        if ability.action in ("activate_all", "activate_seed"):
-                            _set_aim_action(ability.action)
-                        else:
-                            _set_aim_action(None)
-                            # Immediate abilities fire immediately.
-                            trigger_ability_effect(game, ability.action)
-
+                    # Main ability click: delegate to Action metadata.
+                    self._begin_action_from_def(game, ability)
                     return
 
             # Map / world clicks.
@@ -688,25 +1065,10 @@ class DungeonScene(Scene):
             if not game.world.in_bounds(tx, ty):
                 return
 
-            # Terminus placement via click.
+            # Terminus placement via click (legacy).
             if getattr(game, "awaiting_terminus", False):
                 _set_ui("target_cursor", (tx, ty))
                 game.try_place_terminus((tx, ty))
-                return
-
-            # Aim-mode click to fire activate_all / activate_seed.
-            if aim_action in ("activate_all", "activate_seed"):
-                # Convert click to world-coordinates (in pattern space) and pick nearest vertex
-                wx = (mx - renderer.origin_x) / renderer.tile
-                wy = (my - renderer.origin_y) / renderer.tile
-                target_idx = game.nearest_vertex((wx, wy))
-                if target_idx is not None:
-                    trigger_ability_effect(
-                        game,
-                        aim_action,
-                        hover_vertex=target_idx,
-                    )
-                _set_aim_action(None)
                 return
 
             # Default: click-to-move / use stairs.
@@ -728,6 +1090,13 @@ class DungeonScene(Scene):
             if not in_aim_mode:
                 if hasattr(game, "describe_current_tile"):
                     game.describe_current_tile()
+            return
+
+        if kind == "look_action":
+            # Trigger the 'look' Action via the central Action entry point.
+            # This will read the Action's TargetingSpec (kind="look", mode="look")
+            # and enter look-style TargetMode.
+            self._begin_action_from_def(game, "look")
             return
 
         if kind == "pickup":
@@ -794,6 +1163,7 @@ class DungeonScene(Scene):
 
         if kind == "open_fractal_editor":
             from .fractal_editor_scene import FractalEditorState
+
             game.fractal_editor_state = FractalEditorState()  # default rect grid
             setattr(game, "fractal_editor_requested", True)
             renderer.quit_requested = True
@@ -857,18 +1227,53 @@ class DungeonScene(Scene):
             if ability is None:
                 ability = vis[0]
 
-            if ability.action == "place":
-                _set_ui("target_cursor", game.actors[game.player_id].pos)
-                if hasattr(game, "begin_place_mode"):
-                    game.begin_place_mode()
-                _set_aim_action(None)
-            else:
-                if ability.action in ("activate_all", "activate_seed"):
-                    _set_aim_action(ability.action)
-                else:
-                    _set_aim_action(None)
-                    trigger_ability_effect(game, ability.action)
-
+            self._begin_action_from_def(game, ability)
             return
 
         # Any other kinds are currently ignored.
+
+    # ------------------------------------------------------------------ #
+    # Central ability entry point
+    # ------------------------------------------------------------------ #
+    def _begin_action_from_def(self, game: Game, ability) -> None:
+        """
+        Central entry point for invoking an ability from the UI.
+
+        - Looks up the ActionDef.
+        - If the action is non-targeted, fires immediately.
+        - If the action has targeting metadata, enters unified TargetMode.
+        """
+        # AbilityBar entries expose .action; allow passing a raw name as well.
+        action_name = getattr(ability, "action", ability)
+        try:
+            action_def = get_action(action_name)
+        except KeyError:
+            # Unknown action; fall back to immediate effect.
+            trigger_ability_effect(game, action_name)
+            return
+
+        spec = getattr(action_def, "targeting", None)
+
+        # No targeting metadata → immediate action.
+        if not spec or not spec.kind:
+            # Clear any stale aim state.
+            self.ui_state.aim_action = None
+            self._refresh_aim_prediction(game)
+            trigger_ability_effect(game, action_name)
+            return
+
+        # Build TargetConstraints from TargetingSpec.
+        constraints = TargetConstraints(
+            max_range=spec.max_range,
+            neighbor_depth_param=spec.neighbor_depth_param,
+            use_param_radius=spec.radius_param,
+        )
+
+        # Enter unified TargetMode for this action.
+        self.begin_target_mode(
+            game,
+            action=action_name,
+            kind=spec.kind,           # "tile" or "vertex" or "look"
+            mode=spec.mode,           # "terminus", "aim", or "look"
+            constraints=constraints,
+        )

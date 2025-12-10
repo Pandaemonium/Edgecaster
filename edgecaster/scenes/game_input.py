@@ -55,6 +55,8 @@ class GameInput:
             "open_fractal_editor": [pygame.K_PLUS, pygame.K_EQUALS],
             "talk": [pygame.K_t],
             "quick_activate_all": [pygame.K_f],
+            "look_action": [pygame.K_l],
+
         }
         if bindings:
             for k, vals in bindings.items():
@@ -133,6 +135,8 @@ class GameInput:
             "open_fractal_editor",
             "talk",
             "quick_activate_all",
+            "look_action",
+
         ):
             if key in self.bindings.get(kind, []):
                 cmds.append(GameCommand(kind, raw_key=key))

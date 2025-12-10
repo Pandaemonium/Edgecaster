@@ -3,6 +3,72 @@
 
 # content/enemies.yaml
 
+# --- ROOT / ABSTRACT ACTOR TEMPLATES -------------------------
+
+
+
+- id: actor
+  name: Actor
+  glyph: "@"
+  color: [255, 255, 255]
+  faction: template
+  ai: none
+  base_hp: 1
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.0
+  parent: entity
+  description: "All the world's a stage -- and it is theater in the round."
+  tags: ["template", "actor"]
+
+- id: humanoid
+  name: Humanoid
+  glyph: "@"
+  color: [255, 210, 80]
+  faction: template
+  ai: none
+  base_hp: 1
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.0
+  parent: actor
+  description: "The average humanoid is actually quite a bit smaller than a human."
+  tags: ["template", "humanoid"]
+
+- id: demon
+  name: Demon
+  glyph: "d"
+  color: [255, 80, 80]
+  faction: template
+  ai: none
+  base_hp: 1
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.0
+  parent: actor
+  description: "These guys REALLY hate fractals."
+  tags: ["template", "demon"]
+
+- id: beast
+  name: Beast
+  glyph: "b"
+  color: [160, 200, 120]
+  faction: template
+  ai: none
+  base_hp: 1
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.0
+  parent: actor
+  description: "From your point of view, at least."
+  tags: ["template", "beast"]
+
+# --- PLAYER BASE TEMPLATE ------------------------------------
+
 - id: human_base
   name: Human
   glyph: "@"
@@ -14,9 +80,11 @@
   base_attack: 1
   base_defense: 0
   speed: 100
+  parent: humanoid
+  description: "Halfway between an ape and a god."
   tags: ["humanoid"]
 
-
+# --- ENEMIES -------------------------------------------------
 
 - id: "imp"
   name: "Imp"
@@ -30,6 +98,8 @@
   faction: "hostile"
   ai: "imp_loudmouth"
   xp: 10
+  parent: demon
+  description: "Gratingly obnoxious, even by demon standards."
   tags: ["demon", "trivial", "taunting"]
 
 - id: "shadow"
@@ -44,6 +114,8 @@
   faction: "demons"
   ai: "stalker"
   xp: 20
+  parent: demon
+  description: "No lights without shadow, no trees without blight."
   tags: ["undead", "ethereal"]
 
 - id: "fractal_echo"
@@ -58,6 +130,8 @@
   faction: "hostile"
   ai: "skirmisher"
   xp: 10
+  parent: demon
+  description: "Haven't you seen this before?"
   tags: ["echo", "fractal"]
 
 - id: "corrupted_thug"
@@ -72,6 +146,8 @@
   faction: "corrupted"
   ai: "melee_brute"
   xp: 12
+  parent: humanoid
+  description: "You might have thought the corruption would impair his thuggishness."
   tags: ["humanoid", "melee"]
 
 - id: "goblin"
@@ -86,6 +162,8 @@
   faction: "goblins"
   ai: "skirmisher"
   xp: 10
+  parent: humanoid
+  description: "Professional backstabber, amateur frontstabber."
   tags: ["humanoid", "scout", "loot_drop"]
 
 - id: "vampire_bat"
@@ -100,6 +178,8 @@
   faction: "beasts"
   ai: "dive_bite"
   xp: 10
+  parent: beast
+  description: "Or was it a bat vampire?"
   tags: ["flying", "beast", "pack_hunter"]
 
 - id: "raving_lunatic"
@@ -114,6 +194,8 @@
   faction: "madmen"
   ai: "lunatic"
   xp: 10
+  parent: humanoid
+  description: "Even a thousand monkeys are right twice a day."
   tags: ["humanoid", "chaotic", "talker"]
 
 - id: "mana_viper"
@@ -128,4 +210,6 @@
   faction: "beasts"
   ai: "mana_bite"
   xp: 30
+  parent: beast
+  description: "He'll vipe the mana right outta ya!"
   tags: ["beast", "magic", "poisonous"]

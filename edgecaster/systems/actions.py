@@ -2,6 +2,156 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Literal, Protocol
+from pathlib import Path
+import yaml
+
+
+
+
+
+
+# Lightweight prototype cache built from the YAML content layer.
+_ENTITY_PROTO_INDEX: Dict[str, dict] = {}
+_ENEMY_PROTO_INDEX: Dict[str, dict] = {}
+_PROTO_INDEX: Dict[str, dict] = {}
+
+def get_prototype(proto_id: str) -> dict:
+    """Return the raw prototype dict (entities + enemies) for a given id.
+
+    This is a thin wrapper over the cached YAML content.
+    """
+    if not proto_id:
+        return {}
+    if not _PROTO_INDEX:
+        _load_prototype_index()
+    return _PROTO_INDEX.get(str(proto_id), {})
+
+def _load_prototype_index() -> None:
+    global _ENTITY_PROTO_INDEX, _ENEMY_PROTO_INDEX, _PROTO_INDEX
+
+    try:
+        content_root = Path(__file__).resolve().parents[1] / "content"
+        entities_path = content_root / "entities.yaml"
+        enemies_path = content_root / "enemies.yaml"
+    except Exception:
+        return
+
+    try:
+        if entities_path.is_file():
+            with entities_path.open("r", encoding="utf-8") as f:
+                entities = yaml.safe_load(f) or []
+                _ENTITY_PROTO_INDEX = {
+                    str(p.get("id")): p for p in entities if isinstance(p, dict) and "id" in p
+                }
+        if enemies_path.is_file():
+            with enemies_path.open("r", encoding="utf-8") as f:
+                enemies = yaml.safe_load(f) or []
+                _ENEMY_PROTO_INDEX = {
+                    str(p.get("id")): p for p in enemies if isinstance(p, dict) and "id" in p
+                }
+    except Exception:
+        _ENTITY_PROTO_INDEX = {}
+        _ENEMY_PROTO_INDEX = {}
+
+    _PROTO_INDEX = {}
+    _PROTO_INDEX.update(_ENTITY_PROTO_INDEX)
+    _PROTO_INDEX.update(_ENEMY_PROTO_INDEX)
+
+# Build the cache at import time (best-effort).
+_load_prototype_index()
+
+
+def _lookup_proto_id_for_entity(ent: Any) -> str | None:
+    """
+    Best-effort guess of which YAML prototype this runtime entity came from.
+
+    Priority:
+    1) Explicit template id in tags (template_id).
+    2) Item-type tag for item entities (item_type).
+    3) ent.kind (for actors/enemies, this is usually the enemy template id).
+    4) ent.id as a last resort.
+    """
+    tags = getattr(ent, "tags", None) or {}
+
+    candidates = [
+        tags.get("template_id"),     # e.g. enemy factory could stash this
+        tags.get("item_type"),       # e.g. "strawberry", "destabilizer", etc.
+        getattr(ent, "kind", None),  # e.g. "imp", "mana_viper", "human_base"
+        getattr(ent, "id", None),    # absolute last resort
+    ]
+
+    for cid in candidates:
+        if cid:
+            return str(cid)
+
+    return None
+
+
+
+def _resolve_description_via_parents(proto_id: str) -> str | None:
+    if not proto_id or not _PROTO_INDEX:
+        return None
+
+    visited: set[str] = set()
+    cur = proto_id
+
+    while cur and cur not in visited:
+        visited.add(cur)
+        proto = _PROTO_INDEX.get(cur)
+        if not proto:
+            break
+        desc = proto.get("description")
+        if desc:
+            return str(desc)
+        parent = proto.get("parent")
+        if not parent:
+            break
+        cur = str(parent)
+
+    return None
+
+
+def resolve_entity_description(ent: Any) -> str | None:
+    """
+    1. If ent.description exists, use that.
+    2. Else infer proto id (kind/id) and climb YAML parent chain.
+    """
+    direct = getattr(ent, "description", None)
+    if direct:
+        return str(direct)
+
+    proto_id = _lookup_proto_id_for_entity(ent)
+    if not proto_id:
+        return None
+
+    return _resolve_description_via_parents(proto_id)
+
+
+def describe_entity_for_look(ent: Any) -> Dict[str, Any]:
+    """Return name, glyph, color, and description for an entity."""
+
+    proto_id = _lookup_proto_id_for_entity(ent)
+    proto = _PROTO_INDEX.get(proto_id, {}) if proto_id and _PROTO_INDEX else {}
+
+    name = (
+        getattr(ent, "name", None)
+        or getattr(ent, "label", None)
+        or proto.get("name")
+        or "something"
+    )
+
+    glyph = getattr(ent, "glyph", None) or proto.get("glyph") or "?"
+    color = getattr(ent, "color", None) or proto.get("color") or (255, 255, 255)
+
+    desc = resolve_entity_description(ent) or "You see nothing remarkable about it."
+
+    return {
+        "name": str(name),
+        "glyph": str(glyph),
+        "color": tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
+        "description": str(desc),
+    }
+
 
 # ---------------------------------------------------------------------------
 # Core action model
@@ -21,6 +171,20 @@ class ActionFunc(Protocol):
     def __call__(self, game: Any, actor_id: str, **kwargs: Any) -> None: ...
 
 
+
+@dataclass
+class TargetingSpec:
+    kind: str | None = None              # "tile" or "vertex"
+    mode: str | None = None              # "terminus" or "aim"
+    max_range: int | None = None
+    radius_param: str | None = None      # e.g. "radius" for activate_all
+    neighbor_depth_param: str | None = None  # e.g. "neighbor_depth" for activate_seed
+    requires_confirm: bool = True        # reserved for later (auto-fire on click, etc.)
+
+
+
+
+
 @dataclass
 class ActionDef:
     name: str
@@ -31,6 +195,9 @@ class ActionDef:
     # ability bar when owned by the current host actor.
     show_in_bar: bool = False
     cooldown_ticks: int = 0
+    # Targeting metadata (None = immediate, non-targeted action).
+    targeting: TargetingSpec | None = None
+
 
 
 
@@ -159,16 +326,10 @@ def register_action(
     speed: SpeedTag = "fast",
     show_in_bar: bool = False,
     cooldown_ticks: int = 0,
+    targeting: TargetingSpec | None = None,
 ) -> Callable[[ActionFunc], ActionFunc]:
     """
     Decorator to register a function as an Action.
-
-    Usage:
-
-        @register_action("yawp", label="Yawp", speed="instant", show_in_bar=True)
-        def yawp_action(game, actor_id, **kwargs):
-            ...
-
     """
     def decorator(func: ActionFunc) -> ActionFunc:
         # Dev convenience: allow override if hot–reloading.
@@ -179,10 +340,12 @@ def register_action(
             func=func,
             show_in_bar=show_in_bar,
             cooldown_ticks=cooldown_ticks,
+            targeting=targeting,
         )
         return func
 
     return decorator
+
 
 
 def get_action(name: str) -> ActionDef:
@@ -207,8 +370,10 @@ def get_action(name: str) -> ActionDef:
                 func=_custom_n_action,
                 show_in_bar=base.show_in_bar,
                 cooldown_ticks=base.cooldown_ticks,
+                targeting=base.targeting,
             )
         return _action_registry[name]
+
     try:
         return _action_registry[name]
     except KeyError as exc:
@@ -393,7 +558,17 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
 # Fractal / rune actions
 # ---------------------------------------------------------------------------
 
-@register_action("place", label="Place", speed="fast", show_in_bar=True)
+@register_action(
+    "place",
+    label="Place",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(
+        kind="tile",
+        mode="terminus",
+        # max_range could later be wired to a param if desired
+    ),
+)
 def _action_place(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Enter 'place terminus' mode for the acting entity.
@@ -401,9 +576,11 @@ def _action_place(game: Any, actor_id: str, **kwargs: Any) -> None:
     Right now this is effectively a player-only thing and does not
     consume any extra parameters; we just delegate to Game.
     """
-    # Keep this robust if used in tests or before Game grows helpers.
+    # This is still a setup hook; the actual placement occurs when
+    # TargetMode confirms and calls Game.try_place_terminus.
     if hasattr(game, "begin_place_mode"):
         game.begin_place_mode()
+
 
 
 @register_action("subdivide", label="Subdivide", speed="fast", show_in_bar=True)
@@ -470,30 +647,46 @@ def _action_destabilize(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_destabilize(actor_id)
 
 
-@register_action("activate_all", label="Activate R", speed="fast", show_in_bar=True)
+@register_action(
+    "activate_all",
+    label="Activate R",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(
+        kind="vertex",
+        mode="aim",
+        radius_param="radius",
+    ),
+)
 def _action_activate_all(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
-    Activate the rune pattern with a 'radius' illuminator around a vertex.
-
-    Expected **kwargs:
-        target_vertex: Optional[int] – index into the pattern's vertex list.
+	...
     """
     target_vertex = kwargs.get("target_vertex")
     if hasattr(game, "act_activate_all"):
         game.act_activate_all(actor_id, target_vertex)
 
 
-@register_action("activate_seed", label="Activate N", speed="fast", show_in_bar=True)
+
+@register_action(
+    "activate_seed",
+    label="Activate N",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(
+        kind="vertex",
+        mode="aim",
+        neighbor_depth_param="neighbor_depth",
+    ),
+)
 def _action_activate_seed(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
-    Activate the rune pattern using a 'neighbors' illuminator.
-
-    Expected **kwargs:
-        target_vertex: Optional[int] – index into the pattern's vertex list.
+	...
     """
     target_vertex = kwargs.get("target_vertex")
     if hasattr(game, "act_activate_seed"):
         game.act_activate_seed(actor_id, target_vertex)
+
 
 
 @register_action("reset", label="Reset Rune", speed="fast", show_in_bar=True)
@@ -515,3 +708,33 @@ def _action_meditate(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_meditate"):
         game.act_meditate(actor_id)
+
+
+@register_action(
+    "look",
+    label="Look",
+    speed="instant",
+    show_in_bar=False,
+    targeting=TargetingSpec(
+        kind="look",
+        mode="look",
+    ),
+)
+@register_action(
+    "look",
+    label="Look",
+    speed="instant",
+    show_in_bar=False,
+    targeting=TargetingSpec(
+        kind="look",
+        mode="look",
+    ),
+)
+def _action_look(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Inspect a distant tile / entity.
+
+    The actual popup is currently triggered by the DungeonScene
+    confirm stub (_confirm_look).
+    """
+    return

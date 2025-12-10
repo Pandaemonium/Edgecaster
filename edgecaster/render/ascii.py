@@ -585,16 +585,87 @@ class AsciiRenderer:
             self.surface.blit(sprite, sprite.get_rect(center=(px, py)))
 
     def draw_target_cursor(self, game: Game) -> None:
-        if not game.awaiting_terminus:
-            return
+        """
+        Draw the tile highlight for unified TargetMode.
+
+        - For legacy rune placement, we still gate on game.awaiting_terminus.
+        - For look-style targeting, we draw whenever ui_state.target.kind == "look".
+        """
+        t = self._ui_attr("target", None)
         tc = self._ui_attr("target_cursor", None)
-        tx, ty = tc if tc else (0, 0)
+
+        if not tc:
+            return
+
+        # Draw for:
+        #  - legacy terminus mode (awaiting_terminus flag)
+        #  - look-style TargetMode (kind == "look")
+        kind = getattr(t, "kind", None) if t is not None else None
+        draw_for_terminus = bool(game.awaiting_terminus)
+        draw_for_look = (kind == "look")
+
+        if not (draw_for_terminus or draw_for_look):
+            return
+
+        tx, ty = tc
         if not game.world.in_bounds(tx, ty):
             return
-        px = tx * self.tile
-        py = ty * self.tile
+
+        px = tx * self.tile + self.origin_x
+        py = ty * self.tile + self.origin_y
+
         rect = pygame.Rect(px, py, self.tile, self.tile)
         pygame.draw.rect(self.surface, (255, 255, 120), rect, 2)
+        
+        
+    def draw_look_overlay(self, game: Game) -> None:
+        """
+        When in look-style TargetMode, show the name of any actor under
+        the cursor in a yellow label just beneath the tile.
+        """
+        t = self._ui_attr("target", None)
+        if not t or getattr(t, "kind", None) != "look":
+            return
+
+        cursor_tile = getattr(t, "cursor_tile", None) or self._ui_attr("target_cursor", None)
+        if not cursor_tile:
+            return
+
+        tx, ty = cursor_tile
+        world = game.world
+        if not world.in_bounds(tx, ty):
+            return
+
+        tile = world.get_tile(tx, ty)
+        if tile is None or (hasattr(tile, "visible") and not tile.visible):
+            return
+
+        # Find any renderable entities (actors, items, features...) at this tile.
+        try:
+            renderables = game.renderables_current()
+        except Exception:
+            renderables = []
+
+        entities_here = [
+            e for e in renderables
+            if getattr(e, "pos", None) == (tx, ty)
+        ]
+        if not entities_here:
+            return
+
+        # For now, just show the "topmost" entity's name.
+        ent = entities_here[-1]
+        name = getattr(ent, "name", None) or getattr(ent, "label", None) or "something"
+
+
+        # Convert tile → pixel; center text under the tile
+        px = tx * self.tile + self.origin_x + self.tile // 2
+        py = ty * self.tile + self.origin_y + self.tile  # just below the tile
+
+        text = self.small_font.render(name, True, self.sel)  # self.sel is your yellow-ish color
+        self.surface.blit(text, (px - text.get_width() // 2, py))
+
+
 
     def draw_place_overlay(self, game: Game) -> None:
         """Subtle pulsing circle showing placement range when selecting a terminus."""
@@ -873,6 +944,8 @@ class AsciiRenderer:
         renderables = game.renderables_current()
         self.draw_entities(game.world, renderables)
         self.draw_target_cursor(game)
+        self.draw_look_overlay(game)
+
         self.draw_status(game)
         self.draw_log(game)
         self.draw_ability_bar(game)
@@ -1045,7 +1118,8 @@ class AsciiRenderer:
         pygame.quit()
 
     def draw_config_overlay(self, game: Game) -> None:
-        action_name = self._ui_attr("config_action", self.config_action)
+        # UI state now lives on DungeonUIState; renderer has no local fallback.
+        action_name = self._ui_attr("config_action", None)
         if not action_name:
             return
         params = game.param_view(action_name)
@@ -1066,7 +1140,8 @@ class AsciiRenderer:
         title = self.big_label(f"Configure {action_name}")
         overlay.blit(title, (panel_x + 16, panel_y + 12))
         y = panel_y + 50
-        sel_idx = self._ui_attr("config_selection", self.config_selection)
+
+        sel_idx = self._ui_attr("config_selection", 0)
         for i, p in enumerate(params):
             sel = (i == sel_idx)
             col = self.sel if sel else self.fg
