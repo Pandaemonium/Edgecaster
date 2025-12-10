@@ -115,6 +115,11 @@ class DungeonScene(Scene):
     # ------------------------------------------------------------------ #
     # Live-loop hooks
     def handle_event(self, event, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Keep keybindings in sync with manager settings.
+        if hasattr(manager, "keybindings"):
+            kb = manager.keybindings
+            self.input.set_bindings(kb.get("bindings", {}))
+            self.input.set_move_bindings(kb.get("move_bindings", {}))
         game, renderer = self._ensure_game(manager)
         if game is None:
             manager.set_scene(None)

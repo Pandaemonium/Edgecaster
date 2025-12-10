@@ -173,7 +173,22 @@ SECTION 6 — PRACTICAL ONBOARDING NOTES
 - Entity prototypes define everything about entities: glyphs, colors, descriptions, and future behaviors.
 
 ===============================================================================
-SECTION 7 — TL;DR FOR THE NEXT GUY
+SECTION 7 — KEYBINDINGS
+
+- Source of truth: `scenes/game_input.py` (`DEFAULT_BINDINGS`, `DEFAULT_MOVE_BINDINGS`).
+- Persistence: `keybindings.json` in the repo root stores:
+  - `bindings`: command -> list of encoded key+modifier integers (modifiers preserved).
+  - `move_bindings`: encoded key+modifier -> (dx, dy).
+- Editing: Options → Controls (`scenes/keybinds_scene.py`)
+  - Single-page list with categories; each action has up to 3 slots.
+  - Click a slot to start capture; type a key (modifiers allowed) then Enter to commit, Esc to cancel.
+  - Click the “x” in a slot to clear; scroll wheel moves selection.
+  - “Reset Defaults” (top-right) restores defaults and writes `keybindings.json`.
+  - Conflict handling clears the same key from other commands in the same context (dungeon/global), including movement.
+- Application: `SceneManager` holds current bindings; `DungeonScene` applies them each frame so changes take effect immediately.
+
+===============================================================================
+SECTION 8 — TL;DR FOR THE NEXT GUY
 
 ascii.py: pure renderer  
 DungeonScene: owns UI state + targeting + ability interaction  

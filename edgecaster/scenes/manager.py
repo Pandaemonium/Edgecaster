@@ -9,6 +9,7 @@ from edgecaster import config
 from edgecaster.render.ascii import AsciiRenderer
 from edgecaster.rng import new_rng
 from edgecaster.character import Character, default_character
+from .game_input import load_bindings_full
 
 from .base import Scene
 from .character_creation_scene import CharacterCreationScene
@@ -36,6 +37,9 @@ class SceneManager:
             "Show FPS": False,
             "Big Text": False,
         }
+        # Keybindings (persisted to disk): {"bindings": ..., "move_bindings": ...}
+        binds, moves = load_bindings_full()
+        self.keybindings = {"bindings": binds, "move_bindings": moves}
 
         # RNG + game state
         self.rng = new_rng()

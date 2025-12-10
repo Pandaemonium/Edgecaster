@@ -15,6 +15,8 @@ from .base import (
     MENU_ACTION_BACK,
     MENU_ACTION_FULLSCREEN,
 )
+from .keybinds_scene import KeybindsScene
+from .game_input import load_bindings_full, save_bindings_file
 
 
 # ---------------------------------------------------------------------------#
@@ -207,14 +209,16 @@ class OptionsScene(Scene):
         # 0..len(toggles)-1 : boolean toggles
         # len(toggles)      : "Options" (recursive)
         # len(toggles)+1    : "Options Options" (visual submenu)
-        # len(toggles)+2    : "Developer mode" (stat editor)
-        # len(toggles)+3    : "Back"
+        # len(toggles)+2    : "Controls" (keybindings)
+        # len(toggles)+3    : "Developer mode" (stat editor)
+        # len(toggles)+4    : "Back"
         num_toggles = len(toggles)
         options_index = num_toggles
         options_options_index = num_toggles + 1
-        dev_index = num_toggles + 2
-        back_index = num_toggles + 3
-        num_items = num_toggles + 4
+        controls_index = num_toggles + 2
+        dev_index = num_toggles + 3
+        back_index = num_toggles + 4
+        num_items = num_toggles + 5
 
         # Logical panel size (used for anisotropic scaling)
         logical_w = int(renderer.width * 0.90)
@@ -331,6 +335,19 @@ class OptionsScene(Scene):
                         parent_alpha=parent_alpha,
                     )
                     manager.push_scene(visual_scene)
+                    running = False
+                    return True
+
+                # Controls -> keybindings
+                if idx == controls_index:
+                    child_rect = self._compute_child_rect()
+                    kb_scene = KeybindsScene(
+                        base_rect=child_rect,
+                        depth=self.depth + 1,
+                        bindings=dict(manager.keybindings.get("bindings", {})),
+                        move_bindings=dict(manager.keybindings.get("move_bindings", {})),
+                    )
+                    manager.push_scene(kb_scene)
                     running = False
                     return True
 
@@ -473,6 +490,14 @@ class OptionsScene(Scene):
             oo_text = ui_font.render(prefix + "Options Options", True, color)
             logical_surface.blit(oo_text, (base_x, y))
             y += oo_text.get_height() + line_gap
+
+            # "Controls"
+            selected = self.selected_idx == controls_index
+            color = renderer.player_color if selected else renderer.fg
+            prefix = "-> " if selected else "  "
+            ctrl_text = ui_font.render(prefix + "Controls", True, color)
+            logical_surface.blit(ctrl_text, (base_x, y))
+            y += ctrl_text.get_height() + line_gap
 
             # "Developer mode"
             selected = self.selected_idx == dev_index
