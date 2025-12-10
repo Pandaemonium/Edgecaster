@@ -172,4 +172,9 @@ def action_preview_geometry(action: str, game: Any = None, overrides: Dict[str, 
         # Simple gradient colors mapped via extra for renderer draw
         return {"verts": verts, "segs": segs, "rainbow": True}
 
+    if action == "verdant_edges":
+        verts = [(0.2, 0.5), (0.4, 0.5), (0.6, 0.5), (0.8, 0.5)]
+        segs = [(0, 1), (1, 2), (2, 3)]
+        return {"verts": verts, "segs": segs, "green_levels": True}
+
     return None

@@ -130,6 +130,7 @@ def trigger_ability_effect(
     action: str,
     *,
     hover_vertex: Optional[int] = None,
+    **extra: object,
 ) -> None:
     """
     Execute the *effect* of an ability.
@@ -211,5 +212,5 @@ def trigger_ability_effect(
     # name of a registered action. If the action system is present,
     # we let it handle the details (e.g. imp_taunt, class abilities).
     if hasattr(game, "queue_player_action"):
-        game.queue_player_action(action)
+        game.queue_player_action(action, **extra)
     # If not, we just no-op rather than crash.

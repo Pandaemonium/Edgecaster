@@ -11,11 +11,12 @@ from .urgent_message_scene import UrgentMessageScene
 from .game_input import GameInput, GameCommand
 from edgecaster.systems.abilities import trigger_ability_effect
 from edgecaster.systems.targeting import predict_aim_preview
+from edgecaster.patterns import motion as pattern_motion
 from edgecaster.ui.ability_bar import AbilityBarState
 from edgecaster.systems.actions import get_action, describe_entity_for_look
 
 
-TargetKind = Literal["tile", "vertex", "look"]
+TargetKind = Literal["tile", "vertex", "look", "position"]
 
 
 @dataclass
@@ -58,6 +59,9 @@ class DungeonUIState:
     config_action: str | None = None
     config_selection: int = 0
     aim_prediction: object | None = None  # computed preview info for aim overlays
+    push_target: tuple[float, float] | None = None
+    push_rotation: float = 0.0
+    push_preview: object | None = None
 
     def __post_init__(self) -> None:
         if self.hover_neighbors is None:
@@ -449,6 +453,30 @@ class DungeonScene(Scene):
 
             self._refresh_aim_prediction(game)
 
+        if kind == "position":
+            # Push pattern targeting: seed at pattern COM (or player tile).
+            self.ui_state.aim_action = action
+            lvl = game._level()
+            pattern = getattr(lvl, "pattern", None)
+            anchor = getattr(lvl, "pattern_anchor", None)
+            max_range = constraints.max_range or 5.0
+            if pattern and anchor and pattern.vertices:
+                com = pattern_motion.center_of_mass(pattern)
+                com_world = (com[0] + anchor[0], com[1] + anchor[1])
+                tstate.cursor_tile = (int(round(com_world[0])), int(round(com_world[1])))
+                self.ui_state.target_cursor = tstate.cursor_tile
+                self.ui_state.push_target = com_world
+                self.ui_state.push_rotation = 0.0
+                self.ui_state.push_preview = pattern_motion.build_push_preview(
+                    pattern, anchor, com_world, 0.0, max_range
+                )
+            elif origin_tile is not None:
+                tstate.cursor_tile = origin_tile
+                self.ui_state.target_cursor = origin_tile
+                self.ui_state.push_target = (origin_tile[0], origin_tile[1])
+                self.ui_state.push_rotation = 0.0
+                self.ui_state.push_preview = None
+
     def cancel_target_mode(self, game: Game) -> None:
         t = self.ui_state.target
         self.ui_state.target = None
@@ -456,6 +484,9 @@ class DungeonScene(Scene):
         self.ui_state.hover_vertex = None
         self.ui_state.hover_neighbors = []
         self.ui_state.aim_prediction = None
+        self.ui_state.push_target = None
+        self.ui_state.push_rotation = 0.0
+        self.ui_state.push_preview = None
         # Clear legacy terminus flag for any tile/terminus targeting.
         if t and t.kind == "tile" and getattr(t, "mode", None) == "terminus":
             game.awaiting_terminus = False
@@ -494,6 +525,14 @@ class DungeonScene(Scene):
                 t.action,
                 hover_vertex=t.cursor_vertex,
             )
+
+        # POSITION TARGETING (push_pattern)
+        elif t.kind == "position":
+            tgt = self.ui_state.push_target or t.cursor_tile
+            if tgt is None:
+                return
+            rot = self.ui_state.push_rotation
+            trigger_ability_effect(game, t.action, target_pos=tgt, rotation_deg=rot)
 
         # Clear target + legacy flags
         self.cancel_target_mode(game)
@@ -596,12 +635,34 @@ class DungeonScene(Scene):
         wx = (mx - renderer.origin_x) / renderer.tile
         wy = (my - renderer.origin_y) / renderer.tile
 
-        if t.kind in ("tile", "look"):
+        if t.kind in ("tile", "look", "position"):
             tx = int((mx - renderer.origin_x) // renderer.tile)
             ty = int((my - renderer.origin_y) // renderer.tile)
             if game.world.in_bounds(tx, ty):
                 t.cursor_tile = (tx, ty)
                 self.ui_state.target_cursor = (tx, ty)
+                if getattr(t, "action", None) == "push_pattern":
+                    lvl = game._level()
+                    pattern = getattr(lvl, "pattern", None)
+                    anchor = getattr(lvl, "pattern_anchor", None)
+                    if pattern and anchor and pattern.vertices:
+                        com = pattern_motion.center_of_mass(pattern)
+                        com_world = (com[0] + anchor[0], com[1] + anchor[1])
+                        dx = tx - com_world[0]
+                        dy = ty - com_world[1]
+                        dist = (dx * dx + dy * dy) ** 0.5
+                        max_range = getattr(t.constraints, "max_range", None) if t.constraints else None
+                        if max_range is None:
+                            max_range = 5.0
+                        if dist > max_range and dist > 0:
+                            scale = max_range / dist
+                            dx *= scale
+                            dy *= scale
+                        tgt = (com_world[0] + dx, com_world[1] + dy)
+                        self.ui_state.push_target = tgt
+                        self.ui_state.push_preview = pattern_motion.build_push_preview(
+                            pattern, anchor, tgt, self.ui_state.push_rotation, max_range
+                        )
 
         elif t.kind == "vertex":
             idx = game.nearest_vertex((wx, wy))
@@ -703,6 +764,7 @@ class DungeonScene(Scene):
             in_target_mode and t.kind == "vertex" and getattr(t, "mode", None) == "aim"
         )
         aim_action = ui.aim_action
+        push_mode = bool(in_target_mode and t and getattr(t, "action", "") == "push_pattern")
 
         in_look_mode = bool(in_target_mode and t and t.kind == "look")
 
@@ -934,30 +996,47 @@ class DungeonScene(Scene):
         # Mouse wheel controls zoom or activate_all radius.
         if kind == "mouse_wheel":
             if cmd.wheel_y:
-                active_name = bar.active_action
-                spec = None
-                if active_name:
-                    try:
-                        action_def = get_action(active_name)
-                        spec = getattr(action_def, "targeting", None)
-                    except KeyError:
-                        spec = None
-
-                if spec and spec.radius_param:
-                    delta = 1 if cmd.wheel_y > 0 else -1
-                    changed, msg = game.adjust_param(
-                        active_name,
-                        spec.radius_param,
-                        delta,
-                    )
-                    if not changed and delta > 0 and msg:
-                        renderer._set_flash(msg)
-                    self._refresh_aim_prediction(game)
+                if push_mode:
+                    delta_deg = 15 if cmd.wheel_y > 0 else -15
+                    ui.push_rotation = (ui.push_rotation + delta_deg) % 360
+                    if ui.push_target and t and t.constraints:
+                        lvl = game._level()
+                        pattern = getattr(lvl, "pattern", None)
+                        anchor = getattr(lvl, "pattern_anchor", None)
+                        max_range = getattr(t.constraints, "max_range", 5.0)
+                        if pattern and anchor and pattern.vertices:
+                            ui.push_preview = pattern_motion.build_push_preview(
+                                pattern,
+                                anchor,
+                                ui.push_target,
+                                ui.push_rotation,
+                                max_range,
+                            )
                 else:
-                    renderer._change_zoom(
-                        cmd.wheel_y,
-                        renderer._to_surface(pygame.mouse.get_pos()),
-                    )
+                    active_name = bar.active_action
+                    spec = None
+                    if active_name:
+                        try:
+                            action_def = get_action(active_name)
+                            spec = getattr(action_def, "targeting", None)
+                        except KeyError:
+                            spec = None
+
+                    if spec and spec.radius_param:
+                        delta = 1 if cmd.wheel_y > 0 else -1
+                        changed, msg = game.adjust_param(
+                            active_name,
+                            spec.radius_param,
+                            delta,
+                        )
+                        if not changed and delta > 0 and msg:
+                            renderer._set_flash(msg)
+                        self._refresh_aim_prediction(game)
+                    else:
+                        renderer._change_zoom(
+                            cmd.wheel_y,
+                            renderer._to_surface(pygame.mouse.get_pos()),
+                        )
             return
 
         # Mouse click drives target confirm, ability bar, config, placement, and click-to-move.
@@ -1243,37 +1322,33 @@ class DungeonScene(Scene):
         - If the action is non-targeted, fires immediately.
         - If the action has targeting metadata, enters unified TargetMode.
         """
-        # AbilityBar entries expose .action; allow passing a raw name as well.
         action_name = getattr(ability, "action", ability)
         try:
             action_def = get_action(action_name)
         except KeyError:
-            # Unknown action; fall back to immediate effect.
             trigger_ability_effect(game, action_name)
             return
 
         spec = getattr(action_def, "targeting", None)
 
-        # No targeting metadata → immediate action.
+        # No targeting metadata: fire immediately.
         if not spec or not spec.kind:
-            # Clear any stale aim state.
             self.ui_state.aim_action = None
             self._refresh_aim_prediction(game)
             trigger_ability_effect(game, action_name)
             return
 
-        # Build TargetConstraints from TargetingSpec.
         constraints = TargetConstraints(
             max_range=spec.max_range,
             neighbor_depth_param=spec.neighbor_depth_param,
-            use_param_radius=spec.radius_param,
+            use_param_radius=getattr(spec, "radius_param", spec.use_param_radius if hasattr(spec, "use_param_radius") else None),
         )
 
         # Enter unified TargetMode for this action.
         self.begin_target_mode(
             game,
             action=action_name,
-            kind=spec.kind,           # "tile" or "vertex" or "look"
-            mode=spec.mode,           # "terminus", "aim", or "look"
+            kind=spec.kind,           # "tile" or "vertex" or "look" or "position"
+            mode=spec.mode,           # "terminus", "aim", etc.
             constraints=constraints,
         )

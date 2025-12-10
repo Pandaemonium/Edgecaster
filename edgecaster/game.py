@@ -21,6 +21,7 @@ from edgecaster.character import Character, default_character
 from edgecaster.content import npcs
 from edgecaster.systems.actions import get_action, action_delay
 from edgecaster.patterns import colors as pattern_colors
+from edgecaster.patterns import motion as pattern_motion
 from edgecaster.systems import ai
 import edgecaster.enemies.templates as enemy_templates
 from . import lorenz
@@ -305,6 +306,9 @@ class Game:
             # Meta slots
             actions.append("reset")
             actions.append("meditate")
+            actions.append("rainbow_edges")
+            actions.append("verdant_edges")
+            actions.append("push_pattern")
             actions.append("rainbow_edges")
 
         # For now, all other classes keep only move/wait (empty ability bar).
@@ -1529,6 +1533,8 @@ class Game:
         self._coherence_tick(level, delta)
         # NEW: cooldowns tick down
         self._cooldown_tick(level, delta)
+        # NEW: pattern motion tick
+        pattern_motion.step_motion(self, level, delta)
 
 
     def _coherence_tick(self, level: LevelState, delta: int) -> None:
@@ -1817,6 +1823,8 @@ class Game:
         lvl.pattern_anchor = None
         lvl.activation_points = []
         lvl.activation_ttl = 0
+        # Stop any lingering motion when the pattern is cleared.
+        lvl.pattern_motion = None
         # reset coherence to max on zone change
         player = self._player() if hasattr(self, "_player") else None
         if player:
@@ -2311,6 +2319,7 @@ class Game:
         def do_place() -> None:
             lvl.pattern = builder.line_pattern((0.0, 0.0), (dx, dy))
             lvl.pattern_anchor = (px, py)
+            lvl.pattern_motion = None
             self.log.add(f"Terminus placed at {target}.")
 
         self._schedule(lvl, self.cfg.place_time_ticks, do_place)
@@ -2792,6 +2801,28 @@ class Game:
         level = self._level()
         self._activate_pattern_seed_neighbors(level, target_vertex)
 
+    def act_push_pattern(self, actor_id: str, target_pos=None, rotation_deg: float = 0) -> None:
+        """Begin repeated motion/rotation of the current pattern."""
+        level = self._level()
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+        if pattern is None or anchor is None or not pattern.vertices:
+            return
+        com = pattern_motion.center_of_mass(pattern)
+        com_world = (com[0] + anchor[0], com[1] + anchor[1])
+        if target_pos is None:
+            target_pos = com_world
+        dx = target_pos[0] - com_world[0]
+        dy = target_pos[1] - com_world[1]
+        dist = (dx * dx + dy * dy) ** 0.5
+        max_range = 5.0
+        if dist > max_range and dist > 0:
+            scale = max_range / dist
+            dx *= scale
+            dy *= scale
+        pattern_motion.start_motion(level, (dx, dy), rotation_deg, interval=10)
+        self._advance_time(level, self.cfg.action_time_fast)
+
     def act_destabilize(self, actor_id: str) -> None:
         """Teleport randomly within 10 tiles; 50% chance to take 10% max HP."""
         level = self._level()
@@ -2861,6 +2892,8 @@ class Game:
             self.log.add("No pattern to modify. Place a terminus first.")
             return
         segs = lvl.pattern.to_segments()
+        # Editing the pattern should cancel any ongoing motion.
+        lvl.pattern_motion = None
         if kind == "subdivide":
             parts = self._param_value("subdivide", "parts")
             gen = builder.SubdivideGenerator(parts=parts)

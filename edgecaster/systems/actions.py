@@ -659,8 +659,33 @@ def _action_rainbow_edges(game: Any, actor_id: str, **kwargs: Any) -> None:
     Color current pattern edges in ROYGBIV order starting from the root.
     """
     if pattern_colors and hasattr(pattern_colors, "apply_rainbow_edges"):
-
         pattern_colors.apply_rainbow_edges(game)
+
+
+@register_action("verdant_edges", label="Verdant", speed="fast", show_in_bar=True)
+def _action_verdant_edges(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Color edges greener with depth: nearest are white, furthest are fully green.
+    """
+    if pattern_colors and hasattr(pattern_colors, "apply_depth_green_edges"):
+        pattern_colors.apply_depth_green_edges(game)
+
+
+@register_action(
+    "push_pattern",
+    label="Push",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(kind="position", mode="aim"),
+)
+def _action_push_pattern(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Begin moving/spinning the current pattern: applies a repeated translation + rotation every 10 ticks.
+    """
+    if hasattr(game, "act_push_pattern"):
+        target = kwargs.get("target_pos")
+        rot = kwargs.get("rotation_deg", 0)
+        game.act_push_pattern(actor_id, target_pos=target, rotation_deg=rot)
 
 
 

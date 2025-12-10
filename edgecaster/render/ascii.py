@@ -686,6 +686,66 @@ class AsciiRenderer:
         pygame.draw.circle(overlay, color, (int(cx), int(cy)), int(radius), width=2)
         self.surface.blit(overlay, (0, 0))
 
+    def draw_push_preview(self, game: Game) -> None:
+        """Draw source/target boxes and ghost pattern for push_pattern targeting."""
+        preview = self._ui_attr("push_preview", None)
+        if not preview:
+            return
+        source = preview.get("source_com")
+        target = preview.get("target_com")
+        half = preview.get("half_size", 1.0)
+        if source is None or target is None:
+            return
+
+        def _to_px(pt: Tuple[float, float]) -> Tuple[int, int]:
+            return (
+                int(pt[0] * self.tile + self.origin_x),
+                int(pt[1] * self.tile + self.origin_y),
+            )
+
+        def _draw_box(center: Tuple[int, int], color_top, color_bottom) -> None:
+            cx, cy = center
+            size = int(half * self.tile)
+            left = cx - size
+            right = cx + size
+            top = cy - size
+            bottom = cy + size
+            pygame.draw.line(self.surface, color_top, (left, top), (right, top), 2)
+            pygame.draw.line(self.surface, color_bottom, (left, bottom), (right, bottom), 2)
+            steps = max(2, bottom - top)
+            for i in range(steps + 1):
+                t = i / max(1, steps)
+                col = (
+                    int(color_top[0] + (color_bottom[0] - color_top[0]) * t),
+                    int(color_top[1] + (color_bottom[1] - color_top[1]) * t),
+                    int(color_top[2] + (color_bottom[2] - color_top[2]) * t),
+                )
+                y = top + i
+                pygame.draw.line(self.surface, col, (left, y), (left + 1, y))
+                pygame.draw.line(self.surface, col, (right, y), (right - 1, y))
+
+        _draw_box(_to_px(source), (0, 0, 0), (255, 255, 255))
+        _draw_box(_to_px(target), (30, 30, 30), (240, 240, 240))
+
+        tgt_verts = preview.get("target_verts") or []
+        edges = preview.get("edges") or []
+        if tgt_verts and edges:
+            tval = pygame.time.get_ticks() / 1000.0
+            alpha = int(80 + 80 * (0.5 + 0.5 * math.sin(tval * 2 * math.pi)))
+            ghost = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+            for a, b in edges:
+                if a >= len(tgt_verts) or b >= len(tgt_verts):
+                    continue
+                ax, ay = tgt_verts[a]
+                bx, by = tgt_verts[b]
+                pygame.draw.aaline(
+                    ghost,
+                    (180, 255, 200, alpha),
+                    _to_px((ax, ay)),
+                    _to_px((bx, by)),
+                )
+            self.surface.blit(ghost, (0, 0))
+
     def draw_status(self, game: Game) -> None:
         player = game.actors[game.player_id]
         x = 12
@@ -941,6 +1001,7 @@ class AsciiRenderer:
         self.draw_lorenz_overlay(game)
 
         self.draw_pattern_overlay(game)
+        self.draw_push_preview(game)
         self.draw_place_overlay(game)
         self.draw_activation_overlay(game)
         self.draw_aim_overlay(game)
@@ -1095,9 +1156,9 @@ class AsciiRenderer:
                         t1 = (i + 1) / steps
                         px0 = ax + (bx - ax) * t0
                         py0 = ay + (by - ay) * t0
-                    px1 = ax + (bx - ax) * t1
-                    py1 = ay + (by - ay) * t1
-                    pygame.draw.aaline(surf, (180, 230, 255), to_px(px0, py0), to_px(px1, py1))
+                        px1 = ax + (bx - ax) * t1
+                        py1 = ay + (by - ay) * t1
+                        pygame.draw.aaline(surf, (180, 230, 255), to_px(px0, py0), to_px(px1, py1))
                     continue
                 color = (180, 230, 255)
                 if extra and extra.get("rainbow"):
@@ -1116,6 +1177,16 @@ class AsciiRenderer:
                         (238, 130, 238),
                     ]
                     color = colors[idx % len(colors)]
+                elif extra and extra.get("green_levels"):
+                    try:
+                        idx = segs.index((a, b))
+                    except ValueError:
+                        idx = 0
+                    max_idx = max(1, len(segs) - 1)
+                    t = idx / max_idx
+                    gcol = 255
+                    val = int(255 * (1 - t))
+                    color = (val, gcol, val)
                 pygame.draw.aaline(surf, color, to_px(*verts[a]), to_px(*verts[b]))
             if extra and extra.get("circle"):
                 rad_norm = extra.get("radius", 1.5) if extra else 1.5
