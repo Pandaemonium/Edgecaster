@@ -133,8 +133,9 @@ class AsciiRenderer:
         # clear main surface
         self.surface.fill(self.bg)
         # compute map origin offset to account for top bar and right log
+        # Push the map down by ~4 rows of tiles to keep HUD from overlapping.
         map_origin_x = 8
-        map_origin_y = self.top_bar_height + 8
+        map_origin_y = self.top_bar_height + 8 + int(self.tile * 4)
         self.origin_x = map_origin_x
         self.origin_y = map_origin_y
         palette = {

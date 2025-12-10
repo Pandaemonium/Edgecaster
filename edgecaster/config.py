@@ -6,11 +6,14 @@ default_seed = 12345
 
 @dataclass
 class GameConfig:
-    view_width: int = 1280
-    view_height: int = 900
-    tile_size: int = 24
-    world_width: int = 40
-    world_height: int = 24
+    # Render surface resolution (letterboxed to display). Increased ~50% for more viewport area.
+    view_width: int = 1920
+    view_height: int = 1350
+    # Slightly larger tiles to better fill the viewport.
+    tile_size: int = 26
+    # Zone dimensions in tiles (per-screen dungeon slice).
+    world_width: int = 60
+    world_height: int = 40
     world_map_screens: int = 100
     seed: int = default_seed
     max_vertices: int = 50000
