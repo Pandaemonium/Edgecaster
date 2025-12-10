@@ -51,7 +51,8 @@ class WorldMapScene(Scene):
                         break
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.game.world_map_ready:
                     map_w, map_h = map_surface.get_size()
-                    mx, my = event.pos
+                    # Convert display coords to render-surface coords to account for letterboxing/fullscreen.
+                    mx, my = renderer._to_surface(event.pos)
                     ox = (renderer.width - map_w) // 2
                     oy = (renderer.height - map_h) // 2
                     rel_x = mx - ox
@@ -149,8 +150,9 @@ class WorldMapScene(Scene):
 
     def _render_overmap(self, renderer) -> tuple[pygame.Surface, tuple[float, float, float, float]]:
         """Render a Julia-based relief overmap using fixed bounds from the c_path entry."""
-        target_w = min(1024, renderer.width - 32)
-        target_h = min(720, renderer.height - 120)
+        # Render larger map (use most of the viewport with a small margin).
+        target_w = max(640, renderer.width - 64)
+        target_h = max(480, renderer.height - 180)
         ss = 2
         px_w = max(1, target_w * ss)
         px_h = max(1, target_h * ss)

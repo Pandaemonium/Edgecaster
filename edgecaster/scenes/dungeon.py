@@ -1048,27 +1048,26 @@ class DungeonScene(Scene):
         # 5) Ability bar: page cycling + hotkeys + quick 'f'
         # ------------------------------------------------------------
 
-        # Page cycling: PgUp/PgDn/Tab switch ability bar pages
-        if kind == "ability_page_prev":
-            bar.prev_page()
-            # Snap selection + active ability to the first slot on the new page.
+        def _page_bar(bar, forward: bool) -> None:
+            """Cycle ability bar page and snap selection to first slot on that page."""
+            if forward:
+                bar.next_page()
+            else:
+                bar.prev_page()
             start = bar.page * bar.page_size
             if 0 <= start < len(bar.order):
                 bar.selected_index = start
                 act = bar.action_at_index(start)
                 if act:
                     bar.active_action = act
+
+        # Page cycling: PgUp/PgDn/Tab switch ability bar pages
+        if kind == "ability_page_prev":
+            _page_bar(bar, forward=False)
             return
 
         if kind == "ability_page_next":
-            bar.next_page()
-            # Same behavior going forward: first slot of the new page.
-            start = bar.page * bar.page_size
-            if 0 <= start < len(bar.order):
-                bar.selected_index = start
-                act = bar.action_at_index(start)
-                if act:
-                    bar.active_action = act
+            _page_bar(bar, forward=True)
             return
 
         if kind == "ability_hotkey" and cmd.hotkey is not None:
@@ -1167,11 +1166,23 @@ class DungeonScene(Scene):
             # Ability bar page arrows.
             bar_view = getattr(renderer, "ability_bar_view", None)
             if bar_view is not None:
-                if bar_view.page_prev_rect and bar_view.page_prev_rect.collidepoint(mx, my):
-                    bar.prev_page()
+                prev_rects = []
+                next_rects = []
+                # Support multiple arrow hitboxes (above/below on both sides).
+                if hasattr(bar_view, "page_prev_rects"):
+                    prev_rects.extend(bar_view.page_prev_rects)
+                if hasattr(bar_view, "page_next_rects"):
+                    next_rects.extend(bar_view.page_next_rects)
+                if bar_view.page_prev_rect:
+                    prev_rects.append(bar_view.page_prev_rect)
+                if bar_view.page_next_rect:
+                    next_rects.append(bar_view.page_next_rect)
+
+                if any(r.collidepoint(mx, my) for r in prev_rects):
+                    _page_bar(bar, forward=False)
                     return
-                if bar_view.page_next_rect and bar_view.page_next_rect.collidepoint(mx, my):
-                    bar.next_page()
+                if any(r.collidepoint(mx, my) for r in next_rects):
+                    _page_bar(bar, forward=True)
                     return
 
             # Open ability reorder manager.

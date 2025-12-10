@@ -248,6 +248,9 @@ class AbilityBarRenderer:
         self.abilities_button_rect: Optional[pygame.Rect] = None
         self.page_prev_rect: Optional[pygame.Rect] = None
         self.page_next_rect: Optional[pygame.Rect] = None
+        # Multiple arrow hitboxes (e.g., above/below on both sides) that all map to prev/next.
+        self.page_prev_rects: List[pygame.Rect] = []
+        self.page_next_rects: List[pygame.Rect] = []
 
     # ------------------------------------------------------------------
     # Helpers
@@ -325,6 +328,8 @@ class AbilityBarRenderer:
         self.abilities_button_rect = None
         self.page_prev_rect = None
         self.page_next_rect = None
+        self.page_prev_rects = []
+        self.page_next_rects = []
 
         for ab in bar_state.abilities:
             # We deliberately only clear the attributes we own.
@@ -348,6 +353,18 @@ class AbilityBarRenderer:
         label_rect.centery = bar_rect.centery
         surface.blit(label_surf, label_rect)
         self.abilities_button_rect = label_rect.inflate(8, 4)
+        # Faint outline of the clickable area.
+        pygame.draw.rect(surface, (80, 80, 110), self.abilities_button_rect, 1)
+        # Up/down arrows stacked around the button to page abilities.
+        up_surf = small_font.render("^", True, fg)
+        down_surf = small_font.render("v", True, fg)
+        up_rect = up_surf.get_rect(centerx=self.abilities_button_rect.centerx, bottom=label_rect.top - 2)
+        down_rect = down_surf.get_rect(centerx=self.abilities_button_rect.centerx, top=label_rect.bottom + 2)
+        surface.blit(up_surf, up_rect)
+        surface.blit(down_surf, down_rect)
+        # Map to prev/next page hooks, with slightly inflated hitboxes for easier clicking.
+        self.page_prev_rects.append(up_rect.inflate(6, 6))
+        self.page_next_rects.append(down_rect.inflate(6, 6))
 
         # --- page arrows on the right ---------------------------------
         page_text = f"{bar_state.page + 1}/{bar_state.total_pages}"
@@ -365,7 +382,8 @@ class AbilityBarRenderer:
             prev_rect.right = page_rect.left - 8
             prev_rect.centery = arrow_y
             surface.blit(prev_surf, prev_rect)
-            self.page_prev_rect = prev_rect
+            self.page_prev_rect = prev_rect.inflate(6, 6)
+            self.page_prev_rects.append(self.page_prev_rect)
         else:
             self.page_prev_rect = None
 
@@ -376,9 +394,18 @@ class AbilityBarRenderer:
             next_rect.left = page_rect.right + 8
             next_rect.centery = arrow_y
             surface.blit(next_surf, next_rect)
-            self.page_next_rect = next_rect
+            self.page_next_rect = next_rect.inflate(6, 6)
+            self.page_next_rects.append(self.page_next_rect)
         else:
             self.page_next_rect = None
+
+        # Extra vertical arrows on the right (above/below the page indicator) using the same hooks.
+        up_rect_r = up_surf.get_rect(centerx=page_rect.centerx, bottom=page_rect.top - 2)
+        down_rect_r = down_surf.get_rect(centerx=page_rect.centerx, top=page_rect.bottom + 2)
+        surface.blit(up_surf, up_rect_r)
+        surface.blit(down_surf, down_rect_r)
+        self.page_prev_rects.append(up_rect_r.inflate(6, 6))
+        self.page_next_rects.append(down_rect_r.inflate(6, 6))
 
         # --- visible abilities ----------------------------------------
         vis = bar_state.visible_abilities()
