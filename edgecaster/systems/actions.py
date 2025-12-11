@@ -671,6 +671,15 @@ def _action_verdant_edges(game: Any, actor_id: str, **kwargs: Any) -> None:
         pattern_colors.apply_depth_green_edges(game)
 
 
+@register_action("ignite", label="Ignite", speed="fast", show_in_bar=True, cooldown_ticks=50)
+def _action_ignite(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Ignite red edges for 30 ticks with decaying damage.
+    """
+    if hasattr(game, "act_ignite"):
+        game.act_ignite(actor_id)
+
+
 @register_action(
     "push_pattern",
     label="Push",

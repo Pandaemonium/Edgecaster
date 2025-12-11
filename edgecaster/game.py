@@ -311,6 +311,7 @@ class Game:
             actions.append("meditate")
             actions.append("rainbow_edges")
             actions.append("verdant_edges")
+            actions.append("ignite")
             actions.append("push_pattern")
 
         # For now, all other classes keep only move/wait (empty ability bar).
@@ -2976,6 +2977,153 @@ class Game:
                 self.log.add(f"{actor.name} shudders from the destabilization.")
                 if actor.stats.hp <= 0:
                     self._kill_actor(level, actor)
+
+    def act_ignite(self, actor_id: str) -> None:
+        """
+        Ignite red edges for 30 ticks with decaying direct/indirect damage.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+        if actor is None or pattern is None or anchor is None or not pattern.edges:
+            return
+
+        # High mana cost gate
+        cost = 30
+        try:
+            if actor.stats.mana < cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana to ignite.")
+                return
+            actor.stats.mana -= cost
+            actor.stats.clamp()
+        except Exception:
+            pass
+
+        duration = 30
+        base_direct = 4.0
+        base_indirect = 2.0
+
+        state = {
+            "remaining": duration,
+            "accum": {},  # target_id -> fractional dmg
+        }
+        level.ignite_state = state
+        if actor_id == self.player_id:
+            self.log.add("You ignite the pattern!")
+
+        def normalize_edge_key(a: int, b: int) -> tuple[int, int]:
+            return (a, b) if a <= b else (b, a)
+
+        def edge_color_map():
+            edge_colors = getattr(pattern, "edge_colors", {}) or {}
+            if edge_colors:
+                return edge_colors
+            return {}
+
+        color_map = edge_color_map()
+
+        def tiles_for_edge(a_idx: int, b_idx: int) -> list[tuple[int, int]]:
+            try:
+                verts = project_vertices(pattern, anchor)
+                ax, ay = verts[a_idx]
+                bx, by = verts[b_idx]
+            except Exception:
+                return []
+            return _line_points(int(round(ax)), int(round(ay)), int(round(bx)), int(round(by)))
+
+        def apply_tick() -> None:
+            if state.get("remaining", 0) <= 0:
+                level.ignite_state = None
+                return
+            # Decay multiplier
+            mult = state["remaining"] / duration
+
+            # Collect direct tiles and redness values
+            direct_tiles: dict[tuple[int, int], float] = {}
+            for edge in pattern.edges:
+                a = getattr(edge, "a", None)
+                b = getattr(edge, "b", None)
+                if a is None or b is None:
+                    continue
+                col = color_map.get(normalize_edge_key(a, b), None)
+                if col is None:
+                    if isinstance(edge.color, tuple) and len(edge.color) >= 3:
+                        col = edge.color
+                    else:
+                        continue
+                try:
+                    r, g, bl = int(col[0]), int(col[1]), int(col[2])
+                except Exception:
+                    continue
+                redness = max(0, r - max(g, bl))
+                if redness <= 0:
+                    continue
+                for t in tiles_for_edge(a, b):
+                    prev = direct_tiles.get(t, 0.0)
+                    if redness > prev:
+                        direct_tiles[t] = redness
+
+            if not direct_tiles:
+                state["remaining"] = 0
+                level.ignite_state = None
+                return
+
+            # Indirect tiles: neighbors of direct
+            indirect_tiles: dict[tuple[int, int], float] = {}
+            for (dx, dy), red in direct_tiles.items():
+                for ox in (-1, 0, 1):
+                    for oy in (-1, 0, 1):
+                        nx, ny = dx + ox, dy + oy
+                        if (nx, ny) in direct_tiles:
+                            continue
+                        prev = indirect_tiles.get((nx, ny), 0.0)
+                        if red > prev:
+                            indirect_tiles[(nx, ny)] = red
+
+            # Damage application
+            combined: dict[str, any] = {}
+            for aid, act in level.actors.items():
+                combined[aid] = act
+            for eid, ent in level.entities.items():
+                if eid not in combined:
+                    combined[eid] = ent
+
+            for tid, obj in combined.items():
+                pos = getattr(obj, "pos", None)
+                if not pos:
+                    continue
+                tx, ty = int(round(pos[0])), int(round(pos[1]))
+                dmg_val = 0.0
+                if (tx, ty) in direct_tiles:
+                    redness = direct_tiles[(tx, ty)]
+                    dmg_val = base_direct * (redness / 255.0) * mult
+                elif (tx, ty) in indirect_tiles:
+                    redness = indirect_tiles[(tx, ty)]
+                    dmg_val = base_indirect * (redness / 255.0) * mult
+                if dmg_val <= 0:
+                    continue
+                acc = state["accum"].get(tid, 0.0) + dmg_val
+                dmg_int = int(acc)
+                state["accum"][tid] = acc - dmg_int
+                if dmg_int > 0:
+                    try:
+                        obj.stats.hp -= dmg_int
+                        obj.stats.clamp()
+                        if obj.stats.hp <= 0 and tid != self.player_id:
+                            self._kill_actor(level, obj)
+                    except Exception:
+                        pass
+
+            state["remaining"] -= 1
+            if state["remaining"] > 0:
+                self._schedule(level, 1, apply_tick)
+            else:
+                level.ignite_state = None
+
+        # First tick immediately
+        apply_tick()
 
 
     def act_fractal(self, actor_id: str, kind: str) -> None:
