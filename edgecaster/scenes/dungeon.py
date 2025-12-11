@@ -1108,6 +1108,17 @@ class DungeonScene(Scene):
         # Mouse wheel controls zoom or activate_all radius.
         if kind == "mouse_wheel":
             if cmd.wheel_y:
+                # If hovering over log panel, scroll log instead of zoom.
+                sx, sy = renderer._to_surface(pygame.mouse.get_pos())
+                log_x0 = renderer.width - renderer.log_panel_width
+                log_y0 = renderer.top_bar_height
+                log_y1 = renderer.height - renderer.ability_bar_height
+                if sx >= log_x0 and log_y0 <= sy < log_y1:
+                    try:
+                        renderer.scroll_log(game, delta_lines=cmd.wheel_y)
+                    except Exception:
+                        pass
+                    return
                 if push_mode:
                     delta_deg = 15 if cmd.wheel_y > 0 else -15
                     ui.push_rotation = (ui.push_rotation + delta_deg) % 360

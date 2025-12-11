@@ -79,6 +79,8 @@ class AsciiRenderer:
         self.pause_requested = False   # NEW: used by DungeonScene to decide on pause
         self.lorenz_center_x: float | None = None
         self.lorenz_center_y: float | None = None
+        # Log scroll offset (pixels)
+        self.log_scroll_offset: float = 0.0
         self.lorenz_follow = 0.25  # 0 = frozen, 1 = glued to player
         # Phase-space view center (for how we frame the attractor itself)
         self.lorenz_view_cx = 0.0
@@ -902,9 +904,16 @@ class AsciiRenderer:
 
         panel_surface = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
 
-        lines = game.log.tail(200)
+        # Keep a deeper history so scrolling can see older messages.
+        # Ensure log capacity is high enough for long sessions.
+        try:
+            game.log.capacity = max(getattr(game.log, "capacity", 0), 100000)
+        except Exception:
+            pass
+        max_lines = max(1000, getattr(game.log, "capacity", 1000))
+        lines = game.log.tail(max_lines)
         y = panel_h - 8
-        max_lines = 80
+        y += self.log_scroll_offset
         for line in reversed(lines[-max_lines:]):
             wrapped = self._wrap_text(line, self.small_font, panel_w - 12)
             for wline in reversed(wrapped):
@@ -917,6 +926,34 @@ class AsciiRenderer:
                 break
 
         self.surface.blit(panel_surface, panel_rect.topleft)
+
+    def scroll_log(self, game: Game, delta_lines: int) -> None:
+        """
+        Adjust log scroll offset when hovering log panel.
+        """
+        line_h = self.small_font.get_height() + 2
+        self.log_scroll_offset += delta_lines * line_h
+        # Clamp to available content
+        panel_h = self.height - self.top_bar_height - self.ability_bar_height
+        max_lines = max(1000, getattr(game.log, "capacity", 1000))
+        lines = game.log.tail(max_lines)
+        total_h = 0
+        for line in lines:
+            wrapped = self._wrap_text(line, self.small_font, self.log_panel_width - 12)
+            for _ in wrapped:
+                total_h += line_h
+        max_offset = max(0, total_h - panel_h + 16)
+        if self.log_scroll_offset < 0:
+            self.log_scroll_offset = 0
+        if self.log_scroll_offset > max_offset:
+            self.log_scroll_offset = max_offset
+        # Optional debug
+        try:
+            from edgecaster.scenes.keybinds_scene import _dbg  # reuse simple logger if available
+
+            _dbg(f"log_scroll offset={self.log_scroll_offset} total_h={total_h} max_offset={max_offset} lines={len(lines)}")
+        except Exception:
+            pass
 
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
         """Simple word-wrap that fits text within max_width."""

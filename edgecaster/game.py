@@ -73,12 +73,15 @@ def _los(world: World, a: Tuple[int, int], b: Tuple[int, int]) -> bool:
 
 @dataclass
 class MessageLog:
-    capacity: int = 50
+    capacity: int = 100000
     messages: List[str] | None = None
 
     def __post_init__(self) -> None:
         if self.messages is None:
             self.messages = []
+        # Bump capacity for older saves.
+        if self.capacity < 1000:
+            self.capacity = 100000
 
     def add(self, text: str) -> None:
         self.messages.append(text)
