@@ -312,6 +312,7 @@ class Game:
             actions.append("rainbow_edges")
             actions.append("verdant_edges")
             actions.append("ignite")
+            actions.append("regrow")
             actions.append("push_pattern")
 
         # For now, all other classes keep only move/wait (empty ability bar).
@@ -2985,8 +2986,7 @@ class Game:
         level = self._level()
         actor = level.actors.get(actor_id)
         pattern = getattr(level, "pattern", None)
-        anchor = getattr(level, "pattern_anchor", None)
-        if actor is None or pattern is None or anchor is None or not pattern.edges:
+        if actor is None or pattern is None or not pattern.edges:
             return
 
         # High mana cost gate
@@ -3007,7 +3007,10 @@ class Game:
 
         state = {
             "remaining": duration,
+            "duration": duration,
             "accum": {},  # target_id -> fractional dmg
+            "direct_tiles": [],
+            "indirect_tiles": [],
         }
         level.ignite_state = state
         if actor_id == self.player_id:
@@ -3026,6 +3029,7 @@ class Game:
 
         def tiles_for_edge(a_idx: int, b_idx: int) -> list[tuple[int, int]]:
             try:
+                anchor = getattr(level, "pattern_anchor", None)
                 verts = project_vertices(pattern, anchor)
                 ax, ay = verts[a_idx]
                 bx, by = verts[b_idx]
@@ -3035,6 +3039,10 @@ class Game:
 
         def apply_tick() -> None:
             if state.get("remaining", 0) <= 0:
+                level.ignite_state = None
+                return
+            anchor = getattr(level, "pattern_anchor", None)
+            if anchor is None:
                 level.ignite_state = None
                 return
             # Decay multiplier
@@ -3082,6 +3090,10 @@ class Game:
                         if red > prev:
                             indirect_tiles[(nx, ny)] = red
 
+            # Persist tiles for renderer
+            state["direct_tiles"] = list(direct_tiles.keys())
+            state["indirect_tiles"] = list(indirect_tiles.keys())
+
             # Damage application
             combined: dict[str, any] = {}
             for aid, act in level.actors.items():
@@ -3125,6 +3137,153 @@ class Game:
         # First tick immediately
         apply_tick()
 
+    def act_regrow(self, actor_id: str) -> None:
+        """
+        Heal along green edges for 30 ticks with decaying strength.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        pattern = getattr(level, "pattern", None)
+        if actor is None or pattern is None or not pattern.edges:
+            return
+
+        cost = 30
+        try:
+            if actor.stats.mana < cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana to regrow.")
+                return
+            actor.stats.mana -= cost
+            actor.stats.clamp()
+        except Exception:
+            pass
+
+        duration = 30
+        base_direct = 3.5
+        base_indirect = 1.5
+
+        state = {
+            "remaining": duration,
+            "duration": duration,
+            "accum": {},  # target_id -> fractional heal
+            "direct_tiles": [],
+            "indirect_tiles": [],
+        }
+        level.regrow_state = state
+        if actor_id == self.player_id:
+            self.log.add("You flood the pattern with renewal.")
+
+        def normalize_edge_key(a: int, b: int) -> tuple[int, int]:
+            return (a, b) if a <= b else (b, a)
+
+        def edge_color_map():
+            edge_colors = getattr(pattern, "edge_colors", {}) or {}
+            if edge_colors:
+                return edge_colors
+            return {}
+
+        color_map = edge_color_map()
+
+        def tiles_for_edge(a_idx: int, b_idx: int) -> list[tuple[int, int]]:
+            try:
+                anchor = getattr(level, "pattern_anchor", None)
+                verts = project_vertices(pattern, anchor)
+                ax, ay = verts[a_idx]
+                bx, by = verts[b_idx]
+            except Exception:
+                return []
+            return _line_points(int(round(ax)), int(round(ay)), int(round(bx)), int(round(by)))
+
+        def apply_tick() -> None:
+            if state.get("remaining", 0) <= 0:
+                level.regrow_state = None
+                return
+            anchor = getattr(level, "pattern_anchor", None)
+            if anchor is None:
+                level.regrow_state = None
+                return
+            mult = state["remaining"] / duration
+
+            direct_tiles: dict[tuple[int, int], float] = {}
+            for edge in pattern.edges:
+                a = getattr(edge, "a", None)
+                b = getattr(edge, "b", None)
+                if a is None or b is None:
+                    continue
+                col = color_map.get(normalize_edge_key(a, b), None)
+                if col is None:
+                    if isinstance(edge.color, tuple) and len(edge.color) >= 3:
+                        col = edge.color
+                    else:
+                        continue
+                try:
+                    r, g, bl = int(col[0]), int(col[1]), int(col[2])
+                except Exception:
+                    continue
+                greenness = max(0, g - max(r, bl))
+                if greenness <= 0:
+                    continue
+                for t in tiles_for_edge(a, b):
+                    prev = direct_tiles.get(t, 0.0)
+                    if greenness > prev:
+                        direct_tiles[t] = greenness
+
+            if not direct_tiles:
+                state["remaining"] = 0
+                level.regrow_state = None
+                return
+
+            indirect_tiles: dict[tuple[int, int], float] = {}
+            for (dx, dy), gval in direct_tiles.items():
+                for ox in (-1, 0, 1):
+                    for oy in (-1, 0, 1):
+                        nx, ny = dx + ox, dy + oy
+                        if (nx, ny) in direct_tiles:
+                            continue
+                        prev = indirect_tiles.get((nx, ny), 0.0)
+                        if gval > prev:
+                            indirect_tiles[(nx, ny)] = gval
+
+            state["direct_tiles"] = list(direct_tiles.keys())
+            state["indirect_tiles"] = list(indirect_tiles.keys())
+
+            combined: dict[str, any] = {}
+            for aid, act in level.actors.items():
+                combined[aid] = act
+            for eid, ent in level.entities.items():
+                if eid not in combined:
+                    combined[eid] = ent
+
+            for tid, obj in combined.items():
+                pos = getattr(obj, "pos", None)
+                if not pos:
+                    continue
+                tx, ty = int(round(pos[0])), int(round(pos[1]))
+                heal_val = 0.0
+                if (tx, ty) in direct_tiles:
+                    gval = direct_tiles[(tx, ty)]
+                    heal_val = base_direct * (gval / 255.0) * mult
+                elif (tx, ty) in indirect_tiles:
+                    gval = indirect_tiles[(tx, ty)]
+                    heal_val = base_indirect * (gval / 255.0) * mult
+                if heal_val <= 0:
+                    continue
+                acc = state["accum"].get(tid, 0.0) + heal_val
+                heal_int = int(acc)
+                state["accum"][tid] = acc - heal_int
+                if heal_int > 0:
+                    try:
+                        obj.stats.hp = min(obj.stats.max_hp, obj.stats.hp + heal_int)
+                    except Exception:
+                        pass
+
+            state["remaining"] -= 1
+            if state["remaining"] > 0:
+                self._schedule(level, 1, apply_tick)
+            else:
+                level.regrow_state = None
+
+        apply_tick()
 
     def act_fractal(self, actor_id: str, kind: str) -> None:
         """Generic action entry point: apply a fractal generator to the current pattern."""

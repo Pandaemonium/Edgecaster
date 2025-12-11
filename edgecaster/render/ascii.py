@@ -955,6 +955,97 @@ class AsciiRenderer:
         except Exception:
             pass
 
+    def draw_ignite_overlay(self, game: Game) -> None:
+        """
+        Visual overlay for Ignite: glow direct tiles red/orange, indirect amber, with flicker.
+        """
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+        state = getattr(level, "ignite_state", None)
+        if not state:
+            return
+        direct = state.get("direct_tiles") or []
+        indirect = state.get("indirect_tiles") or []
+        remaining = float(state.get("remaining", 0))
+        duration = float(state.get("duration", 1)) or 1.0
+        tval = pygame.time.get_ticks() / 1000.0
+        flicker = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(tval * 6.0))
+        alpha_scale = (remaining / duration) * flicker
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        def draw_tile(tile_pos, color):
+            tx, ty = tile_pos
+            px = int(tx * self.tile + self.origin_x)
+            py = int(ty * self.tile + self.origin_y)
+            rect = pygame.Rect(px, py, self.tile, self.tile)
+            pygame.draw.rect(overlay, color, rect)
+
+        direct_col = (255, 80, 40, int(160 * alpha_scale))
+        indirect_col = (255, 180, 80, int(90 * alpha_scale))
+        for tile in direct:
+            draw_tile(tile, direct_col)
+        for tile in indirect:
+            draw_tile(tile, indirect_col)
+
+        # Subtle pulse outline on pattern anchor area if present
+        anchor = getattr(level, "pattern_anchor", None)
+        if anchor:
+            ax, ay = anchor
+            cx = ax * self.tile + self.origin_x + self.tile * 0.5
+            cy = ay * self.tile + self.origin_y + self.tile * 0.5
+            radius = self.tile * 1.0
+            col = (255, 120, 60, int(80 * alpha_scale))
+            pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
+
+        self.surface.blit(overlay, (0, 0))
+
+    def draw_regrow_overlay(self, game: Game) -> None:
+        """
+        Visual overlay for Regrow: glow direct tiles green, indirect teal, with pulse.
+        """
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+        state = getattr(level, "regrow_state", None)
+        if not state:
+            return
+        direct = state.get("direct_tiles") or []
+        indirect = state.get("indirect_tiles") or []
+        remaining = float(state.get("remaining", 0))
+        duration = float(state.get("duration", 1)) or 1.0
+        tval = pygame.time.get_ticks() / 1000.0
+        flicker = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(tval * 5.5))
+        alpha_scale = (remaining / duration) * flicker
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        def draw_tile(tile_pos, color):
+            tx, ty = tile_pos
+            px = int(tx * self.tile + self.origin_x)
+            py = int(ty * self.tile + self.origin_y)
+            rect = pygame.Rect(px, py, self.tile, self.tile)
+            pygame.draw.rect(overlay, color, rect)
+
+        direct_col = (80, 255, 120, int(160 * alpha_scale))
+        indirect_col = (80, 220, 200, int(90 * alpha_scale))
+        for tile in direct:
+            draw_tile(tile, direct_col)
+        for tile in indirect:
+            draw_tile(tile, indirect_col)
+
+        anchor = getattr(level, "pattern_anchor", None)
+        if anchor:
+            ax, ay = anchor
+            cx = ax * self.tile + self.origin_x + self.tile * 0.5
+            cy = ay * self.tile + self.origin_y + self.tile * 0.5
+            radius = self.tile * 1.0
+            col = (120, 255, 180, int(70 * alpha_scale))
+            pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
+
+        self.surface.blit(overlay, (0, 0))
+
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
         """Simple word-wrap that fits text within max_width."""
         words = text.split()
@@ -1074,6 +1165,8 @@ class AsciiRenderer:
 
         self.draw_status(game)
         self.draw_log(game)
+        self.draw_ignite_overlay(game)
+        self.draw_regrow_overlay(game)
         self.draw_ability_bar(game)
         config_open = self._ui_attr("config_open", None)
         config_action = self._ui_attr("config_action", None)

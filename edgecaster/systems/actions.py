@@ -680,6 +680,15 @@ def _action_ignite(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_ignite(actor_id)
 
 
+@register_action("regrow", label="Regrow", speed="fast", show_in_bar=True, cooldown_ticks=50)
+def _action_regrow(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Heal along green edges for 30 ticks with decaying strength.
+    """
+    if hasattr(game, "act_regrow"):
+        game.act_regrow(actor_id)
+
+
 @register_action(
     "push_pattern",
     label="Push",
