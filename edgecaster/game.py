@@ -150,11 +150,6 @@ class Game:
         # character info
         self.character: Character = character or default_character()
 
-        # Known POI markers (zone coords) for world map rendering / hints
-        self.poi_locations: Dict[str, Tuple[int, int, int]] = {
-            pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()
-        }
-
         # What the HUD should call the thing-you-are:
         # initially your class, later overwritten by body-hops.
         base_label = (
@@ -395,6 +390,19 @@ class Game:
             self.rng.randrange(0, self.cfg.world_map_screens),
         )
         self.log.add(f"A mysterious lab is rumored at overworld zone ({self.lab_zone[0]}, {self.lab_zone[1]}). Press < to view the world map.")
+        # Inject the lab POI with the chosen coord so mapgen/POI system can build it.
+        lab_poi = poi_content.POIS.get("lab")
+        if lab_poi:
+            poi_content.POIS["lab"] = poi_content.POI(
+                id=lab_poi.id,
+                coord=(self.lab_zone[0], self.lab_zone[1], 0),
+                npcs=lab_poi.npcs,
+                structures=lab_poi.structures,
+            )
+        # Known POI markers (zone coords) for world map rendering / hints (after lab injected)
+        self.poi_locations: Dict[str, Tuple[int, int, int]] = {
+            pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()
+        }
 
 
     def _build_player_stats(self) -> Stats:
@@ -863,38 +871,50 @@ class Game:
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
         x, y, depth = coord
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
-        if depth == 0:
-            # Lab zone override
-            if (x, y) == getattr(self, "lab_zone", (-1, -1)):
-                mapgen.generate_lab(world, self.rng)
-                lab_state = LabState()
-            else:
-                self._ensure_overmap_ready()
-                jx_slice = jy_slice = None
-                if getattr(self, "tile_julia_grid", None):
-                    gx0 = x * world.width
-                    gx1 = gx0 + world.width
-                    gy0 = y * world.height
-                    gy1 = gy0 + world.height
-                    xgrid = self.tile_julia_grid.get("x", [])
-                    ygrid = self.tile_julia_grid.get("y", [])
-                    # fall back to None if out of bounds
-                    if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
-                        jx_slice = jy_slice = None
-                    else:
-                        jx_slice = xgrid[gx0:gx1]
-                        jy_slice = ygrid[gy0:gy1]
-                mapgen.generate_fractal_overworld(
-                    world,
-                    self.fractal_field,
-                    coord,
-                    self.rng,
-                    up_pos=up_pos,
-                    overmap_params=self.overmap_params,
-                    jx_slice=jx_slice,
-                    jy_slice=jy_slice,
-                )
-                lab_state = None
+        # Determine any POIs that hit this coord (used for lab/structures).
+        poi_hits = [pid for pid, poi in poi_content.POIS.items() if tuple(poi.coord) == tuple(coord)]
+        is_lab_zone = False
+        for pid in poi_hits:
+            poi = poi_content.POIS.get(pid)
+            if not poi:
+                continue
+            for struct in getattr(poi, "structures", []) or []:
+                if struct.get("kind") == "lab":
+                    is_lab_zone = True
+                    break
+            if is_lab_zone:
+                break
+
+        if depth == 0 and is_lab_zone:
+            mapgen.generate_lab(world, self.rng)
+            lab_state = LabState()
+        elif depth == 0:
+            self._ensure_overmap_ready()
+            jx_slice = jy_slice = None
+            if getattr(self, "tile_julia_grid", None):
+                gx0 = x * world.width
+                gx1 = gx0 + world.width
+                gy0 = y * world.height
+                gy1 = gy0 + world.height
+                xgrid = self.tile_julia_grid.get("x", [])
+                ygrid = self.tile_julia_grid.get("y", [])
+                # fall back to None if out of bounds
+                if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
+                    jx_slice = jy_slice = None
+                else:
+                    jx_slice = xgrid[gx0:gx1]
+                    jy_slice = ygrid[gy0:gy1]
+            mapgen.generate_fractal_overworld(
+                world,
+                self.fractal_field,
+                coord,
+                self.rng,
+                up_pos=up_pos,
+                overmap_params=self.overmap_params,
+                jx_slice=jx_slice,
+                jy_slice=jy_slice,
+            )
+            lab_state = None
         else:
             mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
             lab_state = None
@@ -907,6 +927,9 @@ class Game:
                 world.depot_info = depot_info  # type: ignore[attr-defined]
             except Exception:
                 world.depot_info = None  # type: ignore[attr-defined]
+        if "lab" in poi_hits:
+            # Already generated as a lab layout above; nothing extra for now.
+            pass
         lvl = LevelState(
             world=world,
             actors={},

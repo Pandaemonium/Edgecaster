@@ -49,6 +49,13 @@ Single layer translating:
 Pygame Event → GameCommand(kind="move"|"look_action"|"ability_hotkey"|...)
 
 Scenes interpret GameCommands. The renderer remains input-agnostic.
+Keybind persistence merges user settings with DEFAULT_BINDINGS on load, so new
+commands (e.g., toggle_door) automatically appear even on older saves; any
+command added to DEFAULT_BINDINGS will surface in the keybinds menu under a
+category or the auto-added “Other” section.
+Keybinds UI (keybinds_scene.py) is data-driven: any command in DEFAULT_BINDINGS
+is listed; conflicts are resolved per scene-context so the same key is not
+bound to two actions in the same scene.
 
 -------------------------------------------------------------------------------
 GAME CORE (edgecaster/game.py)
@@ -61,6 +68,23 @@ Authoritative simulation:
 Does NOT:
 - Know about rendering
 - Contain UI hints or targeting logic
+
+POIs and content:
+- Points of Interest are defined in content/pois.yaml (coord-bound), and can
+  spawn NPCs, structures, and items. Mapgen calls apply_pois(...) to mark the
+  world, then _spawn_poi_contents populates entities. Structures route through
+  mapgen helpers (e.g., item depots, labs) instead of hardcoded coords.
+- Entities/features/items live in content/entities.yaml (data-first); enemies in
+  content/enemies.yaml; NPC definitions in content/npcs.py.
+- Structures (e.g., item depots, lab) are generated in mapgen and described by
+  POIs; avoid hard-coding coordinates in code—add POIs instead. Dynamic POIs
+  (e.g., the lab) can be injected at runtime by replacing POIS entries with
+  their chosen coord.
+Abilities and actions:
+- Actions and targeting live in systems/actions.py; abilities are just actions
+  surfaced via abilities.py and the AbilityBarState. Adding a new action should
+  declare its targeting metadata so scenes can enter TargetMode without renderer
+  logic changes. Ability icons and pages are built from AbilityBarState.
 
 -------------------------------------------------------------------------------
 SYSTEMS (edgecaster/systems/)
@@ -165,4 +189,7 @@ SECTION 6 — CURRENT STRATEGIC WORK
 - Reduce ad-hoc menu scenes (char select, keybindings, custom runes)
 - Expand transform-based UI effects
 - Extend entity components + procedural lore
-
+Open doc gaps to address:
+- Brief primer on POI format + structures (content/pois.yaml, mapgen hooks).
+- Brief primer on AbilityBarState and how abilities are synced from abilities.py.
+- Note world map rendering cache (scene manager spawns background thread).

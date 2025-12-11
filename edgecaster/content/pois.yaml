@@ -27,3 +27,8 @@ starting_zone:
       description: "A hulking demon chained and pitted for training."
   structures:
     - kind: item_depot
+lab:
+  coord: [0, 0, 0]   # overwritten at runtime by the chosen lab zone
+  npcs: []
+  structures:
+    - kind: lab
