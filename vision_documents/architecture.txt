@@ -1,6 +1,6 @@
-﻿EDGECASTER ARCHITECTURE GUIDE
+﻿﻿EDGECASTER ARCHITECTURE GUIDE
 High-Level Overview and Refactor Roadmap
-Updated: 2025-12-10 (unified targeting, Action metadata, entity inheritance)
+Updated: 2025-12-11 (VisualProfile integration, mirrored-world effects, panel-local UI)
 
 This document orients new contributors to the post-ascii-purge structure.
 It must remain concise, accurate, and immediately useful as a project primer.
@@ -13,7 +13,7 @@ Own:
 - Input interpretation (via GameCommand)
 - UI state (dialogs, config menus, ability bar, targeting)
 - Scene transitions
-- High-level gameplay “intent routing” (e.g., “Player activates this action”)
+- High-level gameplay “intent routing”
 
 Do NOT:
 - Perform rendering
@@ -23,19 +23,20 @@ Do NOT:
 Key scenes:
 - manager.py                     scene stack + transitions
 - dungeon.py                     primary gameplay; owns ability bar + TargetMode
-- inventory_scene.py             nested inventory UI
-- fractal_editor_scene.py
-- urgent_message_scene.py
-- dialogue_scene.py
+- urgent_message_scene.py        popup system using panel-local rendering
+- dialogue_scene.py              dialogue trees + callbacks
+- inventory_scene.py             nested inventories
+- options, keybinds, character creation, etc.
 
 -------------------------------------------------------------------------------
 RENDERERS (edgecaster/render/)
 Pure view layer.
 
 ascii.py:
-- Draws the map, entities, UI overlays, tooltips, look labels
-- Computes hitboxes for mouse interactions
-- Holds only lightweight visual/state caching; no gameplay rules or logic
+- Draws map, entities, overlays
+- Draws panel-local UI for menu/popup scenes
+- Supports global visual transforms (mirror, rotate, scale) via VisualProfile
+- Computes hitboxes for mouse interactions (in panel space)
 
 Renderers never:
 - Read events
@@ -43,163 +44,125 @@ Renderers never:
 - Store gameplay state
 
 -------------------------------------------------------------------------------
-INPUT (edgecaster/scenes/game_input.py)
-Single translation layer:
+INPUT (scenes/game_input.py)
+Single layer translating:
 Pygame Event → GameCommand(kind="move"|"look_action"|"ability_hotkey"|...)
 
-Scenes interpret GameCommands; the renderer never touches input.
+Scenes interpret GameCommands. The renderer remains input-agnostic.
 
 -------------------------------------------------------------------------------
 GAME CORE (edgecaster/game.py)
-Authoritative world state:
-- Entities & actors
+Authoritative simulation:
+- Entities, actors, stats
 - Turn updates, movement, collisions, combat
-- Rune graph + fractal mechanics
+- Fractal mechanics / rune interactions
 - Procedural world state, RNG
 
-The GameCore does NOT:
-- Interpret input
-- Know about UI or rendering
-- Contain UI hints, labels, or targeting logic
+Does NOT:
+- Know about rendering
+- Contain UI hints or targeting logic
 
 -------------------------------------------------------------------------------
 SYSTEMS (edgecaster/systems/)
 Pure logic modules:
-- actions.py         → ActionDef registry + metadata (icons, targeting, config buttons)
-- abilities.py       → Ability list for an actor; routes action execution
+- actions.py         → ActionDef metadata + targeting rules
+- abilities.py       → Actor-specific action lists
 - patterns/*         → Fractal generation
-- ai.py              → NPC behavior
+- ai.py              → Behavior stubs
 
-NEW (critical):
+NEW:
 ✓ All UI-facing action metadata lives in actions.py  
-✓ AbilityBar is fully metadata-driven and reflects the host actor’s action list  
-✓ Targeting behavior (tile, vertex, look) is declared in Action.targeting  
+✓ Targeting rules declared in Action.targeting  
+✓ AbilityBar is fully metadata-driven
 
 ===============================================================================
 SECTION 2 — ASCII PURGE STATUS
 
-Legacy ASCII responsibilities (input, targeting, logic) now live in Scenes.
-
-Current state:
-
 ✓ ascii.py is draw-only  
-✓ All targeting state (cursor, hover, aim, config) lives in DungeonUIState  
-✓ All input routes into DungeonScene._handle_command  
-✓ Lorenz integration moved to game/lorenz; renderer only consumes view data  
-
-Remaining minor impurities:
-- Some overlays are still visually styled inside ascii.py, but the logic behind them
-  is now scene-owned.
+✓ All targeting state in DungeonUIState  
+✓ All input routed through DungeonScene  
+✓ Lorenz trail simulation moved out of renderer  
+Minor remainder: some temporary overlay styling still lives in ascii.py.
 
 -------------------------------------------------------------------------------
-SECTION 3 — ABILITY SYSTEM (CURRENT BEHAVIOR)
+SECTION 2B — VISUAL SCENE SYSTEM (NEW FOUNDATION)
 
-Pipeline:
-ActionDef (actions.py)  
-→ abilities.build_abilities(actor)  
-→ AbilityBarState (scene)  
-→ AbilityBarRenderer (view)  
-→ DungeonScene._handle_command  
-→ trigger_ability_effect / queue_player_action
+We now support true transform-driven UI using panel-local rendering.
 
-Highlights:
-✓ Ability bar reflects **current host actor’s actions**  
-✓ show_in_bar determines visibility  
-✓ Icons, labels, sub-buttons imported from ActionDef metadata  
-✓ Body-swapping cleanly updates available abilities  
-✓ Class kits (e.g. Kochbender) added at spawn via entity.actions, eventually moved into
-  character generation templates
+visuals.py introduces:
+- VisualProfile (scale_x/y, offset_x/y, angle, alpha, flip_x/y)
+- apply_visual_panel(...)  → transforms + draws a panel into the display
+- unproject_mouse(...)      → inverts transformations for accurate mouse hit-testing
+
+SceneManager:
+- Holds a global VisualProfile for world-level effects (e.g., cursed mirror)
+- Supplies per-window VisualProfiles to popup scenes
+
+Panel-local UI:
+- PopupMenuScene, UrgentMessageScene, DialoguePopupScene, OptionsScene migrated
+- All menus draw into local surfaces sized exactly to their window_rect
+- Transform applied at blit-time, never altering underlying logic
+
+Use cases now enabled:
+- Rotated popups ("clockwise inventory")
+- Mirrored world ("eye curse")
+- Recursive menu distortions
+- Future dungeon-space effects (wobble, holographic UI, overlaid diagnostics)
+
+Future: unify all scene rendering under a consistent transform stack.
 
 ===============================================================================
-SECTION 4 — TARGETING (UNIFIED TARGETMODE)
+SECTION 3 — TARGETING (UNIFIED TARGETMODE)
 
-We now support a generalized TargetMode for any Action declaring a TargetingSpec.
+TargetingSpec (in actions.py) defines:
+- kind: tile | vertex | look
+- mode: aim | terminus | inspect
+- range parameters
 
-TargetingSpec fields:
-- kind: "tile" | "vertex" | "look"
-- mode: "terminus" | "aim" | "look"
-- max_range, radius_param, neighbor_depth_param
-
-TargetState (scene-owned):
-- action
-- kind, mode
-- origin tile
-- cursor position (tile or vertex)
-- range/parameter constraints
+TargetState (scene-owned) contains cursor, origin, mode, etc.
 
 DungeonScene:
-- Handles cursor movement for all modes
-- Handles confirm/cancel routing
-- Calls trigger_ability_effect or look/inspect popups
-- Renderer only draws the cursor + overlays
+- Handles movement of cursor
+- Confirms/cancels
+- Calls action effects or Look/Inspect popup
 
-Current modes implemented:
-✓ place (tile/terminus)  
-✓ activate_all / activate_seed (vertex/aim)  
-✓ look_action (tile/look) — with data-driven entity inspection  
+Renderer:
+- Draws cursor only; does no targeting logic
 
-Future modes:
-- Ranged attacks
-- Teleports
-- Cone/line targeting
-- Multi-point selection
+Implemented:
+✓ tile-based placement  
+✓ vertex-based fractal activation  
+✓ look/inspect (with entity inheritance)  
 
 ===============================================================================
-SECTION 5 — DATA-DRIVEN ENTITIES & INHERITANCE
+SECTION 4 — DATA-DRIVEN ENTITIES & INHERITANCE
 
-We now have a unified YAML-driven prototype system with hierarchical inheritance:
+YAML prototypes define:
+- parent  
+- glyph, color  
+- description (inherited automatically)  
+- stats, tags
 
-✓ entity → actor/item/environment → specific subtypes  
+Loader resolves full parent chains.
+Runtime entities reference final archetypes.
+Look-mode displays inherited descriptions.
 
-Features:
-- Each prototype defines `parent`, `glyph`, `color`, `description`, stats, tags
-- Parent chain is resolved at load time into fully merged prototypes
-- Runtime entities track their origin prototype (archetype)
-- Entity descriptions inherit automatically (pelican → bird → creature → entity)
-- Look-mode inspection uses the hierarchy to display lore
-
-Vision:
-- Extend component-driven modeling (AI flags, resistances, sounds, biology)
-- Procedural “lore trees” and mutation-based inheritance
-- Everything is an entity (berries, demons, fractal echoes, abstractions)
+Goal: expand to components (AI flags, physiology, materials).
 
 ===============================================================================
-SECTION 6 — PRACTICAL ONBOARDING NOTES
+SECTION 5 — PRACTICAL ONBOARDING NOTES
 
-- Renderer is view-only. Never handle input or mutate game state.
-- Scenes own UI, input, and active state machines (ability bar, targeting, dialogs).
-- Game owns all world logic and simulation.
-- Actions define all UI metadata; Scene interprets and routes commands.
-- Entity prototypes define everything about entities: glyphs, colors, descriptions, and future behaviors.
+- Renderer = view-only.  
+- Scenes = all UI, transitions, targeting, dialogs.  
+- Game = simulation only.  
+- Actions = metadata + targeting.  
+- Entities = data-driven and hierarchical.
 
-===============================================================================
-SECTION 7 — KEYBINDINGS
+-------------------------------------------------------------------------------
+SECTION 6 — CURRENT STRATEGIC WORK
 
-- Source of truth: `scenes/game_input.py` (`DEFAULT_BINDINGS`, `DEFAULT_MOVE_BINDINGS`).
-- Persistence: `keybindings.json` in the repo root stores:
-  - `bindings`: command -> list of encoded key+modifier integers (modifiers preserved).
-  - `move_bindings`: encoded key+modifier -> (dx, dy).
-- Editing: Options → Controls (`scenes/keybinds_scene.py`)
-  - Single-page list with categories; each action has up to 3 slots.
-  - Click a slot to start capture; type a key (modifiers allowed) then Enter to commit, Esc to cancel.
-  - Click the “x” in a slot to clear; scroll wheel moves selection.
-  - “Reset Defaults” (top-right) restores defaults and writes `keybindings.json`.
-  - Conflict handling clears the same key from other commands in the same context (dungeon/global), including movement.
-- Application: `SceneManager` holds current bindings; `DungeonScene` applies them each frame so changes take effect immediately.
+- Consolidate menu layout using VisualProfile pipeline
+- Reduce ad-hoc menu scenes (char select, keybindings, custom runes)
+- Expand transform-based UI effects
+- Extend entity components + procedural lore
 
-===============================================================================
-SECTION 8 — TL;DR FOR THE NEXT GUY
-
-ascii.py: pure renderer  
-DungeonScene: owns UI state + targeting + ability interaction  
-Game: pure world simulation  
-Actions: define abilities, metadata, targeting rules  
-Entities: now truly data-driven + hierarchical  
-
-Next strategic targets:
-- Expand entity components (stats, AI flags, materials)
-- Add ranged/magic targeting modes using TargetMode
-- Unify item/actor/entity actions under the same ActionDef system
-- Continue renderer decoupling (toward tiles/sprites if desired)
-
-Keep the geometry weird and the hierarchies clean.

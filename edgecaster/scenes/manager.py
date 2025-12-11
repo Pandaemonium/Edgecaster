@@ -18,6 +18,7 @@ from .main_menu import MainMenuScene
 from .world_map_scene import WorldMapScene
 
 
+
 class SceneManager:
     def __init__(self, cfg: config.GameConfig, renderer: AsciiRenderer) -> None:
         # Store config + renderer from main.py
@@ -48,7 +49,9 @@ class SceneManager:
         # like the Options -> World Seed display have something to look at.
         self.character: Character = default_character()
         self.current_game = None
-
+        # Optional global visual profile (e.g. world-level curses/blessings).
+        # This is a high-level hint; renderers may choose how to apply it.
+        self.global_visual_profile: VisualProfile | None = None
         # Start on the main menu
         self.set_scene(MainMenuScene())
 
@@ -118,6 +121,25 @@ class SceneManager:
         self.window_stack.append(window_rect)
         self.scene_stack.append(scene)
         return scene
+
+
+    def set_global_visual_profile(self, profile: VisualProfile | None) -> None:
+        """
+        Set or clear a global visual profile that should affect the whole game.
+        For example, a 'cursed' world might flip everything horizontally.
+        """
+        self.global_visual_profile = profile
+
+        # Best-effort: if the renderer knows how to use a global profile,
+        # hand it off. Otherwise this is a harmless no-op.
+        if hasattr(self.renderer, "set_global_visual_profile"):
+            self.renderer.set_global_visual_profile(profile)
+        else:
+            # As a fallback, stash it directly on the renderer so the
+            # present() code can read it if you wire it up later.
+            setattr(self.renderer, "global_visual_profile", profile)
+
+
 
     # ------------------------------------------------------------------ #
     # Stack operations

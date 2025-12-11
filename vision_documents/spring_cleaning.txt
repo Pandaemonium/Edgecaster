@@ -1,110 +1,97 @@
-﻿SPRING CLEANING — ACTIONABLE PLAN
-(Current Status: Action-driven abilities, unified TargetMode, hierarchical entities)
+﻿﻿SPRING CLEANING — ACTIONABLE PLAN
+(Current Status: VisualProfile pipeline active, mirror-curse implemented,
+metadata-driven abilities, unified TargetMode, hierarchical entities)
 
-Legend: [CLEANUP] structural/no-behavior change; [BEHAVIOR] gameplay change;  
-        [VISION] long-term design direction.
-
-===============================================================================
-SLICE 1: Renderer / Input Untangle [CLEANUP] — COMPLETE ENOUGH FOR NOW
-Goal: ascii.py is draw-only; scenes own input + UI logic.
-
-✓ ascii.py owns no input  
-✓ Input → GameInput → GameCommand → DungeonScene._handle_command  
-✓ Renderer only draws, computes hitboxes  
-
-Remaining impurities:
-- A few UI overlays still styled directly in ascii.py
-- Lorenz trail state now correctly lives in game/lorenz
-
-Next micro-step:
-- Fine-grain separation of visual-only UI effects vs scene logic
+Legend: [CLEANUP] structural/no-behavior change  
+        [BEHAVIOR] gameplay change  
+        [VISION] long-term direction
 
 ===============================================================================
-SLICE 2: Ability Bar Overhaul [CLEANUP] — COMPLETE
-Goal: Metadata-driven ability bar (icons, labels, sub-buttons).
+SLICE 1: Renderer / Input Untangle [CLEANUP] — COMPLETE ENOUGH
+✓ ascii.py is draw-only  
+✓ Input routed exclusively through GameInput → GameCommand  
+✓ Lorenz logic removed from renderer  
 
-✓ AbilityBarState scene-owned  
-✓ AbilityBarRenderer view-only  
-✓ actions.py defines all metadata  
-✓ Bar updates automatically when host actor changes  
-✓ Kochbender kit added via entity.actions (to be moved to character gen templates)
-
-Next steps:
-- Integrate class templates / origins into the entity-spawn pipeline  
-- Clean ability injection at player creation
-
-===============================================================================
-SLICE 3: Unified TargetMode [CLEANUP/BEHAVIOR] — COMPLETE (FOUNDATION)
-Goal: One targeting system for everything.
-
-✓ TargetState implemented (tile / vertex / look)  
-✓ Keyboard + mouse unified  
-✓ Confirm/cancel fully routed through DungeonScene  
-✓ Renderer only draws cursor + overlays  
-✓ Actions declare targeting rules via TargetingSpec
-
-Next steps:
-- Add ranged, teleport, cone, and line targeting  
-- Add graph-neighbor cycling for vertex mode  
-- Add preview layers for more complex target shapes
-
-===============================================================================
-SLICE 4: Look / Inspect System [BEHAVIOR] — NEWLY COMPLETE
-Goal: Roguelike-style examination with entity inheritance.
-
-✓ `look_action` triggers look-style TargetMode  
-✓ Hover shows yellow entity label  
-✓ Confirm shows UrgentMessage popup with:
-    - Title (name)
-    - Big glyph (colored)
-    - Inherited description via prototype chain  
-✓ Look mode remains active after closing popup for smooth multi-inspection  
-✓ Foundation for lore / ecology / procedural biology
-
-Next steps:
-- Dedicated InspectScene with scrollable stats, abilities, materials  
-- Auto-inspection on targeting (aim-preview)
-
-===============================================================================
-SLICE 5: Entity Inheritance System [CLEANUP/BEHAVIOR] — NEW CORE SUBSYSTEM
-Goal: Every entity derives from a parent; child overrides fields.
-
-✓ YAML prototypes define `parent`, `glyph`, `color`, `description`, stats  
-✓ Loader resolves inheritance into flattened prototypes  
-✓ Runtime entities tagged with their archetype  
-✓ Hierarchical lookup used for inspection and future AI
-
-Next steps:
-- Add component flags (AI, materials, interactions)  
-- Add biological attributes (size, tissues, metabolism)  
-- Make items & actors share more systems (unified physics/HP/etc.)
-
-===============================================================================
-SLICE 6: Inventory Cleanup [CLEANUP] — PARTIALLY COMPLETE
-✓ Nested containers  
-✓ InventoryScene stable  
 Remaining:
-- UI polish  
-- Stacking and weight systems  
-- Auto-sort modes
+- Minor overlay style cleanup in ascii.py
 
 ===============================================================================
-SLICE 7: Data-Driven Everything [VISION]
-- Move combat stats, resistances, speeds into templates  
-- Add behavior components (aggressive, curious, brittle, fractal)  
-- Spawners use prototype metadata  
-- Entities become fully component-based
+SLICE 2: Ability Bar / Actions Overhaul [CLEANUP] — COMPLETE
+✓ Metadata-driven ability bar  
+✓ Actions declare icons, tooltips, config buttons  
+✓ Ability sets derived dynamically from entity actions  
+
+Next:
+- Integrate class templates / origins into entity spawn path
 
 ===============================================================================
-DEFERRED / LONG-TERM VISION
-- Optional tile/sprite renderer  
-- Behavior-tree AI  
-- Procedural pantheons + god-planets (Yggen long-term)  
-- Lore generation using hierarchical entity metadata  
-- Full action-economy redesign (interrupts, reactions, timings)
+SLICE 3: Unified TargetMode [FOUNDATION COMPLETE]
+✓ Tile, vertex, and look targeting unified  
+✓ Mouse + keyboard symmetric  
+✓ Look-mode inspect uses entity inheritance  
+
+Next:
+- Cone/line shapes  
+- Ranged preview layers  
+- Multi-step targeting for complex spells
 
 ===============================================================================
-Current tactical focus:
-→ Extend unified TargetMode  
-→ Expand entity prototype components  
-→ Stabilize inheritance + inspection for future systems  
+SLICE 4: Entity Inheritance System [NEW CORE]
+✓ YAML-driven prototypes with parents  
+✓ Description lookup via hierarchy  
+✓ Runtime metadata unified  
+
+Next:
+- Add materials, AI flags, physiology  
+- Begin standardizing combat stats in prototypes
+
+===============================================================================
+SLICE 5: Inventory Revamp [PARTIAL]
+✓ Nested containers stable  
+Remaining:
+- Stacking, sorting, weight, filter modes  
+- Integrate with panel-local UI pipeline
+
+===============================================================================
+SLICE 6: Visual Scene Pipeline [NEW FOUNDATION]
+Goal: generalize UI rendering, enable rotation/mirroring/scale effects.
+
+✓ visuals.py added  
+✓ VisualProfile struct  
+✓ apply_visual_panel + unproject_mouse implemented  
+✓ PopupMenuScene, UrgentMessageScene, OptionsScene migrated  
+✓ SceneManager + AsciiRenderer support global visual profiles (mirror curse)
+
+Next:
+- Migrate InventoryScene and DialogueScene fully to panel-local layout  
+- Add debug toggles: rotate(+5°), alpha pulses, recursive distortions  
+- Extend transform stack to dungeon rendering (optional wobble, holography)
+
+===============================================================================
+SLICE 7: Menu System Rework [CLEANUP — UPCOMING]
+The current menu ecosystem is inconsistent in scale/layout.
+
+Scheduled pass:
+- Standardize layout pipeline (title → body → choices → footer)
+- Normalize fonts, padding, border sizes
+- Unify character creation, keybindings, custom rune menus
+- Remove leftover ad-hoc coordinate math
+- Use panel-local rendering everywhere
+
+===============================================================================
+SLICE 8: Data-Driven Everything [VISION]
+- Expand prototypes with combat stats, resistances, materials  
+- Behavior components (curious, brittle, fractal, volatile)  
+- Procedural pantheons + lore through inheritance chains
+
+===============================================================================
+CURRENT TACTICAL FOCUS
+→ Finish migration of all menus to panel-local layout  
+→ Expand entity components  
+→ Extend targeting modes  
+→ Demonstrate more transform-based UI (clockwise inventory, mirror curse)
+→ Generalize data about visual transforms like "ghostly" and "clockwise" and gather them somewhere external to game.py, possibly with "conditions".
+
+------------------------------------------------------------------------------
+The guiding principles:
+Keep the geometry weird, keep responsibilities clean, keep progress incremental.

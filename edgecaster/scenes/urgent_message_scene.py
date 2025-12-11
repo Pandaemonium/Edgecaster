@@ -37,7 +37,7 @@ class UrgentMessageScene(PopupMenuScene):
         back_confirms: bool = True,
     ) -> None:
         # Let PopupMenuScene handle snapshot, dimming, generic layout, etc.
-        super().__init__(window_rect=window_rect, dim_background=True, scale=0.7)
+        super().__init__(window_rect=window_rect, dim_background=True, scale=0.3)
 
         self.game = game
         self.message = message

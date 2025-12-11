@@ -6,6 +6,8 @@ import pygame
 
 from .base import PopupMenuScene
 from .urgent_message_scene import UrgentMessageScene
+from edgecaster.visuals import VisualProfile
+
 
 if TYPE_CHECKING:
     from .manager import SceneManager  # only for type hints
@@ -35,19 +37,39 @@ class InventoryScene(PopupMenuScene):
         window_rect: Optional[pygame.Rect] = None,
         parent_owner_id: Optional[str] = None,
         title: Optional[str] = None,
+        base_visual: Optional[VisualProfile] = None,
     ) -> None:
         # window_rect is optional; manager.open_window_scene can pass one,
         # otherwise PopupMenuScene will compute a centered popup rect.
         super().__init__(window_rect=window_rect, dim_background=True, scale=0.7)
         self.game = game
+
         # If owner_id is None, we default to the current host (player).
         self.owner_id: Optional[str] = owner_id
+
         # Parent inventory: where items "pop out" to when you Take.
         # Top-level player inventory has parent_owner_id = None.
         self.parent_owner_id: Optional[str] = parent_owner_id
 
-        # NEW: explicit title for this inventory popup (e.g. "smoky Inventory")
+        # Explicit title for this inventory popup (e.g. "smoky Inventory")
         self.explicit_title: Optional[str] = title
+
+        # Start from the parent's visual profile if we were given one.
+        # (Make a copy so we don't mutate the parent's instance.)
+        if base_visual is not None:
+            self.visual_profile = VisualProfile(
+                scale_x=base_visual.scale_x,
+                scale_y=base_visual.scale_y,
+                offset_x=base_visual.offset_x,
+                offset_y=base_visual.offset_y,
+                angle=base_visual.angle,
+                alpha=base_visual.alpha,
+                flip_x=base_visual.flip_x,
+                flip_y=base_visual.flip_y,
+            )
+
+        # Apply any visual modifiers implied by the owning container's tags.
+        self._apply_visual_from_owner_tags()
 
     def _owner_id(self) -> str:
         """Which entity's inventory are we viewing?
@@ -55,6 +77,133 @@ class InventoryScene(PopupMenuScene):
         If no explicit owner is set, default to the current player.
         """
         return self.owner_id or self.game.player_id
+
+    def _apply_visual_from_owner_tags(self) -> None:
+        """
+        Look at the owner entity's tags and layer visual effects on top of
+        whatever base VisualProfile we already have.
+
+        This is where "clockwise", "ghostly", etc. effects stack.
+        """
+        owner_id = self._owner_id()
+
+        # Player inventory never gets twisted; only special containers do.
+        if owner_id == self.game.player_id:
+            return
+
+        ent = None
+
+        # 1) Try the obvious: level entities / actors
+        level = self.game._level()
+        if level is not None:
+            ent = level.entities.get(owner_id) or level.actors.get(owner_id)
+
+        # 2) If not found, search the player's inventory
+        if ent is None:
+            for cand in getattr(self.game, "player_inventory", []):
+                if getattr(cand, "id", None) == owner_id:
+                    ent = cand
+                    break
+
+        # 3) If still not found, search all known per-owner inventories
+        if ent is None:
+            for inv in getattr(self.game, "inventories", {}).values():
+                for cand in inv:
+                    if getattr(cand, "id", None) == owner_id:
+                        ent = cand
+                        break
+                if ent is not None:
+                    break
+
+        if ent is None:
+            # We couldn't locate the owner entity anywhere; nothing to do.
+            return
+
+        tags = getattr(ent, "tags", {}) or {}
+
+        # --- Define how tags map to visual deltas -----------------------
+        angle_delta = 0.0
+        alpha_factor = 1.0
+
+        # 5 degrees clockwise (negative because pygame rotation is CCW-positive)
+        if tags.get("clockwise_inventory"):
+            angle_delta += -5.0
+
+        # Ghostly inventory: more transparent
+        # (Expect a future tag "ghostly_inventory" on containers.)
+        if tags.get("ghostly_inventory"):
+            alpha_factor *= 0.6  # 60% of incoming opacity
+
+        # Nothing to do if this container has no special tags.
+        if angle_delta == 0.0 and alpha_factor == 1.0:
+            return
+
+        # Start from any existing profile (possibly inherited from parent).
+        base = self.visual_profile or VisualProfile()
+
+        new_alpha = base.alpha * alpha_factor
+        # Clamp alpha so it never becomes fully invisible or >1
+        new_alpha = max(0.05, min(1.0, new_alpha))
+
+        self.visual_profile = VisualProfile(
+            scale_x=base.scale_x,
+            scale_y=base.scale_y,
+            offset_x=base.offset_x,
+            offset_y=base.offset_y,
+            angle=base.angle + angle_delta,
+            alpha=new_alpha,
+            flip_x=base.flip_x,
+            flip_y=base.flip_y,
+        )
+
+
+    def _maybe_apply_clockwise_visual(self) -> None:
+        """If this inventory belongs to a 'clockwise' container, rotate it.
+
+        We have to be careful about where the owner entity lives:
+        - On the ground: level.entities
+        - As an actor:   level.actors
+        - As an item:    inside some inventory list (player or others)
+        """
+        owner_id = self._owner_id()
+
+        # Player inventory never gets twisted; only special containers do.
+        if owner_id == self.game.player_id:
+            return
+
+        ent = None
+
+        # 1) Try the obvious: level entities / actors
+        level = self.game._level()
+        if level is not None:
+            ent = level.entities.get(owner_id) or level.actors.get(owner_id)
+
+        # 2) If not found, search the player's inventory
+        if ent is None:
+            for cand in getattr(self.game, "player_inventory", []):
+                if getattr(cand, "id", None) == owner_id:
+                    ent = cand
+                    break
+
+        # 3) If still not found, search all known per-owner inventories
+        if ent is None:
+            for inv in getattr(self.game, "inventories", {}).values():
+                for cand in inv:
+                    if getattr(cand, "id", None) == owner_id:
+                        ent = cand
+                        break
+                if ent is not None:
+                    break
+
+        if ent is None:
+            # We couldn't locate the owner entity anywhere; nothing to do.
+            return
+
+        tags = getattr(ent, "tags", {}) or {}
+        if tags.get("clockwise_inventory"):
+            # 5 degrees clockwise (negative because pygame uses CCW-positive).
+            self.visual_profile = VisualProfile(angle=-5.0)
+
 
 
     def _find_container_targets(self, exclude_id: Optional[str] = None) -> list[tuple[str, str]]:
@@ -281,6 +430,9 @@ class InventoryScene(PopupMenuScene):
                 # Title for this nested inventory popup: use the container's own name.
                 popup_title = getattr(cur_ent, "name", None) or "Inventory"
 
+                # Inherit parent's visual profile so effects stack recursively.
+                parent_visual = self.visual_profile
+
                 mgr.push_scene(
                     InventoryScene(
                         self.game,
@@ -289,8 +441,10 @@ class InventoryScene(PopupMenuScene):
                         # This container lives inside the *current* inventory space.
                         parent_owner_id=self._owner_id(),
                         title=popup_title,
+                        base_visual=parent_visual,
                     )
                 )
+
 
 
 

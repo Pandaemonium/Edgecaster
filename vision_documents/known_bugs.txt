@@ -10,4 +10,6 @@
 
 -Under some circumstances that I'm not sure, the inventory / get items functionality stops working. Other actions like Yawp still work.
 
--Beggarly Vagrant can't accept a berry, likely due to inventory system changes
+-Keybinding is slightly off: ? is actually mapped to /, + to =, it seems shift isn't being recognized.
+
+

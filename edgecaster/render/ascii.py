@@ -10,6 +10,7 @@ from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns.library import action_preview_geometry
 from edgecaster.ui.ability_bar import AbilityBarRenderer
+from edgecaster.visuals import VisualProfile, apply_visual_panel
 
 
 
@@ -92,8 +93,16 @@ class AsciiRenderer:
         # Each entry = one frame's list of (cx_px, cy_px, z)
         self.lorenz_trail_frames: list[list[tuple[int, int, float]]] = []
         self.lorenz_trail_max_frames = 3  # keep trails very short
+        # Optional world-level visual profile (e.g. curses/blessings).
+        # SceneManager can set this via set_global_visual_profile().
+        self.global_visual_profile: VisualProfile | None = None
 
-    # ------------------------------------------------------------------ #
+
+
+    # ----        # Optional world-level visual profile (e.g. curses/blessings).
+        # SceneManager can set this via set_global_visual_profile().
+        self.global_visual_profile: VisualProfile | None = None
+
     # UI state access (scene-owned view-model preferred)                 #
     # ------------------------------------------------------------------ #
 
@@ -126,6 +135,12 @@ class AsciiRenderer:
     def is_fullscreen(self) -> bool:
         return self.fullscreen
 
+    def set_global_visual_profile(self, profile: VisualProfile | None) -> None:
+        """
+        Set or clear a global visual profile affecting the entire game view.
+        For example, a 'cursed' world might flip everything horizontally.
+        """
+        self.global_visual_profile = profile
 
 
 
@@ -1294,7 +1309,11 @@ class AsciiRenderer:
 
 
     def _present(self) -> None:
-        """Blit render surface to display with letterboxing (no stretch, aspect preserved)."""
+        """Blit render surface to display with letterboxing (no stretch, aspect preserved).
+
+        If a global VisualProfile is set (e.g. from a curse), use it to
+        transform the entire game view (flip, rotate, etc.) as a final step.
+        """
         dw, dh = self.display.get_size()
         sw, sh = self.surface.get_size()
         scale = min(dw / sw, dh / sh)
@@ -1302,15 +1321,40 @@ class AsciiRenderer:
         new_h = int(sh * scale)
         ox = max(0, (dw - new_w) // 2)
         oy = max(0, (dh - new_h) // 2)
+
+        # Keep letterbox info for mouse unprojection and other helpers.
         self.lb_off = (ox, oy)
         self.lb_scale = scale
+
         self.display.fill((0, 0, 0))
+
+        # Pre-scale the logical game surface into the letterboxed panel.
         if scale != 1.0:
-            scaled = pygame.transform.smoothscale(self.surface, (new_w, new_h))
-            self.display.blit(scaled, (ox, oy))
+            panel = pygame.transform.smoothscale(self.surface, (new_w, new_h))
         else:
-            self.display.blit(self.surface, (ox, oy))
+            # Copy to avoid surprising mutations if we transform.
+            panel = self.surface.copy()
+
+        panel_rect = pygame.Rect(ox, oy, new_w, new_h)
+
+        global_visual = getattr(self, "global_visual_profile", None)
+
+        if global_visual is None:
+            # Normal path: just blit the panel as-is.
+            self.display.blit(panel, panel_rect.topleft)
+        else:
+            # Cursed/blessed path: apply the visual profile to the whole panel.
+            # We hand the letterboxed region to apply_visual_panel; it will
+            # flip/rotate/offset within that rectangle.
+            apply_visual_panel(
+                base_surface=self.display,
+                logical_surface=panel,
+                window_rect=panel_rect,
+                visual=global_visual,
+            )
+
         pygame.display.flip()
+
 
     def _set_flash(self, text: str, color: Tuple[int, int, int] = (255, 120, 120), duration_ms: int = 2000) -> None:
         self.flash_text = text
