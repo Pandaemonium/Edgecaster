@@ -150,13 +150,25 @@ def describe_entity_for_look(ent: Any) -> Dict[str, Any]:
     color = getattr(ent, "color", None) or proto.get("color") or (255, 255, 255)
 
     desc = resolve_entity_description(ent) or "You see nothing remarkable about it."
+    hp_text = None
+    try:
+        tags = getattr(ent, "tags", {}) or {}
+        if getattr(ent, "show_exact_hp", False) or tags.get("show_exact_hp"):
+            stats = getattr(ent, "stats", None)
+            if stats and hasattr(stats, "hp") and hasattr(stats, "max_hp"):
+                hp_text = f"HP: {int(stats.hp)}/{int(stats.max_hp)}"
+    except Exception:
+        hp_text = None
 
-    return {
+    info = {
         "name": str(name),
         "glyph": str(glyph),
         "color": tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
         "description": str(desc),
     }
+    if hp_text:
+        info["hp_text"] = hp_text
+    return info
 
 
 # ---------------------------------------------------------------------------

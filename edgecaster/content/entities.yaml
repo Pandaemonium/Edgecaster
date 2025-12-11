@@ -92,3 +92,54 @@
   tags:
     item_type: destabilizer
     grants_ability: destabilize
+
+# --- UTILITY ITEMS ---------------------------------------------------
+- id: healing_kit
+  name: Healing Kit
+  glyph: "!"
+  color: [120, 220, 120]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: entity
+  description: "Bandages, tinctures, and a very small saw."
+  tags:
+    item_type: healing_kit
+
+- id: scrap_blade
+  name: Scrap Blade
+  glyph: "/"
+  color: [180, 180, 180]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: entity
+  description: "A jagged length of metal. Not quite a sword, but sharp enough."
+  tags:
+    item_type: scrap_blade
+
+# --- SIGN / DOOR FEATURES -------------------------------------------
+- id: sign
+  name: Sign
+  glyph: "§"
+  color: [200, 200, 120]
+  kind: feature
+  render_layer: 0
+  blocks_movement: false
+  parent: entity
+  description: "A sign with some text."
+  tags:
+    sign_text: "A weathered sign."
+
+- id: door
+  name: Door
+  glyph: "+"
+  color: [180, 140, 80]
+  kind: feature
+  render_layer: 0
+  blocks_movement: true
+  parent: entity
+  description: "A sturdy wooden door."
+  tags:
+    door_state: closed
+    door: true

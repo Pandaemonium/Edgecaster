@@ -213,3 +213,19 @@
   parent: beast
   description: "He'll vipe the mana right outta ya!"
   tags: ["beast", "magic", "poisonous"]
+- id: "caged_demon"
+  name: "Caged Demon"
+  glyph: "&"
+  color: [255, 80, 80]
+  faction: "neutral"
+  ai: "idle"
+  base_hp: 1000
+  base_mana: 0
+  base_attack: 0
+  base_defense: 0
+  speed: 0.0
+  parent: demon
+  description: "A hulking demon chained for training bouts. It regenerates rapidly."
+  actions: []
+  xp: 0
+  tags: ["training_dummy"]

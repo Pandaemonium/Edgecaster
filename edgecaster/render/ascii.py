@@ -28,6 +28,8 @@ class AsciiRenderer:
         self.tile = tile
         self.origin_x = 0
         self.origin_y = 0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
         self.surface_flags = pygame.RESIZABLE
         # render surface at native resolution; display may be larger in fullscreen
         self.surface = pygame.Surface((width, height))
@@ -146,15 +148,20 @@ class AsciiRenderer:
 
 
 
+    def _map_origin_base(self) -> Tuple[int, int]:
+        # Base origin before pan
+        map_origin_x = 8
+        map_origin_y = self.top_bar_height + 8 + int(self.tile * 4)
+        return map_origin_x, map_origin_y
+
     def draw_world(self, world: World) -> None:
         # clear main surface
         self.surface.fill(self.bg)
         # compute map origin offset to account for top bar and right log
-        # Push the map down by ~4 rows of tiles to keep HUD from overlapping.
-        map_origin_x = 8
-        map_origin_y = self.top_bar_height + 8 + int(self.tile * 4)
-        self.origin_x = map_origin_x
-        self.origin_y = map_origin_y
+        map_origin_x, map_origin_y = self._map_origin_base()
+        # apply pan offsets (set by zoom/pan)
+        self.origin_x = map_origin_x + self.pan_x
+        self.origin_y = map_origin_y + self.pan_y
         palette = {
             "~": (90, 130, 255),   # water
             ",": (190, 170, 120),  # shore
@@ -1223,8 +1230,11 @@ class AsciiRenderer:
         # map font scales with zoom; UI fonts remain constant
         self.map_font = pygame.font.SysFont("consolas", max(8, int(self.tile)))
         # adjust origin so world point under cursor stays under cursor
-        self.origin_x = mx - wx * self.tile
-        self.origin_y = my - wy * self.tile
+        base_x, base_y = self._map_origin_base()
+        target_origin_x = mx - wx * self.tile
+        target_origin_y = my - wy * self.tile
+        self.pan_x = target_origin_x - base_x
+        self.pan_y = target_origin_y - base_y
 
     def _get_glow_sprite(self, radius: int, color: Tuple[int, int, int]) -> pygame.Surface:
         key = (radius, color)

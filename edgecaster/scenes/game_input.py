@@ -44,6 +44,7 @@ from copy import deepcopy
 DEFAULT_BINDINGS: Dict[str, List[int]] = {
     "escape": [encode_keybinding(pygame.K_ESCAPE)],
     "toggle_fullscreen": [encode_keybinding(pygame.K_F11)],
+    "toggle_door": [encode_keybinding(pygame.K_o)],
     "show_help": [],  # handled via unicode '?'
     "examine": [encode_keybinding(pygame.K_x)],
     "pickup": [encode_keybinding(pygame.K_g)],
@@ -88,6 +89,20 @@ DEFAULT_MOVE_BINDINGS: Dict[int, Tuple[int, int]] = {
 }
 
 
+def _merge_default_bindings(binds: Dict[str, Iterable[int]]) -> Dict[str, List[int]]:
+    merged = deepcopy(DEFAULT_BINDINGS)
+    for k, vals in binds.items():
+        merged[k] = list(vals)
+    return merged
+
+
+def _merge_default_moves(moves: Dict[int, Tuple[int, int]]) -> Dict[int, Tuple[int, int]]:
+    merged = deepcopy(DEFAULT_MOVE_BINDINGS)
+    for k, v in moves.items():
+        merged[int(k)] = (int(v[0]), int(v[1]))
+    return merged
+
+
 def _bindings_path() -> Path:
     """Path to persisted bindings file."""
     return Path(__file__).resolve().parent.parent / "keybindings.json"
@@ -108,7 +123,7 @@ def _load_bindings_file() -> Tuple[Dict[str, List[int]], Dict[int, Tuple[int, in
             # Legacy: plain dict of bindings
             if isinstance(data, dict):
                 binds = {k: [int(v) for v in vals] for k, vals in data.items()}
-                return binds, deepcopy(DEFAULT_MOVE_BINDINGS)
+                return _merge_default_bindings(binds), deepcopy(DEFAULT_MOVE_BINDINGS)
     except Exception:
         pass
     return deepcopy(DEFAULT_BINDINGS), deepcopy(DEFAULT_MOVE_BINDINGS)
@@ -172,8 +187,8 @@ class GameInput:
     ) -> None:
         # single-key bindings (non-movement, non-hotkey)
         loaded_bindings, loaded_moves = _load_bindings_file()
-        self.bindings: Dict[str, List[int]] = loaded_bindings
-        self.move_bindings: Dict[int, Tuple[int, int]] = loaded_moves
+        self.bindings: Dict[str, List[int]] = _merge_default_bindings(loaded_bindings)
+        self.move_bindings: Dict[int, Tuple[int, int]] = _merge_default_moves(loaded_moves)
 
         if bindings:
             self.set_bindings(bindings)
@@ -182,11 +197,11 @@ class GameInput:
 
     def set_bindings(self, bindings: Dict[str, Iterable[int]]) -> None:
         """Replace current bindings (used when reloading from options)."""
-        self.bindings = {k: list(v) for k, v in bindings.items()}
+        self.bindings = _merge_default_bindings({k: list(v) for k, v in bindings.items()})
 
     def set_move_bindings(self, move_bindings: Dict[int, Tuple[int, int]]) -> None:
         """Replace current movement bindings."""
-        self.move_bindings = {int(k): (int(v[0]), int(v[1])) for k, v in move_bindings.items()}
+        self.move_bindings = _merge_default_moves({int(k): (int(v[0]), int(v[1])) for k, v in move_bindings.items()})
 
     def handle_keydown(self, event: pygame.event.Event) -> List[GameCommand]:
         cmds: List[GameCommand] = []
@@ -203,6 +218,10 @@ class GameInput:
         # Fullscreen toggle
         if combined in self.bindings.get("toggle_fullscreen", []):
             return [GameCommand("toggle_fullscreen", raw_key=key)]
+
+        # Door toggle
+        if combined in self.bindings.get("toggle_door", []):
+            return [GameCommand("toggle_door", raw_key=key)]
 
         # Ability bar page cycling
         if combined in self.bindings.get("ability_page_prev", []):

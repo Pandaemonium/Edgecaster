@@ -899,7 +899,14 @@ class Game:
             mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
             lab_state = None
         # Apply POIs (records ids on world)
-        mapgen.apply_pois(world, coord)
+        poi_hits = mapgen.apply_pois(world, coord)
+        # Build starting structures (e.g., depot)
+        if "starting_zone" in poi_hits:
+            try:
+                depot_info = mapgen.build_item_depot(world, self.rng, world.entry)
+                world.depot_info = depot_info  # type: ignore[attr-defined]
+            except Exception:
+                world.depot_info = None  # type: ignore[attr-defined]
         lvl = LevelState(
             world=world,
             actors={},
@@ -1210,6 +1217,7 @@ class Game:
         if not poi_ids:
             return
         entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
+        depot_info = getattr(level.world, "depot_info", None)
 
         def nearest_walkable(origin: Tuple[int, int], max_radius: int = 12) -> Optional[Tuple[int, int]]:
             ox, oy = origin
@@ -1232,6 +1240,43 @@ class Game:
             poi = poi_content.POIS.get(pid)
             if not poi:
                 continue
+            # Handle structures
+            for struct in getattr(poi, "structures", []) or []:
+                if struct.get("kind") == "item_depot" and depot_info:
+                    # Place door
+                    door_pos = depot_info.get("door")
+                    if door_pos:
+                        try:
+                            ent = self._spawn_entity_from_template("door", door_pos)
+                            level.entities[ent.id] = ent
+                            tile = level.world.get_tile(*door_pos)
+                            if tile:
+                                tile.walkable = False
+                                tile.glyph = "#"
+                        except Exception:
+                            pass
+                    # Place sign
+                    sign_pos = depot_info.get("sign")
+                    if sign_pos:
+                        try:
+                            ent = self._spawn_entity_from_template(
+                                "sign",
+                                sign_pos,
+                                overrides={"tags": {"sign_text": "Item Depot"}, "name": "Item Depot"},
+                            )
+                            level.entities[ent.id] = ent
+                        except Exception:
+                            pass
+                    # Place items in interior
+                    interior = depot_info.get("interior") or []
+                    item_ids = ["blueberry", "raspberry", "strawberry", "destabilizer", "debug_inventory", "healing_kit", "scrap_blade"]
+                    for pos in interior:
+                        try:
+                            template_id = self.rng.choice(item_ids)
+                            ent = self._spawn_entity_from_template(template_id, pos)
+                            level.entities[ent.id] = ent
+                        except Exception:
+                            continue
             for spec in poi.npcs:
                 npc_def = npcs.NPC_DEFS.get(spec.npc_id, {})
                 name = spec.name or npc_def.get("name", spec.npc_id.title())
@@ -1250,25 +1295,44 @@ class Game:
                     spawn_pos = nearest_walkable(entry)
                 if spawn_pos is None:
                     continue
-                aid = self._new_id()
-                actor = Human(
-                    id=aid,
-                    name=name,
-                    pos=spawn_pos,
-                    faction="npc",
-                    stats=Stats(hp=1, max_hp=1),
-                    tags={"npc_id": spec.npc_id},
-                    disposition=npc_def.get("base_disposition", 0),
-                    affiliations=tuple(npc_def.get("factions", [])),
-                    glyph=glyph,
-                    color=color,  # type: ignore[arg-type]
-                )
-                # NEW: wire through POI / NPC_DEF description for look/inspect
-                desc = getattr(spec, "description", None) or npc_def.get("description")
-                if desc:
-                    actor.description = desc
-                level.actors[aid] = actor
-                level.entities[aid] = actor
+                if spec.npc_id == "caged_demon":
+                    actor = enemy_factory.spawn_enemy("caged_demon", spawn_pos)
+                    actor.faction = "neutral"
+                    actor.actions = ()
+                    actor.ai = "idle"
+                    actor.tags = getattr(actor, "tags", {}) or {}
+                    actor.tags["npc_id"] = spec.npc_id
+                    actor.tags["show_exact_hp"] = True
+                    actor.show_exact_hp = True
+                    desc = getattr(spec, "description", None) or npc_def.get("description") or actor.description
+                    if desc:
+                        actor.description = desc
+                    actor.regen_per_tick = (1, 10)
+                    self._start_regen(level, actor.id, amount=1, interval=10)
+                else:
+                    aid = self._new_id()
+                    actor = Human(
+                        id=aid,
+                        name=name,
+                        pos=spawn_pos,
+                        faction="npc",
+                        stats=Stats(hp=1, max_hp=1),
+                        tags={"npc_id": spec.npc_id},
+                        disposition=npc_def.get("base_disposition", 0),
+                        affiliations=tuple(npc_def.get("factions", [])),
+                        glyph=glyph,
+                        color=color,  # type: ignore[arg-type]
+                    )
+                    # NEW: wire through POI / NPC_DEF description for look/inspect
+                    desc = getattr(spec, "description", None) or npc_def.get("description")
+                    if desc:
+                        actor.description = desc
+                    actor.tags.setdefault("npc_id", spec.npc_id)
+                    if npc_def.get("show_exact_hp", False):
+                        actor.tags["show_exact_hp"] = True
+                        actor.show_exact_hp = True
+                level.actors[actor.id] = actor
+                level.entities[actor.id] = actor
 
     def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
         if count <= 0:
@@ -1626,6 +1690,26 @@ class Game:
         # NEW: pattern motion tick
         pattern_motion.step_motion(self, level, delta)
 
+    def _start_regen(self, level: LevelState, actor_id: str, amount: int, interval: int) -> None:
+        """
+        Start periodic regen for an actor: heals `amount` HP every `interval` ticks.
+        """
+        def tick() -> None:
+            actor = level.actors.get(actor_id)
+            if actor is None or getattr(actor, "alive", True) is False:
+                return
+            try:
+                stats = actor.stats
+                if stats.hp < stats.max_hp:
+                    stats.hp = min(stats.max_hp, stats.hp + amount)
+            except Exception:
+                pass
+            # reschedule if still alive
+            if actor is not None:
+                self._schedule(level, interval, tick)
+
+        self._schedule(level, interval, tick)
+
 
     def _coherence_tick(self, level: LevelState, delta: int) -> None:
         """Drain coherence each tick based on vertex count beyond INT*4."""
@@ -1884,6 +1968,36 @@ class Game:
         if ent and getattr(ent, "blocks_movement", False):
             return ent
         return None
+
+    def _toggle_door(self, ent: Entity, level: LevelState, notify: bool = False) -> None:
+        tags = getattr(ent, "tags", {}) or {}
+        state = tags.get("door_state", "closed")
+        tile = level.world.get_tile(*ent.pos) if hasattr(ent, "pos") else None
+        if state == "closed":
+            tags["door_state"] = "open"
+            ent.blocks_movement = False
+            ent.glyph = "/"
+            ent.color = getattr(ent, "color", (180, 140, 80))
+            if tile:
+                tile.walkable = True
+                tile.glyph = "."
+            if notify:
+                self.log.add("You open the door.")
+        else:
+            tags["door_state"] = "closed"
+            ent.blocks_movement = True
+            ent.glyph = "+"
+            ent.color = getattr(ent, "color", (180, 140, 80))
+            if tile:
+                # Closed doors block movement and line-of-sight like walls.
+                tile.walkable = False
+                tile.glyph = "#"
+            if notify:
+                self.log.add("You close the door.")
+        ent.tags = tags
+        # Refresh visibility immediately so opening/closing updates FOV right away.
+        level.need_fov = True
+        self._update_fov(level)
 
 
     # --- status helpers ---
@@ -2718,6 +2832,13 @@ class Game:
         # treat blocking entities as solid, like walls
         blocking_ent = self._blocking_entity_at(level, (nx, ny))
         if blocking_ent:
+            # Auto-open doors on bump
+            if getattr(blocking_ent, "tags", {}).get("door_state") == "closed":
+                self._toggle_door(blocking_ent, level, notify=(id == self.player_id))
+                # After opening, proceed if no longer blocking
+                if not getattr(blocking_ent, "blocks_movement", False):
+                    self._handle_move_or_attack(level, id, dx, dy)
+                return
             if id == self.player_id:
                 self.log.add(f"You bump into the {blocking_ent.name}.")
             return

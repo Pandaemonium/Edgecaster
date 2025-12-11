@@ -85,6 +85,55 @@ def apply_pois(world: World, coord: Tuple[int, int, int]) -> List[str]:
     return hits
 
 
+def build_item_depot(world: World, rng, entry: Tuple[int, int]) -> dict:
+    """
+    Carve an item depot to the left of entry. Returns metadata for placement.
+    """
+    w = rng.randint(5, 8)
+    h = rng.randint(5, 8)
+    ex, ey = entry
+    x = max(1, ex - w - 4)
+    y = max(1, min(world.height - h - 2, ey - h // 2))
+    door_y = y + rng.randint(1, max(1, h - 2))
+    door_x = x + w - 1  # east wall
+
+    interior = []
+    for yy in range(y, y + h):
+        for xx in range(x, x + w):
+            tile = world.get_tile(xx, yy)
+            if tile is None:
+                continue
+            is_border = xx in (x, x + w - 1) or yy in (y, y + h - 1)
+            if is_border:
+                tile.walkable = False
+                tile.glyph = "#"
+            else:
+                tile.walkable = True
+                tile.glyph = "."
+                interior.append((xx, yy))
+    # door
+    if world.in_bounds(door_x, door_y):
+        dtile = world.get_tile(door_x, door_y)
+        if dtile:
+            # Closed door starts as a blocker (like a wall) until opened.
+            dtile.walkable = False
+            dtile.glyph = "#"
+    # sign just outside door (east side)
+    sign_pos = None
+    if world.in_bounds(door_x + 1, door_y):
+        sign_pos = (door_x + 1, door_y)
+        tile = world.get_tile(*sign_pos)
+        if tile:
+            tile.walkable = True
+            tile.glyph = "."
+    return {
+        "rect": (x, y, w, h),
+        "door": (door_x, door_y),
+        "sign": sign_pos,
+        "interior": interior,
+    }
+
+
 def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None, coord: Tuple[int, int, int] = (0, 0, 0)) -> None:
     """Simple rectangular rooms connected by halls, with optional stairs."""
     # start filled with walls

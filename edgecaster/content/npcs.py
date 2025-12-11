@@ -11,6 +11,16 @@ NPC_DEFS = {
             "Choose a new pattern to weave into your repertoire.",
         ],
     },
+    "caged_demon": {
+        "name": "Caged Demon",
+        "factions": ["neutral"],
+        "base_disposition": 0,
+        "description": "A hulking demon chained for training bouts. It regenerates quickly.",
+        "dialogue": [
+            "The demon growls, eager to be struck.",
+            "You may practice your strikes here; it will regenerate.",
+        ],
+    },
     "hexmage": {
         "name": "The Hexmage",
         "factions": ["edgecasters"],

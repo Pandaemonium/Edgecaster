@@ -21,6 +21,7 @@ class POI:
     id: str
     coord: Tuple[int, int, int]  # exact match for now
     npcs: List[NPCSpawnSpec] = field(default_factory=list)
+    structures: List[dict] = field(default_factory=list)
     # Future: entities, items, layout overrides
 
 
@@ -53,7 +54,8 @@ def _load_pois() -> Dict[str, POI]:
                     description=npc.get("description"),  # NEW
                 )
             )
-        out[pid] = POI(id=pid, coord=coord, npcs=npc_specs)
+        structures = spec.get("structures", []) or []
+        out[pid] = POI(id=pid, coord=coord, npcs=npc_specs, structures=structures)
     return out
 
 

@@ -58,6 +58,7 @@ COMMAND_CONTEXTS = {
     "possess_nearest": {"dungeon"},
     "look_action": {"dungeon"},
     "wait": {"dungeon"},
+    "toggle_door": {"dungeon"},
     # Navigation / map
     "stairs_up_or_map": {"dungeon"},
     "stairs_down": {"dungeon"},
@@ -74,8 +75,10 @@ COMMAND_CONTEXTS = {
 }
 
 
-# Categories of commands shown in the keybinding menu.
-KEYBIND_CATEGORIES: List[Tuple[str, List[Tuple[str, str]]]] = [
+# Base categories of commands shown in the keybinding menu. We’ll append any
+# commands that exist in DEFAULT_BINDINGS but aren’t explicitly listed here so
+# new bindings automatically surface in the UI.
+BASE_KEYBIND_CATEGORIES: List[Tuple[str, List[Tuple[str, str]]]] = [
     ("Movement (Dungeon)", [
         ("move_up", "Move Up"),
         ("move_down", "Move Down"),
@@ -94,6 +97,7 @@ KEYBIND_CATEGORIES: List[Tuple[str, List[Tuple[str, str]]]] = [
         ("possess_nearest", "Possess Nearest"),
         ("look_action", "Look Mode"),
         ("wait", "Wait"),
+        ("toggle_door", "Open / Close Door"),
     ]),
     ("Navigation / Map", [
         ("stairs_up_or_map", "Stairs Up / World Map"),
@@ -111,6 +115,29 @@ KEYBIND_CATEGORIES: List[Tuple[str, List[Tuple[str, str]]]] = [
         ("yawp", "Yawp / Debug Shout"),
     ]),
 ]
+
+
+_EXTRA_LABELS = {
+    "toggle_door": "Open / Close Door",
+}
+
+
+def _build_categories() -> List[Tuple[str, List[Tuple[str, str]]]]:
+    listed = {cmd for _, entries in BASE_KEYBIND_CATEGORIES for cmd, _ in entries}
+    extras: List[Tuple[str, str]] = []
+    for cmd in DEFAULT_BINDINGS.keys():
+        if cmd in listed:
+            continue
+        label = _EXTRA_LABELS.get(cmd, cmd.replace("_", " ").title())
+        extras.append((cmd, label))
+    cats = list(BASE_KEYBIND_CATEGORIES)
+    if extras:
+        cats.append(("Other", extras))
+    return cats
+
+
+# Categories used by the scene (includes any auto-added extras).
+KEYBIND_CATEGORIES: List[Tuple[str, List[Tuple[str, str]]]] = _build_categories()
 
 
 class KeybindsScene(Scene):

@@ -16,3 +16,14 @@ academy:
       glyph: "&"
       color: [255, 200, 120]
       offsets: [[-1, 1], [2, -1], [-2, -1], [1, 2], [-1, 2]]
+starting_zone:
+  coord: [50, 50, 0]
+  npcs:
+    - npc_id: caged_demon
+      name: Caged Demon
+      glyph: "&"
+      color: [255, 80, 80]
+      offsets: [[-2, 0], [2, 0], [0, -2], [0, 2], [1, 1], [-1, -1]]
+      description: "A hulking demon chained and pitted for training."
+  structures:
+    - kind: item_depot

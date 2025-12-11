@@ -106,6 +106,7 @@ class DungeonScene(Scene):
         # Keep the Game instance across pauses/inventory.
         self.game: Game | None = None
         self.ui_state = DungeonUIState()
+        self._pending_door_toggle: dict[tuple[int, int], object] | None = None
         # Scene-level input mapper for "pure game" actions
         # refactor: migrate to a shared input layer; DungeonScene should consume a GameCommand queue only.
         self.input = GameInput()
@@ -594,6 +595,10 @@ class DungeonScene(Scene):
                     lines.append(str(glyph))
                     lines.append("")
                 lines.append(str(desc))
+                hp_txt = info.get("hp_text")
+                if hp_txt:
+                    lines.append("")
+                    lines.append(hp_txt)
                 body = "\n".join(lines)
             else:
                 # No entities here: fall back to a tile description if available.
@@ -1162,6 +1167,37 @@ class DungeonScene(Scene):
                         )
             return
 
+        if kind == "toggle_door":
+            level = game._level()
+            player = game.actors[game.player_id]
+            px, py = player.pos
+            # Check current + cardinal neighbors for doors.
+            offsets = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+            doors: list[tuple[tuple[int, int], object]] = []
+            for dx, dy in offsets:
+                tx, ty = px + dx, py + dy
+                for ent in game._all_entities(level):
+                    if ent.pos == (tx, ty) and getattr(ent, "tags", {}).get("door"):
+                        doors.append(((dx, dy), ent))
+                        break
+
+            if not doors:
+                game.log.add("No door nearby.")
+                self._pending_door_toggle = None
+                return
+
+            if len(doors) == 1:
+                (_, ent) = doors[0]
+                game._toggle_door(ent, level, notify=True)
+                game._advance_time(level, 5)
+                self._pending_door_toggle = None
+                return
+
+            # Multiple doors: ask for direction and store candidates.
+            self._pending_door_toggle = {offset: ent for offset, ent in doors}
+            game.log.add("Multiple doors nearby. Press a direction to choose.")
+            return
+
         # Mouse click drives target confirm, ability bar, config, placement, and click-to-move.
         if kind == "mouse_click" and cmd.mouse_pos is not None and cmd.mouse_button == 1:
             # If we’re in target mode, treat click as confirm after updating hover.
@@ -1437,6 +1473,16 @@ class DungeonScene(Scene):
         # ------------------------------------------------------------
 
         if kind == "move" and vec is not None:
+            if self._pending_door_toggle:
+                dx, dy = vec
+                ent = self._pending_door_toggle.get((dx, dy))
+                if ent:
+                    game._toggle_door(ent, game._level(), notify=True)
+                    game._advance_time(game._level(), 5)
+                else:
+                    game.log.add("No door in that direction.")
+                self._pending_door_toggle = None
+                return
             if hasattr(game, "queue_player_move"):
                 game.queue_player_move(vec)
             return
