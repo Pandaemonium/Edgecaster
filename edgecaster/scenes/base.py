@@ -3,6 +3,8 @@ from __future__ import annotations
 import pygame
 from typing import Optional
 
+from edgecaster.visuals import VisualProfile, apply_visual_panel, unproject_mouse
+
 
 # ---------------------------------------------------------------------------
 # Base Scene
@@ -21,6 +23,7 @@ class Scene:
 
     # Opt-in flag for the new engine-driven loop.
     uses_live_loop: bool = False
+    visual_profile: VisualProfile | None = None
 
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         """
@@ -506,6 +509,9 @@ class PopupMenuScene(MenuScene):
         # Ensure we have a window rect
         self._ensure_window_rect(manager)
         assert self.window_rect is not None
+        visual = self.visual_profile or VisualProfile()
+
+
 
         def handle_action(action: Optional[str]) -> bool:
             """
@@ -590,15 +596,15 @@ class PopupMenuScene(MenuScene):
                     menu.handle_keyup(event.key)
 
                 elif event.type == pygame.MOUSEMOTION:
-                    if hasattr(renderer, "_to_surface"):
-                        mx, my = renderer._to_surface(event.pos)
+                    if self.window_rect is not None:
+                        mx, my = unproject_mouse(event.pos, self.window_rect, visual)
                     else:
                         mx, my = event.pos
                     self._update_hover_from_mouse((mx, my))
 
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if hasattr(renderer, "_to_surface"):
-                        mx, my = renderer._to_surface(event.pos)
+                    if self.window_rect is not None:
+                        mx, my = unproject_mouse(event.pos, self.window_rect, visual)
                     else:
                         mx, my = event.pos
                     idx = self._index_from_mouse_pos((mx, my))
@@ -643,11 +649,10 @@ class PopupMenuScene(MenuScene):
         menu options, and a standard footer inside window_rect.
         """
         renderer = manager.renderer
-        surface = renderer.surface
         assert self.window_rect is not None
 
         rect = self.window_rect
-        panel = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        panel = pygame.Surface(self.window_rect.size, pygame.SRCALPHA)
 
         # Panel background + border
         panel.fill((10, 10, 20, 240))
@@ -673,8 +678,8 @@ class PopupMenuScene(MenuScene):
                 y += text.get_height()
             y += 8
 
-        # Menu items
-        self._option_rects = []  # global screen-space rects
+        # Menu items drawn in panel-local space
+        self._option_rects = []
         for idx, label in enumerate(options):
             selected = (idx == self.selected_idx)
             color = renderer.player_color if selected else renderer.fg
@@ -683,21 +688,34 @@ class PopupMenuScene(MenuScene):
             local_x = (panel.get_width() - text.get_width()) // 2
             local_y = y
 
-            # Local rect on the panel
             local_rect = text.get_rect(topleft=(local_x, local_y))
             panel.blit(text, local_rect.topleft)
 
-            # Convert to global coords for hit-testing
-            global_rect = local_rect.move(rect.left, rect.top)
-            self._option_rects.append(global_rect)
+            self._option_rects.append(local_rect)
+
 
             y += text.get_height() + 4
 
-        # Footer
+        # Footer remains panel-local
+
         footer = getattr(self, "FOOTER_TEXT", MENU_FOOTER_HELP)
         footer_text = small_font.render(footer, True, renderer.dim)
         fx = (panel.get_width() - footer_text.get_width()) // 2
         fy = panel.get_height() - footer_text.get_height() - 8
         panel.blit(footer_text, (fx, fy))
 
-        surface.blit(panel, rect.topleft)
+        visual = self.visual_profile or VisualProfile()
+        apply_visual_panel(renderer.surface, panel, rect, visual)
+
+    def _index_from_mouse_pos(self, pos: tuple[int, int]) -> int | None:
+        """Return index of option under this mouse position, or None."""
+        mx, my = pos
+        for i, rect in enumerate(self._option_rects):
+            if rect.collidepoint(mx, my):
+                return i
+        return None
+
+    def _update_hover_from_mouse(self, pos: tuple[int, int]) -> None:
+        idx = self._index_from_mouse_pos(pos)
+        if idx is not None:
+            self.selected_idx = idx

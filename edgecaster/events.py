@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Callable, List, Optional
+from edgecaster.visuals import VisualProfile
+
 
 @dataclass
 class DialogueChoice:
@@ -92,29 +94,30 @@ def effect_berry_glut(choice_index: int, game) -> None:
     else:
         game.log.add("The foliage shivers, but nothing seems to take root...")
 
-def effect_mysterious_stranger(choice_index: int, game) -> None:
+def effect_mysterious_stranger(choice_index: int, game: "Game") -> None:
     """
-    Beggarly Vagrant root interaction.
-
     choice_index 0: "Give him a berry"
-        - If player has a berry: consume one and go to the generous path.
-        - If not: fall through to the refusal-style path.
+        - If the player has a berry anywhere in their inventory, path1 (blessing).
+        - Otherwise, path2 (you fail him).
 
     choice_index 1: "Nothing to spare"
-        - Go straight to the refusal path.
+        - path2
+
+    choice_index 2: "Pluck the eyeballs from the beggar's skull and eat them like berries."
+        - path3 + Cursed status + mirrored world
     """
     if choice_index == 0:
-        # "Give him a berry"
         if _player_has_berry(game):
-            _consume_one_berry(game)
-            # Go to the grateful response
+            effect_bless_player(game)
             start_dialogue(game, MYSTERIOUS_STRANGER_DIALOGUE, start_node="path1")
         else:
-            # Tried to give, but empty hands → treat as option 2
             start_dialogue(game, MYSTERIOUS_STRANGER_DIALOGUE, start_node="path2")
-    else:
-        # "Nothing to spare"
+    elif choice_index == 1:
         start_dialogue(game, MYSTERIOUS_STRANGER_DIALOGUE, start_node="path2")
+    elif choice_index == 2:
+        start_dialogue(game, MYSTERIOUS_STRANGER_DIALOGUE, start_node="path3")
+
+
 
 
 # --- Event table ---------------------------------------------------------
@@ -155,7 +158,7 @@ EVENTS: List[Event] = [
             "A tall man with kingly bearing, crusted and worn by years of regret.\n"
             "\"I am cursed to wander these fruitless lands. Will you quench my longing?\""
         ),
-        choices=["Give him a berry", "Nothing to spare"],
+        choices=["Give him a berry", "Nothing to spare", "Pluck the eyeballs from his skull and eat them like berries"],
         effect=effect_mysterious_stranger,
         weight=1,
         overworld_only=True,
@@ -266,36 +269,165 @@ def start_dialogue(game: "Game", tree: DialogueTree, start_node: Optional[str] =
 
 # --- Helper effects -------------------------------------------------------
 
+def _iter_all_inventory_items(game, owner_id: Optional[str] = None, _visited: Optional[set[str]] = None):
+    """
+    Yield (owner_id, item) for every item reachable from the player’s inventory,
+    including items inside containers, recursively.
+
+    - Starts from the current player’s inventory by default.
+    - Walks through container inventories via game.inventories[entity.id].
+    - Uses a visited set of owner_ids to avoid infinite loops
+      (e.g. recursive Inventory that contains itself).
+    """
+    if _visited is None:
+        _visited = set()
+
+    # Initial root: the current host (player) inventory
+    if owner_id is None:
+        owner_id = getattr(game, "player_id", None)
+        if owner_id is None:
+            return
+        # Use the new per-player inventory property if available
+        root_inv = getattr(game, "player_inventory", None)
+        if root_inv is None:
+            # Fallback for any legacy paths
+            root_inv = getattr(game, "inventory", []) or []
+    else:
+        if owner_id in _visited:
+            return
+        # Use the unified inventory registry if present
+        if hasattr(game, "get_inventory"):
+            root_inv = game.get_inventory(owner_id)
+        else:
+            root_inv = getattr(game, "inventory", []) or []
+
+    if owner_id in _visited:
+        return
+    _visited.add(owner_id)
+
+    for ent in root_inv:
+        yield owner_id, ent
+
+        # If this item itself owns an inventory, recurse into it.
+        eid = getattr(ent, "id", None)
+        if eid and hasattr(game, "inventories") and eid in getattr(game, "inventories", {}):
+            yield from _iter_all_inventory_items(game, eid, _visited)
+
+
 def _player_has_berry(game) -> bool:
-    """Returns True if any item in inventory is tagged as a berry."""
-    for ent in getattr(game, "inventory", []):
+    """Returns True if any item anywhere in the player's inventory tree is a berry."""
+    for owner_id, ent in _iter_all_inventory_items(game):
         tags = getattr(ent, "tags", {}) or {}
         if tags.get("test_berry") or tags.get("item_type") in {
-            "blueberry", "raspberry", "strawberry"
+            "blueberry",
+            "raspberry",
+            "strawberry",
         }:
             return True
     return False
+
 
 
 def _consume_one_berry(game) -> bool:
-    """Removes exactly one berry from inventory. Returns True if one was removed."""
-    inv = getattr(game, "inventory", [])
-    for i, ent in enumerate(inv):
+    """
+    Removes exactly one berry from the player's inventory tree.
+
+    Returns True if a berry was found and removed, False otherwise.
+    """
+    # First pass: find the berry and remember which owner's inventory it's in.
+    for owner_id, ent in _iter_all_inventory_items(game):
         tags = getattr(ent, "tags", {}) or {}
         if tags.get("test_berry") or tags.get("item_type") in {
-            "blueberry", "raspberry", "strawberry"
+            "blueberry",
+            "raspberry",
+            "strawberry",
         }:
-            inv.pop(i)
-            return True
+            # Second pass: actually pop it from that specific inventory list.
+            if hasattr(game, "get_inventory"):
+                inv = game.get_inventory(owner_id)
+            else:
+                inv = getattr(game, "inventory", []) or []
+
+            for i, e in enumerate(inv):
+                if e is ent:
+                    inv.pop(i)
+                    return True
+            # If for some reason we didn't find it to pop, keep searching.
     return False
 
 
-def effect_bless_player(game):
-    """Apply the temporary 'blessed' status to the player."""
-    player = game._player()
-    # Let's say blessed lasts 200 ticks for now — you can tune it later.
-    game._add_status(player, "blessed", duration=200,
-                     on_apply="A quiet warmth settles over you. You feel blessed.")
+
+def effect_bless_player(game: "Game") -> None:
+    """
+    Apply / refresh the Blessed status.
+
+    Also:
+    - If the player was Cursed, remove that status.
+    - Clear any global visual profile (e.g. un-mirror the world).
+    """
+    lvl = game._level()
+    player = lvl.actors.get(game.player_id)
+    if player is None:
+        return
+
+    # If you were cursed, remove that status.
+    if hasattr(player, "statuses") and "cursed" in player.statuses:
+        del player.statuses["cursed"]
+
+    # Clear any global visual profile (un-mirror the world).
+    manager = getattr(game, "scene_manager", None)
+    if manager is not None and hasattr(manager, "set_global_visual_profile"):
+        manager.set_global_visual_profile(None)
+
+    # Apply / refresh the 'blessed' status.
+    if not game._has_status(player, "blessed"):
+        game._add_status(
+            player,
+            "blessed",
+            duration=200,
+            on_apply="You feel a gentle warmth settle over you.",
+        )
+    else:
+        # Refresh / extend blessing duration
+        if "blessed" in player.statuses:
+            player.statuses["blessed"] = max(
+                player.statuses.get("blessed", 0),
+                200,
+            )
+
+
+
+
+def effect_curse_player(game: "Game") -> None:
+    """
+    Apply the Cursed status and trigger the global mirrored visual.
+
+    This is invoked from the 'eat the eyeballs' choice.
+    """
+    lvl = game._level()
+    player = lvl.actors.get(game.player_id)
+    if player is None:
+        return
+
+    # Add a long-lived 'cursed' status. Duration is effectively "until cleansed".
+    if not game._has_status(player, "cursed"):
+        game._add_status(
+            player,
+            "cursed",
+            duration=10_000,  # very long; effectively permanent for now
+            on_apply="A vertiginous chill grips you. The world feels subtly wrong.",
+        )
+
+    # If we have a live scene manager, ask it to flip the entire game horizontally.
+    manager = getattr(game, "scene_manager", None)
+    if manager is not None and hasattr(manager, "set_global_visual_profile"):
+        manager.set_global_visual_profile(VisualProfile(flip_x=True))
+
+    # IMPORTANT: do NOT call start_dialogue() here.
+    # The DialoguePopupScene sees next_id=None for this choice,
+    # so it will close itself after this effect runs.
+
+
 
 
 # --- Adaptive Choice Effect ----------------------------------------------
@@ -367,7 +499,6 @@ MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
                 DialogueChoice(
                     text="May you find solace.",
                     next_id=None,
-                    effect=effect_bless_player,  # grants 'blessed'
                 ),
             ],
         ),
@@ -387,6 +518,18 @@ MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
                     text="Part ways.",
                     next_id=None,
                 ),
+            ],
+        ),
+        "path3": DialogueNode(
+            id="path3",
+            title="A Feast of Eyeballs",
+            body=(
+                "The man offers no resistance, welcoming blindness as a mercy.\n\n"
+                "The eyeberries taste tart.\n\n"
+                "Your vision swims as you take a view from a new perspective..."
+            ),
+            choices=[
+                DialogueChoice("Twice the eyeballs...", next_id=None, effect = effect_curse_player),
             ],
         ),
     },

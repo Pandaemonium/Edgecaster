@@ -7,6 +7,7 @@ from pygame import Rect
 
 from edgecaster import config
 from edgecaster.render.ascii import AsciiRenderer
+from edgecaster.visuals import VisualProfile
 from edgecaster.rng import new_rng
 from edgecaster.character import Character, default_character
 from .game_input import load_bindings_full
@@ -15,6 +16,7 @@ from .base import Scene
 from .character_creation_scene import CharacterCreationScene
 from .main_menu import MainMenuScene
 from .world_map_scene import WorldMapScene
+
 
 
 class SceneManager:
@@ -47,7 +49,9 @@ class SceneManager:
         # like the Options -> World Seed display have something to look at.
         self.character: Character = default_character()
         self.current_game = None
-
+        # Optional global visual profile (e.g. world-level curses/blessings).
+        # This is a high-level hint; renderers may choose how to apply it.
+        self.global_visual_profile: VisualProfile | None = None
         # Start on the main menu
         self.set_scene(MainMenuScene())
 
@@ -98,6 +102,7 @@ class SceneManager:
         scale: float = 0.6,
         parent: Optional[Rect] = None,
         offset: int = 0,
+        visual: VisualProfile | None = None,
         **kwargs,
     ) -> Scene:
         """
@@ -109,11 +114,32 @@ class SceneManager:
         """
         window_rect = self.compute_child_window_rect(scale, parent, offset)
         scene = scene_cls(window_rect=window_rect, **kwargs)  # type: ignore[arg-type]
+        if visual is not None:
+            scene.visual_profile = visual
         # Tag the scene so we know it's windowed
         scene.window_rect = window_rect  # type: ignore[attr-defined]
         self.window_stack.append(window_rect)
         self.scene_stack.append(scene)
         return scene
+
+
+    def set_global_visual_profile(self, profile: VisualProfile | None) -> None:
+        """
+        Set or clear a global visual profile that should affect the whole game.
+        For example, a 'cursed' world might flip everything horizontally.
+        """
+        self.global_visual_profile = profile
+
+        # Best-effort: if the renderer knows how to use a global profile,
+        # hand it off. Otherwise this is a harmless no-op.
+        if hasattr(self.renderer, "set_global_visual_profile"):
+            self.renderer.set_global_visual_profile(profile)
+        else:
+            # As a fallback, stash it directly on the renderer so the
+            # present() code can read it if you wire it up later.
+            setattr(self.renderer, "global_visual_profile", profile)
+
+
 
     # ------------------------------------------------------------------ #
     # Stack operations

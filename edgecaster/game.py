@@ -324,9 +324,43 @@ class Game:
         lvl.actors[player.id] = player
         lvl.entities[player.id] = player
 
+        # --- Give the player a recursive inventory test item -----------------
+        #
+        # This uses the normal debug_inventory template (a container item),
+        # but we:
+        #   1) Put it directly into the player's inventory
+        #   2) Make *its own* inventory list contain itself.
+        #
+        # So when you open it, you'll see an item that is the same bag,
+        # and opening that again just keeps nesting visually.
+        try:
+            recursive_item = self._spawn_entity_from_template(
+                "debug_inventory",
+                player.pos,
+                overrides={
+                    "name": "recursive Inventory",
+                    "tags": {"recursive_inventory": True},
+                },
+            )
+        except Exception:
+            recursive_item = None
+
+        if recursive_item is not None:
+            # Put the bag into the player's starting inventory.
+            self.player_inventory.append(recursive_item)
+
+            # Now give *that bag* its own inventory, containing itself.
+            rec_inv = self.get_inventory(recursive_item.id)
+            rec_inv.append(recursive_item)
+
+            recursive_item.description = (
+                "A Platonic bag that appears to contain, among other things, itself."
+            )
+
         # DEBUG: spawn a few Inventory entities near the starting position so we
         # can pick them up and test nested containers / recursion.
-        self.debug_spawn_inventory_near_player(count=3)
+        self.debug_spawn_inventory_near_player(count=8)
+
 
 
  
@@ -1429,42 +1463,88 @@ class Game:
 
         Each Inventory is an item-entity with container=True and the glyph '∞',
         so it can be picked up with 'g' and opened from the inventory UI.
+
+        Distribution (per inventory):
+        - 50% special: 'clockwise' or 'ghostly' (equal chance) with matching tags.
+        - 50% cosmetic: one adjective from the cosmetic list (no clockwise/ghostly).
+        In all cases, exactly ONE adjective appears in the name.
         """
         level = self._level()
         if self.player_id not in level.actors:
             return
         player = level.actors[self.player_id]
 
+        # --- random fun adjectives for inventories (unchanged baseline) ---
+        adjectives = [
+            "fetid", "dubious", "spectacular", "outrageous", "sensible",
+            "colossal", "lightly-aged", "unfortunate", "malicious",
+            "courageous", "flavorful", "salty", "magnanimous",
+            "pernicious", "persuasive", "cartoonish", "trapezoidal",
+            "bovine", "spectral", "capitalized", "automatic",
+            "counter-clockwise", "mirrored", "recursive", "stout",
+            "lean", "microscopic", "semipermeable", "blessed",
+            "+1", "+2", "candlelit", "smoky", "smoked", "cozy",
+            "uninhabitable", "nuclear", "deathly", "ferocious",
+            "fractious", "queer", "rectilinear", "lavender-scented",
+            "hopefully not racist", "erotic", "far-fetched", "amazing",
+            "underwhelming", "carnivorous", "mysterious", "arctic",
+            "celestial", "fiery", "toasty", "room temperature",
+            "unassuming", "subtle", "gaudy", "ornate", "gem-encrusted",
+            "golden", "wooden", "marbled", "spiked", "luminescent",
+            "electrified", "poisonous", "venomous", "mangled",
+            "malfunctioning", "twisted", "octonionic", "eldritch", "malted",
+            "syrupy", "tumultuous", "festooned", "inappropriate", "entropic",
+            "extropic", "overpopulated", "arbitrary", "cannibalistic",
+            "ecstatic", "carbon-based", "semifluid", "carbonated",
+            "vitamin-rich", "emotionally vulnerable", "disgruntled",
+            "cannibalistic", "vegan-friendly", "emphatic", "plain old",
+            "cream-filled", "inexcusable", "historically accurate",
+            "randomized", "lubricated", "grape-flavored", "excitable",
+            "tasteless", "vintage", "incandescent", "steam-powered",
+        ]
+
+        # Special effect adjectives (these drive tags / visuals):
+        special_adjectives = ("clockwise", "ghostly")
+
+        # Cosmetic adjectives exclude the special ones.
+        cosmetic_adjectives = [
+            a for a in adjectives
+            if a.lower() not in ("clockwise", "ghostly")
+        ]
+
+        # Shuffle cosmetic pool so we can pop without duplicates in this batch.
+        cosmetic_pool = list(cosmetic_adjectives)
+        self.rng.shuffle(cosmetic_pool)
+
+        def next_cosmetic_adj() -> str:
+            nonlocal cosmetic_pool
+            if not cosmetic_pool:
+                # Refill & reshuffle if we somehow exhaust the pool.
+                cosmetic_pool = list(cosmetic_adjectives)
+                self.rng.shuffle(cosmetic_pool)
+            return cosmetic_pool.pop()
+
         def place_inventory(pos: Tuple[int, int]) -> None:
             x, y = pos
 
-            # --- random fun adjectives for inventories (unchanged) ---
-            adjectives = [
-                "fetid", "dubious", "spectacular", "outrageous", "sensible",
-                "colossal", "lightly-aged", "unfortunate", "malicious",
-                "courageous", "flavorful", "salty", "magnanimous",
-                "pernicious", "persuasive", "cartoonish", "trapezoidal",
-                "bovine", "spectral", "capitalized", "clockwise",
-                "counter-clockwise", "mirrored", "recursive", "stout",
-                "lean", "microscopic", "semipermeable", "blessed",
-                "+1", "+2", "candlelit", "smoky", "smoked", "cozy",
-                "uninhabitable", "nuclear", "deathly", "ferocious",
-                "fractious", "queer", "rectilinear", "lavender-scented",
-                "hopefully not racist", "erotic", "far-fetched", "amazing",
-                "underwhelming", "carnivorous", "mysterious", "arctic",
-                "celestial", "fiery", "toasty", "room temperature",
-                "unassuming", "subtle", "gaudy", "ornate", "gem-encrusted",
-                "golden", "wooden", "marbled", "spiked", "luminescent",
-                "electrified", "poisonous", "venomous", "mangled",
-                "malfunctioning", "twisted", "octonionic", "eldritch", "malted",
-                "syrupy", "tumultuous", "festooned", "inappropriate", "entropic",
-                "extropic", "overpopulated", "arbitrary", "cannibalistic",
-                "ecstatic", "carbon-based", "semifluid", "carbonated",
-                "vitamin-rich", "emotionally vulnerable", "disgruntled",
-                "cannibalistic", "vegan-friendly", "emphatic", "ghostly",
-                "cream-filled", "inexcusable", "historically accurate"
-            ]
-            adj = self.rng.choice(adjectives)
+            # Roll which kind of inventory this is.
+            r = self.rng.random()
+            adj: str
+            tags: dict[str, object] = {}
+
+            if r < 0.5:
+                # 50% special: equal chance clockwise / ghostly
+                special_adj = self.rng.choice(special_adjectives)
+                adj = special_adj
+
+                if special_adj == "clockwise":
+                    tags["clockwise_inventory"] = True
+                elif special_adj == "ghostly":
+                    tags["ghostly_inventory"] = True
+            else:
+                # 50% cosmetic: one from the cosmetic pool, no special tag
+                adj = next_cosmetic_adj()
+
             display_name = f"{adj} Inventory"
 
             # Random color, overriding the template's default
@@ -1474,18 +1554,23 @@ class Game:
                 self.rng.randint(80, 255),
             )
 
+            overrides: dict[str, object] = {
+                "name": display_name,
+                "color": color,
+            }
+            if tags:
+                overrides["tags"] = tags
+
             ent = self._spawn_entity_from_template(
                 "debug_inventory",
                 (x, y),
-                overrides={
-                    "name": display_name,
-                    "color": color,
-                },
+                overrides=overrides,
             )
             ent.description = "Definitely NOT a bag, it's much more Platonic than that."
+
             level.entities[ent.id] = ent
-
-
+            # Ensure it has an inventory slot allocated
+            self.get_inventory(ent.id)
 
         spawned = self._spawn_entities_near(
             level,
@@ -1502,6 +1587,7 @@ class Game:
                 self.log.add("Inventory sale! Inventory inventory must go!")
         else:
             self.log.add("This is no place for an inventory.")
+
 
 
 
@@ -2061,27 +2147,18 @@ class Game:
 
 
     def take_from_container(self, container_id: str, index: int) -> None:
-        """Move an item from another entity's inventory into the current host's.
+        """Move an item from another entity's inventory into the player's.
 
-        This is the backend for the UI's 'Take' action, and can also be
-        used by AI later. It does not assume the container is on the ground
-        or visible – it's purely structural.
+        Legacy helper used by some older UIs / AI. Newer code should prefer
+        ``move_item_between_inventories`` directly so we have a single place
+        to handle recursive containers and logging.
         """
-        # Inventory we are taking *from* (e.g. chest, bag, rock, goblin).
-        src_inv = self.get_inventory(container_id)
-        if not (0 <= index < len(src_inv)):
-            return
+        self.move_item_between_inventories(
+            container_id,
+            index,
+            self.player_id,
+        )
 
-        # Item being taken.
-        ent = src_inv.pop(index)
-
-        # Where it goes: always into the current host's inventory.
-        dst_inv = self.player_inventory
-        dst_inv.append(ent)
-
-        name = getattr(ent, "name", None) or "item"
-        article = "an" if name and name[0].lower() in "aeiou" else "a"
-        self.log.add(f"You take {article} {name.lower()}.")
 
 
     def move_item_between_inventories(
@@ -2103,6 +2180,18 @@ class Game:
         if not (0 <= index < len(src_inv)):
             return
 
+        # Peek at the item first so we can detect self-removal on recursive bags.
+        ent = src_inv[index]
+        if getattr(ent, "id", None) == src_owner_id:
+            # Special case: a container trying to remove itself from its own inventory.
+            # Do not mutate any inventories; just narrate the failure.
+            name = getattr(ent, "name", None) or "item"
+            self.log.add(
+                f"You turn the {name.lower()} inside out, but it remains itself."
+            )
+            return
+
+        # Normal case: actually move the item.
         ent = src_inv.pop(index)
         dst_inv = self.get_inventory(dest_owner_id)
         dst_inv.append(ent)
@@ -2116,13 +2205,28 @@ class Game:
         else:
             dest_label = dest_owner_id
             level = self._level()
+
+            # First try level entities / actors
             dest_ent = level.entities.get(dest_owner_id) or level.actors.get(dest_owner_id)
+
+            # If not found there, search through all inventories for a matching entity id
+            if dest_ent is None:
+                for inv_owner, items in self.inventories.items():
+                    for it in items:
+                        if getattr(it, "id", None) == dest_owner_id:
+                            dest_ent = it
+                            break
+                    if dest_ent is not None:
+                        break
+
             if dest_ent is not None:
                 dest_name = getattr(dest_ent, "name", None)
                 if dest_name:
                     dest_label = dest_name
 
         self.log.add(f"You put {article} {name.lower()} into {dest_label}.")
+
+
 
 
 
