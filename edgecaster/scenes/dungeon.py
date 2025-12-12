@@ -14,7 +14,7 @@ from edgecaster.systems.targeting import predict_aim_preview
 from edgecaster.patterns import motion as pattern_motion
 from edgecaster.ui.ability_bar import AbilityBarState
 from edgecaster.systems.actions import get_action, describe_entity_for_look
-
+from edgecaster.visuals import VisualProfile, apply_visual_panel  
 
 TargetKind = Literal["tile", "vertex", "look", "position"]
 
@@ -169,7 +169,65 @@ class DungeonScene(Scene):
     def render(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         if self.game is None:
             return
-        renderer.draw_dungeon_frame(self.game)
+
+        # Use the per-scene visual profile if present.
+        visual = getattr(self, "visual_profile", None) or VisualProfile()
+
+        # If the profile is “identity”, just render normally.
+        if (
+            visual.scale_x == 1.0 and visual.scale_y == 1.0
+            and visual.offset_x == 0.0 and visual.offset_y == 0.0
+            and visual.angle == 0.0
+            and visual.alpha == 1.0
+            and not visual.flip_x and not visual.flip_y
+        ):
+            # Normal path: let the renderer draw and present as usual.
+            renderer.draw_dungeon_frame(self.game)
+            return
+
+        # Otherwise: draw the dungeon into an off-screen panel and apply the transform.
+        width, height = renderer.width, renderer.height
+        panel = pygame.Surface((width, height), pygame.SRCALPHA)
+
+        # Temporarily redirect the renderer to draw into the panel, and
+        # *suppress* its own _present() so we don't present the unrotated frame.
+        old_surface = renderer.surface
+        old_present = getattr(renderer, "_present", None)
+
+        try:
+            renderer.surface = panel
+
+            if old_present is not None:
+                # Monkey-patch _present to a no-op while we render into the panel.
+                renderer._present = lambda: None  # type: ignore[assignment]
+
+            renderer.draw_dungeon_frame(self.game)
+
+        finally:
+            # Restore renderer surface and _present implementation.
+            renderer.surface = old_surface
+            if old_present is not None:
+                renderer._present = old_present  # type: ignore[assignment]
+
+        # Treat the entire logical screen as the “window rect” for this scene.
+        window_rect = pygame.Rect(0, 0, width, height)
+
+        # Apply the scene's visual profile, blitting the transformed panel
+        # into the real logical surface.
+        apply_visual_panel(
+            base_surface=renderer.surface,
+            logical_surface=panel,
+            window_rect=window_rect,
+            visual=visual,
+        )
+
+        # Finally, present the transformed frame to the actual display.
+        if hasattr(renderer, "_present"):
+            renderer._present()
+        else:
+            renderer.present()
+
+
 
     # Legacy compatibility: if SceneManager falls back to run()
     def run(self, manager: "SceneManager") -> None:  # pragma: no cover - legacy path
@@ -1401,11 +1459,12 @@ class DungeonScene(Scene):
             return
 
         if kind == "yawp":
-            if hasattr(game, "queue_player_action"):
-                game.queue_player_action("yawp")
-            else:
-                game.log.add("You yawp! 'Yawp!'")
+            # Defer to the central Action definition for yawp.
+            # This lets _debug_yawp in actions.py handle both the log
+            # message and the visual rotation test.
+            trigger_ability_effect(game, "yawp")
             return
+
 
         if kind == "wait":
             if hasattr(game, "queue_player_wait"):

@@ -51,31 +51,39 @@ def apply_visual_panel(base_surface, logical_surface, window_rect, visual: Visua
 
 
 def unproject_mouse(pos_display, window_rect, visual: VisualProfile) -> tuple[float, float]:
-    """Convert a display-space mouse position back into panel-local coordinates."""
-    # Translate coordinates so the panel center (with offset) is the origin.
+    """Convert a display- or surface-space mouse position back into panel-local coordinates.
+
+    This is the exact inverse of apply_visual_panel(), assuming:
+      - logical panel size = window_rect.size
+      - scale_x/scale_y are applied about the panel center
+      - flips are applied after scaling
+      - rotation is about the panel center
+      - final blit centers the transformed panel on window_rect.center + offset
+    """
+    # Translate so that the transformed panel center is at the origin
     dx = pos_display[0] - (window_rect.centerx + visual.offset_x)
     dy = pos_display[1] - (window_rect.centery + visual.offset_y)
 
-    # Undo rotation by applying the inverse angle.
+    # Undo rotation (inverse angle)
     if visual.angle:
-        angle_rad = -math.radians(visual.angle)
+        angle_rad = math.radians(visual.angle)
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
         dx, dy = (dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a)
 
-    # Undo flips.
+    # Undo flips
     if visual.flip_x:
         dx = -dx
     if visual.flip_y:
         dy = -dy
 
-    # Undo scaling, guarding against extremely small values to avoid division by zero.
+    # Undo scaling (guard against zero/near-zero)
     safe_scale_x = visual.scale_x if abs(visual.scale_x) > 1e-6 else 1.0
     safe_scale_y = visual.scale_y if abs(visual.scale_y) > 1e-6 else 1.0
     dx /= safe_scale_x
     dy /= safe_scale_y
 
-    # Convert from centered coordinates back to panel-local (0,0 at top-left).
+    # Convert back from centered coords to panel-local top-left origin
     panel_x = dx + window_rect.width / 2
     panel_y = dy + window_rect.height / 2
     return (panel_x, panel_y)
