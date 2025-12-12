@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pygame
 from typing import Optional
-
+import math
 from edgecaster.visuals import VisualProfile, apply_visual_panel, unproject_mouse
 
 
@@ -247,8 +247,24 @@ class MenuScene(Scene):
         self._menu_input = MenuInput()
         # NEW: list of rects for hit-testing menu options with the mouse
         self._option_rects: list[pygame.Rect] = []
+        # NEW: treat menu as a fullscreen panel by default
+        self.window_rect: Optional[pygame.Rect] = None
+
+
+    def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """For plain menus, default to a fullscreen window_rect."""
+        if self.window_rect is not None:
+            return
+        renderer = manager.renderer
+        self.window_rect = pygame.Rect(0, 0, renderer.width, renderer.height)
+
+    def _current_visual(self) -> VisualProfile:
+        """Return the active visual profile for this menu."""
+        return self.visual_profile or VisualProfile()
+
 
     # ---- hooks for subclasses ------------------------------------------------
+
 
     def get_menu_items(self) -> list[str]:
         raise NotImplementedError
@@ -323,25 +339,38 @@ class MenuScene(Scene):
                     menu.handle_keyup(event.key)
 
                 elif event.type == pygame.MOUSEMOTION:
-                    # Convert from display coords to surface coords if needed
+                    # Convert from display coords → surface coords → panel-local coords.
                     if hasattr(renderer, "_to_surface"):
-                        mx, my = renderer._to_surface(event.pos)
+                        sx, sy = renderer._to_surface(event.pos)
                     else:
-                        mx, my = event.pos
+                        sx, sy = event.pos
+
+                    self._ensure_window_rect(manager)
+                    assert self.window_rect is not None
+                    visual = self._current_visual()
+
+                    mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
                     self._update_hover_from_mouse((mx, my))
 
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    # Same projection logic for clicks.
                     if hasattr(renderer, "_to_surface"):
-                        mx, my = renderer._to_surface(event.pos)
+                        sx, sy = renderer._to_surface(event.pos)
                     else:
-                        mx, my = event.pos
+                        sx, sy = event.pos
+
+                    self._ensure_window_rect(manager)
+                    assert self.window_rect is not None
+                    visual = self._current_visual()
+
+                    mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
                     idx = self._index_from_mouse_pos((mx, my))
                     if idx is not None:
                         self.selected_idx = idx
-                        # Behave like pressing Enter on this option
                         if self.on_activate(idx, manager):
                             running = False
                             break
+
 
 
             # Key-repeat
@@ -350,11 +379,34 @@ class MenuScene(Scene):
                 if self._handle_action(repeat_action, manager, options):
                     break
 
-            # ---- drawing ----
-            surface.fill(renderer.bg)
-            self._draw_contents(manager, options)
+            # ----------------- DRAW -----------------
+            self._ensure_window_rect(manager)
+            assert self.window_rect is not None
+            rect = self.window_rect
+
+            # Draw into a panel the size of window_rect
+            panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+            panel.fill(renderer.bg)
+
+            # Temporarily pretend the panel is the renderer surface
+            # so _draw_contents keeps working with its existing math.
+            old_surface = renderer.surface
+            old_w, old_h = renderer.width, renderer.height
+            try:
+                renderer.surface = panel
+                renderer.width, renderer.height = rect.width, rect.height
+                self._draw_contents(manager, options)
+            finally:
+                renderer.surface = old_surface
+                renderer.width, renderer.height = old_w, old_h
+
+            # Apply the visual profile to blit the panel into the real surface
+            visual = self._current_visual()
+            apply_visual_panel(renderer.surface, panel, rect, visual)
+
             renderer.present()
             clock.tick(60)
+
 
     # ---- internal helpers ----------------------------------------------------
 
@@ -509,9 +561,10 @@ class PopupMenuScene(MenuScene):
         # Ensure we have a window rect
         self._ensure_window_rect(manager)
         assert self.window_rect is not None
-        visual = self.visual_profile or VisualProfile()
 
-
+        def _current_visual() -> VisualProfile:
+            # Always fetch the latest profile so rotation/scale stay in sync
+            return self.visual_profile or VisualProfile()
 
         def handle_action(action: Optional[str]) -> bool:
             """
@@ -596,28 +649,43 @@ class PopupMenuScene(MenuScene):
                     menu.handle_keyup(event.key)
 
                 elif event.type == pygame.MOUSEMOTION:
-                    if self.window_rect is not None:
-                        mx, my = unproject_mouse(event.pos, self.window_rect, visual)
+                    # Convert from display coords → surface coords → panel-local coords.
+                    if hasattr(renderer, "_to_surface"):
+                        sx, sy = renderer._to_surface(event.pos)
                     else:
-                        mx, my = event.pos
+                        sx, sy = event.pos
+
+                    if self.window_rect is not None:
+                        visual = _current_visual()
+                        mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
+                    else:
+                        mx, my = (sx, sy)
+
                     self._update_hover_from_mouse((mx, my))
 
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if self.window_rect is not None:
-                        mx, my = unproject_mouse(event.pos, self.window_rect, visual)
+                    # Same projection logic for clicks.
+                    if hasattr(renderer, "_to_surface"):
+                        sx, sy = renderer._to_surface(event.pos)
                     else:
-                        mx, my = event.pos
+                        sx, sy = event.pos
+
+                    if self.window_rect is not None:
+                        visual = _current_visual()
+                        mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
+                    else:
+                        mx, my = (sx, sy)
+
                     idx = self._index_from_mouse_pos((mx, my))
                     if idx is not None:
                         self.selected_idx = idx
-                        # Same semantics as activate
                         if self.on_activate(idx, manager):
                             running = False
                             break
-            # 💡 NEW: if we have been told to stop, don't draw another frame
+
+            # 💡 If we have been told to stop, don't draw another frame
             if not running:
                 break
-
 
             # ----------------- DRAW -----------------
 
@@ -641,7 +709,45 @@ class PopupMenuScene(MenuScene):
             renderer.present()
             clock.tick(60)
 
+
     # ------------------------------------------------------------------ #
+
+    def _panel_point_to_surface(
+        self,
+        local_x: float,
+        local_y: float,
+        rect: pygame.Rect,
+        visual: VisualProfile,
+    ) -> tuple[float, float]:
+        """
+        Forward-transform a point from panel-local coordinates into surface-space,
+        using the same math as apply_visual_panel().
+        """
+        # Centered panel coords
+        dx = local_x - rect.width / 2.0
+        dy = local_y - rect.height / 2.0
+
+        # Scale
+        dx *= visual.scale_x
+        dy *= visual.scale_y
+
+        # Flips
+        if visual.flip_x:
+            dx = -dx
+        if visual.flip_y:
+            dy = -dy
+
+        # Rotation (pygame uses CCW-positive angles)
+        if visual.angle:
+            angle_rad = math.radians(visual.angle)
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+            dx, dy = (dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a)
+
+        # Translate back to surface-space center + offset
+        sx = dx + rect.centerx + visual.offset_x
+        sy = dy + rect.centery + visual.offset_y
+        return sx, sy
 
     def _draw_panel(self, manager: "SceneManager", options: list[str]) -> None:  # type: ignore[name-defined]
         """
@@ -679,7 +785,8 @@ class PopupMenuScene(MenuScene):
             y += 8
 
         # Menu items drawn in panel-local space
-        self._option_rects = []
+        self._option_rects = []          # panel-local
+
         for idx, label in enumerate(options):
             selected = (idx == self.selected_idx)
             color = renderer.player_color if selected else renderer.fg
@@ -693,29 +800,17 @@ class PopupMenuScene(MenuScene):
 
             self._option_rects.append(local_rect)
 
-
             y += text.get_height() + 4
 
         # Footer remains panel-local
-
         footer = getattr(self, "FOOTER_TEXT", MENU_FOOTER_HELP)
-        footer_text = small_font.render(footer, True, renderer.dim)
-        fx = (panel.get_width() - footer_text.get_width()) // 2
-        fy = panel.get_height() - footer_text.get_height() - 8
-        panel.blit(footer_text, (fx, fy))
+        if footer:
+            footer_text = small_font.render(footer, True, renderer.dim)
+            fx = (panel.get_width() - footer_text.get_width()) // 2
+            fy = panel.get_height() - footer_text.get_height() - 8
+            panel.blit(footer_text, (fx, fy))
 
+        # Finally, draw the panel to the main surface with the active visual profile
         visual = self.visual_profile or VisualProfile()
         apply_visual_panel(renderer.surface, panel, rect, visual)
 
-    def _index_from_mouse_pos(self, pos: tuple[int, int]) -> int | None:
-        """Return index of option under this mouse position, or None."""
-        mx, my = pos
-        for i, rect in enumerate(self._option_rects):
-            if rect.collidepoint(mx, my):
-                return i
-        return None
-
-    def _update_hover_from_mouse(self, pos: tuple[int, int]) -> None:
-        idx = self._index_from_mouse_pos(pos)
-        if idx is not None:
-            self.selected_idx = idx

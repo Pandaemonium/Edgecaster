@@ -469,6 +469,8 @@ def _debug_yawp(game: Any, actor_id: str, **kwargs: Any) -> None:
     Simple sandbox action used to test the action system.
 
     When invoked, the acting entity emits a mighty yawp into the game log.
+    It also rotates the current scene's visual profile by 90 degrees as
+    a visual test (typically the dungeon scene).
     """
     actor = getattr(getattr(game, "actors", {}), "get", lambda *_: None)(actor_id)
     if actor is not None:
@@ -481,6 +483,15 @@ def _debug_yawp(game: Any, actor_id: str, **kwargs: Any) -> None:
     else:
         # Fallback: print to stdout if no log is available.
         print(f"{who} yawps! 'Yawp!'")
+
+    # Screen shake test: impulse
+    mgr = getattr(game, "scene_manager", None)
+    if mgr and hasattr(mgr, "renderer"):
+        rnd = mgr.renderer
+        if hasattr(rnd, "apply_shake"):
+            rnd.apply_shake(amplitude=18.0, duration_ms=350)
+
+
 
 
 @register_action("wait", label="Wait", speed="fast")

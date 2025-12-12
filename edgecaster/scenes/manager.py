@@ -180,6 +180,9 @@ class SceneManager:
     # ------------------------------------------------------------------ #
     # Live-loop driver for scenes that set uses_live_loop = True.
 
+    # ------------------------------------------------------------------ #
+    # Live-loop driver for scenes that set uses_live_loop = True.
+
     def _run_live_scene(self, scene: Scene) -> None:
         renderer = self.renderer
         clock = pygame.time.Clock()
@@ -194,11 +197,25 @@ class SceneManager:
                 if event.type == pygame.QUIT:
                     self.set_scene(None)
                     return
+
+                # Window resize: update the renderer's display surface
+                if event.type == pygame.VIDEORESIZE:
+                    # Only call if the renderer actually has this helper
+                    if hasattr(renderer, "handle_resize"):
+                        renderer.handle_resize(event.w, event.h)
+                    else:
+                        # Fallback: just resize the display surface
+                        pygame.display.set_mode((event.w, event.h), renderer.surface_flags)
+                    # Don't forward this to scenes; it's purely a view concern.
+                    continue
+
                 # Global fullscreen toggle
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
                     renderer.toggle_fullscreen()
                     # Do not forward to scene; handled globally.
                     continue
+
+                # Normal path: scene-specific handling
                 scene.handle_event(event, self)
 
             # Update
@@ -211,3 +228,4 @@ class SceneManager:
             if getattr(renderer, "quit_requested", False):
                 renderer.quit_requested = False
                 return
+

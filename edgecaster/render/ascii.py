@@ -16,6 +16,8 @@ from edgecaster.visuals import VisualProfile, apply_visual_panel
 
 
 
+
+
 class AsciiRenderer:
     def __init__(self, width: int, height: int, tile: int) -> None:
         # refactor: constructor currently owns UI/interaction state; migrate ability/target/config/lorenz state
@@ -31,13 +33,36 @@ class AsciiRenderer:
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.surface_flags = pygame.RESIZABLE
-        # render surface at native resolution; display may be larger in fullscreen
+
+
+
+        #Will clean this up soon to dedicated visual effects file#
+        # screen shake (impulse-based)
+
+        self.shake_time_ms = 0       # ms remaining
+        self.shake_amplitude = 0.0   # initial magnitude
+        self.shake_decay_ms = 250    # decay constant (tweakable)
+        self.shake_last_tick_ms = 0  # last time we updated the shake timer
+
+
+
+        # Logical render surface stays at the configured resolution.
         self.surface = pygame.Surface((width, height))
         self.fullscreen = False
-        self.display = pygame.display.set_mode((width, height), self.surface_flags)
+
+        # Clamp the initial *windowed* size to the current desktop resolution so
+        # we never open a window larger than the screen.
+        info = pygame.display.Info()
+        max_w, max_h = info.current_w, info.current_h
+        win_w = min(width, max_w)
+        win_h = min(height, max_h)
+        self.windowed_size = (win_w, win_h)
+
+        self.display = pygame.display.set_mode(self.windowed_size, self.surface_flags)
+
         self.lb_off = (0, 0)  # letterbox offset when centering
         self.lb_scale = 1.0   # letterbox scale factor
-        self.lb_scale = 1.0   # letterbox scale factor
+
         pygame.display.set_caption("Edgecaster (ASCII prototype)")
         self.font = pygame.font.SysFont("consolas", self.base_tile)  # UI font (fixed)
         self.map_font = pygame.font.SysFont("consolas", self.tile)  # map glyphs, scales with zoom
@@ -103,12 +128,25 @@ class AsciiRenderer:
 
 
 
-    # ----        # Optional world-level visual profile (e.g. curses/blessings).
-        # SceneManager can set this via set_global_visual_profile().
-        self.global_visual_profile: VisualProfile | None = None
+
 
     # UI state access (scene-owned view-model preferred)                 #
     # ------------------------------------------------------------------ #
+
+
+    def handle_resize(self, width: int, height: int) -> None:
+        """
+        Handle a window resize event.
+
+        We keep the logical render surface (self.surface) at the original
+        width/height and only resize the display window. _present() already
+        uses display.get_size() to compute letterboxing, so this is enough.
+        """
+        self.display = pygame.display.set_mode((width, height), self.surface_flags)
+        # _present() will recompute lb_off / lb_scale on the next frame.
+
+
+
 
     def _ui_attr(self, name: str, default=None):
         """Prefer a scene-provided ui_state if attached; fallback to renderer fields."""
@@ -130,11 +168,20 @@ class AsciiRenderer:
     def toggle_fullscreen(self) -> None:
         flags = self.display.get_flags()
         if flags & pygame.FULLSCREEN:
-            self.display = pygame.display.set_mode((self.width, self.height), self.surface_flags)
+            # Leaving fullscreen → go back to windowed, but clamp to desktop.
+            info = pygame.display.Info()
+            max_w, max_h = info.current_w, info.current_h
+            win_w = min(self.windowed_size[0], max_w)
+            win_h = min(self.windowed_size[1], max_h)
+            self.windowed_size = (win_w, win_h)
+            self.display = pygame.display.set_mode(self.windowed_size, self.surface_flags)
             self.fullscreen = False
         else:
+            # Entering fullscreen → remember current windowed size.
+            self.windowed_size = self.display.get_size()
             self.display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
             self.fullscreen = True
+
 
     def is_fullscreen(self) -> bool:
         return self.fullscreen
@@ -1477,6 +1524,42 @@ class AsciiRenderer:
 
         panel_rect = pygame.Rect(ox, oy, new_w, new_h)
 
+        # -------------------------------------------------------
+        # Screen shake (impulse → exponential decay) -- CLEAN UP to dedicated visual effects file
+        # -------------------------------------------------------
+        if self.shake_time_ms > 0:
+            now = pygame.time.get_ticks()
+
+            # Compute elapsed time since last shake update
+            if self.shake_last_tick_ms == 0:
+                elapsed = 0
+            else:
+                elapsed = now - self.shake_last_tick_ms
+
+            # Decrease remaining time
+            self.shake_time_ms = max(0, self.shake_time_ms - elapsed)
+            self.shake_last_tick_ms = now
+
+            # remaining fraction (clamped 0..1 so it never grows above amplitude)
+            frac = max(0.0, min(1.0, self.shake_time_ms / self.shake_decay_ms))
+            amp = self.shake_amplitude * frac
+
+            import random
+            jitter_x = int(random.uniform(-amp, amp))
+            jitter_y = int(random.uniform(-amp, amp))
+            panel_rect.x += jitter_x
+            panel_rect.y += jitter_y
+
+            # If time ran out this frame, snap to rest.
+            if self.shake_time_ms <= 0:
+                self.shake_time_ms = 0
+                self.shake_last_tick_ms = 0
+        else:
+            # Ensure clean rest state
+            self.shake_time_ms = 0
+            self.shake_last_tick_ms = 0
+
+
         global_visual = getattr(self, "global_visual_profile", None)
 
         if global_visual is None:
@@ -1500,3 +1583,14 @@ class AsciiRenderer:
         self.flash_text = text
         self.flash_color = color
         self.flash_until_ms = pygame.time.get_ticks() + duration_ms
+        
+        
+        
+#Clean this to a dedicated visual effects file
+    def apply_shake(self, amplitude: float = 12.0, duration_ms: int = 250):
+        """
+        Trigger a shaking impulse: amplitude in pixels, duration in ms.
+        """
+        self.shake_amplitude = amplitude
+        self.shake_time_ms = duration_ms
+        self.shake_last_tick_ms = pygame.time.get_ticks()
