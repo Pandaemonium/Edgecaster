@@ -43,11 +43,17 @@ def transform_pattern(pattern: Pattern, rotation_deg: float) -> None:
 def start_motion(level, delta: Tuple[float, float], rotation_deg: float, interval: int = 10) -> None:
     """
     Store motion state on the level so _advance_time can step it.
+
+    We step every tick for smoother motion; scale per-tick delta/rotation so the
+    overall rate stays the same as the requested interval.
     """
+    step_int = max(1, interval)
+    step_delta = (delta[0] / step_int, delta[1] / step_int)
+    step_rot = rotation_deg / step_int
     level.pattern_motion = {
-        "delta": delta,
-        "rotation": rotation_deg,
-        "interval": interval,
+        "delta": step_delta,
+        "rotation": step_rot,
+        "interval": 1,  # tick every game tick for smoother motion
         "accum": 0,
     }
 

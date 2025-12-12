@@ -1,9 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import heapq
 import threading
 from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
 import yaml
+from collections import deque
 
 
 from edgecaster import config, events
@@ -74,22 +75,25 @@ def _los(world: World, a: Tuple[int, int], b: Tuple[int, int]) -> bool:
 @dataclass
 class MessageLog:
     capacity: int = 100000
-    messages: List[str] | None = None
+    messages: deque[str] | None = None
 
     def __post_init__(self) -> None:
         if self.messages is None:
-            self.messages = []
+            # deque for O(1) append/pop with bounded history
+            self.messages = deque(maxlen=self.capacity)
         # Bump capacity for older saves.
         if self.capacity < 1000:
             self.capacity = 100000
+        if self.messages is not None:
+            self.messages = deque(self.messages, maxlen=self.capacity)
 
     def add(self, text: str) -> None:
         self.messages.append(text)
-        if len(self.messages) > self.capacity:
-            self.messages.pop(0)
 
     def tail(self, n: int) -> List[str]:
-        return self.messages[-n:]
+        if n <= 0:
+            return []
+        return list(self.messages)[-n:]
 
 
 @dataclass
@@ -109,7 +113,7 @@ class LevelState:
     up_stairs: Optional[Tuple[int, int]] = None
     down_stairs: Optional[Tuple[int, int]] = None
     hover_vertex: Optional[int] = None  # for renderer hinting
-    spotted: set = None  # seen actors
+    spotted: set[str] = field(default_factory=set)  # seen actors
     coord: Tuple[int, int, int] = (0, 0, 0)  # (x, y, depth)
     lab_state: Optional["LabState"] = None  # lab-specific state if this is a lab zone
 
@@ -133,7 +137,6 @@ class Game:
             enemy_templates.load_enemy_templates(logger=self._debug)
         except Exception as e:
             self._debug(f"Enemy template load failed: {e!r}")
-        # urgent message system (level-ups, death, important events)
         # urgent message system (level-ups, death, important events)
         self.urgent_message: str | None = None
         self.urgent_resolved: bool = True
@@ -366,13 +369,6 @@ class Game:
 
 
  
-
-        # enemies
-        
-        
-
-
-
 
         self._spawn_enemies(self._level(), count=4)
 
@@ -2012,8 +2008,8 @@ class Game:
             if ent.pos != pos:
                 continue
 
-            # Heuristic: anything with a 'faction' attribute we treat as an actor.
-            if hasattr(ent, "faction"):
+            # Prefer actual Actors when present; otherwise treat as item/feature.
+            if isinstance(ent, Actor):
                 if actor_candidate is None:
                     actor_candidate = ent
             else:
@@ -2633,8 +2629,7 @@ class Game:
 
     def queue_player_wait(self) -> None:
         """Spend a turn doing nothing (useful for letting effects tick or luring enemies)."""
-        lvl = self._level()
-        self._advance_time(lvl, self.cfg.action_time_fast)
+        self.queue_actor_action(self.player_id, "wait")
     
     def queue_player_fractal(self, kind: str) -> None:
         lvl = self._level()
@@ -3126,7 +3121,6 @@ class Game:
             dx *= scale
             dy *= scale
         pattern_motion.start_motion(level, (dx, dy), rotation_deg, interval=10)
-        self._advance_time(level, self.cfg.action_time_fast)
 
     def act_destabilize(self, actor_id: str) -> None:
         """Teleport randomly within 10 tiles; 50% chance to take 10% max HP."""
@@ -3831,7 +3825,7 @@ class Game:
         self._on_enemy_killed(actor)
 
         # Use the canonical id (actor_id is a property alias if you made Actor→Entity)
-        aid = actor.actor_id
+        aid = actor.id
 
         # Remove from actors dict
         if aid in level.actors:

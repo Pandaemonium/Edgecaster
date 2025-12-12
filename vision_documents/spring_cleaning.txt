@@ -6,26 +6,9 @@ Legend: [CLEANUP] structural/no-behavior change
         [BEHAVIOR] gameplay change  
         [VISION] long-term direction
 
-===============================================================================
-SLICE 1: Renderer / Input Untangle [CLEANUP] — COMPLETE ENOUGH
-✓ ascii.py is draw-only  
-✓ Input routed exclusively through GameInput → GameCommand  
-✓ Lorenz logic removed from renderer  
-
-Remaining:
-- Minor overlay style cleanup in ascii.py
 
 ===============================================================================
-SLICE 2: Ability Bar / Actions Overhaul [CLEANUP] — COMPLETE
-✓ Metadata-driven ability bar  
-✓ Actions declare icons, tooltips, config buttons  
-✓ Ability sets derived dynamically from entity actions  
-
-Next:
-- Integrate class templates / origins into entity spawn path
-
-===============================================================================
-SLICE 3: Unified TargetMode [FOUNDATION COMPLETE]
+SLICE 1: Unified TargetMode [FOUNDATION COMPLETE]
 ✓ Tile, vertex, and look targeting unified  
 ✓ Mouse + keyboard symmetric  
 ✓ Look-mode inspect uses entity inheritance  
@@ -36,39 +19,7 @@ Next:
 - Multi-step targeting for complex spells
 
 ===============================================================================
-SLICE 4: Entity Inheritance System [NEW CORE]
-✓ YAML-driven prototypes with parents  
-✓ Description lookup via hierarchy  
-✓ Runtime metadata unified  
-
-Next:
-- Add materials, AI flags, physiology  
-- Begin standardizing combat stats in prototypes
-
-===============================================================================
-SLICE 5: Inventory Revamp [PARTIAL]
-✓ Nested containers stable  
-Remaining:
-- Stacking, sorting, weight, filter modes  
-- Integrate with panel-local UI pipeline
-
-===============================================================================
-SLICE 6: Visual Scene Pipeline [NEW FOUNDATION]
-Goal: generalize UI rendering, enable rotation/mirroring/scale effects.
-
-✓ visuals.py added  
-✓ VisualProfile struct  
-✓ apply_visual_panel + unproject_mouse implemented  
-✓ PopupMenuScene, UrgentMessageScene, OptionsScene migrated  
-✓ SceneManager + AsciiRenderer support global visual profiles (mirror curse)
-
-Next:
-- Migrate InventoryScene and DialogueScene fully to panel-local layout  
-- Add debug toggles: rotate(+5°), alpha pulses, recursive distortions  
-- Extend transform stack to dungeon rendering (optional wobble, holography)
-
-===============================================================================
-SLICE 7: Menu System Rework [CLEANUP — UPCOMING]
+SLICE 2: Menu System Rework [CLEANUP — UPCOMING]
 The current menu ecosystem is inconsistent in scale/layout.
 
 Scheduled pass:
@@ -79,7 +30,7 @@ Scheduled pass:
 - Use panel-local rendering everywhere
 
 ===============================================================================
-SLICE 8: Data-Driven Everything [VISION]
+SLICE 3: Data-Driven Everything [VISION]
 - Expand prototypes with combat stats, resistances, materials  
 - Behavior components (curious, brittle, fractal, volatile)  
 - Procedural pantheons + lore through inheritance chains
@@ -91,6 +42,295 @@ CURRENT TACTICAL FOCUS
 → Extend targeting modes  
 → Demonstrate more transform-based UI (clockwise inventory, mirror curse)
 → Generalize data about visual transforms like "ghostly" and "clockwise" and gather them somewhere external to game.py, possibly with "conditions".
+
+
+Potential game.py refactor notes:
+
+1) Split the Game god-object into systems modules
+
+Problem: Game currently owns: spawning, overmap threading, scheduling, FOV/LOS, inventories, cooldowns/status, pattern ops, class kits, Lorenz aura, POI placement, debug helpers… It’s hard to reason about invariants, and changes risk side-effects.
+
+Codex instructions
+
+Create modules (or expand existing ones) and move code with minimal behavior change:
+
+edgecaster/systems/scheduler.py: _schedule, _advance_time, event heap type.
+
+edgecaster/systems/fov.py: _line_points, _los, _update_fov.
+
+edgecaster/systems/inventory.py: get_inventory, player_inventory, pickup/drop/eat/move_between_inventories`, recursion guard.
+
+edgecaster/systems/spawn.py: _make_zone, _spawn_enemies, _enemy_template_ids, _entity_templates, _spawn_entity_from_template, _spawn_poi_contents, helper placement methods.
+
+edgecaster/systems/status.py: _add_status, _tick_status, _has_status, _cooldown_tick, _slow_mult, regen tick.
+
+edgecaster/systems/pattern_ops.py: place/activate/subdivide/generators/reset/meditate + parameter logic.
+
+edgecaster/systems/lorenz_aura.py: _advance_lorenz, _lorenz_contact_damage, reset/init wrappers.
+
+edgecaster/systems/overmap.py: _init_overmap_params_and_grid, render thread, tile julia grid.
+
+Keep Game as an orchestrator that delegates into these modules.
+
+Keep public API stable (renderer calls still work).
+
+Done when
+
+game.py shrinks substantially; each moved function has same signature; game runs with no functional regressions.
+
+2) Fix action-system consistency (avoid “double-advance time” bugs)
+
+ Status: addressed for quick wins (act_push_pattern no longer advances time; queue_player_wait now routes through queue_actor_action). Full audit can continue later if needed.
+
+3) Make MessageLog efficient (avoid O(n) pops)
+
+Problem: MessageLog.add() does pop(0) when over capacity → O(n) per message. Capacity is huge (100k), so this can become expensive.
+
+ Status: addressed (MessageLog now uses deque with maxlen; tail preserved).
+
+4) Fix dataclass mutable defaults and type consistency
+
+Problem: LevelState.spotted: set = None should be field(default_factory=set) to avoid None checks and future footguns. Also typing is mixed (List vs list, | unions) without from __future__ import annotations at file top.
+
+ Status: addressed (LevelState.spotted now uses field(default_factory=set); dataclasses import updated).
+
+5) Stop relying on hasattr(ent, "faction") to distinguish actor vs entity
+
+ Status: addressed (entity lookup now uses isinstance(ent, Actor) instead of attribute heuristics).
+
+6) Establish and enforce “registry invariants” for level.actors and level.entities
+
+Problem: Many operations must keep both dicts in sync (spawning, killing, moving, possessing, stairs, etc.). This is easy to get wrong.
+
+Codex instructions
+
+Add helper methods on Game (or a LevelRegistry object):
+
+add_actor(level, actor)
+
+remove_actor(level, actor_id)
+
+add_entity(level, entity)
+
+remove_entity(level, entity_id)
+
+Replace all direct level.actors[...] = ... / del level.actors[...] / level.entities[...] = ... writes with helpers.
+
+In helpers, assert invariants in debug mode:
+
+Actor must exist in both maps if you intend them mirrored.
+
+Non-actor entities must not be in actors.
+
+Done when
+
+A grep shows almost no direct mutations of those dicts outside helpers.
+
+_kill_actor and spawn paths always use helpers.
+
+7) Fix _kill_actor id usage (actor.actor_id vs actor.id)
+
+Problem: _kill_actor uses aid = actor.actor_id with a comment “if you made Actor→Entity”. If Actor doesn’t actually have actor_id, this is a runtime crash.
+
+Codex instructions
+
+Pick one canonical identifier. Almost certainly: actor.id.
+
+Change _kill_actor to use actor.id consistently.
+
+If you do have actor.actor_id somewhere, delete the alias or ensure it always exists; but don’t mix.
+
+Done when
+
+No code references actor.actor_id unless it is guaranteed by the class definition.
+
+8) Overmap rendering thread safety (pygame surfaces + shared state)
+
+Problem: _background_render_map builds surf and stores it into self.world_map_cache from a background thread. If surf is a pygame Surface, pygame is not always thread-safe. Also world_map_cache/world_map_ready/world_map_rendering are written without locks.
+
+Codex instructions
+
+Add a threading.Lock (e.g., self._overmap_lock) guarding all reads/writes of overmap shared state.
+
+If _render_overmap touches pygame APIs, move rendering to main thread or render into raw pixel arrays in worker thread and convert to Surface on main thread.
+
+Make _ensure_overmap_ready() safe with the lock.
+
+Done when
+
+No race conditions when opening world map repeatedly.
+
+No intermittent crashes/hangs in map render.
+
+9) Centralize config/constants (reduce magic numbers)
+
+Problem: Many gameplay constants are hardcoded: Lorenz params, ignite/regrow duration and costs, freeze costs, “radius 10”, “slow decay 0.1 per 10 ticks”, etc.
+
+Codex instructions
+
+Move constants into:
+
+config.GameConfig where they are “game tuning” values, OR
+
+dedicated module constants (e.g., edgecaster/tuning.py) if not truly config-driven yet.
+
+Replace literals with named config fields.
+
+For per-class defaults (Lorenz), consider Character/class template fields.
+
+Done when
+
+Major gameplay constants are discoverable in config/tuning.
+
+10) Make inventory/entity lookup fast (avoid O(N) scans across all inventories)
+
+Problem: move_item_between_inventories tries to label destination by scanning level.entities/actors, then scanning all inventories to find an entity with matching id. This becomes slow as inventories grow.
+
+Codex instructions
+
+Introduce a global id -> Entity index for all known entities, including those inside inventories (or store container ownership differently).
+
+Update it whenever entities are spawned, picked up, moved between inventories, dropped, destroyed.
+
+Replace the “search all inventories” fallback with an O(1) lookup.
+
+Done when
+
+No “scan all inventories” code path remains.
+
+11) Add position indexes for actors/entities (optional but big payoff)
+
+Problem: _actor_at and _entity_at iterate all values each call; FOV also calls _actor_at per visible tile → potentially heavy.
+
+Codex instructions
+
+Maintain level.actor_pos: dict[(x,y)->actor_id] and optionally level.entity_pos: dict[(x,y)->set[entity_id]].
+
+Update indexes whenever something moves/spawns/dies/picked up/dropped.
+
+Rewrite _actor_at/_entity_at/_blocking_entity_at to use indexes.
+
+Done when
+
+Hot loops stop scanning whole dicts.
+
+12) Normalize content file paths and caching behavior
+
+Problem: Template loaders compute content_dir = Path(__file__).resolve().parent / "content". Depending on where this file lives, that may be wrong. Also caching is per-Game instance, not global.
+
+Codex instructions
+
+Resolve content directory via package resources:
+
+simplest: Path(edgecaster.__file__).resolve().parent / "content" (or a config field).
+
+better: importlib.resources for packaged data.
+
+Make template caches module-level singletons or injected content manager, so multiple Game instances don’t reload YAML.
+
+Add error logging that surfaces missing YAML clearly.
+
+Done when
+
+Content loads reliably from any working directory / packaging mode.
+
+13) Clean up duplicate/stray code blocks and debug scaffolding
+
+Problem: There are repeated comments (“urgent message system” twice), large debug sections (recursive inventory, debug spawns), and blank “enemies” section stubs—noise makes maintenance harder.
+
+Codex instructions
+
+Remove duplicate comments and dead whitespace blocks.
+
+Gate debug-only helpers behind a config flag (e.g., cfg.debug_spawn_items, cfg.debug_mode) and default them off.
+
+Move debug helpers to edgecaster/debug_tools.py or similar.
+
+Done when
+
+__init__ no longer reads like a scratchpad; debug behaviors can be toggled via config.
+
+14) Reduce __init__ responsibilities (bootstrap vs runtime)
+
+Problem: __init__ does file I/O, loads templates, creates zones, spawns player, spawns items, spawns enemies, sets up map threads, sets up lab POI injection…
+
+Codex instructions
+
+Split into explicit steps:
+
+Game.__init__ sets fields only.
+
+Game.initialize_run() (or similar) does template load, world seed, POI injection, starting zone creation, player spawn, starting items, initial enemies, initial FOV.
+
+Ensure callers create Game then call .initialize_run().
+
+Done when
+
+Constructor is quick and side-effect-light; initialization sequence is explicit and testable.
+
+15) Tighten scheduler/event typing and semantics
+
+Problem: Events are List[Tuple[int,int,Callable]] and pushed onto heap; okay, but hard to extend/debug.
+
+Codex instructions
+
+Create:
+
+@dataclass(order=True)
+class ScheduledEvent:
+    tick: int
+    order: int
+    action: Callable[[], None] = field(compare=False)
+
+
+Use heapq on ScheduledEvent.
+
+Add debug hooks for “what is scheduled next” when investigating time issues.
+
+Done when
+
+Scheduler code is clearer, safer to extend.
+
+16) Extract “damage-over-time along edges” (ignite/regrow) into a reusable effect engine
+
+Problem: act_ignite and act_regrow are huge near-duplicates (tile collection + decay + accumulation).
+
+Codex instructions
+
+Create a generic helper:
+
+apply_edge_aura(level, pattern, anchor, color_metric_fn, base_direct, base_indirect, duration, cost, on_tick_damage/heal)
+
+Parameterize:
+
+how you compute “redness/greenness”
+
+whether it damages or heals
+
+messages to log
+
+Keep behavior identical.
+
+Done when
+
+Ignite/regrow code shrinks dramatically and shares one core implementation.
+
+17) Align “door state” between entity + tile + LOS
+
+Problem: Door toggling edits tile.walkable and glyph and also ent.blocks_movement, but LOS uses tile.walkable to decide blocking. That conflates movement and vision.
+
+Codex instructions
+
+Add tile.blocks_los (or tile.transparent) and update _los to use that instead of walkable.
+
+Door toggle sets both movement and LOS appropriately.
+
+Ensure walls remain non-walkable and block LOS; floors walkable and transparent; closed doors block both; open doors allow both.
+
+Done when
+
+You can have walkable-but-opaque or non-walkable-but-transparent tiles later without rewriting LOS.
+
 
 ------------------------------------------------------------------------------
 The guiding principles:
