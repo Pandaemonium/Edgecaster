@@ -510,6 +510,12 @@ class AsciiRenderer:
                 y1 = ay + dy * t1
                 edge_key = (min(e.a, e.b), max(e.a, e.b))
                 col = edge_colors.get(edge_key)
+                if col and isinstance(col, (list, tuple)) and len(col) == 2 and all(
+                    isinstance(c, (list, tuple)) and len(c) >= 3 for c in col
+                ):
+                    c0 = tuple(int(v) for v in col[0][:3])
+                    c1 = tuple(int(v) for v in col[1][:3])
+                    col = self._lerp_color(c0, c1, (t0 + t1) * 0.5)
                 if not col:
                     col = self._lerp_color(self.pattern_color, self.pattern_color_end, (t0 + t1) * 0.5)
                 core_col = (*col, 220)

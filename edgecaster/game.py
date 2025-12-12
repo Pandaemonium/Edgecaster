@@ -306,6 +306,8 @@ class Game:
             actions.append("meditate")
             actions.append("rainbow_edges")
             actions.append("verdant_edges")
+            actions.append("winter_hue")
+            actions.append("freeze")
             actions.append("ignite")
             actions.append("regrow")
             actions.append("push_pattern")
@@ -457,6 +459,14 @@ class Game:
             },
             "custom": {
                 "amplitude": {"values": [1.0, 0.9, 0.8, 0.7], "thresholds": [0, 1, 2, 3], "stat": "int", "label": "Scale"},
+            },
+            "winter_hue": {
+                "radius": {"values": [1, 2, 3, 4], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Radius"},
+                "scale": {"values": [1.0, 1.5, 2.0, 3.0], "thresholds": [0, 5, 10, 15], "stat": "res", "label": "Intensity Scale"},
+            },
+            "freeze": {
+                "damage_scale": {"values": [0.05, 0.1, 0.2, 0.3], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Dmg / Blue"},
+                "slow_scale": {"values": [0.02, 0.04, 0.06, 0.08], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Slow / Blue"},
             },
         }
 
@@ -685,6 +695,12 @@ class Game:
                 origin.cooldowns[action_name] = action_def.cooldown_ticks
             except Exception:
                 pass
+
+        # Slow effects: multiply delay by any active slow multiplier on the actor.
+        if actor is not None:
+            mult = self._slow_mult(actor)
+            if mult > 1.0:
+                delay = int(math.ceil(delay * mult))
 
         # Advance game time by the appropriate amount.
         self._advance_time(lvl, delay)
@@ -1789,6 +1805,34 @@ class Game:
             for ent in items:
                 tick_entity(ent)
 
+        # Tick down frozen/chilled slow effects (decay 0.1 every 10 ticks).
+        for actor in level.actors.values():
+            tags = getattr(actor, "tags", None) or {}
+            mult = float(tags.get("frozen_slow", 1.0))
+            if mult <= 1.0:
+                continue
+            acc = float(tags.get("frozen_slow_timer", 0.0))
+            acc += delta
+            if acc >= 10:
+                steps = int(acc // 10)
+                acc = acc % 10
+                mult = max(1.0, mult - steps * 0.1)
+            if mult <= 1.0 + 1e-6:
+                tags.pop("frozen_slow", None)
+                tags.pop("frozen_slow_timer", None)
+            else:
+                tags["frozen_slow"] = mult
+                tags["frozen_slow_timer"] = acc
+            actor.tags = tags
+
+    def _slow_mult(self, actor: Actor) -> float:
+        tags = getattr(actor, "tags", {}) or {}
+        try:
+            mult = float(tags.get("frozen_slow", 1.0))
+        except Exception:
+            mult = 1.0
+        return max(1.0, mult)
+
 
     # --- Lorenz / strange-attractor aura, game-side ---
 
@@ -2887,8 +2931,10 @@ class Game:
         defender.stats.clamp()
         if attacker.id == self.player_id:
             self.log.add(f"You hit {defender.name} for {dmg}.")
-        else:
+        elif defender.id == self.player_id:
             self.log.add(f"{attacker.name} hits you for {dmg}.")
+        else:
+            self.log.add(f"{attacker.name} hits {defender.name} for {dmg}.")
         if defender.stats.hp <= 0:
             # Player death uses the urgent popup; enemies die normally.
             if defender.id == self.player_id:
@@ -3028,6 +3074,10 @@ class Game:
                 delay = action_delay(self.cfg, action_def)
 
         # --- Schedule next turn -----------------------------------------
+        # Apply slow effects to monsters too.
+        mult = self._slow_mult(actor)
+        if mult > 1.0:
+            delay = int(math.ceil(delay * mult))
         self._schedule(
             level,
             delay,
@@ -3428,6 +3478,87 @@ class Game:
                 level.regrow_state = None
 
         apply_tick()
+
+    def act_freeze(self, actor_id: str) -> None:
+        """
+        Deal damage and apply slowing based on pattern blueness across all tiles the pattern occupies.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+        if actor is None or pattern is None or anchor is None or not pattern.vertices:
+            return
+
+        # High mana cost gate (no cooldown)
+        cost = 35
+        try:
+            if actor.stats.mana < cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana to freeze.")
+                return
+            actor.stats.mana -= cost
+            actor.stats.clamp()
+        except Exception:
+            pass
+
+        dmg_scale = getattr(self, "get_param_value", lambda a, k: 0.1)("freeze", "damage_scale") or 0.1
+        slow_scale = getattr(self, "get_param_value", lambda a, k: 0.04)("freeze", "slow_scale") or 0.04
+
+        verts_world = project_vertices(pattern, anchor)
+        vcolors = getattr(pattern, "vertex_colors", None) or []
+
+        def blueness(idx: int) -> float:
+            try:
+                col = vcolors[idx]
+            except Exception:
+                col = None
+            if not col or len(col) < 3:
+                return 0.0
+            r, g, b = col[0], col[1], col[2]
+            return max(0.0, float(b) - max(float(r), float(g)))
+
+        tile_blue: Dict[Tuple[int, int], float] = {}
+        for i, (vx, vy) in enumerate(verts_world):
+            tx = int(round(vx))
+            ty = int(round(vy))
+            blue = blueness(i)
+            tile_blue[(tx, ty)] = tile_blue.get((tx, ty), 0.0) + blue
+
+        if actor_id == self.player_id:
+            self.log.add("You unleash a freezing wave through the pattern.")
+
+        for (tx, ty), bsum in tile_blue.items():
+            if bsum <= 0:
+                continue
+            dmg = bsum * float(dmg_scale)
+            slow_mult = 1.0 + bsum * float(slow_scale)
+            if slow_mult > 4.0:
+                slow_mult = 4.0
+            for target in list(level.actors.values()):
+                if not target.alive:
+                    continue
+                if tuple(getattr(target, "pos", (None, None))) != (tx, ty):
+                    continue
+                if dmg > 0:
+                    dmg_int = int(max(0, dmg))
+                    if dmg_int > 0:
+                        target.stats.hp -= dmg_int
+                        target.stats.clamp()
+                        if target.id == self.player_id:
+                            self.log.add(f"The freeze bites you for {dmg_int} damage.")
+                            if target.stats.hp <= 0:
+                                self.set_urgent("by way of freezing", title="You unravel...", choices=["Continue..."])
+                        else:
+                            self.log.add(f"{target.name} is frozen for {dmg_int} damage.")
+                            if target.stats.hp <= 0:
+                                self._kill_actor(level, target)
+                tags = getattr(target, "tags", {}) or {}
+                current = float(tags.get("frozen_slow", 1.0))
+                if slow_mult > current:
+                    tags["frozen_slow"] = slow_mult
+                    tags["frozen_slow_timer"] = 0.0
+                    target.tags = tags
 
     def act_fractal(self, actor_id: str, kind: str) -> None:
         """Generic action entry point: apply a fractal generator to the current pattern."""

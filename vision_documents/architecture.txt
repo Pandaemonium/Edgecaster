@@ -85,6 +85,8 @@ Abilities and actions:
   surfaced via abilities.py and the AbilityBarState. Adding a new action should
   declare its targeting metadata so scenes can enter TargetMode without renderer
   logic changes. Ability icons and pages are built from AbilityBarState.
+- Per-action tunables (gear icons) are defined in Game.param_defs (game.py);
+  adding params there makes them available to the config overlay automatically.
 
 -------------------------------------------------------------------------------
 SYSTEMS (edgecaster/systems/)

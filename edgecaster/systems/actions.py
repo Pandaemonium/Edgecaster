@@ -176,6 +176,7 @@ def describe_entity_for_look(ent: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 SpeedTag = Literal["instant", "fast", "slow"]
+SpeedType = SpeedTag | int
 
 
 class ActionFunc(Protocol):
@@ -207,7 +208,7 @@ class TargetingSpec:
 class ActionDef:
     name: str
     label: str
-    speed: SpeedTag
+    speed: SpeedType
     func: ActionFunc
     # Whether this action is eligible to appear in the player-facing
     # ability bar when owned by the current host actor.
@@ -409,6 +410,8 @@ def action_delay(cfg: Any, action_def: ActionDef) -> int:
     """
     tag = action_def.speed
 
+    if isinstance(tag, int):
+        return max(0, int(tag))
     if tag == "instant":
         return 0
     if tag == "fast":
@@ -694,6 +697,15 @@ def _action_verdant_edges(game: Any, actor_id: str, **kwargs: Any) -> None:
         pattern_colors.apply_depth_green_edges(game)
 
 
+@register_action("winter_hue", label="Winter Hue", speed=5, show_in_bar=True)
+def _action_winter_hue(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Color vertices based on local density (white → deep blue) and gradient edges between them.
+    """
+    if pattern_colors and hasattr(pattern_colors, "apply_winter_hue"):
+        pattern_colors.apply_winter_hue(game)
+
+
 @register_action("ignite", label="Ignite", speed="fast", show_in_bar=True, cooldown_ticks=50)
 def _action_ignite(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
@@ -710,6 +722,15 @@ def _action_regrow(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_regrow"):
         game.act_regrow(actor_id)
+
+
+@register_action("freeze", label="Freeze", speed="fast", show_in_bar=True)
+def _action_freeze(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Deal damage and apply slowing based on pattern blueness across all pattern tiles.
+    """
+    if hasattr(game, "act_freeze"):
+        game.act_freeze(actor_id)
 
 
 @register_action(

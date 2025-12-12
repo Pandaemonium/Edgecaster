@@ -138,3 +138,71 @@ def apply_depth_green_edges(game) -> None:
         edge_colors[_normalize_edge_key(a, b)] = (r, g, bcol)
 
     setattr(pattern, "edge_colors", edge_colors)
+
+
+def apply_winter_hue(game) -> None:
+    """
+    Color vertices based on local density (within radius), then assign edge
+    gradients between those vertex colors. Higher local density -> deeper blue;
+    isolated vertices stay near-white.
+    """
+    try:
+        level = game._level()
+    except Exception:
+        return
+    pattern = getattr(level, "pattern", None)
+    origin = getattr(game, "pattern_anchor", None)
+    if pattern is None or origin is None or not pattern.vertices:
+        return
+
+    verts_world = project_vertices(pattern, origin)
+    radius = getattr(game, "get_param_value", lambda a, k: 2)("winter_hue", "radius") or 2
+    scale = getattr(game, "get_param_value", lambda a, k: 2.0)("winter_hue", "scale") or 2.0
+    try:
+        rfloat = float(radius)
+    except Exception:
+        rfloat = 2.0
+    try:
+        sfloat = float(scale)
+    except Exception:
+        sfloat = 2.0
+    r2 = rfloat * rfloat
+    # Compute per-vertex intensity from sqrt of nearby count (exclude self).
+    vertex_colors: List[Color] = []
+    # Higher scale => softer effect (needs more neighbors to reach deep blue).
+    softness = max(1e-3, sfloat * 4.0)
+    white = (255, 255, 255)
+    deep_blue = (10, 60, 180)
+    for i, (x, y) in enumerate(verts_world):
+        cnt = 0
+        for j, (ox, oy) in enumerate(verts_world):
+            if i == j:
+                continue
+            dx = ox - x
+            dy = oy - y
+            if dx * dx + dy * dy <= r2:
+                cnt += 1
+        # Continuous scale: sqrt falloff, softened so low counts stay near-white.
+        intensity = math.sqrt(cnt) / softness
+        if intensity > 1.0:
+            intensity = 1.0
+        col = (
+            int(white[0] + (deep_blue[0] - white[0]) * intensity),
+            int(white[1] + (deep_blue[1] - white[1]) * intensity),
+            int(white[2] + (deep_blue[2] - white[2]) * intensity),
+        )
+        vertex_colors.append(col)
+
+    # Assign edge gradients between endpoint colors
+    edge_colors: Dict[Tuple[int, int], Tuple[Color, Color]] = {}
+    for edge in getattr(pattern, "edges", []):
+        a = getattr(edge, "a", None)
+        b = getattr(edge, "b", None)
+        if a is None or b is None:
+            continue
+        ca = vertex_colors[a] if 0 <= a < len(vertex_colors) else white
+        cb = vertex_colors[b] if 0 <= b < len(vertex_colors) else white
+        edge_colors[_normalize_edge_key(a, b)] = (ca, cb)
+
+    setattr(pattern, "edge_colors", edge_colors)
+    setattr(pattern, "vertex_colors", vertex_colors)
