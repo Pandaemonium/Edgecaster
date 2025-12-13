@@ -8,6 +8,7 @@ from pygame import Rect
 from edgecaster import config
 from edgecaster.render.ascii import AsciiRenderer
 from edgecaster.visuals import VisualProfile
+from edgecaster.visual_effects import concat_effect_names
 from edgecaster.rng import new_rng
 from edgecaster.character import Character, default_character
 from .game_input import load_bindings_full
@@ -18,7 +19,6 @@ from .main_menu import MainMenuScene
 from .world_map_scene import WorldMapScene
 from edgecaster.ui.status_header import StatusHeaderWidget
 from edgecaster.ui.widgets import WidgetContext
-from edgecaster.visual_effects import concat_effect_names
 
 
 class SceneManager:
@@ -256,13 +256,19 @@ class SceneManager:
 
             # Update
             scene.update(dt, self)
-
             # Render
-            # Let scenes globally tint everything by setting visual_effects; also include any world-level effects.
-            if hasattr(renderer, "active_visual_effects"):
-                global_eff = getattr(renderer, "global_visual_effects", []) or []
-                scene_eff = getattr(scene, "visual_effects", []) or []
-                renderer.active_visual_effects = concat_effect_names(global_eff, scene_eff)
+            # Make scene + global visual effects available to the renderer so the
+            # entire frame (map + UI) can pick them up consistently.
+            # Global effects live in renderer.visual_fx.global_effects (preferred),
+            # but keep a fallback to the old attribute in case something stashes it there.
+            global_eff = []
+            try:
+                global_eff = list(getattr(renderer.visual_fx, "global_effects", []) or [])
+            except Exception:
+                global_eff = list(getattr(renderer, "global_visual_effects", []) or [])
+            # Scene effects affect entity rendering + window-local vibes.
+            scene_eff = getattr(scene, "visual_effects", []) or []
+            renderer.active_visual_effects = list(scene_eff)
 
             scene.render(renderer, self)
 

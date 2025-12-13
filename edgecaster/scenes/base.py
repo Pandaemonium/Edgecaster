@@ -4,15 +4,8 @@ import pygame
 from typing import Optional
 import math
 from edgecaster.visuals import VisualProfile, apply_visual_panel, unproject_mouse
-from edgecaster.visual_effects import build_visual_profile, apply_entity_color_effects
+from edgecaster.visual_effects import build_visual_profile, apply_entity_color_effects, apply_surface_overlays
 
-def _tint_color(scene, base_color, renderer) -> tuple[int, int, int]:
-    """
-    Apply entity color effects (fiery/bismuth/etc.) to an RGB color.
-    Keeps the return as an (r,g,b) triple.
-    """
-    effects = getattr(scene, "visual_effects", []) or []
-    return apply_entity_color_effects(scene, base_color, effects, now_ms=pygame.time.get_ticks())
 
 # ---------------------------------------------------------------------------
 # Base Scene
@@ -68,6 +61,25 @@ MENU_ACTION_DOWN = "down"
 MENU_ACTION_LEFT = "left"
 MENU_ACTION_RIGHT = "right"
 MENU_ACTION_ACTIVATE = "activate"
+
+
+def _active_effects(scene, renderer) -> list[str]:
+    """Return the effect-name stack that should apply to *everything* in this scene.
+
+    Preference order:
+    1) renderer.active_visual_effects (set by SceneManager each frame; includes globals + scene)
+    2) scene.visual_effects
+    """
+    eff = getattr(renderer, "active_visual_effects", None)
+    if isinstance(eff, (list, tuple)) and eff:
+        return [str(x) for x in eff if x]
+    eff = getattr(scene, "visual_effects", None)
+    if isinstance(eff, str) and eff:
+        return [eff]
+    if isinstance(eff, (list, tuple)):
+        return [str(x) for x in eff if x]
+    return []
+
 MENU_ACTION_BACK = "back"
 MENU_ACTION_FULLSCREEN = "fullscreen"
 # Shared footer hint for standard menus
@@ -399,7 +411,7 @@ class MenuScene(Scene):
 
             # Draw into a panel the size of window_rect
             panel = pygame.Surface(rect.size, pygame.SRCALPHA)
-            panel.fill(_tint_color(self, renderer.bg, renderer))
+            panel.fill(renderer.bg)
 
             # Temporarily pretend the panel is the renderer surface
             # so _draw_contents keeps working with its existing math.
@@ -472,12 +484,8 @@ class MenuScene(Scene):
                 if not line.strip():
                     y += renderer.font.get_height()
                     continue
-                base_col = renderer.fg
-                surf = renderer.font.render(
-                    line,
-                    True,
-                    apply_entity_color_effects(self, base_col, getattr(self, "visual_effects", []) or []),
-                )
+                col = apply_entity_color_effects(self, renderer.fg, _active_effects(self, renderer))
+                surf = renderer.font.render(line, True, col)
                 surface.blit(surf, ((renderer.width - surf.get_width()) // 2, y))
                 y += renderer.font.get_height()
 
@@ -496,7 +504,7 @@ class MenuScene(Scene):
         for idx, opt in enumerate(options):
             selected = idx == self.selected_idx
             base_col = renderer.player_color if selected else renderer.fg
-            color = apply_entity_color_effects(self, base_col, getattr(self, "visual_effects", []) or [])
+            color = apply_entity_color_effects(self, base_col, _active_effects(self, renderer))
             prefix = "▶ " if selected else "  "
             text_surf = renderer.font.render(prefix + opt, True, color)
             x = renderer.width // 2 - 110
@@ -509,7 +517,7 @@ class MenuScene(Scene):
 
         # Footer hint
         if self.FOOTER_TEXT:
-            hint_col = apply_entity_color_effects(self, renderer.dim, getattr(self, "visual_effects", []) or [])
+            hint_col = apply_entity_color_effects(self, renderer.dim, _active_effects(self, renderer))
             hint = renderer.small_font.render(self.FOOTER_TEXT, True, hint_col)
             surface.blit(
                 hint,
@@ -789,20 +797,14 @@ class PopupMenuScene(MenuScene):
         rect = self.window_rect
         panel = pygame.Surface(self.window_rect.size, pygame.SRCALPHA)
 
-        # Panel background + border (tinted by effects)
-        base_bg = (10, 10, 20)
-        base_border = (220, 220, 240)
+        # Panel background + border
+        eff = _active_effects(self, renderer)
 
-        bg_rgb = _tint_color(self, base_bg, renderer)
-        border_rgb = _tint_color(self, base_border, renderer)
+        bg_rgb = apply_entity_color_effects(self, (10, 10, 20), eff)
+        border_rgb = apply_entity_color_effects(self, (220, 220, 240), eff)
 
-        panel.fill((bg_rgb[0], bg_rgb[1], bg_rgb[2], 240))
-        pygame.draw.rect(
-            panel,
-            (border_rgb[0], border_rgb[1], border_rgb[2], 255),
-            panel.get_rect(),
-            2,
-        )
+        panel.fill((*bg_rgb, 240))
+        pygame.draw.rect(panel, (*border_rgb, 255), panel.get_rect(), 2)
 
         font = renderer.font
         small_font = renderer.small_font
@@ -813,32 +815,33 @@ class PopupMenuScene(MenuScene):
         ascii_art = self.get_ascii_art()
         if ascii_art:
             for line in ascii_art.splitlines():
-                base_col = renderer.fg
-                text = font.render(
-                    line,
-                    True,
-                    apply_entity_color_effects(self, base_col, getattr(self, "visual_effects", []) or []),
-                )
+                if not line.strip():
+                    y += font.get_height()
+                    continue
+
+                col = apply_entity_color_effects(self, renderer.fg, _active_effects(self, renderer))
+                text = font.render(line, True, col)
                 x = (panel.get_width() - text.get_width()) // 2
                 panel.blit(text, (x, y))
                 y += text.get_height()
             y += 8
 
         # Menu items drawn in panel-local space
-        self._option_rects = []          # panel-local
+        self._option_rects = []  # panel-local
 
         for idx, label in enumerate(options):
             selected = (idx == self.selected_idx)
             base_col = renderer.player_color if selected else renderer.fg
-            color = apply_entity_color_effects(self, base_col, getattr(self, "visual_effects", []) or [])
+            color = apply_entity_color_effects(self, base_col, _active_effects(self, renderer))
+
             prefix = "▶ " if selected else "  "
             text = font.render(prefix + label, True, color)
+
             local_x = (panel.get_width() - text.get_width()) // 2
             local_y = y
 
             local_rect = text.get_rect(topleft=(local_x, local_y))
             panel.blit(text, local_rect.topleft)
-
             self._option_rects.append(local_rect)
 
             y += text.get_height() + 4
@@ -846,14 +849,25 @@ class PopupMenuScene(MenuScene):
         # Footer remains panel-local
         footer = getattr(self, "FOOTER_TEXT", MENU_FOOTER_HELP)
         if footer:
-            footer_col = apply_entity_color_effects(self, renderer.dim, getattr(self, "visual_effects", []) or [])
+            footer_col = apply_entity_color_effects(self, renderer.dim, _active_effects(self, renderer))
             footer_text = small_font.render(footer, True, footer_col)
             fx = (panel.get_width() - footer_text.get_width()) // 2
             fy = panel.get_height() - footer_text.get_height() - 8
             panel.blit(footer_text, (fx, fy))
 
+        # Surface overlay lane (particles/shimmer/etc.)
+        eff = _active_effects(self, renderer)
+        # Surface overlay lane (particles/shimmer/etc.)
+        eff = _active_effects(self, renderer)
+        if eff:
+            apply_surface_overlays(self, panel, panel.get_rect(), eff)
+
+
         # Finally, draw the panel to the main surface with the active visual profile
-        visual = build_visual_profile(self.visual_profile or VisualProfile(), getattr(self, "visual_effects", []) or [])
+        visual = build_visual_profile(
+            self.visual_profile or VisualProfile(),
+            getattr(self, "visual_effects", []) or [],
+        )
         apply_visual_panel(renderer.surface, panel, rect, visual)
 
 

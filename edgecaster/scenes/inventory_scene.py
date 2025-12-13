@@ -180,8 +180,9 @@ class InventoryScene(PopupMenuScene):
 
         if owner_id == self.game.player_id:
             choices.append("Drop")
-            if is_berry:
+            if is_berry or is_container:
                 choices.append("Eat")
+
             if container_targets:
                 choices.append("Put into...")
         else:
@@ -219,11 +220,75 @@ class InventoryScene(PopupMenuScene):
                     self.game.drop_inventory_item(index)
 
             elif choice == "Eat":
-                if hasattr(self.game, "eat_item_from_inventory"):
-                    self.game.eat_item_from_inventory(current_owner_id, index)
-                else:
-                    if current_owner_id == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
-                        self.game.eat_inventory_item(index)
+                # Recompute berry/container flags (inventory may have changed)
+                cur_is_berry = bool(cur_tags.get("test_berry")) or cur_tags.get("item_type") in {
+                    "blueberry",
+                    "raspberry",
+                    "strawberry",
+                }
+
+                if cur_is_container and not cur_is_berry:
+                    # --- Eat the inventory (container), recursively -----------------------
+
+                    # 1) Remove the container item itself from the current inventory
+                    eaten_ent = cur_inv.pop(index)
+                    eaten_id = getattr(eaten_ent, "id", None)
+
+                    # 2) Walk the inventory tree, collecting effects from:
+                    #    - the container itself
+                    #    - every item inside it
+                    #    - every nested container and its contents, recursively
+                    all_effects: list[str] = []
+                    all_effects = concat_effect_names(all_effects, effect_names_from_obj(eaten_ent))
+
+                    def _consume_inventory_tree(owner_id: str, visited: set[str]) -> None:
+                        if not owner_id or owner_id in visited:
+                            return
+                        visited.add(owner_id)
+
+                        inv_map = getattr(self.game, "inventories", None)
+                        if not isinstance(inv_map, dict):
+                            return
+
+                        inv_list = inv_map.get(owner_id)
+                        if not inv_list:
+                            # remove empty mapping if present
+                            inv_map.pop(owner_id, None)
+                            return
+
+                        # Iterate a snapshot because we'll delete the mapping at the end.
+                        for child in list(inv_list):
+                            nonlocal all_effects
+                            all_effects = concat_effect_names(all_effects, effect_names_from_obj(child))
+
+                            child_id = getattr(child, "id", None)
+                            child_tags = getattr(child, "tags", {}) or {}
+                            child_is_container = bool(child_tags.get("container"))
+
+                            if child_is_container and child_id and child_id in inv_map:
+                                _consume_inventory_tree(str(child_id), visited)
+
+                        # Finally delete this inventory list (consumes its contents)
+                        inv_map.pop(owner_id, None)
+
+                    if eaten_id and hasattr(self.game, "inventories"):
+                        _consume_inventory_tree(str(eaten_id), set())
+
+                    # 3) Apply ALL collected effects globally (stacking)
+                    if all_effects:
+                        try:
+                            existing = list(getattr(mgr.renderer.visual_fx, "global_effects", []) or [])
+                        except Exception:
+                            existing = []
+                        mgr.set_global_visual_effects(concat_effect_names(existing, all_effects))
+
+                    # 4) Log
+                    if hasattr(self.game, "log") and hasattr(self.game.log, "add"):
+                        self.game.log.add("You're not sure if you should have eaten that inventory...")
+
+                    return
+
+
 
             elif choice == "Take" and current_owner_id != self.game.player_id:
                 dest_owner_id = self.parent_owner_id or self.game.player_id

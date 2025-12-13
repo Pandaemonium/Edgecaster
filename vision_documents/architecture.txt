@@ -6,51 +6,68 @@ Updated: 2025-12-13
 This document orients new contributors to the current structure.
 It must remain concise, accurate, and immediately useful.
 
-
 ===============================================================================
 SECTION 1 — LAYER RESPONSIBILITIES
 
 SCENES (edgecaster/scenes/)
 Own:
-- Input interpretation (via GameCommand)
-- Scene-local UI state (menus, dialogs, targeting, ability bar sync)
-- Scene transitions and stacking
-- High-level gameplay intent routing
-- Declaring which overlay widget layers are active (overlay_layers)
-- Declaring visual effects by NAME (scene.visual_effects)
+
+Input interpretation (via GameCommand)
+
+Scene-local UI state (menus, dialogs, targeting, ability bar sync)
+
+Scene transitions and stacking
+
+High-level gameplay intent routing
+
+Declaring which overlay widget layers are active (overlay_layers)
+
+Declaring visual effects by NAME (scene.visual_effects)
 
 Do NOT:
-- Perform low-level rendering
-- Apply pygame transforms directly
-- Implement simulation rules
+
+Perform low-level rendering
+
+Apply pygame transforms directly
+
+Implement simulation rules
 
 Key scenes:
-- manager.py                     scene stack + overlay layer service
-- dungeon.py                     primary gameplay; TargetMode + UI routing
-- inventory_scene.py             nested inventories (now effect-driven)
-- urgent_message_scene.py        generic popup/dialog system
-- dialogue_scene.py              dialogue trees + callbacks
-- options / keybinds / character creation
 
+manager.py scene stack + overlay layer service
 
--------------------------------------------------------------------------------
+dungeon.py primary gameplay; TargetMode + UI routing
+
+inventory_scene.py nested inventories (effect-driven; recursive)
+
+urgent_message_scene.py generic popup/dialog system
+
+dialogue_scene.py dialogue trees + callbacks
+
+options / keybinds / character creation
+
 RENDERERS (edgecaster/render/)
 
 Pure view layer.
 
 ascii.py:
-- Draws map, entities, overlays
-- Draws panel-local UI for popup/menu scenes
-- Applies VisualProfiles and VisualEffects at draw time
-- Owns the VisualEffectManager (screen shake, vibration, global effects)
+
+Draws map, entities, overlays
+
+Draws panel-local UI for popup/menu scenes
+
+Applies VisualProfiles and VisualEffects at draw time
+
+Owns the VisualEffectManager (screen shake, vibration, global effects)
 
 Renderers NEVER:
-- Read input events
-- Interpret GameCommands
-- Store gameplay or UI state
 
+Read input events
 
--------------------------------------------------------------------------------
+Interpret GameCommands
+
+Store gameplay or UI state
+
 INPUT (edgecaster/scenes/game_input.py)
 
 Single conversion point:
@@ -60,45 +77,57 @@ Scenes interpret GameCommands.
 Renderers are input-agnostic.
 
 Keybinds:
-- DEFAULT_BINDINGS merged with user settings
-- Commands auto-listed in keybinds UI
-- Scene-context conflict resolution
 
+DEFAULT_BINDINGS merged with user settings
 
--------------------------------------------------------------------------------
+Commands auto-listed in keybinds UI
+
+Scene-context conflict resolution
+
 GAME CORE (edgecaster/game.py)
 
 Authoritative simulation:
-- Entities, actors, stats
-- Turn updates, movement, collisions, combat
-- Fractal mechanics, patterns, rune interactions
-- Procedural world state, RNG
+
+Entities, actors, stats
+
+Turn updates, movement, collisions, combat
+
+Fractal mechanics, patterns, rune interactions
+
+Procedural world state, RNG
 
 Does NOT:
-- Know about rendering
-- Contain UI logic or transforms
+
+Know about rendering
+
+Contain UI logic or transforms
 
 Data:
-- content/entities.yaml
-- content/enemies.yaml
-- content/pois.yaml
-- npcs.py
 
+content/entities.yaml
 
--------------------------------------------------------------------------------
+content/enemies.yaml
+
+content/pois.yaml
+
+npcs.py
+
 SYSTEMS (edgecaster/systems/)
 
 Pure logic modules:
-- actions.py         → Action metadata + targeting specs
-- abilities.py       → Actor abilities
-- patterns/*         → Fractal generation
-- ai.py              → Behavior stubs
+
+actions.py → Action metadata + targeting specs
+
+abilities.py → Actor abilities
+
+patterns/* → Fractal generation
+
+ai.py → Behavior stubs
 
 Recent:
 ✓ Targeting metadata centralized
 ✓ AbilityBar is metadata-driven
 ✓ Action parameters surface automatically into UI
-
 
 ===============================================================================
 SECTION 2 — VISUAL TRANSFORM & EFFECT PIPELINE
@@ -106,101 +135,154 @@ SECTION 2 — VISUAL TRANSFORM & EFFECT PIPELINE
 Two distinct but cooperating systems:
 
 visuals.py:
-- VisualProfile (scale, offset, rotation, alpha, flips)
-- apply_visual_panel(...)   → transforms & blits a panel
-- unproject_mouse(...)      → invert transforms for hit-testing
+
+VisualProfile (scale, offset, rotation, alpha, flips)
+
+apply_visual_panel(...) → transforms & blits a panel/surface to screen
+
+unproject_mouse(...) → invert transforms for hit-testing
 
 visual_effects.py:
-- Registry of named VisualEffects (e.g. "clockwise", "ghostly", "fiery")
-- Effects may modify:
-  • VisualProfile (geometry lane)
-  • Entity draw style (color, flicker, etc.)
-  • Final present rect (screen shake, vibration)
-- Effects are stackable and order-preserving
-- Duplicate effects intentionally compound (e.g. clockwise + clockwise)
+
+Registry of named VisualEffects (e.g. "clockwise", "ghostly", "fiery", "bismuth")
+
+Effects may modify:
+• VisualProfile (geometry lane: rotate/scale/flip/alpha/offset)
+• Entity draw style (color lane: tint/flicker)
+• Final present rect (present lane: screen shake/vibration impulses)
+• Surface overlays (overlay lane: particles/shimmer/scanlines)
+
+Effects are stackable and order-preserving
+
+Duplicate effects intentionally compound (fractal recursion)
+
+Overlay bounds:
+
+Effects can optionally specify an overlay drawing rect (local coordinates),
+allowing localized auras or rising smoke/embers around a tile/panel without
+bleeding across the whole screen.
 
 Design rule:
-Scenes/entities declare *effect names only*.
+Scenes/entities declare effect names only.
 All effect behavior lives in visual_effects.py.
 
 Enables:
-- Recursive clockwise/ghostly inventories
-- Global mirror curses
-- Decaying impulses (Yawp shake)
-- Persistent vibrations
-- Parity between scene effects and entity effects
 
+Recursive clockwise/ghostly inventories
+
+Global mirror curses
+
+Decaying impulses (Yawp shake)
+
+Persistent vibrations
+
+Parity between scene effects and entity effects
+
+Localized entity auras/particles on the dungeon map
 
 ===============================================================================
 SECTION 3 — TARGETING (UNIFIED TARGETMODE)
 
 TargetingSpec (actions.py):
-- kind: tile | vertex | look
-- mode: aim | terminus | inspect
-- range parameters
+
+kind: tile | vertex | look
+
+mode: aim | terminus | inspect
+
+range parameters
 
 TargetState (scene-local):
-- cursor, origin, mode
+
+cursor, origin, mode
 
 DungeonScene:
-- Owns targeting flow
+
+Owns targeting flow
 
 Renderer:
-- Draws cursor only
 
+Draws cursor only
 
 ===============================================================================
 SECTION 4 — WIDGET SYSTEM & OVERLAY LAYERS
 
 Widget foundation:
-- edgecaster/ui/widgets.py
-- WidgetContext(surface, game, scene, renderer)
-- Widget base class (layout, draw, handle_event, update)
-- Layout containers (VBox/HBox) + interactive widgets
+
+edgecaster/ui/widgets.py
+
+WidgetContext(surface, game, scene, renderer)
+
+Widget base class (layout, draw, handle_event, update)
+
+Layout containers (VBox/HBox) + interactive widgets
 
 Ownership model:
-- Scenes own widget trees and route input
-- Renderer remains draw-only
+
+Scenes own widget trees and route input
+
+Renderer remains draw-only
 
 Overlay widget layers:
-- SceneManager maintains named widget layers (e.g. "hud")
-- Scenes opt in via overlay_layers
-- Popup dimming occurs before overlays
-- Allows live HUD during inventory/popups
+
+SceneManager maintains named widget layers (e.g. "hud")
+
+Scenes opt in via overlay_layers
+
+Popup dimming occurs before overlays
+
+Allows live HUD during inventory/popups
 
 Status:
 ✓ HUD widget active in dungeon + inventory
 ✓ Temporary F8 debug overlay exists as scaffolding
 
-
 ===============================================================================
 SECTION 5 — DATA-DRIVEN ENTITIES & INHERITANCE
 
 YAML prototypes define:
-- parent, glyph, color
-- description (inherited)
-- stats, tags, behaviors
+
+parent, glyph, color
+
+description (inherited)
+
+stats, tags, behaviors
 
 Runtime entities are fully resolved archetypes.
 Look-mode displays inherited descriptions.
 
+Note:
+Entity tags may include "visual_effects" names; renderer applies these consistently
+to glyph color and (optionally) localized overlays on the map.
 
 ===============================================================================
 SECTION 6 — ONBOARDING NOTES
 
-- Renderer = draw-only
-- Scenes = UI state + intent
-- Game = simulation only
-- Systems = reusable logic
-- VisualProfiles = panel/window transforms
-- VisualEffects = named, stackable presentation logic
-- Widgets = UI composition
-- Overlay layers = cross-scene widgets (HUD)
-- Assets live in project-root assets/ (not inside package)
+Renderer = draw-only
+
+Scenes = UI state + intent
+
+Game = simulation only
+
+Systems = reusable logic
+
+VisualProfiles = panel/window transforms
+
+VisualEffects = named, stackable presentation logic
+
+Widgets = UI composition
+
+Overlay layers = cross-scene widgets (HUD)
+
+Assets live in project-root assets/ (not inside package)
 
 Current strategic work:
-- HUD → Ability Bar → generalized MenuScene widgets
-- Two-pane inventory (list + details)
-- Keybinds/options unification
-- Reduce ad-hoc coordinate math
-- Expand transform/effect-driven UI
+
+HUD → Ability Bar → generalized MenuScene widgets
+
+Two-pane inventory (list + details)
+
+Keybinds/options unification
+
+Reduce ad-hoc coordinate math
+
+Expand transform/effect-driven UI
