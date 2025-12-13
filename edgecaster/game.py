@@ -5,6 +5,7 @@ from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
 import yaml
 from collections import deque
+import pygame
 
 
 from edgecaster import config, events
@@ -152,6 +153,8 @@ class Game:
 
         # character info
         self.character: Character = character or default_character()
+        # Currency: bismuth wallet
+        self.bismuth: int = 0
 
         # What the HUD should call the thing-you-are:
         # initially your class, later overwritten by body-hops.
@@ -206,6 +209,8 @@ class Game:
         # Inventories: mapping from owner id to a list of carried Entities.
         # Initially empty; per-owner lists are created lazily via get_inventory().
         self.inventories: Dict[str, List[Entity]] = {}
+        # Simple SFX cache for lightweight sounds
+        self._sfx_cache: Dict[str, object] = {}
 
         # create starting zone
         self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
@@ -421,6 +426,40 @@ class Game:
             coherence=base_coh,
             max_coherence=base_coh,
         )
+    # --- currency helpers ---
+
+    def adjust_currency(self, amount: int, *, log: bool = True) -> int:
+        """Adjust bismuth wallet; clamps at 0. Returns new balance."""
+        try:
+            self.bismuth = max(0, int(self.bismuth + amount))
+        except Exception:
+            pass
+        if log and amount != 0:
+            if amount > 0:
+                self.log.add(f"You gain {amount} bismuth.")
+            else:
+                self.log.add(f"You spend {-amount} bismuth.")
+        return getattr(self, "bismuth", 0)
+
+    def _play_sfx(self, rel_path: str, volume: float = 1.0) -> None:
+        """Lightweight SFX helper with simple caching; best-effort (fails silently)."""
+        try:
+            root = Path(__file__).resolve().parent.parent
+            path = root / rel_path
+            if not path.exists():
+                return
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            cache = getattr(self, "_sfx_cache", {})
+            snd = cache.get(path)
+            if snd is None:
+                snd = pygame.mixer.Sound(str(path))
+                cache[path] = snd
+                self._sfx_cache = cache
+            snd.set_volume(max(0.0, min(1.0, float(volume))))
+            snd.play()
+        except Exception:
+            return
 
     def _init_param_defs(self) -> Dict[str, Dict[str, dict]]:
         # thresholds correspond to minimum stat to unlock the value at same index
@@ -1312,6 +1351,30 @@ class Game:
                             level.entities[ent.id] = ent
                         except Exception:
                             continue
+            # Extra: drop some starting bismuth piles in the starting zone.
+            if pid == "starting_zone":
+                world = level.world
+                dropped = 0
+                attempts = 0
+                max_attempts = 200
+                while dropped < 5 and attempts < max_attempts:
+                    attempts += 1
+                    x = self.rng.randint(0, world.width - 1)
+                    y = self.rng.randint(0, world.height - 1)
+                    if not world.in_bounds(x, y):
+                        continue
+                    if not world.is_walkable(x, y):
+                        continue
+                    if self._actor_at(level, (x, y)):
+                        continue
+                    if self._entity_at(level, (x, y)):
+                        continue
+                    try:
+                        ent = self._spawn_entity_from_template("bismuth_pile", (x, y))
+                        level.entities[ent.id] = ent
+                        dropped += 1
+                    except Exception:
+                        continue
             for spec in poi.npcs:
                 npc_def = npcs.NPC_DEFS.get(spec.npc_id, {})
                 name = spec.name or npc_def.get("name", spec.npc_id.title())
@@ -1559,6 +1622,34 @@ class Game:
             ent = self._spawn_entity_from_template(template_id, (x, y))
             level.entities[ent.id] = ent
             placed += 1
+
+        # Sprinkle some bismuth piles alongside berries for testing.
+        bismuth_count = max(1, count // 10)
+        for _ in range(bismuth_count):
+            attempts = 0
+            while attempts < max_attempts and placed < count + bismuth_count:
+                attempts += 1
+                x = self.rng.randint(0, world.width - 1)
+                y = self.rng.randint(0, world.height - 1)
+                if not world.in_bounds(x, y):
+                    continue
+                if not world.is_walkable(x, y):
+                    continue
+                if self._actor_at(level, (x, y)):
+                    continue
+                if self._entity_at(level, (x, y)):
+                    continue
+                try:
+                    ent = self._spawn_entity_from_template(
+                        "bismuth_pile",
+                        (x, y),
+                        overrides={"tags": {"amount": self.rng.randint(3, 15)}},
+                    )
+                    level.entities[ent.id] = ent
+                    placed += 1
+                    break
+                except Exception:
+                    continue
 
 
 
@@ -2180,6 +2271,31 @@ class Game:
         if not ent:
             return
 
+        tags = getattr(ent, "tags", {}) or {}
+        if tags.get("currency") == "bismuth":
+            amt = 0
+            try:
+                amt = int(tags.get("amount", 0))
+            except Exception:
+                amt = 0
+            if amt <= 0:
+                size = "tiny"
+            elif amt <= 3:
+                size = "tiny"
+            elif amt <= 10:
+                size = "small"
+            elif amt <= 25:
+                size = "medium"
+            elif amt <= 50:
+                size = "large"
+            elif amt <= 100:
+                size = "huge"
+            else:
+                size = "enormous"
+            article = "an" if size[0].lower() in "aeiou" else "a"
+            self.log.add(f"You see {article} {size} bismuth crystal.")
+            return
+
         # If this is an auto-observe and the only thing here is the observer,
         # don't spam the log with "You see yourself" messages.
         if auto and observer_id is not None and getattr(ent, "id", None) == observer_id:
@@ -2225,6 +2341,21 @@ class Game:
         ent = self._entity_at(level, player.pos)
         if ent is None:
             self.log.add("There is nothing here to pick up.")
+            return
+
+        # Currency piles are auto-absorbed.
+        tags = getattr(ent, "tags", {}) or {}
+        if tags.get("currency") == "bismuth":
+            amt = int(tags.get("amount", 0))
+            if amt > 0:
+                self.adjust_currency(amt, log=True)
+                # Play cash pickup sound (best-effort).
+                self._play_sfx("assets/sfx/chaching.mp3", volume=0.7)
+            # remove entity from world
+            for eid, e in list(level.entities.items()):
+                if e is ent:
+                    del level.entities[eid]
+                    break
             return
 
         # Don't allow picking up actors or non-item entities (for now).
@@ -2941,6 +3072,24 @@ class Game:
                 )
             else:
                 self.log.add(f"{defender.name} dies.")
+                # Currency drop if the defender carries bismuth loot tags.
+                tags = getattr(defender, "tags", {}) or {}
+                drop_min = int(tags.get("currency_min", 0))
+                drop_max = int(tags.get("currency_max", 0))
+                if drop_max < drop_min:
+                    drop_max = drop_min
+                if drop_max > 0 and level.world.is_walkable(*defender.pos):
+                    amt = self.rng.randint(drop_min, drop_max) if drop_min < drop_max else drop_min
+                    if amt > 0:
+                        try:
+                            ent = self._spawn_entity_from_template(
+                                "bismuth_pile",
+                                defender.pos,
+                                overrides={"tags": {"amount": amt}},
+                            )
+                            level.entities[ent.id] = ent
+                        except Exception:
+                            pass
                 self._kill_actor(level, defender)
 
 

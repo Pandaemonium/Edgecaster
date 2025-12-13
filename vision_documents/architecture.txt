@@ -179,6 +179,8 @@ SECTION 6 — ONBOARDING NOTES
 - VisualProfiles = panel/window-level transforms
 - Widgets = UI composition inside panel-local rendering
 - Overlay layers = reusable cross-scene widget layers (HUD, etc.)
+- Currency: simulation lives in game.py (wallet + adjust_currency; currency items in content/entities.yaml with tags currency/amount). Renderer draws currency items with PNG icons from assets/icons/ (project root), HUD header shows the balance via StatusHeaderWidget.
+- Assets: loaded from project root assets/ (e.g., assets/icons/bismuth.png); keep renderer references project-rooted, not package-relative. Avoid embedding assets inside the edgecaster/ package.
 
 Current strategic work:
 - HUD → Ability Bar → MenuScene (generalized widget-based menus)

@@ -1,6 +1,7 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
+from pathlib import Path
 from typing import Tuple, List, Dict
 
 
@@ -76,6 +77,19 @@ class AsciiRenderer:
         self.vertex_base_radius = 2
         self.hp_color = (200, 80, 80)
         self.mana_color = (90, 160, 255)
+        # Resolve project root (one level above the edgecaster package)
+        self._project_root = Path(__file__).resolve().parents[2]
+        # Currency icon
+        try:
+            icon_path = self._project_root / "assets" / "icons" / "bismuth.png"
+            self.bismuth_icon = pygame.image.load(str(icon_path)).convert_alpha()
+            self.bismuth_icon_hud = pygame.transform.smoothscale(self.bismuth_icon, (24, 24))
+            # map-sized icon scaled to current tile size
+            self.bismuth_icon_map = pygame.transform.smoothscale(self.bismuth_icon, (self.tile, self.tile))
+        except Exception:
+            self.bismuth_icon = None
+            self.bismuth_icon_hud = None
+            self.bismuth_icon_map = None
         self.bar_bg = (40, 40, 60)
         self.ability_bar_height = 72
         self.top_bar_height = 64
@@ -460,9 +474,14 @@ class AsciiRenderer:
             if px >= self.width or py >= self.height:
                 continue
 
-            glyph, color = self._entity_visual(ent)
-            text = self.map_font.render(glyph, True, color)
-            self.surface.blit(text, (px, py))
+            tags = getattr(ent, "tags", {}) or {}
+            if tags.get("currency") == "bismuth" and getattr(self, "bismuth_icon_map", None) is not None:
+                icon = self.bismuth_icon_map
+                self.surface.blit(icon, (px, py))
+            else:
+                glyph, color = self._entity_visual(ent)
+                text = self.map_font.render(glyph, True, color)
+                self.surface.blit(text, (px, py))
 
 
 
@@ -1179,6 +1198,12 @@ class AsciiRenderer:
         self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         # map font scales with zoom; UI fonts remain constant
         self.map_font = pygame.font.SysFont("consolas", max(8, int(self.tile)))
+        # rescale currency icon for map tiles when zoom changes
+        if getattr(self, "bismuth_icon", None) is not None:
+            try:
+                self.bismuth_icon_map = pygame.transform.smoothscale(self.bismuth_icon, (self.tile, self.tile))
+            except Exception:
+                self.bismuth_icon_map = None
         # adjust origin so world point under cursor stays under cursor
         base_x, base_y = self._map_origin_base()
         target_origin_x = mx - wx * self.tile
@@ -1214,6 +1239,10 @@ class AsciiRenderer:
             int(c1[1] + (c2[1] - c1[1]) * t),
             int(c1[2] + (c2[2] - c1[2]) * t),
         )
+
+    def _log_debug(self, msg: str) -> None:
+        """No-op placeholder retained for call-site compatibility."""
+        return
 
     def _render_action_icon(
         self,

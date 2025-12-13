@@ -138,7 +138,31 @@ class StatusHeaderWidget(Widget):
         level_text = small_font.render(f"Zone ({zx},{zy}) Depth {zz}", True, fg)
 
         surface_w = getattr(renderer, "width", ctx.surface.get_width())
-        ctx.surface.blit(tick_text, (surface_w - tick_text.get_width() - 8, 12))
-        ctx.surface.blit(level_text, (surface_w - level_text.get_width() - 8, 30))
+        tick_x = surface_w - tick_text.get_width() - 8
+        level_x = surface_w - level_text.get_width() - 8
+
+        # --- Currency (bismuth) icon + amount, left of tick block ---
+        try:
+            balance = getattr(game, "bismuth", 0)
+        except Exception:
+            balance = 0
+        icon = getattr(renderer, "bismuth_icon_hud", None) or getattr(renderer, "bismuth_icon", None)
+        bal_text = small_font.render(f"{balance}", True, fg)
+        pad = 8
+        icon_w = icon.get_width() if icon is not None else 0
+        icon_h = icon.get_height() if icon is not None else 0
+        # place currency immediately to the left of whichever of tick/zone is farther left
+        currency_right = min(tick_x, level_x) - pad
+        bx = currency_right - icon_w - bal_text.get_width() - pad
+        by = self.rect.y + 12
+        if bx < pad:
+            bx = pad
+        if icon is not None:
+            ctx.surface.blit(icon, (bx, by))
+            bx += icon_w + 6
+        ctx.surface.blit(bal_text, (bx, by + max(0, (icon_h - bal_text.get_height()) // 2)))
+
+        ctx.surface.blit(tick_text, (tick_x, 12))
+        ctx.surface.blit(level_text, (level_x, 30))
 
         super().draw(ctx)

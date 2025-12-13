@@ -65,6 +65,20 @@
     item_type: strawberry
     test_berry: true
 
+# --- CURRENCY --------------------------------------------------------
+- id: bismuth_pile
+  name: Bismuth
+  glyph: "$"
+  color: [180, 200, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: entity
+  description: "A shimmering cluster of bismuth."
+  tags:
+    currency: bismuth
+    amount: 5
+
 # --- META-INVENTORY CONTAINER --------------------------------
 - id: debug_inventory
   name: Strange Inventory

@@ -1307,7 +1307,14 @@ class DungeonScene(Scene):
                         except KeyError:
                             spec = None
 
-                    if spec and spec.radius_param:
+                    # Only adjust radius with the wheel when actively aiming an action that has a radius param.
+                    if (
+                        spec
+                        and spec.radius_param
+                        and in_target_mode
+                        and t
+                        and getattr(t, "action", None) == active_name
+                    ):
                         delta = 1 if cmd.wheel_y > 0 else -1
                         changed, msg = game.adjust_param(
                             active_name,
