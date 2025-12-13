@@ -1098,7 +1098,13 @@ class Game:
             tmpl_id = self.rng.choice(enemy_ids)
 
             mob = enemy_factory.spawn_enemy(tmpl_id, pos)
-
+            # 50% bismuth imps (works for both direct "imp" spawns and YAML-driven pools)
+            if tmpl_id == "imp" and self.rng.random() < 0.2:
+                mob.tags = getattr(mob, "tags", None) or {}
+                mob.tags["visual_effects"] = ["bismuth"]
+                # Temporary naming convention (will be replaced by descriptor system later)
+                if not mob.name.lower().startswith("bismuth "):
+                    mob.name = "bismuth imp"
             level.actors[mob.id] = mob
             level.entities[mob.id] = mob  # mirror into entities
 
@@ -1509,8 +1515,16 @@ class Game:
         radius: int = 3,
     ) -> int:
         """Spawn up to `count` imps within `radius` tiles of center using templates."""
+
         def place_imp(pos: Tuple[int, int]) -> None:
             imp = enemy_factory.spawn_enemy("imp", pos)
+
+            # 50% chance this imp is bismuth (visual effect applies to its glyph/color everywhere)
+            if self.rng.random() < 0.2:
+                imp.tags = getattr(imp, "tags", None) or {}
+                imp.tags["visual_effects"] = ["bismuth"]
+                imp.name = "bismuth imp"
+
             level.actors[imp.id] = imp
             level.entities[imp.id] = imp
 
@@ -1660,8 +1674,10 @@ class Game:
         so it can be picked up with 'g' and opened from the inventory UI.
 
         Distribution (per inventory):
-        - 50% special: 'clockwise' or 'ghostly' (equal chance) with matching tags.
-        - 50% cosmetic: one adjective from the cosmetic list (no clockwise/ghostly).
+        - 80% functional adjective: picks one adjective that ALSO declares one or more
+          VisualEffect names (tags['visual_effects']).
+        - 20% non-functional adjective: purely cosmetic wordplay, no effects.
+
         In all cases, exactly ONE adjective appears in the name.
         """
         level = self._level()
@@ -1669,76 +1685,87 @@ class Game:
             return
         player = level.actors[self.player_id]
 
-        # --- random fun adjectives for inventories (unchanged baseline) ---
-        adjectives = [
+        # ------------------------------------------------------------------
+        # Adjectives
+        #
+        # Keep these two pools mutually exclusive:
+        # - functional adjectives have associated VisualEffects (tested pipeline)
+        # - non-functional adjectives are just funny flavor (no effect yet)
+        # ------------------------------------------------------------------
+
+        # Functional adjectives → effect name(s) (from visual_effects.py registry).
+        # NOTE: "mirrored" resolves to either mirror_x or mirror_y per spawn.
+        functional_map: dict[str, list[str]] = {
+            "clockwise": ["clockwise"],
+            "ghostly": ["ghostly"],
+            "mirrored": [],  # chosen dynamically: ["mirror_x"] or ["mirror_y"]
+            "fiery": ["fiery"],
+            "bismuth": ["bismuth"],
+        }
+
+        # Big goofy pool. We will remove any functional adjectives from this below.
+        nonfunctional_adjectives = [
             "fetid", "dubious", "spectacular", "outrageous", "sensible",
             "colossal", "lightly-aged", "unfortunate", "malicious",
             "courageous", "flavorful", "salty", "magnanimous",
             "pernicious", "persuasive", "cartoonish", "trapezoidal",
             "bovine", "spectral", "capitalized", "automatic",
-            "counter-clockwise", "mirrored", "recursive", "stout",
+            "counter-clockwise", "recursive", "stout",
             "lean", "microscopic", "semipermeable", "blessed",
             "+1", "+2", "candlelit", "smoky", "smoked", "cozy",
             "uninhabitable", "nuclear", "deathly", "ferocious",
             "fractious", "queer", "rectilinear", "lavender-scented",
             "hopefully not racist", "erotic", "far-fetched", "amazing",
             "underwhelming", "carnivorous", "mysterious", "arctic",
-            "celestial", "fiery", "toasty", "room temperature",
+            "celestial", "toasty", "room temperature",
             "unassuming", "subtle", "gaudy", "ornate", "gem-encrusted",
             "golden", "wooden", "marbled", "spiked", "luminescent",
             "electrified", "poisonous", "venomous", "mangled",
             "malfunctioning", "twisted", "octonionic", "eldritch", "malted",
             "syrupy", "tumultuous", "festooned", "inappropriate", "entropic",
-            "extropic", "overpopulated", "arbitrary", "cannibalistic",
+            "extropic", "overpopulated", "arbitrary",
             "ecstatic", "carbon-based", "semifluid", "carbonated",
             "vitamin-rich", "emotionally vulnerable", "disgruntled",
-            "cannibalistic", "vegan-friendly", "emphatic", "plain old",
+            "vegan-friendly", "emphatic", "plain old",
             "cream-filled", "inexcusable", "historically accurate",
             "randomized", "lubricated", "grape-flavored", "excitable",
             "tasteless", "vintage", "incandescent", "steam-powered",
         ]
 
-        # Special effect adjectives (these drive tags / visuals):
-        special_adjectives = ("clockwise", "ghostly")
-
-        # Cosmetic adjectives exclude the special ones.
-        cosmetic_adjectives = [
-            a for a in adjectives
-            if a.lower() not in ("clockwise", "ghostly")
+        # Ensure mutual exclusivity (remove any functional words if they appear).
+        functional_set = {k.lower() for k in functional_map.keys()}
+        nonfunctional_adjectives = [
+            a for a in nonfunctional_adjectives
+            if a.lower() not in functional_set
         ]
 
-        # Shuffle cosmetic pool so we can pop without duplicates in this batch.
-        cosmetic_pool = list(cosmetic_adjectives)
-        self.rng.shuffle(cosmetic_pool)
+        # Shuffle pool so a batch of spawned inventories tends not to repeat.
+        nonfunc_pool = list(nonfunctional_adjectives)
+        self.rng.shuffle(nonfunc_pool)
 
-        def next_cosmetic_adj() -> str:
-            nonlocal cosmetic_pool
-            if not cosmetic_pool:
-                # Refill & reshuffle if we somehow exhaust the pool.
-                cosmetic_pool = list(cosmetic_adjectives)
-                self.rng.shuffle(cosmetic_pool)
-            return cosmetic_pool.pop()
+        def next_nonfunc_adj() -> str:
+            nonlocal nonfunc_pool
+            if not nonfunc_pool:
+                nonfunc_pool = list(nonfunctional_adjectives)
+                self.rng.shuffle(nonfunc_pool)
+            return nonfunc_pool.pop()
 
         def place_inventory(pos: Tuple[int, int]) -> None:
             x, y = pos
 
-            # Roll which kind of inventory this is.
-            r = self.rng.random()
-            adj: str
+            # Roll: functional vs non-functional adjective
             tags: dict[str, object] = {}
+            if self.rng.random() < 0.80:
+                adj = self.rng.choice(list(functional_map.keys()))
+                effects = list(functional_map[adj])
 
-            if r < 0.5:
-                # 50% special: equal chance clockwise / ghostly
-                special_adj = self.rng.choice(special_adjectives)
-                adj = special_adj
+                if adj == "mirrored":
+                    effects = [self.rng.choice(["mirror_x", "mirror_y"])]
 
-                if special_adj == "clockwise":
-                    tags["clockwise_inventory"] = True
-                elif special_adj == "ghostly":
-                    tags["ghostly_inventory"] = True
+                if effects:
+                    tags["visual_effects"] = effects
             else:
-                # 50% cosmetic: one from the cosmetic pool, no special tag
-                adj = next_cosmetic_adj()
+                adj = next_nonfunc_adj()
 
             display_name = f"{adj} Inventory"
 
@@ -1782,6 +1809,7 @@ class Game:
                 self.log.add("Inventory sale! Inventory inventory must go!")
         else:
             self.log.add("This is no place for an inventory.")
+
 
 
 

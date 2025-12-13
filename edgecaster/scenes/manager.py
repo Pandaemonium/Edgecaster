@@ -18,6 +18,7 @@ from .main_menu import MainMenuScene
 from .world_map_scene import WorldMapScene
 from edgecaster.ui.status_header import StatusHeaderWidget
 from edgecaster.ui.widgets import WidgetContext
+from edgecaster.visual_effects import concat_effect_names
 
 
 class SceneManager:
@@ -145,6 +146,19 @@ class SceneManager:
             # present() code can read it if you wire it up later.
             setattr(self.renderer, "global_visual_profile", profile)
 
+    def set_global_visual_effects(self, names: list[str] | None) -> None:
+        """
+        Set or clear global visual effects (named, stackable).
+        This is the preferred modern path for world-level curses/blessings.
+        """
+        # Best-effort: forward to renderer's effect manager.
+        if hasattr(self.renderer, "set_global_visual_effects"):
+            self.renderer.set_global_visual_effects(names or [])
+        else:
+            # Fallback: stash for later; harmless if renderer doesn't read it yet.
+            setattr(self.renderer, "global_visual_effects", names or [])
+
+
 
     def draw_widget_layer(self, layer: str, *, surface, game=None, scene=None) -> None:
         widgets = self.widget_layers.get(layer)
@@ -244,6 +258,12 @@ class SceneManager:
             scene.update(dt, self)
 
             # Render
+            # Let scenes globally tint everything by setting visual_effects; also include any world-level effects.
+            if hasattr(renderer, "active_visual_effects"):
+                global_eff = getattr(renderer, "global_visual_effects", []) or []
+                scene_eff = getattr(scene, "visual_effects", []) or []
+                renderer.active_visual_effects = concat_effect_names(global_eff, scene_eff)
+
             scene.render(renderer, self)
 
             # If renderer signals quit (legacy escape hatch), honor it.

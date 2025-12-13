@@ -376,8 +376,12 @@ def effect_bless_player(game: "Game") -> None:
 
     # Clear any global visual profile (un-mirror the world).
     manager = getattr(game, "scene_manager", None)
-    if manager is not None and hasattr(manager, "set_global_visual_profile"):
-        manager.set_global_visual_profile(None)
+    if manager is not None:
+        if hasattr(manager, "set_global_visual_effects"):
+            manager.set_global_visual_effects([])
+        elif hasattr(manager, "renderer") and hasattr(manager.renderer, "set_global_visual_effects"):
+            manager.renderer.set_global_visual_effects([])
+
 
     # Apply / refresh the 'blessed' status.
     if not game._has_status(player, "blessed"):
@@ -420,8 +424,14 @@ def effect_curse_player(game: "Game") -> None:
 
     # If we have a live scene manager, ask it to flip the entire game horizontally.
     manager = getattr(game, "scene_manager", None)
-    if manager is not None and hasattr(manager, "set_global_visual_profile"):
-        manager.set_global_visual_profile(VisualProfile(flip_x=True))
+    if manager is not None:
+        # Preferred: SceneManager forwards to renderer
+        if hasattr(manager, "set_global_visual_effects"):
+            manager.set_global_visual_effects(["mirror_x"])
+        # Fallback: direct renderer access (debug friendliness)
+        elif hasattr(manager, "renderer") and hasattr(manager.renderer, "set_global_visual_effects"):
+            manager.renderer.set_global_visual_effects(["mirror_x"])
+
 
     # IMPORTANT: do NOT call start_dialogue() here.
     # The DialoguePopupScene sees next_id=None for this choice,
