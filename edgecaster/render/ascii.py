@@ -13,6 +13,13 @@ from edgecaster.ui.ability_bar import AbilityBarRenderer
 from edgecaster.visuals import VisualProfile, apply_visual_panel
 from edgecaster.ui.widgets import WidgetContext, HUDWidget
 from edgecaster.ui.status_header import StatusHeaderWidget
+from edgecaster.visual_effects import (
+    VisualEffectManager,
+    build_visual_profile,
+    apply_entity_color_effects,
+    effect_names_from_obj,
+    concat_effect_names,
+)
 
 
 class AsciiRenderer:
@@ -31,17 +38,7 @@ class AsciiRenderer:
         self.pan_y = 0.0
         self.surface_flags = pygame.RESIZABLE
 
-
-
-        #Will clean this up soon to dedicated visual effects file#
-        # screen shake (impulse-based)
-
-        self.shake_time_ms = 0       # ms remaining
-        self.shake_amplitude = 0.0   # initial magnitude
-        self.shake_decay_ms = 250    # decay constant (tweakable)
-        self.shake_last_tick_ms = 0  # last time we updated the shake timer
-
-
+        self.visual_fx = VisualEffectManager()
 
         # Logical render surface stays at the configured resolution.
         self.surface = pygame.Surface((width, height))
@@ -175,6 +172,14 @@ class AsciiRenderer:
             int((pos[0] - self.lb_off[0]) / max(1e-6, self.lb_scale)),
             int((pos[1] - self.lb_off[1]) / max(1e-6, self.lb_scale)),
         )
+
+    def set_global_visual_effects(self, names: list[str] | None) -> None:
+        self.visual_fx.set_global_effects(names or [])
+
+    def clear_global_visual_effects(self) -> None:
+        self.visual_fx.set_global_effects([])
+
+
 
     def present(self) -> None:
         self._present()
@@ -405,24 +410,17 @@ class AsciiRenderer:
         # Finally, blit the Lorenz layer over the main surface
         self.surface.blit(self.lorenz_surface, (0, 0))
 
-
-
-
-
-
-
     def _entity_visual(self, ent) -> Tuple[str, Tuple[int, int, int]]:
         """Return (glyph, color) for any renderable entity.
 
         - Actors are detected by having a 'faction' attribute.
         - Generic entities (items/features) use their own glyph/color.
+        - NEW: apply entity + scene-level color effects (fiery/bismuth/etc.).
         """
         # Actors (player, monsters, NPCs, etc.)
         if hasattr(ent, "faction"):
-            # Always respect the entity's own glyph so body-swaps look right.
             glyph = getattr(ent, "glyph", "@")
 
-            # You can still give factions default colors, but don't clobber explicit ones.
             base_color = getattr(ent, "color", None)
             if base_color is not None:
                 color = base_color
@@ -433,15 +431,27 @@ class AsciiRenderer:
             else:
                 color = self.monster_color
 
+            effects = concat_effect_names(
+                getattr(self, "active_visual_effects", []) or [],
+                effect_names_from_obj(ent),
+            )
+            if effects:
+                color = apply_entity_color_effects(ent, color, effects, now_ms=pygame.time.get_ticks())
+
             return glyph, color
 
         # Generic entities: items, features, etc.
         glyph = getattr(ent, "glyph", "?")
         color = getattr(ent, "color", self.fg)
+
+        effects = concat_effect_names(
+            getattr(self, "active_visual_effects", []) or [],
+            effect_names_from_obj(ent),
+        )
+        if effects:
+            color = apply_entity_color_effects(ent, color, effects, now_ms=pygame.time.get_ticks())
+
         return glyph, color
-
-
-
 
     def draw_entities(self, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
@@ -1455,58 +1465,22 @@ class AsciiRenderer:
             panel = self.surface.copy()
 
         panel_rect = pygame.Rect(ox, oy, new_w, new_h)
+        self.visual_fx.update()
+        panel_rect = self.visual_fx.apply_present_rect(panel_rect)
 
-        # -------------------------------------------------------
-        # Screen shake (impulse → exponential decay) -- CLEAN UP to dedicated visual effects file
-        # -------------------------------------------------------
-        if self.shake_time_ms > 0:
-            now = pygame.time.get_ticks()
-
-            # Compute elapsed time since last shake update
-            if self.shake_last_tick_ms == 0:
-                elapsed = 0
-            else:
-                elapsed = now - self.shake_last_tick_ms
-
-            # Decrease remaining time
-            self.shake_time_ms = max(0, self.shake_time_ms - elapsed)
-            self.shake_last_tick_ms = now
-
-            # remaining fraction (clamped 0..1 so it never grows above amplitude)
-            frac = max(0.0, min(1.0, self.shake_time_ms / self.shake_decay_ms))
-            amp = self.shake_amplitude * frac
-
-            import random
-            jitter_x = int(random.uniform(-amp, amp))
-            jitter_y = int(random.uniform(-amp, amp))
-            panel_rect.x += jitter_x
-            panel_rect.y += jitter_y
-
-            # If time ran out this frame, snap to rest.
-            if self.shake_time_ms <= 0:
-                self.shake_time_ms = 0
-                self.shake_last_tick_ms = 0
-        else:
-            # Ensure clean rest state
-            self.shake_time_ms = 0
-            self.shake_last_tick_ms = 0
-
-
-        global_visual = getattr(self, "global_visual_profile", None)
-
-        if global_visual is None:
-            # Normal path: just blit the panel as-is.
+        # Global named effects (e.g. mirror curse) are applied to the entire panel here.
+        global_names = getattr(self.visual_fx, "global_effects", []) or []
+        if not global_names:
             self.display.blit(panel, panel_rect.topleft)
         else:
-            # Cursed/blessed path: apply the visual profile to the whole panel.
-            # We hand the letterboxed region to apply_visual_panel; it will
-            # flip/rotate/offset within that rectangle.
+            global_visual = build_visual_profile(VisualProfile(), global_names)
             apply_visual_panel(
                 base_surface=self.display,
                 logical_surface=panel,
                 window_rect=panel_rect,
                 visual=global_visual,
             )
+
 
         pygame.display.flip()
 
@@ -1518,11 +1492,6 @@ class AsciiRenderer:
         
         
         
-#Clean this to a dedicated visual effects file
     def apply_shake(self, amplitude: float = 12.0, duration_ms: int = 250):
-        """
-        Trigger a shaking impulse: amplitude in pixels, duration in ms.
-        """
-        self.shake_amplitude = amplitude
-        self.shake_time_ms = duration_ms
-        self.shake_last_tick_ms = pygame.time.get_ticks()
+        self.visual_fx.trigger_shake(amplitude_px=float(amplitude), duration_ms=int(duration_ms))
+

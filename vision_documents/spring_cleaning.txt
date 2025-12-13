@@ -1,125 +1,102 @@
 ﻿SPRING CLEANING — ACTIONABLE PLAN
-(Current Status: VisualProfile pipeline active, widget system online, HUD widgetized,
-overlay widget layers wired, metadata-driven abilities, unified TargetMode, hierarchical entities)
+(Current Status: Widget system online; VisualProfile + VisualEffect pipeline active)
 
-Legend: [CLEANUP] structure/no-behavior change  
-        [BEHAVIOR] gameplay change  
-        [VISION] long-term direction
+Legend:
+[CLEANUP] structure/no-behavior change
+[BEHAVIOR] gameplay change
+[VISION] long-term direction
 
 
 ===============================================================================
 SLICE 1: Unified TargetMode [FOUNDATION COMPLETE]
-✓ Tile / vertex / look targeting unified  
-✓ Mouse + keyboard symmetric  
-✓ Inspect mode uses entity inheritance  
+✓ Tile / vertex / look targeting unified
+✓ Mouse + keyboard symmetric
+✓ Inspect mode uses entity inheritance
 
 Next:
-- Cone / line shapes  
-- Ranged preview layering  
+- Cone / line shapes
+- Ranged preview layering
 - Multi-step targeting for complex spells
 
 
 ===============================================================================
 SLICE 2: Menu & UI System Rework [CLEANUP — ACTIVE]
-Problem: menus, keybinds, options, inventory, and special scenes all use unique
-layout code. Several still rely on ad-hoc pixel math.
+
+Problem:
+Menus, keybinds, inventory, and special scenes historically used ad-hoc layout
+code and scene-specific hacks (especially for visuals).
 
 New foundation:
-✓ Panel-local rendering everywhere  
-✓ Scene-level VisualProfiles  
-✓ Widget API introduced (WidgetContext, Widget, basic layout containers)
-✓ Overlay widget layers (SceneManager-owned; scenes opt-in via overlay_layers)
-  - HUD/status header can render during dungeon + inventory
-  - Popup dimming happens before overlays, so HUD stays bright/live
-  - Enables live HP/MP updates while interacting with inventory/popup UIs
+✓ Panel-local rendering everywhere
+✓ Scene-level VisualProfiles
+✓ General VisualEffect system (named, stackable, recursive)
+✓ Widget API introduced
+✓ Overlay widget layers (SceneManager-owned; scenes opt-in)
+
+Visual effects milestone:
+✓ Introduced visual_effects.py as a central registry
+✓ Clockwise / ghostly / mirror / shake / vibrate unified
+✓ Inventory-specific visual hacks removed
+✓ Effects now apply uniformly to scenes, popups, and entities
+✓ Duplicate effects intentionally compound (fractal recursion)
 
 Temporary scaffolding (do not let this linger):
-- dungeon.py currently contains an F8-toggled debug widget overlay used to prove
-  scene-owned widgets + event interception. Keep it as a fallback while HUD +
-  AbilityBar widgetization is in progress, but remove it once input/clickiness is
-  confirmed stable.
+- dungeon.py still contains an F8 debug overlay used to validate widget input
+  interception. Keep as fallback until HUD + AbilityBar widgetization is stable,
+  then remove.
 
-Migration order (stay on track):
-1) HUD (status/name/HP/etc.) → widget in its own file; rendered via overlay layer
+Migration order (stay disciplined):
+1) HUD → widget in its own file (overlay layer)
 2) Ability Bar → widgetized + preserve clickiness
-3) MenuScene → generalized widget-based menus; keep “MenuScene classic” as a
-   convenient preset/legacy wrapper while migrating unicorn scenes
+3) MenuScene → generalized widget-based menus
+   (keep MenuScene classic as a thin legacy wrapper during migration)
 
 
 ===============================================================================
 SLICE 3: Data-Driven Everything [VISION]
-- Expand prototypes with materials, physiology, resistances  
-- Behavior components (curious, brittle, fractal, volatile)  
-- Procedural pantheons + lore via inheritance chains
+
+- Expand prototypes with materials, physiology, resistances
+- Behavior components (curious, brittle, fractal, volatile)
+- Procedural pantheons and lore via inheritance chains
+- Conditions/adjectives system that can attach gameplay + visual effects
+  (e.g. "Fiery" condition → fiery VisualEffect)
 
 
 ===============================================================================
 CURRENT TACTICAL FOCUS (UI / SCENE LAYER)
-→ Complete widget primitives (Label, Button, List)  
-→ Introduce flexible menu layouts (two-pane, mixed text+graphics)  
-→ Convert InventoryScene → widget-based (left list + right detail panel)
-→ Convert KeybindsScene → data-driven grid widget  
-→ Normalize visual style across all menus  
-→ Centralize special visual tags (“ghostly”, “clockwise”) into a registry
+
+→ Finish widget primitives (Label, Button, List)
+→ Flexible menu layouts (two-pane, mixed text/graphics)
+→ InventoryScene → widget-based (list + details)
+→ KeybindsScene → data-driven grid widget
+→ Normalize visual style across all menus
+→ Keep all visual effects registry-driven (no scene-specific hacks)
 
 
 ===============================================================================
 ONGOING ENGINE CLEANUPS
 
-1) [CLEANUP] game.py decomposition into systems/*
-   Break Game god-object into systems: scheduler, fov, inventory, spawn,
-   status, pattern_ops, lorenz, overmap. Maintain public API.
-
-2) [CLEANUP] Scheduler/event semantics
-   Move to ScheduledEvent dataclass; ensure no double-advance behavior.
-
-3) [CLEANUP] MessageLog performance
-   Using deque(maxlen) instead of O(n) pop(0).
-
+1) [CLEANUP] Decompose game.py into systems/*
+2) [CLEANUP] Scheduler/event semantics cleanup
+3) [CLEANUP] MessageLog performance (deque)
 4) [CLEANUP] Dataclass defaults & typing consistency
-   Use field(default_factory=...) for all mutable fields.
-
-5) [CLEANUP] Actor/entity identification
-   Prefer isinstance(ent, Actor); avoid hasattr(ent,"faction").
-
+5) [CLEANUP] Actor/entity identification consistency
 6) [CLEANUP] Level registry invariants
-   Centralized helpers for add/remove actor/entity; ensure consistency.
-
-7) [CLEANUP] Kill-path id consistency
-   Use actor.id everywhere; remove actor.actor_id ambiguity.
-
+7) [CLEANUP] Kill-path ID consistency
 8) [CLEANUP] Overmap thread safety
-   Lock access to world_map_cache + move pygame ops to main thread if needed.
-
-9) [CLEANUP] Centralize config/tuning constants
-   Move gameplay constants into GameConfig or tuning.py.
-
+9) [CLEANUP] Centralize tuning constants
 10) [CLEANUP] Inventory/entity lookup optimizations
-    Replace O(N) scans with global entity index.
-
 11) [CLEANUP] Actor/entity position indexes
-    level.actor_pos / level.entity_pos for O(1) lookups.
-
 12) [CLEANUP] Normalize content-file resolution
-    Use importlib.resources or package-level paths.
-
 13) [CLEANUP] Remove leftover debug scaffolding
-    Move dev helpers into edgecaster/debug_tools.py.
-
 14) [CLEANUP] Explicit initialization pipeline
-    Make Game.__init__ light; move world gen to initialize_run().
-
 15) [CLEANUP] Tighten scheduler typing
-    ScheduledEvent dataclass + debug hooks.
-
 16) [CLEANUP] Unify ignite/regrow effect logic
-    Build reusable edge-aura engine; keep behavior identical.
-
 17) [CLEANUP] Distinguish movement vs LOS blocking
-    Add tile.transparent or tile.blocks_los.
+
 
 -------------------------------------------------------------------------------
 Guiding principles:
-Keep the geometry weird.  
-Keep responsibilities clean.  
-Progress should remain incremental and readable.
+Keep the geometry weird.
+Keep responsibilities clean.
+Refactor early, but surgically.

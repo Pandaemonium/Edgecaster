@@ -1,9 +1,10 @@
 ﻿EDGECASTER ARCHITECTURE GUIDE
 High-Level Overview and Refactor Roadmap
-Updated: 2025-12-13 (Overlay widget layers; HUD active in dungeon + inventory)
+Updated: 2025-12-13
+(Status: Widget system online; VisualProfile + VisualEffect pipeline active)
 
 This document orients new contributors to the current structure.
-It must remain concise, accurate, and immediately useful as a project primer.
+It must remain concise, accurate, and immediately useful.
 
 
 ===============================================================================
@@ -12,47 +13,51 @@ SECTION 1 — LAYER RESPONSIBILITIES
 SCENES (edgecaster/scenes/)
 Own:
 - Input interpretation (via GameCommand)
-- Scene-local UI state (menus, dialogs, targeting, ability bar state sync)
-- Scene transitions
+- Scene-local UI state (menus, dialogs, targeting, ability bar sync)
+- Scene transitions and stacking
 - High-level gameplay intent routing
-- Declaring which overlay widget layers should be active (overlay_layers)
+- Declaring which overlay widget layers are active (overlay_layers)
+- Declaring visual effects by NAME (scene.visual_effects)
 
 Do NOT:
 - Perform low-level rendering
-- Interpret raw pygame display transforms
-- Implement world rules or simulation logic
+- Apply pygame transforms directly
+- Implement simulation rules
 
 Key scenes:
-- manager.py                     scene stack + transitions + overlay layer service
-- dungeon.py                     primary gameplay; owns TargetMode & UI routing
-- urgent_message_scene.py        popup system using panel-local rendering
+- manager.py                     scene stack + overlay layer service
+- dungeon.py                     primary gameplay; TargetMode + UI routing
+- inventory_scene.py             nested inventories (now effect-driven)
+- urgent_message_scene.py        generic popup/dialog system
 - dialogue_scene.py              dialogue trees + callbacks
-- inventory_scene.py             nested inventories (migrating to widgets)
-- options, keybinds, character creation, etc.
+- options / keybinds / character creation
 
 
 -------------------------------------------------------------------------------
 RENDERERS (edgecaster/render/)
+
 Pure view layer.
 
 ascii.py:
 - Draws map, entities, overlays
 - Draws panel-local UI for popup/menu scenes
-- Transitional: some HUD drawing may remain, but target architecture is:
-  **scene-owned widget trees** with renderer remaining draw-only
+- Applies VisualProfiles and VisualEffects at draw time
+- Owns the VisualEffectManager (screen shake, vibration, global effects)
 
-Renderers never:
-- Read events
-- Interpret commands
+Renderers NEVER:
+- Read input events
+- Interpret GameCommands
 - Store gameplay or UI state
 
 
 -------------------------------------------------------------------------------
-INPUT (scenes/game_input.py)
+INPUT (edgecaster/scenes/game_input.py)
+
 Single conversion point:
 Pygame Event → GameCommand(kind=...)
 
-Scenes interpret GameCommands; renderer remains input-agnostic.
+Scenes interpret GameCommands.
+Renderers are input-agnostic.
 
 Keybinds:
 - DEFAULT_BINDINGS merged with user settings
@@ -62,6 +67,7 @@ Keybinds:
 
 -------------------------------------------------------------------------------
 GAME CORE (edgecaster/game.py)
+
 Authoritative simulation:
 - Entities, actors, stats
 - Turn updates, movement, collisions, combat
@@ -70,90 +76,101 @@ Authoritative simulation:
 
 Does NOT:
 - Know about rendering
-- Contain UI logic or targeting logic
+- Contain UI logic or transforms
 
 Data:
-- POIs (content/pois.yaml)
-- Entities (content/entities.yaml)
-- Enemies (content/enemies.yaml)
-- NPCs (npcs.py)
+- content/entities.yaml
+- content/enemies.yaml
+- content/pois.yaml
+- npcs.py
 
 
 -------------------------------------------------------------------------------
 SYSTEMS (edgecaster/systems/)
-Pure logic:
-- actions.py         → Action metadata + targeting rules
-- abilities.py       → Actor ability lists
+
+Pure logic modules:
+- actions.py         → Action metadata + targeting specs
+- abilities.py       → Actor abilities
 - patterns/*         → Fractal generation
 - ai.py              → Behavior stubs
 
 Recent:
-✓ Targeting metadata centralized  
-✓ AbilityBar is metadata-driven  
-✓ Action parameters surface automatically into config overlay
+✓ Targeting metadata centralized
+✓ AbilityBar is metadata-driven
+✓ Action parameters surface automatically into UI
 
 
 ===============================================================================
-SECTION 2 — VISUAL SCENE SYSTEM (TRANSFORM & PANEL PIPELINE)
+SECTION 2 — VISUAL TRANSFORM & EFFECT PIPELINE
 
-visuals.py introduces:
-- VisualProfile (scale, offset, rotate, alpha, flip)
-- apply_visual_panel(...)  → transforms & blits a panel
-- unproject_mouse(...)     → invert transform for accurate hit-tests
+Two distinct but cooperating systems:
 
-Panel-local rendering:
-- Popups, menus, dialogs draw into a dedicated panel surface
-- Transform applied at blit-time only (logic stays axis-aligned)
+visuals.py:
+- VisualProfile (scale, offset, rotation, alpha, flips)
+- apply_visual_panel(...)   → transforms & blits a panel
+- unproject_mouse(...)      → invert transforms for hit-testing
+
+visual_effects.py:
+- Registry of named VisualEffects (e.g. "clockwise", "ghostly", "fiery")
+- Effects may modify:
+  • VisualProfile (geometry lane)
+  • Entity draw style (color, flicker, etc.)
+  • Final present rect (screen shake, vibration)
+- Effects are stackable and order-preserving
+- Duplicate effects intentionally compound (e.g. clockwise + clockwise)
+
+Design rule:
+Scenes/entities declare *effect names only*.
+All effect behavior lives in visual_effects.py.
 
 Enables:
-- Rotated inventories ("clockwise")
-- Ghost/alpha menus
-- Recursive menu distortions
-- Shared transform math for dungeon-space effects
+- Recursive clockwise/ghostly inventories
+- Global mirror curses
+- Decaying impulses (Yawp shake)
+- Persistent vibrations
+- Parity between scene effects and entity effects
 
 
 ===============================================================================
 SECTION 3 — TARGETING (UNIFIED TARGETMODE)
 
-TargetingSpec (in actions.py):
+TargetingSpec (actions.py):
 - kind: tile | vertex | look
 - mode: aim | terminus | inspect
 - range parameters
 
 TargetState (scene-local):
-- cursor, origin, mode, etc.
+- cursor, origin, mode
 
 DungeonScene:
-- Moves cursor, confirms/cancels, triggers actions
+- Owns targeting flow
 
 Renderer:
-- Draws cursor only (no targeting logic)
+- Draws cursor only
 
 
 ===============================================================================
-SECTION 4 — WIDGET SYSTEM AND OVERLAY LAYERS
+SECTION 4 — WIDGET SYSTEM & OVERLAY LAYERS
 
 Widget foundation:
-- Location: edgecaster/ui/widgets.py
+- edgecaster/ui/widgets.py
 - WidgetContext(surface, game, scene, renderer)
-- Widget base class (rect, layout(), draw(), handle_event(), update())
-- Composition + layout containers (VBox/HBox) + interactive widgets as they are added
+- Widget base class (layout, draw, handle_event, update)
+- Layout containers (VBox/HBox) + interactive widgets
 
-Intended ownership:
-- Scenes own widget trees and route input.
-- Renderers remain draw-only; widgets may *use* renderer helpers (fonts/colors).
+Ownership model:
+- Scenes own widget trees and route input
+- Renderer remains draw-only
 
-Overlay widget layers (general mechanism):
-- SceneManager maintains a registry of named widget layers (e.g. "hud").
-- Scenes declare which layers they want via `overlay_layers` (e.g. {"hud"}).
-- Popup scenes draw dimming first, then overlay layers, so overlays remain bright/live.
-- This allows live-updating HUD while interacting with inventory/popup scenes.
+Overlay widget layers:
+- SceneManager maintains named widget layers (e.g. "hud")
+- Scenes opt in via overlay_layers
+- Popup dimming occurs before overlays
+- Allows live HUD during inventory/popups
 
-Current status:
-✓ Independent status/header HUD widget exists
-✓ HUD overlay layer is active during both dungeon and inventory scenes
-✓ Temporary F8 debug overlay exists in dungeon.py as scaffolding; remove after
-  AbilityBar widgetization/input verification
+Status:
+✓ HUD widget active in dungeon + inventory
+✓ Temporary F8 debug overlay exists as scaffolding
 
 
 ===============================================================================
@@ -164,27 +181,26 @@ YAML prototypes define:
 - description (inherited)
 - stats, tags, behaviors
 
-Runtime entities reference fully-resolved archetypes.
-
-Look-mode automatically displays inherited descriptions.
+Runtime entities are fully resolved archetypes.
+Look-mode displays inherited descriptions.
 
 
 ===============================================================================
 SECTION 6 — ONBOARDING NOTES
 
 - Renderer = draw-only
-- Scenes = UI/state/intent + event routing
+- Scenes = UI state + intent
 - Game = simulation only
-- Systems = reusable logic modules
-- VisualProfiles = panel/window-level transforms
-- Widgets = UI composition inside panel-local rendering
-- Overlay layers = reusable cross-scene widget layers (HUD, etc.)
-- Currency: simulation lives in game.py (wallet + adjust_currency; currency items in content/entities.yaml with tags currency/amount). Renderer draws currency items with PNG icons from assets/icons/ (project root), HUD header shows the balance via StatusHeaderWidget.
-- Assets: loaded from project root assets/ (e.g., assets/icons/bismuth.png); keep renderer references project-rooted, not package-relative. Avoid embedding assets inside the edgecaster/ package.
+- Systems = reusable logic
+- VisualProfiles = panel/window transforms
+- VisualEffects = named, stackable presentation logic
+- Widgets = UI composition
+- Overlay layers = cross-scene widgets (HUD)
+- Assets live in project-root assets/ (not inside package)
 
 Current strategic work:
-- HUD → Ability Bar → MenuScene (generalized widget-based menus)
+- HUD → Ability Bar → generalized MenuScene widgets
 - Two-pane inventory (list + details)
-- Keybindings/options unification
-- Reduce ad-hoc coordinate math everywhere
-- Expand transform-based UI effects
+- Keybinds/options unification
+- Reduce ad-hoc coordinate math
+- Expand transform/effect-driven UI
