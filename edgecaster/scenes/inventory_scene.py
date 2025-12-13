@@ -286,6 +286,15 @@ class InventoryScene(PopupMenuScene):
                     if hasattr(self.game, "log") and hasattr(self.game.log, "add"):
                         self.game.log.add("You're not sure if you should have eaten that inventory...")
 
+                        # Also report the sensations from consumed effects
+                        # Deduplicate while preserving order
+                        seen: set[str] = set()
+                        for eff in all_effects:
+                            if eff in seen:
+                                continue
+                            seen.add(eff)
+                            self.game.log.add(f"You feel {eff}.")
+
                     return
 
 
