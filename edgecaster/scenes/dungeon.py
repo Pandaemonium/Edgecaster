@@ -15,6 +15,8 @@ from edgecaster.patterns import motion as pattern_motion
 from edgecaster.ui.ability_bar import AbilityBarState
 from edgecaster.systems.actions import get_action, describe_entity_for_look
 from edgecaster.visuals import VisualProfile, apply_visual_panel  
+from edgecaster.ui.widgets import WidgetContext, VBox, HBox, LabelWidget, ButtonWidget, ListWidget
+
 
 TargetKind = Literal["tile", "vertex", "look", "position"]
 
@@ -62,6 +64,11 @@ class DungeonUIState:
     push_target: tuple[float, float] | None = None
     push_rotation: float = 0.0
     push_preview: object | None = None
+    # --- debug widget PoC state (safe, pure data) ---
+    debug_widget_visible: bool = False
+    debug_clicks: int = 0
+    debug_selected_index: int = 0
+
 
     def __post_init__(self) -> None:
         if self.hover_neighbors is None:
@@ -106,12 +113,50 @@ class DungeonScene(Scene):
         # Keep the Game instance across pauses/inventory.
         self.game: Game | None = None
         self.ui_state = DungeonUIState()
+        # --- Widget PoC: scene-owned widget tree (view objects) ---
+        self._debug_widget_root = HBox(spacing=12, padding=10, valign="top")
+        self._debug_list = ListWidget(
+            ["alpha", "beta", "gamma", "delta", "epsilon"],
+            selected_index=self.ui_state.debug_selected_index,
+            on_activate=self._on_debug_list_activate,
+        )
+        self._debug_right = VBox(spacing=6, padding=6, align="left")
+        self._debug_title = LabelWidget("Debug Widget PoC", align="left")
+        self._debug_selected = LabelWidget("Selected: alpha", align="left")
+        self._debug_button = ButtonWidget("Click me", on_click=self._on_debug_click)
+        self._debug_hint = LabelWidget("Tip: F8 toggles this panel", align="left")
+
+        self._debug_right.add_child(self._debug_title)
+        self._debug_right.add_child(self._debug_selected)
+        self._debug_right.add_child(self._debug_button)
+        self._debug_right.add_child(self._debug_hint)
+
+        self._debug_widget_root.add_child(self._debug_list)
+        self._debug_widget_root.add_child(self._debug_right)
+
+        # Position and size (a simple overlay box) -- Debut widget clean up later
+        self._debug_widget_root.rect = pygame.Rect(12, 120, 420, 170)
+
         self._pending_door_toggle: dict[tuple[int, int], object] | None = None
         # Scene-level input mapper for "pure game" actions
         # refactor: migrate to a shared input layer; DungeonScene should consume a GameCommand queue only.
         self.input = GameInput()
         self._started = False
         self._old_urgent_cb = None
+
+
+##debug widget
+    def _on_debug_click(self, _btn: ButtonWidget) -> None:
+        self.ui_state.debug_clicks += 1
+        self._debug_title.text = f"Debug Widget PoC ({self.ui_state.debug_clicks} clicks)"
+        # Optional: also log into MessageLog if you want visible proof
+        log = getattr(self.game, "log", None)
+        if log is not None and hasattr(log, "add"):
+            log.add("[debug] ButtonWidget click registered!")
+
+    def _on_debug_list_activate(self, idx: int, item) -> None:
+        self.ui_state.debug_selected_index = idx
+        self._debug_selected.text = f"Selected: {item}"
 
     # ------------------------------------------------------------------ #
     # Live-loop hooks
@@ -134,6 +179,10 @@ class DungeonScene(Scene):
             cmds = self.input.handle_keydown(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)
+            if event.key == pygame.K_F8:
+                self.ui_state.debug_widget_visible = not self.ui_state.debug_widget_visible
+                return
+
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             cmds = self.input.handle_mousebutton(event)
@@ -149,6 +198,30 @@ class DungeonScene(Scene):
             cmds = self.input.handle_mousewheel(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)
+
+        if self.ui_state.debug_widget_visible:
+            # Convert display-space mouse coords -> logical surface coords.
+            ev = event
+            if hasattr(event, "pos"):
+                ox, oy = getattr(renderer, "lb_off", (0, 0))
+                scale = float(getattr(renderer, "lb_scale", 1.0) or 1.0)
+                sx = int((event.pos[0] - ox) / scale)
+                sy = int((event.pos[1] - oy) / scale)
+
+                # Make a shallow event with transformed pos
+                ev = pygame.event.Event(event.type, {**event.dict, "pos": (sx, sy)})
+
+            ctx = WidgetContext(surface=renderer.surface, game=game, scene=self, renderer=renderer)
+
+            # Keep list selection synced from UIState (state is canonical)
+            self._debug_list.selected_index = self.ui_state.debug_selected_index
+
+            # Layout (hitboxes) then allow widget tree to consume the event.
+            self._debug_widget_root.layout(ctx)
+            if self._debug_widget_root.handle_event(ev, ctx):
+                # If list selection changed via hover/click, persist to UIState:
+                self.ui_state.debug_selected_index = self._debug_list.selected_index
+                return
 
     def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         game, renderer = self._ensure_game(manager)
@@ -182,7 +255,28 @@ class DungeonScene(Scene):
             and not visual.flip_x and not visual.flip_y
         ):
             # Normal path: let the renderer draw and present as usual.
-            renderer.draw_dungeon_frame(self.game)
+            old_present = getattr(renderer, "_present", None)
+            try:
+                if old_present is not None:
+                    renderer._present = lambda: None  # type: ignore[assignment]
+
+                renderer.draw_dungeon_frame(self.game)
+
+                if self.ui_state.debug_widget_visible:
+                    ctx = WidgetContext(surface=renderer.surface, game=self.game, scene=self, renderer=renderer)
+                    self._debug_list.selected_index = self.ui_state.debug_selected_index
+                    self._debug_widget_root.layout(ctx)
+                    self._debug_widget_root.draw(ctx)
+
+            finally:
+                if old_present is not None:
+                    renderer._present = old_present  # type: ignore[assignment]
+
+            # Present exactly once.
+            if hasattr(renderer, "_present"):
+                renderer._present()
+            else:
+                renderer.present()
             return
 
         # Otherwise: draw the dungeon into an off-screen panel and apply the transform.
@@ -202,6 +296,11 @@ class DungeonScene(Scene):
                 renderer._present = lambda: None  # type: ignore[assignment]
 
             renderer.draw_dungeon_frame(self.game)
+            if self.ui_state.debug_widget_visible:
+                ctx = WidgetContext(surface=panel, game=self.game, scene=self, renderer=renderer)
+                self._debug_list.selected_index = self.ui_state.debug_selected_index
+                self._debug_widget_root.layout(ctx)
+                self._debug_widget_root.draw(ctx)
 
         finally:
             # Restore renderer surface and _present implementation.
