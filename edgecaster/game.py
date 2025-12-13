@@ -369,11 +369,11 @@ class Game:
 
         # DEBUG: spawn a few Inventory entities near the starting position so we
         # can pick them up and test nested containers / recursion.
-        self.debug_spawn_inventory_near_player(count=8)
+        self.debug_spawn_inventory_near_player()
 
 
 
- 
+
 
         self._spawn_enemies(self._level(), count=4)
 
@@ -1665,52 +1665,56 @@ class Game:
                 except Exception:
                     continue
 
+    def debug_spawn_inventory_near_player(self, radius: int = 3) -> None:
+        """Debug helper: conjure a curated batch of meta-Inventories near the player.
 
+        Spawns:
+          - one of EACH functional adjective inventory (debugging visual effects)
+          - plus 3 non-functional inventories (common "junk" bags for lulz)
 
-    def debug_spawn_inventory_near_player(self, count: int = 1, radius: int = 3) -> None:
-        """Debug helper: conjure one or more meta-Inventories near the player.
-
-        Each Inventory is an item-entity with container=True and the glyph '∞',
-        so it can be picked up with 'g' and opened from the inventory UI.
-
-        Distribution (per inventory):
-        - 80% functional adjective: picks one adjective that ALSO declares one or more
-          VisualEffect names (tags['visual_effects']).
-        - 20% non-functional adjective: purely cosmetic wordplay, no effects.
-
-        In all cases, exactly ONE adjective appears in the name.
+        Functional adjectives are guaranteed to appear exactly once per call.
         """
         level = self._level()
         if self.player_id not in level.actors:
             return
         player = level.actors[self.player_id]
 
-        # ------------------------------------------------------------------
-        # Adjectives
-        #
-        # Keep these two pools mutually exclusive:
-        # - functional adjectives have associated VisualEffects (tested pipeline)
-        # - non-functional adjectives are just funny flavor (no effect yet)
-        # ------------------------------------------------------------------
-
         # Functional adjectives → effect name(s) (from visual_effects.py registry).
         # NOTE: "mirrored" resolves to either mirror_x or mirror_y per spawn.
         functional_map: dict[str, list[str]] = {
             "clockwise": ["clockwise"],
+            "counter-clockwise": ["counter-clockwise"],
             "ghostly": ["ghostly"],
             "mirrored": [],  # chosen dynamically: ["mirror_x"] or ["mirror_y"]
             "fiery": ["fiery"],
             "bismuth": ["bismuth"],
+            "jittery": ["jittery"],
+            "colossal": ["colossal"],
+            "smoky": ["smoky"],
+            "malfunctioning": ["malfunctioning"],
+            "carbonated": ["carbonated"],
+            "toasty": ["toasty"],
+            "arctic": ["arctic"],
+            "syrupy": ["syrupy"],
+            "candlelit": ["candlelit"],
+            "octonionic": ["octonionic"],
+            "celestial": ["celestial"],
+            "extropic": ["extropic"],
+            "entropic": ["entropic"],
+            "underwhelming": ["underwhelming"],
+            "revolving": ["revolving"],
+            "orbiting": ["orbiting"],
+
         }
 
-        # Big goofy pool. We will remove any functional adjectives from this below.
+        # Non-functional pool (pure flavor; no effects)
         nonfunctional_adjectives = [
             "fetid", "dubious", "spectacular", "outrageous", "sensible",
             "colossal", "lightly-aged", "unfortunate", "malicious",
             "courageous", "flavorful", "salty", "magnanimous",
             "pernicious", "persuasive", "cartoonish", "trapezoidal",
             "bovine", "spectral", "capitalized", "automatic",
-            "counter-clockwise", "recursive", "stout",
+            "recursive", "stout",
             "lean", "microscopic", "semipermeable", "blessed",
             "+1", "+2", "candlelit", "smoky", "smoked", "cozy",
             "uninhabitable", "nuclear", "deathly", "ferocious",
@@ -1734,12 +1738,9 @@ class Game:
 
         # Ensure mutual exclusivity (remove any functional words if they appear).
         functional_set = {k.lower() for k in functional_map.keys()}
-        nonfunctional_adjectives = [
-            a for a in nonfunctional_adjectives
-            if a.lower() not in functional_set
-        ]
+        nonfunctional_adjectives = [a for a in nonfunctional_adjectives if a.lower() not in functional_set]
 
-        # Shuffle pool so a batch of spawned inventories tends not to repeat.
+        # Shuffle non-functional pool so the 3 "common" bags tend not to repeat.
         nonfunc_pool = list(nonfunctional_adjectives)
         self.rng.shuffle(nonfunc_pool)
 
@@ -1750,24 +1751,33 @@ class Game:
                 self.rng.shuffle(nonfunc_pool)
             return nonfunc_pool.pop()
 
-        def place_inventory(pos: Tuple[int, int]) -> None:
-            x, y = pos
+        def find_spot_near(center: tuple[int, int], radius: int, max_attempts: int = 200) -> tuple[int, int] | None:
+            cx, cy = center
+            for _ in range(max_attempts):
+                x = cx + self.rng.randint(-radius, radius)
+                y = cy + self.rng.randint(-radius, radius)
+                if not level.world.in_bounds(x, y):
+                    continue
+                if not level.world.is_walkable(x, y):
+                    continue
+                if self._actor_at(level, (x, y)):
+                    continue
+                if self._entity_at(level, (x, y)):
+                    continue
+                return (x, y)
+            return None
 
-            # Roll: functional vs non-functional adjective
+        def spawn_inventory_at(pos: tuple[int, int], adjective: str, *, functional: bool) -> None:
             tags: dict[str, object] = {}
-            if self.rng.random() < 0.80:
-                adj = self.rng.choice(list(functional_map.keys()))
-                effects = list(functional_map[adj])
 
-                if adj == "mirrored":
+            if functional:
+                effects = list(functional_map.get(adjective, []))
+                if adjective == "mirrored":
                     effects = [self.rng.choice(["mirror_x", "mirror_y"])]
-
                 if effects:
                     tags["visual_effects"] = effects
-            else:
-                adj = next_nonfunc_adj()
 
-            display_name = f"{adj} Inventory"
+            display_name = f"{adjective} Inventory"
 
             # Random color, overriding the template's default
             color = (
@@ -1785,7 +1795,7 @@ class Game:
 
             ent = self._spawn_entity_from_template(
                 "debug_inventory",
-                (x, y),
+                pos,
                 overrides=overrides,
             )
             ent.description = "Definitely NOT a bag, it's much more Platonic than that."
@@ -1794,25 +1804,26 @@ class Game:
             # Ensure it has an inventory slot allocated
             self.get_inventory(ent.id)
 
-        spawned = self._spawn_entities_near(
-            level,
-            player.pos,
-            count,
-            place_inventory,
-            radius=radius,
-        )
+        # --- Spawn plan: all functional + 3 non-functional ---
+        desired: list[tuple[str, bool]] = []
+        for adj in functional_map.keys():
+            desired.append((adj, True))
+        for _ in range(3):
+            desired.append((next_nonfunc_adj(), False))
+
+        spawned = 0
+        center = player.pos
+        for adj, is_func in desired:
+            spot = find_spot_near(center, radius=radius, max_attempts=250)
+            if spot is None:
+                continue
+            spawn_inventory_at(spot, adj, functional=is_func)
+            spawned += 1
 
         if spawned > 0:
-            if spawned == 1:
-                self.log.add("That's a nice looking inventory.")
-            else:
-                self.log.add("Inventory sale! Inventory inventory must go!")
+            self.log.add(f"Inventory drop! ({spawned} conjured.)")
         else:
             self.log.add("This is no place for an inventory.")
-
-
-
-
 
     # --- scheduling ---
 
@@ -3161,8 +3172,6 @@ class Game:
                     on_choice_effect=ev.effect,
                 )
 
-        # DEBUG: drop a test Inventory on each new screen to exercise nested containers.
-        self.debug_spawn_inventory_near_player(count=1)
 
 
     def fast_travel_to_zone(self, zx: int, zy: int) -> None:

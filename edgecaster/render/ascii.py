@@ -16,10 +16,14 @@ from edgecaster.ui.status_header import StatusHeaderWidget
 from edgecaster.visual_effects import (
     VisualEffectManager,
     build_visual_profile,
+    apply_surface_overlays,
+    apply_screen_tint_overlays,   # <-- add this
     apply_entity_color_effects,
-    effect_names_from_obj,
     concat_effect_names,
+    effect_names_from_obj,
+    compute_overlay_union_rect
 )
+
 
 
 class AsciiRenderer:
@@ -178,8 +182,6 @@ class AsciiRenderer:
 
     def clear_global_visual_effects(self) -> None:
         self.visual_fx.set_global_effects([])
-
-
 
     def present(self) -> None:
         self._present()
@@ -410,17 +412,24 @@ class AsciiRenderer:
         # Finally, blit the Lorenz layer over the main surface
         self.surface.blit(self.lorenz_surface, (0, 0))
 
+
+
+
+
+
+
     def _entity_visual(self, ent) -> Tuple[str, Tuple[int, int, int]]:
         """Return (glyph, color) for any renderable entity.
 
         - Actors are detected by having a 'faction' attribute.
         - Generic entities (items/features) use their own glyph/color.
-        - NEW: apply entity + scene-level color effects (fiery/bismuth/etc.).
         """
         # Actors (player, monsters, NPCs, etc.)
         if hasattr(ent, "faction"):
+            # Always respect the entity's own glyph so body-swaps look right.
             glyph = getattr(ent, "glyph", "@")
 
+            # You can still give factions default colors, but don't clobber explicit ones.
             base_color = getattr(ent, "color", None)
             if base_color is not None:
                 color = base_color
@@ -431,27 +440,15 @@ class AsciiRenderer:
             else:
                 color = self.monster_color
 
-            effects = concat_effect_names(
-                getattr(self, "active_visual_effects", []) or [],
-                effect_names_from_obj(ent),
-            )
-            if effects:
-                color = apply_entity_color_effects(ent, color, effects, now_ms=pygame.time.get_ticks())
-
             return glyph, color
 
         # Generic entities: items, features, etc.
         glyph = getattr(ent, "glyph", "?")
         color = getattr(ent, "color", self.fg)
-
-        effects = concat_effect_names(
-            getattr(self, "active_visual_effects", []) or [],
-            effect_names_from_obj(ent),
-        )
-        if effects:
-            color = apply_entity_color_effects(ent, color, effects, now_ms=pygame.time.get_ticks())
-
         return glyph, color
+
+
+
 
     def draw_entities(self, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
@@ -489,11 +486,45 @@ class AsciiRenderer:
                 icon = self.bismuth_icon_map
                 self.surface.blit(icon, (px, py))
             else:
-                glyph, color = self._entity_visual(ent)
-                text = self.map_font.render(glyph, True, color)
-                self.surface.blit(text, (px, py))
+                glyph, base_color = self._entity_visual(ent)
 
+                scene_eff = getattr(self, "active_visual_effects", None) or []
+                ent_eff = effect_names_from_obj(ent)
+                eff = concat_effect_names(scene_eff, ent_eff)
 
+                # Color lane
+                color = apply_entity_color_effects(ent, base_color, eff)
+
+                # Base tile rect in LOCAL coords
+                base_rect = pygame.Rect(0, 0, self.tile, self.tile)
+
+                # Compute union overlay bounds (may extend beyond base_rect)
+                union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+
+                # Allocate a canvas large enough for overlays (aura space)
+                canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+
+                # Offset that maps base_rect space into canvas space
+                ox, oy = -union_rect.left, -union_rect.top
+
+                # Render glyph centered inside the base tile region (shifted onto canvas)
+                glyph_surf = self.map_font.render(glyph, True, color)
+                gx = ox + (self.tile - glyph_surf.get_width()) // 2
+                gy = oy + (self.tile - glyph_surf.get_height()) // 2
+                canvas.blit(glyph_surf, (gx, gy))
+
+                # Overlay lane: per-effect rects, shifted into canvas coords
+                if eff:
+                    shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+                    apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+                # Geometry lane: apply transforms to the whole canvas when blitting
+                dest = pygame.Rect(px + union_rect.left, py + union_rect.top, union_rect.w, union_rect.h)
+                if eff:
+                    visual = build_visual_profile(VisualProfile(), eff)
+                    apply_visual_panel(self.surface, canvas, dest, visual)
+                else:
+                    self.surface.blit(canvas, dest.topleft)
 
     def draw_pattern_overlay(self, game: Game) -> None:
         self.edges_surface.fill((0, 0, 0, 0))
@@ -1472,14 +1503,23 @@ class AsciiRenderer:
         global_names = getattr(self.visual_fx, "global_effects", []) or []
         if not global_names:
             self.display.blit(panel, panel_rect.topleft)
+        # Apply overlay lane to the whole screen (global curses/blessings)
+
+
         else:
             global_visual = build_visual_profile(VisualProfile(), global_names)
+            # Overlay lane (particles, scanlines, etc.)
+            apply_surface_overlays(self, panel, panel.get_rect(), global_names)
+            # Tint lane (for effects that only define a color modifier, e.g. syrupy)
+            apply_screen_tint_overlays(self, panel, global_names)
+
             apply_visual_panel(
                 base_surface=self.display,
                 logical_surface=panel,
                 window_rect=panel_rect,
                 visual=global_visual,
             )
+
 
 
         pygame.display.flip()
