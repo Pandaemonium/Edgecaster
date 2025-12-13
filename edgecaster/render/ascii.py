@@ -5,17 +5,13 @@ from typing import Tuple, List, Dict
 
 
 from edgecaster.game import Game
-from edgecaster.state.actors import Actor
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns.library import action_preview_geometry
 from edgecaster.ui.ability_bar import AbilityBarRenderer
 from edgecaster.visuals import VisualProfile, apply_visual_panel
-
-
-
-
-
+from edgecaster.ui.widgets import WidgetContext, HUDWidget
+from edgecaster.ui.status_header import StatusHeaderWidget
 
 
 class AsciiRenderer:
@@ -125,6 +121,10 @@ class AsciiRenderer:
         # Optional world-level visual profile (e.g. curses/blessings).
         # SceneManager can set this via set_global_visual_profile().
         self.global_visual_profile: VisualProfile | None = None
+        # Root HUD widget composed of status, log, and ability bar.
+        # This will later be replaced or extended by a richer widget tree,
+        # but for now it's a thin wrapper around existing draw_* methods.
+        self.hud_widget = HUDWidget()
 
 
 
@@ -826,133 +826,16 @@ class AsciiRenderer:
             self.surface.blit(ghost, (0, 0))
 
     def draw_status(self, game: Game) -> None:
-        player = game.actors[game.player_id]
-        x = 12
-        y = 12
+        """Draw the top header HUD (delegates to StatusHeaderWidget)."""
+        if not hasattr(self, "status_widget") or self.status_widget is None:
+            self.status_widget = StatusHeaderWidget()
 
-        bar_w = 220
-        bar_h = 12
+        ctx = WidgetContext(surface=self.surface, game=game, scene=None, renderer=self)
 
-        # --- Header: name, class, level ---
-        char = getattr(game, "character", None)
-        if char:
-            name = char.name or "Edgecaster"
-            char_class = getattr(char, "char_class", None)
-        else:
-            name = getattr(player, "name", "Edgecaster")
-            char_class = None
-
-        lvl = player.stats.level if player else 1
-
-        label = getattr(game, "current_host_label", None)
-        if label:
-            header_line = f"{name} the {label}"
-        else:
-            header_line = name
-        header_line += f" (Lv {lvl})"
-
-        header_text = self.small_font.render(header_line, True, self.fg)
-
-        # Raise header slightly (was y - 24)
-        header_y = y
-        self.surface.blit(header_text, (x, header_y))
-        y += header_text.get_height() + 10
-
-        # --- HP bar ---
-        pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
-        hp_ratio = 0 if player.stats.max_hp == 0 else player.stats.hp / player.stats.max_hp
-        pygame.draw.rect(
-            self.surface,
-            self.hp_color,
-            pygame.Rect(x, y, int(bar_w * hp_ratio), bar_h),
-        )
-        hp_text = self.small_font.render(
-            f"HP {player.stats.hp}/{player.stats.max_hp}", True, self.fg
-        )
-        # Put the HP label just above its bar
-        self.surface.blit(hp_text, (x + 4, y - 18))
-
-        # --- XP bar (to the right of HP) ---
-        xp_needed = max(1, getattr(player.stats, "xp_to_next", 1))
-        xp_cur = getattr(player.stats, "xp", 0)
-        lvl = getattr(player.stats, "level", 1)
-        xp_text = self.small_font.render(f"XP {xp_cur}/{xp_needed}   (Lv {lvl})", True, self.fg)
-        self.surface.blit(xp_text, (x + bar_w + 20, y - 18))
-        xp_x = x + bar_w + 20
-        xp_y = y
-        xp_ratio = max(0, min(1, xp_cur / xp_needed))
-        xp_w = 180
-        pygame.draw.rect(
-            self.surface,
-            self.bar_bg,
-            pygame.Rect(xp_x, xp_y, xp_w, bar_h),
-        )
-        pygame.draw.rect(
-            self.surface,
-            (120, 200, 120),
-            pygame.Rect(xp_x, xp_y, int(xp_w * xp_ratio), bar_h),
-        )
-        # remove redundant Lv in bar; already shown above
-        # (label rendered before the bar)
-
-        # --- Mana bar below HP ---
-        y += bar_h + 16
-        pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(x, y, bar_w, bar_h))
-        mp_ratio = 0 if player.stats.max_mana == 0 else player.stats.mana / player.stats.max_mana
-        pygame.draw.rect(
-            self.surface,
-            self.mana_color,
-            pygame.Rect(x, y, int(bar_w * mp_ratio), bar_h),
-        )
-        mp_text = self.small_font.render(
-            f"Mana {player.stats.mana}/{player.stats.max_mana}", True, self.fg
-        )
-        self.surface.blit(mp_text, (x + 4, y - 18))
-
-        # --- Coherence bar to the right of mana ---
-        coh_x = x + bar_w + 20
-        coh_y = y
-        coh = getattr(player.stats, "coherence", 0)
-        coh_max = max(1, getattr(player.stats, "max_coherence", 1))
-        coh_ratio = max(0, min(1, coh / coh_max))
-        coh_w = 200
-        pygame.draw.rect(self.surface, self.bar_bg, pygame.Rect(coh_x, coh_y, coh_w, bar_h))
-        pygame.draw.rect(
-            self.surface,
-            (200, 180, 100),
-            pygame.Rect(coh_x, coh_y, int(coh_w * coh_ratio), bar_h),
-        )
-        coh_text = self.small_font.render(f"Coherence {coh}/{coh_max}", True, self.fg)
-        self.surface.blit(coh_text, (coh_x + 4, coh_y - 18))
-
-        # --- Character stats & coherence under bars ---
-        y += bar_h + 12
-        if hasattr(game, "character") and game.character:
-            stats = game.character.stats
-            line = (
-                f"CON {stats.get('con',0)}  "
-                f"AGI {stats.get('agi',0)}  "
-                f"INT {stats.get('int',0)}  "
-                f"RES {stats.get('res',0)}"
-            )
-            stats_text = self.small_font.render(line, True, self.fg)
-            self.surface.blit(stats_text, (x, y))
-
-            # coherence info
-            verts_count = len(game.pattern.vertices) if hasattr(game, "pattern") else 0
-            coh_limit = game._coherence_limit()
-            y += 18
-            label = f"Vertices {verts_count}/{coh_limit}"
-            coh_text = self.small_font.render(label, True, self.fg)
-            self.surface.blit(coh_text, (x, y))
-
-        # tick / zone info on top-right
-        tick_text = self.small_font.render(f"Tick: {game.current_tick}", True, self.fg)
-        zx, zy, zz = getattr(game, "zone", (0, 0, game.level_index))
-        level_text = self.small_font.render(f"Zone ({zx},{zy}) Depth {zz}", True, self.fg)
-        self.surface.blit(tick_text, (self.width - tick_text.get_width() - 8, 12))
-        self.surface.blit(level_text, (self.width - level_text.get_width() - 8, 30))
-
+        # Reserve the top bar region; widget draws inside this.
+        self.status_widget.rect = pygame.Rect(0, 0, self.width, self.top_bar_height)
+        self.status_widget.layout(ctx)
+        self.status_widget.draw(ctx)
 
     def draw_log(self, game: Game) -> None:
         """Scrollable log on the left side."""
@@ -1223,11 +1106,24 @@ class AsciiRenderer:
         self.draw_target_cursor(game)
         self.draw_look_overlay(game)
 
-        self.draw_status(game)
-        self.draw_log(game)
+        # HUD (status header, log panel, ability bar) is now routed
+        # through a generic widget. For the moment this just forwards to the
+        # existing draw_status/draw_log/draw_ability_bar methods, so the
+        # visual result is unchanged; it simply gives us a composable entry
+        # point for future layout work.
+        ctx = WidgetContext(
+            surface=self.surface,
+            game=game,
+            scene=None,
+            renderer=self,
+        )
+        self.hud_widget.layout(ctx)
+        self.hud_widget.draw(ctx)
+
+        # HUD-adjacent overlays still live directly on the renderer for now.
         self.draw_ignite_overlay(game)
         self.draw_regrow_overlay(game)
-        self.draw_ability_bar(game)
+        # Ability bar is drawn by the HUD widget.
         config_open = self._ui_attr("config_open", None)
         config_action = self._ui_attr("config_action", None)
         if config_open and config_action:
@@ -1235,6 +1131,7 @@ class AsciiRenderer:
 
         # Urgent overlay is now handled by UrgentMessageScene.
         self._present()
+
 
 
 

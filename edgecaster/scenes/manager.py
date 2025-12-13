@@ -16,7 +16,8 @@ from .base import Scene
 from .character_creation_scene import CharacterCreationScene
 from .main_menu import MainMenuScene
 from .world_map_scene import WorldMapScene
-
+from edgecaster.ui.status_header import StatusHeaderWidget
+from edgecaster.ui.widgets import WidgetContext
 
 
 class SceneManager:
@@ -28,6 +29,11 @@ class SceneManager:
         # Scene stack + window rects (for overlay scenes like recursive options)
         self.scene_stack: List[Scene] = []
         self.window_stack: List[Rect] = []
+
+        self.widget_layers = {
+            "hud": [StatusHeaderWidget()],
+        }
+
 
         # Shared options state (persists across scenes)
         # Merge "real" game options from the main branch with the newer test flags.
@@ -138,6 +144,22 @@ class SceneManager:
             # As a fallback, stash it directly on the renderer so the
             # present() code can read it if you wire it up later.
             setattr(self.renderer, "global_visual_profile", profile)
+
+
+    def draw_widget_layer(self, layer: str, *, surface, game=None, scene=None) -> None:
+        widgets = self.widget_layers.get(layer)
+        if not widgets:
+            return
+        # Prefer explicit game, else fall back to current_game if present.
+        if game is None:
+            game = self.current_game
+        if game is None:
+            return
+
+        ctx = WidgetContext(surface=surface, game=game, scene=scene, renderer=self.renderer)
+        for w in widgets:
+            w.layout(ctx)
+            w.draw(ctx)
 
 
 

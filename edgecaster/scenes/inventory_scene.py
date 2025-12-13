@@ -54,6 +54,8 @@ class InventoryScene(PopupMenuScene):
         # Explicit title for this inventory popup (e.g. "smoky Inventory")
         self.explicit_title: Optional[str] = title
 
+        self.overlay_layers = {"hud"}
+
         # Start from the parent's visual profile if we were given one.
         # (Make a copy so we don't mutate the parent's instance.)
         if base_visual is not None:

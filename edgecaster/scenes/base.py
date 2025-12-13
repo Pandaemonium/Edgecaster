@@ -24,6 +24,9 @@ class Scene:
     # Opt-in flag for the new engine-driven loop.
     uses_live_loop: bool = False
     visual_profile: VisualProfile | None = None
+    # NEW: overlay widget layers requested by this scene
+    overlay_layers: set[str] = set()
+
 
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         """
@@ -697,14 +700,19 @@ class PopupMenuScene(MenuScene):
 
             # Optional dim overlay
             if self.dim_background:
-                overlay = pygame.Surface(
-                    (renderer.width, renderer.height), pygame.SRCALPHA
-                )
+                overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
                 overlay.fill((0, 0, 0, 140))
                 surface.blit(overlay, (0, 0))
 
+            # NEW: overlay widget layers (drawn AFTER dim so they stay bright)
+            layers = getattr(self, "overlay_layers", set())
+            for layer in layers:
+                if hasattr(manager, "draw_widget_layer"):
+                    manager.draw_widget_layer(layer, surface=surface, game=getattr(self, "game", None), scene=self)
+
             # Draw panel within window_rect
             self._draw_panel(manager, options)
+
 
             renderer.present()
             clock.tick(60)

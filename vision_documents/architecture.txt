@@ -1,9 +1,10 @@
-﻿﻿EDGECASTER ARCHITECTURE GUIDE
+﻿EDGECASTER ARCHITECTURE GUIDE
 High-Level Overview and Refactor Roadmap
-Updated: 2025-12-11 (VisualProfile integration, mirrored-world effects, panel-local UI)
+Updated: 2025-12-13 (Overlay widget layers; HUD active in dungeon + inventory)
 
-This document orients new contributors to the post-ascii-purge structure.
+This document orients new contributors to the current structure.
 It must remain concise, accurate, and immediately useful as a project primer.
+
 
 ===============================================================================
 SECTION 1 — LAYER RESPONSIBILITIES
@@ -11,22 +12,24 @@ SECTION 1 — LAYER RESPONSIBILITIES
 SCENES (edgecaster/scenes/)
 Own:
 - Input interpretation (via GameCommand)
-- UI state (dialogs, config menus, ability bar, targeting)
+- Scene-local UI state (menus, dialogs, targeting, ability bar state sync)
 - Scene transitions
-- High-level gameplay “intent routing”
+- High-level gameplay intent routing
+- Declaring which overlay widget layers should be active (overlay_layers)
 
 Do NOT:
-- Perform rendering
-- Mutate renderer state directly
-- Implement world rules or physics
+- Perform low-level rendering
+- Interpret raw pygame display transforms
+- Implement world rules or simulation logic
 
 Key scenes:
-- manager.py                     scene stack + transitions
-- dungeon.py                     primary gameplay; owns ability bar + TargetMode
+- manager.py                     scene stack + transitions + overlay layer service
+- dungeon.py                     primary gameplay; owns TargetMode & UI routing
 - urgent_message_scene.py        popup system using panel-local rendering
 - dialogue_scene.py              dialogue trees + callbacks
-- inventory_scene.py             nested inventories
+- inventory_scene.py             nested inventories (migrating to widgets)
 - options, keybinds, character creation, etc.
+
 
 -------------------------------------------------------------------------------
 RENDERERS (edgecaster/render/)
@@ -34,164 +37,152 @@ Pure view layer.
 
 ascii.py:
 - Draws map, entities, overlays
-- Draws panel-local UI for menu/popup scenes
-- Supports global visual transforms (mirror, rotate, scale) via VisualProfile
-- Computes hitboxes for mouse interactions (in panel space)
+- Draws panel-local UI for popup/menu scenes
+- Transitional: some HUD drawing may remain, but target architecture is:
+  **scene-owned widget trees** with renderer remaining draw-only
 
 Renderers never:
 - Read events
 - Interpret commands
-- Store gameplay state
+- Store gameplay or UI state
+
 
 -------------------------------------------------------------------------------
 INPUT (scenes/game_input.py)
-Single layer translating:
-Pygame Event → GameCommand(kind="move"|"look_action"|"ability_hotkey"|...)
+Single conversion point:
+Pygame Event → GameCommand(kind=...)
 
-Scenes interpret GameCommands. The renderer remains input-agnostic.
-Keybind persistence merges user settings with DEFAULT_BINDINGS on load, so new
-commands (e.g., toggle_door) automatically appear even on older saves; any
-command added to DEFAULT_BINDINGS will surface in the keybinds menu under a
-category or the auto-added “Other” section.
-Keybinds UI (keybinds_scene.py) is data-driven: any command in DEFAULT_BINDINGS
-is listed; conflicts are resolved per scene-context so the same key is not
-bound to two actions in the same scene.
+Scenes interpret GameCommands; renderer remains input-agnostic.
+
+Keybinds:
+- DEFAULT_BINDINGS merged with user settings
+- Commands auto-listed in keybinds UI
+- Scene-context conflict resolution
+
 
 -------------------------------------------------------------------------------
 GAME CORE (edgecaster/game.py)
 Authoritative simulation:
 - Entities, actors, stats
 - Turn updates, movement, collisions, combat
-- Fractal mechanics / rune interactions
+- Fractal mechanics, patterns, rune interactions
 - Procedural world state, RNG
 
 Does NOT:
 - Know about rendering
-- Contain UI hints or targeting logic
+- Contain UI logic or targeting logic
 
-POIs and content:
-- Points of Interest are defined in content/pois.yaml (coord-bound), and can
-  spawn NPCs, structures, and items. Mapgen calls apply_pois(...) to mark the
-  world, then _spawn_poi_contents populates entities. Structures route through
-  mapgen helpers (e.g., item depots, labs) instead of hardcoded coords.
-- Entities/features/items live in content/entities.yaml (data-first); enemies in
-  content/enemies.yaml; NPC definitions in content/npcs.py.
-- Structures (e.g., item depots, lab) are generated in mapgen and described by
-  POIs; avoid hard-coding coordinates in code—add POIs instead. Dynamic POIs
-  (e.g., the lab) can be injected at runtime by replacing POIS entries with
-  their chosen coord.
-Abilities and actions:
-- Actions and targeting live in systems/actions.py; abilities are just actions
-  surfaced via abilities.py and the AbilityBarState. Adding a new action should
-  declare its targeting metadata so scenes can enter TargetMode without renderer
-  logic changes. Ability icons and pages are built from AbilityBarState.
-- Per-action tunables (gear icons) are defined in Game.param_defs (game.py);
-  adding params there makes them available to the config overlay automatically.
+Data:
+- POIs (content/pois.yaml)
+- Entities (content/entities.yaml)
+- Enemies (content/enemies.yaml)
+- NPCs (npcs.py)
+
 
 -------------------------------------------------------------------------------
 SYSTEMS (edgecaster/systems/)
-Pure logic modules:
-- actions.py         → ActionDef metadata + targeting rules
-- abilities.py       → Actor-specific action lists
+Pure logic:
+- actions.py         → Action metadata + targeting rules
+- abilities.py       → Actor ability lists
 - patterns/*         → Fractal generation
 - ai.py              → Behavior stubs
 
-NEW:
-✓ All UI-facing action metadata lives in actions.py  
-✓ Targeting rules declared in Action.targeting  
-✓ AbilityBar is fully metadata-driven
+Recent:
+✓ Targeting metadata centralized  
+✓ AbilityBar is metadata-driven  
+✓ Action parameters surface automatically into config overlay
+
 
 ===============================================================================
-SECTION 2 — ASCII PURGE STATUS
-
-✓ ascii.py is draw-only  
-✓ All targeting state in DungeonUIState  
-✓ All input routed through DungeonScene  
-✓ Lorenz trail simulation moved out of renderer  
-Minor remainder: some temporary overlay styling still lives in ascii.py.
-
--------------------------------------------------------------------------------
-SECTION 2B — VISUAL SCENE SYSTEM (NEW FOUNDATION)
-
-We now support true transform-driven UI using panel-local rendering.
+SECTION 2 — VISUAL SCENE SYSTEM (TRANSFORM & PANEL PIPELINE)
 
 visuals.py introduces:
-- VisualProfile (scale_x/y, offset_x/y, angle, alpha, flip_x/y)
-- apply_visual_panel(...)  → transforms + draws a panel into the display
-- unproject_mouse(...)      → inverts transformations for accurate mouse hit-testing
+- VisualProfile (scale, offset, rotate, alpha, flip)
+- apply_visual_panel(...)  → transforms & blits a panel
+- unproject_mouse(...)     → invert transform for accurate hit-tests
 
-SceneManager:
-- Holds a global VisualProfile for world-level effects (e.g., cursed mirror)
-- Supplies per-window VisualProfiles to popup scenes
+Panel-local rendering:
+- Popups, menus, dialogs draw into a dedicated panel surface
+- Transform applied at blit-time only (logic stays axis-aligned)
 
-Panel-local UI:
-- PopupMenuScene, UrgentMessageScene, DialoguePopupScene, OptionsScene migrated
-- All menus draw into local surfaces sized exactly to their window_rect
-- Transform applied at blit-time, never altering underlying logic
-
-Use cases now enabled:
-- Rotated popups ("clockwise inventory")
-- Mirrored world ("eye curse")
+Enables:
+- Rotated inventories ("clockwise")
+- Ghost/alpha menus
 - Recursive menu distortions
-- Future dungeon-space effects (wobble, holographic UI, overlaid diagnostics)
+- Shared transform math for dungeon-space effects
 
-Future: unify all scene rendering under a consistent transform stack.
 
 ===============================================================================
 SECTION 3 — TARGETING (UNIFIED TARGETMODE)
 
-TargetingSpec (in actions.py) defines:
+TargetingSpec (in actions.py):
 - kind: tile | vertex | look
 - mode: aim | terminus | inspect
 - range parameters
 
-TargetState (scene-owned) contains cursor, origin, mode, etc.
+TargetState (scene-local):
+- cursor, origin, mode, etc.
 
 DungeonScene:
-- Handles movement of cursor
-- Confirms/cancels
-- Calls action effects or Look/Inspect popup
+- Moves cursor, confirms/cancels, triggers actions
 
 Renderer:
-- Draws cursor only; does no targeting logic
+- Draws cursor only (no targeting logic)
 
-Implemented:
-✓ tile-based placement  
-✓ vertex-based fractal activation  
-✓ look/inspect (with entity inheritance)  
 
 ===============================================================================
-SECTION 4 — DATA-DRIVEN ENTITIES & INHERITANCE
+SECTION 4 — WIDGET SYSTEM AND OVERLAY LAYERS
+
+Widget foundation:
+- Location: edgecaster/ui/widgets.py
+- WidgetContext(surface, game, scene, renderer)
+- Widget base class (rect, layout(), draw(), handle_event(), update())
+- Composition + layout containers (VBox/HBox) + interactive widgets as they are added
+
+Intended ownership:
+- Scenes own widget trees and route input.
+- Renderers remain draw-only; widgets may *use* renderer helpers (fonts/colors).
+
+Overlay widget layers (general mechanism):
+- SceneManager maintains a registry of named widget layers (e.g. "hud").
+- Scenes declare which layers they want via `overlay_layers` (e.g. {"hud"}).
+- Popup scenes draw dimming first, then overlay layers, so overlays remain bright/live.
+- This allows live-updating HUD while interacting with inventory/popup scenes.
+
+Current status:
+✓ Independent status/header HUD widget exists
+✓ HUD overlay layer is active during both dungeon and inventory scenes
+✓ Temporary F8 debug overlay exists in dungeon.py as scaffolding; remove after
+  AbilityBar widgetization/input verification
+
+
+===============================================================================
+SECTION 5 — DATA-DRIVEN ENTITIES & INHERITANCE
 
 YAML prototypes define:
-- parent  
-- glyph, color  
-- description (inherited automatically)  
-- stats, tags
+- parent, glyph, color
+- description (inherited)
+- stats, tags, behaviors
 
-Loader resolves full parent chains.
-Runtime entities reference final archetypes.
-Look-mode displays inherited descriptions.
+Runtime entities reference fully-resolved archetypes.
 
-Goal: expand to components (AI flags, physiology, materials).
+Look-mode automatically displays inherited descriptions.
+
 
 ===============================================================================
-SECTION 5 — PRACTICAL ONBOARDING NOTES
+SECTION 6 — ONBOARDING NOTES
 
-- Renderer = view-only.  
-- Scenes = all UI, transitions, targeting, dialogs.  
-- Game = simulation only.  
-- Actions = metadata + targeting.  
-- Entities = data-driven and hierarchical.
+- Renderer = draw-only
+- Scenes = UI/state/intent + event routing
+- Game = simulation only
+- Systems = reusable logic modules
+- VisualProfiles = panel/window-level transforms
+- Widgets = UI composition inside panel-local rendering
+- Overlay layers = reusable cross-scene widget layers (HUD, etc.)
 
--------------------------------------------------------------------------------
-SECTION 6 — CURRENT STRATEGIC WORK
-
-- Consolidate menu layout using VisualProfile pipeline
-- Reduce ad-hoc menu scenes (char select, keybindings, custom runes)
+Current strategic work:
+- HUD → Ability Bar → MenuScene (generalized widget-based menus)
+- Two-pane inventory (list + details)
+- Keybindings/options unification
+- Reduce ad-hoc coordinate math everywhere
 - Expand transform-based UI effects
-- Extend entity components + procedural lore
-Open doc gaps to address:
-- Brief primer on POI format + structures (content/pois.yaml, mapgen hooks).
-- Brief primer on AbilityBarState and how abilities are synced from abilities.py.
-- Note world map rendering cache (scene manager spawns background thread).
