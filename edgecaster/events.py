@@ -234,15 +234,20 @@ def _open_dialogue_node(game, tree: DialogueTree, node_id: str) -> None:
 
 
 
-def start_dialogue(game: "Game", tree: DialogueTree, start_node: Optional[str] = None) -> None:
-    """Entry point for triggering a dialogue from game logic.
+def start_dialogue(game, tree, start_node: Optional[str] = None) -> None:
+    """
+    Entry point for triggering a dialogue from game logic.
 
-    If start_node is given, begin at that node instead of tree.start_id.
+    If a SceneManager is attached, open DialoguePopupScene as a proper window scene.
+    Otherwise, fall back to the legacy urgent-popup behavior.
     """
     manager = getattr(game, "scene_manager", None)
-    entry = start_node or tree.start_id
 
-    # If there's no scene manager attached, fall back to the legacy urgent popup.
+    entry = start_node
+    if entry is None:
+        entry = getattr(tree, "start_id", None) or next(iter(tree.nodes.keys()))
+
+    # No manager -> fallback to urgent popup behavior
     if manager is None:
         game.log.add("(Dialogue fallback: no scene manager attached.)")
         _open_dialogue_node(game, tree, entry)
@@ -255,7 +260,7 @@ def start_dialogue(game: "Game", tree: DialogueTree, start_node: Optional[str] =
             DialoguePopupScene,
             game=game,
             tree=tree,
-            node_id=entry,
+            start_node=entry,   # <-- IMPORTANT: correct kw
             scale=0.7,
         )
     except Exception as e:
@@ -459,45 +464,15 @@ def effect_give_berry(game):
 
 # --- Updated Dialogue Tree ------------------------------------------------
 
-def start_dialogue(game: "Game", tree: DialogueTree, start_node: Optional[str] = None) -> None:
-    """Entry point for triggering a dialogue from game logic.
 
-    If start_node is given, begin at that node instead of tree.start_id.
-    """
-    manager = getattr(game, "scene_manager", None)
-    entry = start_node or tree.start_id
 
-    # If there's no scene manager attached, fall back to the legacy urgent popup.
-    if manager is None:
-        game.log.add("(Dialogue fallback: no scene manager attached.)")
-        _open_dialogue_node(game, tree, entry)
-        return
-
-    try:
-        from edgecaster.scenes.dialogue_scene import DialoguePopupScene
-
-        manager.open_window_scene(
-            DialoguePopupScene,
-            game=game,
-            tree=tree,
-            node_id=entry,
-            scale=0.7,
-        )
-    except Exception as e:
-        game.log.add(f"(Dialogue error: {e!r})")
-        _open_dialogue_node(game, tree, entry)
 
 
 
 MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
-    id="beggarly_vagrant",
-    # Default start_id is mostly irrelevant now because we always pass start_node,
-    # but keep something sensible as a fallback:
+    id="mysterious_stranger",
     start_id="path2",
     nodes={
-        # ------------------------------------------------------
-        # PATH IF YOU SUCCESSFULLY GIVE A BERRY
-        # ------------------------------------------------------
         "path1": DialogueNode(
             id="path1",
             title="A Quiet Benediction",
@@ -506,16 +481,9 @@ MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
                 "The man beams with renewed vigor and ineffable gratitude."
             ),
             choices=[
-                DialogueChoice(
-                    text="May you find solace.",
-                    next_id=None,
-                ),
+                DialogueChoice(text="May you find solace.", next_id=None),
             ],
         ),
-
-        # ------------------------------------------------------
-        # PATH IF YOU REFUSE OR CANNOT GIVE
-        # ------------------------------------------------------
         "path2": DialogueNode(
             id="path2",
             title="Parting of Beggars",
@@ -524,10 +492,7 @@ MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
                 "\"I expected no more, and no less. Farewell, fellow beggar.\""
             ),
             choices=[
-                DialogueChoice(
-                    text="Part ways.",
-                    next_id=None,
-                ),
+                DialogueChoice(text="Part ways.", next_id=None),
             ],
         ),
         "path3": DialogueNode(
@@ -539,8 +504,13 @@ MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
                 "Your vision swims as you take a view from a new perspective..."
             ),
             choices=[
-                DialogueChoice("Twice the eyeballs...", next_id=None, effect = effect_curse_player),
+                DialogueChoice(
+                    text="Twice the eyeballs...",
+                    next_id=None,
+                    effect=effect_curse_player,
+                ),
             ],
         ),
     },
 )
+

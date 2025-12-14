@@ -252,291 +252,496 @@ class MenuInput:
         self.repeat_key = None
 
 
-class MenuScene(Scene):
+# ---------------------------------------------------------------------------
+# PanelScene: widget-driven panel foundation (fullscreen or popup)
+# ---------------------------------------------------------------------------
+
+from edgecaster.ui.widgets import Widget, WidgetContext, VBox, LabelWidget, MultiLineLabelWidget, ListWidget
+from edgecaster.visuals import VisualProfile, apply_visual_panel, unproject_mouse
+from edgecaster.visual_effects import build_visual_profile, apply_entity_color_effects, apply_surface_overlays
+
+import pygame
+from typing import Optional, Any
+
+
+class PanelScene(Scene):
     """
-    Generic menu scene with standard controls, key-repeat, and footer.
+    New base: a Scene that owns a logical panel surface + rect, and a root widget tree.
 
-    Subclasses should override:
-      - get_menu_items(self) -> list[str]
-      - on_activate(self, index, manager) -> bool  (return True to close menu)
-      - optionally on_back(self, manager) -> bool   (default: exit game)
-      - optionally get_ascii_art(self) -> Optional[str]
-      - optionally draw_extra(self, manager) -> None
+    Responsibilities:
+      - Create a logical panel surface (rect.size) each frame (or reuse)
+      - Route input to widgets FIRST (UI priority)
+      - Apply VisualProfile / named VisualEffects consistently via apply_visual_panel
+      - Keep renderer draw-only (no UI state inside renderer)
     """
 
-    FOOTER_TEXT = MENU_FOOTER_HELP
+    uses_live_loop: bool = True
 
-    def __init__(self) -> None:
-        self.selected_idx = 0
-        self._menu_input = MenuInput()
-        # NEW: list of rects for hit-testing menu options with the mouse
-        self._option_rects: list[pygame.Rect] = []
-        # NEW: treat menu as a fullscreen panel by default
-        self.window_rect: Optional[pygame.Rect] = None
+    def __init__(self, *, window_rect: Optional[pygame.Rect] = None) -> None:
+        super().__init__()
+        self.window_rect: Optional[pygame.Rect] = window_rect
+        self.root: Widget = Widget()
+        self._panel: Optional[pygame.Surface] = None
 
+        # Input mode arbitration:
+        # - mouse hover focus is "implicit"
+        # - keyboard navigation overrides UNTIL the mouse moves
+        self._keyboard_mode: bool = False
+        self._last_mouse_pos: Optional[tuple[int, int]] = None
+
+    # ---- sizing ---------------------------------------------------------
 
     def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        """For plain menus, default to a fullscreen window_rect."""
         if self.window_rect is not None:
             return
-        renderer = manager.renderer
-        self.window_rect = pygame.Rect(0, 0, renderer.width, renderer.height)
+        r = manager.renderer
+        self.window_rect = pygame.Rect(0, 0, r.width, r.height)
 
-    def _current_visual(self) -> VisualProfile:
-        """Return the active visual profile for this menu."""
+    def _get_panel(self) -> pygame.Surface:
+        assert self.window_rect is not None
+        size = self.window_rect.size
+        if self._panel is None or self._panel.get_size() != size:
+            self._panel = pygame.Surface(size, pygame.SRCALPHA)
+        return self._panel
+
+    # ---- visuals --------------------------------------------------------
+
+    def _current_visual_profile(self) -> VisualProfile:
         base = self.visual_profile or VisualProfile()
         effects = getattr(self, "visual_effects", []) or []
         return build_visual_profile(base, effects)
 
-    # ---- hooks for subclasses ------------------------------------------------
+    def _active_effects(self, renderer) -> list[str]:
+        # Prefer the manager-fed renderer.active_visual_effects if present.
+        eff = getattr(renderer, "active_visual_effects", None)
+        if isinstance(eff, (list, tuple)) and eff:
+            return [str(x) for x in eff if x]
+        eff = getattr(self, "visual_effects", None)
+        if isinstance(eff, str) and eff:
+            return [eff]
+        if isinstance(eff, (list, tuple)):
+            return [str(x) for x in eff if x]
+        return []
+
+    # ---- input routing --------------------------------------------------
+
+    def _panel_event(self, event, manager: "SceneManager"):
+        """
+        Panel-local event hook, called only if widgets didn't consume the event.
+        Subclasses can override for non-UI hotkeys, etc.
+        """
+        return None
+
+    def _to_panel_event(self, event, manager: "SceneManager"):
+        """
+        Convert event.pos (surface coords) into panel-local coords by inverting
+        the current visual transform.
+        """
+        self._ensure_window_rect(manager)
+        assert self.window_rect is not None
+
+        # Convert display -> surface coords if renderer provides helper
+        renderer = manager.renderer
+        if hasattr(renderer, "_to_surface") and hasattr(event, "pos"):
+            sx, sy = renderer._to_surface(event.pos)
+        else:
+            sx, sy = getattr(event, "pos", (None, None))
+
+        if sx is None:
+            return event
+
+        visual = self._current_visual_profile()
+        px, py = unproject_mouse((sx, sy), self.window_rect, visual)
+
+        # Clone a minimal event-like object with panel-local pos
+        # (pygame events are not meant to be mutated)
+        class _E:
+            pass
+        e2 = _E()
+        for k in dir(event):
+            if k.startswith("_"):
+                continue
+            try:
+                setattr(e2, k, getattr(event, k))
+            except Exception:
+                pass
+        setattr(e2, "pos", (int(px), int(py)))
+        return e2
+
+    def handle_event(self, event, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Track whether keyboard currently "owns" navigation focus
+        if event.type == pygame.KEYDOWN:
+            self._keyboard_mode = True
+
+        # If mouse moved, mouse takes over hover focus again
+        if event.type == pygame.MOUSEMOTION:
+            # display/surface position doesn't matter; any movement is enough
+            pos = getattr(event, "pos", None)
+            if pos is not None and pos != self._last_mouse_pos:
+                self._last_mouse_pos = pos
+                self._keyboard_mode = False
+
+        # Route mouse events through panel-space before widgets see them
+        e_for_widgets = event
+        if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEWHEEL):
+            if event.type != pygame.MOUSEWHEEL and hasattr(event, "pos"):
+                e_for_widgets = self._to_panel_event(event, manager)
+
+        # Build a WidgetContext on the panel surface for widget handling
+        self._ensure_window_rect(manager)
+        panel = self._get_panel()
+        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=manager.renderer)
+
+        # Widgets first
+        handled = False
+        try:
+            handled = self.root.handle_event(e_for_widgets, ctx)
+        except Exception:
+            handled = False
+
+        if handled:
+            return
+
+        # Fall through to scene-level input
+        self._panel_event(event, manager)
+
+    def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        self._ensure_window_rect(manager)
+        panel = self._get_panel()
+        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=manager.renderer)
+        self.root.update(dt_ms, ctx)
+
+    # ---- rendering ------------------------------------------------------
+
+    def draw_underlay(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """
+        Hook: draw behind the panel (e.g. popup background snapshot + dim).
+        Default: clear screen to renderer.bg.
+        """
+        renderer.surface.fill(renderer.bg)
+
+    def draw_panel(self, panel: pygame.Surface, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """
+        Hook: draw panel background + widgets into `panel`.
+        Default: fill panel to bg + draw widgets.
+        """
+        eff = self._active_effects(renderer)
+        bg = apply_entity_color_effects(self, getattr(renderer, "bg", (0, 0, 0)), eff)
+        panel.fill((*bg, 255))
+
+        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=renderer)
+        self.root.layout(ctx)
+        self.root.draw(ctx)
+
+        if eff:
+            apply_surface_overlays(self, panel, panel.get_rect(), eff)
+
+    def render(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        self._ensure_window_rect(manager)
+        assert self.window_rect is not None
+
+        # Underlay on real surface
+        self.draw_underlay(renderer, manager)
+
+        # Draw into logical panel
+        panel = self._get_panel()
+        self.draw_panel(panel, renderer, manager)
+
+        # Apply visual transform and blit panel -> surface
+        visual = self._current_visual_profile()
+        apply_visual_panel(renderer.surface, panel, self.window_rect, visual)
+
+        # NEW: actually show it on the display
+        if hasattr(renderer, "present"):
+            renderer.present()
+        else:
+            pygame.display.flip()
 
 
-    def get_menu_items(self) -> list[str]:
+
+# ---------------------------------------------------------------------------
+# GeneralMenuScene: widget-driven selection + confirm/cancel + scrolling
+# ---------------------------------------------------------------------------
+
+class GeneralMenuScene(PanelScene):
+    """
+    Widget-driven general menu base:
+      - selection model
+      - confirm/cancel behavior
+      - scrolling via ListWidget
+      - keyboard + mouse with arbitration:
+          keyboard nav overrides until mouse moves
+    """
+
+    FOOTER_TEXT = MENU_FOOTER_HELP
+
+    def __init__(self, *, window_rect: Optional[pygame.Rect] = None) -> None:
+        super().__init__(window_rect=window_rect)
+
+        self.selected_idx: int = 0
+        self._list: Optional[ListWidget] = None
+        self._banner: Optional[LabelWidget] = None
+        self._footer: Optional[LabelWidget] = None
+
+        self._menu_input = MenuInput()
+        self._last_items: list[Any] = []
+        self._last_banner_text: str = ""
+
+        self._build_widgets([])
+
+    # ---- hooks for subclasses ------------------------------------------
+
+    def get_menu_items(self) -> list[Any]:
         raise NotImplementedError
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
-        """
-        Handle selecting an item. Return True if this menu should close.
-        """
         raise NotImplementedError
 
     def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
-        """
-        Handle Esc / back. Default: exit the game loop entirely.
-        Override in submenus to pop/close instead.
-        """
         manager.set_scene(None)
         return True
 
     def get_ascii_art(self) -> Optional[str]:
-        """Optional big title/banner above the menu."""
         return None
 
     def draw_extra(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        """
-        Optional extra drawing hook (background decorations, etc.).
-        Called before menu options and footer.
-        """
         return None
 
-    # ---- mouse helpers -------------------------------------------------------
+    # ---- widget tree ----------------------------------------------------
 
-    def _index_from_mouse_pos(self, pos: tuple[int, int]) -> int | None:
-        """Return index of option under this mouse position, or None."""
-        mx, my = pos
-        for i, rect in enumerate(self._option_rects):
-            if rect.collidepoint(mx, my):
-                return i
-        return None
+    def _build_widgets(self, items: list[Any]) -> None:
+        root = VBox(spacing=10, padding=16, align="center")
+        root.rect = pygame.Rect(0, 0, 0, 0)
 
-    def _update_hover_from_mouse(self, pos: tuple[int, int]) -> None:
-        idx = self._index_from_mouse_pos(pos)
-        if idx is not None:
-            self.selected_idx = idx
+        ascii_art = self.get_ascii_art()
+        if ascii_art:
+            # Legacy banners/popup text are often multi-line.
+            if "\n" in ascii_art:
+                self._banner = MultiLineLabelWidget(ascii_art, align="center", line_spacing=0)
+            else:
+                self._banner = LabelWidget(ascii_art, align="center")
+            root.add_child(self._banner)
+        else:
+            self._banner = None
 
+        self._list = ListWidget(
+            items,
+            selected_index=self.selected_idx,
+            on_activate=self._on_list_activate,
+            line_spacing=6,
+            padding=6,
+        )
+        # Default width; height will be set in draw_panel based on panel size.
+        self._list.rect = pygame.Rect(0, 0, 520, 0)
+        root.add_child(self._list)
 
-    # ---- main loop -----------------------------------------------------------
+        if self.FOOTER_TEXT:
+            self._footer = LabelWidget(self.FOOTER_TEXT, align="center")
+            root.add_child(self._footer)
+        else:
+            self._footer = None
 
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        renderer = manager.renderer
-        surface = renderer.surface
-        clock = pygame.time.Clock()
-        menu = self._menu_input
-        running = True
-
-        while running:
-            options = self.get_menu_items()
-            renderer = manager.renderer
-
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
-
-                elif event.type == pygame.KEYDOWN:
-                    action = menu.handle_keydown(event.key)
-                    if action is not None:
-                        if self._handle_action(action, manager, options):
-                            running = False
-                            break
-
-                elif event.type == pygame.KEYUP:
-                    menu.handle_keyup(event.key)
-
-                elif event.type == pygame.MOUSEMOTION:
-                    # Convert from display coords → surface coords → panel-local coords.
-                    if hasattr(renderer, "_to_surface"):
-                        sx, sy = renderer._to_surface(event.pos)
-                    else:
-                        sx, sy = event.pos
-
-                    self._ensure_window_rect(manager)
-                    assert self.window_rect is not None
-                    visual = self._current_visual()
-
-                    mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
-                    self._update_hover_from_mouse((mx, my))
-
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    # Same projection logic for clicks.
-                    if hasattr(renderer, "_to_surface"):
-                        sx, sy = renderer._to_surface(event.pos)
-                    else:
-                        sx, sy = event.pos
-
-                    self._ensure_window_rect(manager)
-                    assert self.window_rect is not None
-                    visual = self._current_visual()
-
-                    mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
-                    idx = self._index_from_mouse_pos((mx, my))
-                    if idx is not None:
-                        self.selected_idx = idx
-                        if self.on_activate(idx, manager):
-                            running = False
-                            break
+        self.root = root
+        self._last_banner_text = ascii_art or ""
 
 
+    def _on_list_activate(self, idx: int, item: Any) -> None:
+        self.selected_idx = idx
+        # Activation is handled by scene-level path (so it can close/pop cleanly).
+        # We intentionally do nothing here; mouse click will still be consumed.
 
-            # Key-repeat
-            repeat_action = menu.update()
-            if repeat_action is not None:
-                if self._handle_action(repeat_action, manager, options):
-                    break
+    # ---- input ----------------------------------------------------------
 
-            # ----------------- DRAW -----------------
-            self._ensure_window_rect(manager)
-            assert self.window_rect is not None
-            rect = self.window_rect
+    def _panel_event(self, event, manager: "SceneManager"):
+        # Keyboard path (with repeat)
+        if event.type == pygame.KEYDOWN:
+            action = self._menu_input.handle_keydown(event.key)
+            if action is not None:
+                self._handle_action(action, manager)
+                return
 
-            # Draw into a panel the size of window_rect
-            panel = pygame.Surface(rect.size, pygame.SRCALPHA)
-            panel.fill(renderer.bg)
+        if event.type == pygame.KEYUP:
+            self._menu_input.handle_keyup(event.key)
+            return
 
-            # Temporarily pretend the panel is the renderer surface
-            # so _draw_contents keeps working with its existing math.
-            old_surface = renderer.surface
-            old_w, old_h = renderer.width, renderer.height
-            try:
-                renderer.surface = panel
-                renderer.width, renderer.height = rect.width, rect.height
-                self._draw_contents(manager, options)
-            finally:
-                renderer.surface = old_surface
-                renderer.width, renderer.height = old_w, old_h
+        # Mouse click: if ListWidget already handled it, great.
+        # If not handled (e.g. click outside), ignore.
 
-            # Apply the visual profile to blit the panel into the real surface
-            visual = self._current_visual()
-            apply_visual_panel(renderer.surface, panel, rect, visual)
+    def _handle_action(self, action: str, manager: "SceneManager") -> None:
+        items = self.get_menu_items()
+        n = max(1, len(items))
 
-            renderer.present()
-            clock.tick(60)
-
-
-    # ---- internal helpers ----------------------------------------------------
-
-    def _handle_action(
-        self,
-        action: str,
-        manager: "SceneManager",  # type: ignore[name-defined]
-        options: list[str],
-    ) -> bool:
-        """
-        Handle a logical menu action. Returns True if menu should close.
-        """
         if action == MENU_ACTION_FULLSCREEN:
             manager.renderer.toggle_fullscreen()
-            return False
+            return
 
         if action == MENU_ACTION_UP:
-            self.selected_idx = (self.selected_idx - 1) % len(options)
-            return False
+            self.selected_idx = (self.selected_idx - 1) % n
+        elif action == MENU_ACTION_DOWN:
+            self.selected_idx = (self.selected_idx + 1) % n
+        elif action == MENU_ACTION_BACK:
+            # Let legacy code decide what to do. Only auto-close if we're still active.
+            before = manager.scene_stack[-1] if getattr(manager, "scene_stack", None) else None
+            self.on_back(manager)
+            after = manager.scene_stack[-1] if getattr(manager, "scene_stack", None) else None
+            # If on_back didn't change scenes and we're still on top, close.
+            if after is before and after is self:
+                if hasattr(manager, "pop_scene"):
+                    manager.pop_scene()
+                else:
+                    manager.set_scene(None)
+            return
 
-        if action == MENU_ACTION_DOWN:
-            self.selected_idx = (self.selected_idx + 1) % len(options)
-            return False
+        elif action == MENU_ACTION_ACTIVATE:
+            # Legacy menus often call manager.set_scene(...) inside on_activate().
+            # Only auto-close if we're still the active top scene afterward.
+            before = manager.scene_stack[-1] if getattr(manager, "scene_stack", None) else None
+            should_close = self.on_activate(self.selected_idx, manager)
+            after = manager.scene_stack[-1] if getattr(manager, "scene_stack", None) else None
 
-        if action == MENU_ACTION_BACK:
-            return self.on_back(manager)
+            if should_close and after is before and after is self:
+                if hasattr(manager, "pop_scene"):
+                    manager.pop_scene()
+                else:
+                    manager.set_scene(None)
+            return
 
-        if action == MENU_ACTION_ACTIVATE:
-            return self.on_activate(self.selected_idx, manager)
 
-        # Left/right or future extensions can go here if needed
-        return False
+        # Sync selection into list widget and keep it visible
+        if self._list is not None:
+            self._list.selected_index = self.selected_idx
+            self._list.ensure_visible(self.selected_idx)
 
-    def _draw_contents(
-        self,
-        manager: "SceneManager",  # type: ignore[name-defined]
-        options: list[str],
-    ) -> None:
-        renderer = manager.renderer
-        surface = renderer.surface
+    def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Key-repeat ticks
+        repeat_action = self._menu_input.update()
+        if repeat_action is not None:
+            self._handle_action(repeat_action, manager)
 
-        # Custom background/extra stuff
+        # Rebuild list items if changed
+        items = self.get_menu_items()
+        if items != self._last_items:
+            self._last_items = list(items)
+            if self._list is None:
+                self._build_widgets(items)
+            else:
+                self._list.set_items(items)
+                self._list.selected_index = max(0, min(self.selected_idx, max(0, len(items) - 1)))
+                self.selected_idx = self._list.selected_index
+
+        # Banner text may change even when the item list does not (e.g. dialogue nodes).
+        banner_text = self.get_ascii_art() or ""
+        if banner_text != self._last_banner_text:
+            self._last_banner_text = banner_text
+
+            if banner_text:
+                if self._banner is None:
+                    # simplest: rebuild the widget tree to include a banner
+                    self._build_widgets(list(self._last_items))
+                else:
+                    wants_multiline = ("\n" in banner_text)
+                    is_multiline = isinstance(self._banner, MultiLineLabelWidget)
+                    if wants_multiline != is_multiline:
+                        self._build_widgets(list(self._last_items))
+                    else:
+                        self._banner.text = banner_text
+            else:
+                if self._banner is not None:
+                    # banner removed
+                    self._build_widgets(list(self._last_items))
+
+
+        super().update(dt_ms, manager)
+
+    def draw_panel(self, panel: pygame.Surface, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Allow subclasses to draw extra decorations (panel-local)
         self.draw_extra(manager)
 
-        # Banner / ASCII art
-        ascii_art = self.get_ascii_art()
-        y = 80
-        if ascii_art:
-            for line in ascii_art.splitlines():
-                if not line.strip():
-                    y += renderer.font.get_height()
-                    continue
-                col = apply_entity_color_effects(self, renderer.fg, _active_effects(self, renderer))
-                surf = renderer.font.render(line, True, col)
-                surface.blit(surf, ((renderer.width - surf.get_width()) // 2, y))
-                y += renderer.font.get_height()
+        # Background
+        eff = self._active_effects(renderer)
+        bg = apply_entity_color_effects(self, getattr(renderer, "bg", (0, 0, 0)), eff)
+        panel.fill((*bg, 255))
 
-            # A little gap after banner before menu
-            y += 20
-            # Don't let a huge banner push the menu to the very bottom
-            max_menu_start = renderer.height // 2 + 30
-            if y > max_menu_start:
-                y = max_menu_start
-        else:
-            # Fallback: put menu around vertical center
-            y = renderer.height // 3
+        # Layout sizing: make list height fill most of the panel
+        if self._list is not None:
+            # Reserve room for banner/footer
+            top_pad = 16
+            bottom_pad = 16
+            banner_h = 0
+            footer_h = 0
 
-        # Menu options
-        self._option_rects = []  # <-- rebuild each frame
-        for idx, opt in enumerate(options):
-            selected = idx == self.selected_idx
-            base_col = renderer.player_color if selected else renderer.fg
-            color = apply_entity_color_effects(self, base_col, _active_effects(self, renderer))
-            prefix = "▶ " if selected else "  "
-            text_surf = renderer.font.render(prefix + opt, True, color)
-            x = renderer.width // 2 - 110
+            # Rough measurement via font heights; if banner is multi-line, scale accordingly.
+            if self._banner is not None:
+                font = getattr(renderer, "small_font", getattr(renderer, "font", None))
+                h_line = font.get_height() if font else 16
+                text = getattr(self._banner, "text", "") or ""
+                n_lines = max(1, len(text.splitlines())) if text else 1
+                line_spacing = getattr(self._banner, "line_spacing", 0)
+                padding = getattr(self._banner, "padding", 0)
+                banner_h = n_lines * h_line + max(0, n_lines - 1) * line_spacing + 2 * padding + 10
 
-            rect = text_surf.get_rect(topleft=(x, y))
-            surface.blit(text_surf, rect.topleft)
-            self._option_rects.append(rect)
-
-            y += text_surf.get_height() + 10
-
-        # Footer hint
-        if self.FOOTER_TEXT:
-            hint_col = apply_entity_color_effects(self, renderer.dim, _active_effects(self, renderer))
-            hint = renderer.small_font.render(self.FOOTER_TEXT, True, hint_col)
-            surface.blit(
-                hint,
-                ((renderer.width - hint.get_width()) // 2, renderer.height - 40),
-            )
+            if self._footer is not None:
+                font = getattr(renderer, "small_font", getattr(renderer, "font", None))
+                footer_h = (font.get_height() if font else 16) + 8
 
 
+            list_h = max(120, panel.get_height() - (top_pad + bottom_pad + banner_h + footer_h + 40))
+            self._list.rect.height = list_h
 
-class PopupMenuScene(MenuScene):
+        # Widget draw
+        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=renderer)
+
+        # IMPORTANT: prevent VBox from auto-sizing to giant ASCII banner width,
+        # which can push centered children (the list) off-screen.
+        try:
+            self.root.rect = pygame.Rect(0, 0, panel.get_width(), panel.get_height())
+        except Exception:
+            pass
+
+        self.root.layout(ctx)
+
+
+        # Keep selection consistent (mouse hover may have updated ListWidget)
+        if self._list is not None:
+            # If mouse is driving (not keyboard mode), accept hover selection
+            if not self._keyboard_mode:
+                self.selected_idx = self._list.selected_index
+            else:
+                self._list.selected_index = self.selected_idx
+            self._list.ensure_visible(self.selected_idx)
+
+        self.root.draw(ctx)
+
+        # Overlays (particles, etc)
+        if eff:
+            apply_surface_overlays(self, panel, panel.get_rect(), eff)
+
+
+# ---------------------------------------------------------------------------
+# Legacy wrappers: MenuScene / PopupMenuScene now subclass GeneralMenuScene
+# ---------------------------------------------------------------------------
+
+class MenuScene(GeneralMenuScene):
     """
-    MenuScene variant that renders as a centered popup over a snapshot
-    of the underlying screen.
+    Legacy fullscreen menu wrapper.
+    Keeps the old subclass API:
+      - get_menu_items()
+      - on_activate()
+      - on_back()
+      - get_ascii_art()
+      - draw_extra()
+    """
 
-    Features:
-      - Uses the standard MenuInput (with numpad + key repeat).
-      - Dimmed background (configurable).
-      - Optional window_rect: if provided (e.g. via manager.open_window_scene),
-        that rect is used; otherwise a centered rect is computed.
-      - Esc or 'i' both trigger on_back().
+    def __init__(self) -> None:
+        super().__init__(window_rect=None)
+
+
+class PopupMenuScene(GeneralMenuScene):
+    """
+    Legacy popup menu wrapper:
+      - snapshot background once
+      - optional dim overlay
+      - fixed/preset sizing for now (scale), window_rect can be provided
     """
 
     def __init__(
@@ -546,21 +751,12 @@ class PopupMenuScene(MenuScene):
         dim_background: bool = True,
         scale: float = 0.7,
     ) -> None:
-        super().__init__()
-        self.window_rect: Optional[pygame.Rect] = window_rect
+        super().__init__(window_rect=window_rect)
         self.dim_background = dim_background
         self.popup_scale = scale
         self._background: Optional[pygame.Surface] = None
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-
     def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        """
-        If no window_rect was provided, compute a centered rect at popup_scale
-        relative to the full screen. If you want stack-aware rects, call
-        manager.open_window_scene(...) so it passes one in.
-        """
         if self.window_rect is not None:
             return
 
@@ -572,302 +768,25 @@ class PopupMenuScene(MenuScene):
         y = base.y + (base.height - h) // 2
         self.window_rect = pygame.Rect(x, y, w, h)
 
-    # ------------------------------------------------------------------ #
-    # Main loop
-
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        renderer = manager.renderer
-        surface = renderer.surface
-        clock = pygame.time.Clock()
-        menu = self._menu_input
-        running = True
-
-        # Snapshot the screen beneath this popup once.
+    def draw_underlay(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Snapshot beneath the popup once.
         if self._background is None:
-            self._background = surface.copy()
+            self._background = renderer.surface.copy()
 
-        # Ensure we have a window rect
-        self._ensure_window_rect(manager)
-        assert self.window_rect is not None
+        # Restore background snapshot
+        if self._background is not None:
+            renderer.surface.blit(self._background, (0, 0))
+        else:
+            renderer.surface.fill(renderer.bg)
 
-        def _current_visual() -> VisualProfile:
-            # Always fetch the latest profile so rotation/scale stay in sync,
-            # and apply any named visual effects.
-            base = self.visual_profile or VisualProfile()
-            effects = getattr(self, "visual_effects", []) or []
-            return build_visual_profile(base, effects)
+        # Optional dim overlay
+        if self.dim_background:
+            overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 140))
+            renderer.surface.blit(overlay, (0, 0))
 
-
-        def handle_action(action: Optional[str]) -> bool:
-            """
-            Handle a logical menu action. Return True if this menu should close.
-            """
-            nonlocal running
-            if action is None:
-                return False
-
-            if action == MENU_ACTION_FULLSCREEN:
-                renderer.toggle_fullscreen()
-                return False
-
-            options = self.get_menu_items()
-            num_items = max(1, len(options))
-
-            if action == MENU_ACTION_UP:
-                self.selected_idx = (self.selected_idx - 1) % num_items
-                return False
-
-            if action == MENU_ACTION_DOWN:
-                self.selected_idx = (self.selected_idx + 1) % num_items
-                return False
-
-            if action == MENU_ACTION_BACK:
-                if self.on_back(manager):
-                    running = False
-                    return True
-                return False
-
-            if action == MENU_ACTION_ACTIVATE:
-                if self.on_activate(self.selected_idx, manager):
-                    running = False
-                    return True
-                return False
-
-            return False
-
-        while running:
-            options = self.get_menu_items()
-            renderer = manager.renderer
-
-            # ----------------- EVENTS -----------------
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
-
-                if event.type == pygame.KEYDOWN:
-                    # Direct handling of confirm keys so we never depend
-                    # on any platform-specific quirks in MenuInput.
-                    if event.key in (
-                        pygame.K_RETURN,
-                        pygame.K_KP_ENTER,
-                        pygame.K_SPACE,
-                    ):
-                        if self.on_activate(self.selected_idx, manager):
-                            running = False
-                            break
-                        continue
-
-                    # Direct handling of Esc as a back key.
-                    if event.key == pygame.K_ESCAPE:
-                        if self.on_back(manager):
-                            running = False
-                            break
-                        continue
-
-                    # Allow 'i' as an extra "back" key for inventory-like popups.
-                    if event.key == pygame.K_i:
-                        if self.on_back(manager):
-                            running = False
-                            break
-                        continue
-
-                    # Everything else goes through the standard menu keymap.
-                    action = menu.handle_keydown(event.key)
-                    if handle_action(action):
-                        break
-
-                elif event.type == pygame.KEYUP:
-                    menu.handle_keyup(event.key)
-
-                elif event.type == pygame.MOUSEMOTION:
-                    # Convert from display coords → surface coords → panel-local coords.
-                    if hasattr(renderer, "_to_surface"):
-                        sx, sy = renderer._to_surface(event.pos)
-                    else:
-                        sx, sy = event.pos
-
-                    if self.window_rect is not None:
-                        visual = _current_visual()
-                        mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
-                    else:
-                        mx, my = (sx, sy)
-
-                    self._update_hover_from_mouse((mx, my))
-
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    # Same projection logic for clicks.
-                    if hasattr(renderer, "_to_surface"):
-                        sx, sy = renderer._to_surface(event.pos)
-                    else:
-                        sx, sy = event.pos
-
-                    if self.window_rect is not None:
-                        visual = _current_visual()
-                        mx, my = unproject_mouse((sx, sy), self.window_rect, visual)
-                    else:
-                        mx, my = (sx, sy)
-
-                    idx = self._index_from_mouse_pos((mx, my))
-                    if idx is not None:
-                        self.selected_idx = idx
-                        if self.on_activate(idx, manager):
-                            running = False
-                            break
-
-            # 💡 If we have been told to stop, don't draw another frame
-            if not running:
-                break
-
-            # ----------------- DRAW -----------------
-
-            # Restore background snapshot
-            if self._background is not None:
-                surface.blit(self._background, (0, 0))
-            else:
-                surface.fill(renderer.bg)
-
-            # Optional dim overlay
-            if self.dim_background:
-                overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
-                overlay.fill((0, 0, 0, 140))
-                surface.blit(overlay, (0, 0))
-
-            # NEW: overlay widget layers (drawn AFTER dim so they stay bright)
-            layers = getattr(self, "overlay_layers", set())
-            for layer in layers:
-                if hasattr(manager, "draw_widget_layer"):
-                    manager.draw_widget_layer(layer, surface=surface, game=getattr(self, "game", None), scene=self)
-
-            # Draw panel within window_rect
-            self._draw_panel(manager, options)
-
-
-            renderer.present()
-            clock.tick(60)
-
-
-    # ------------------------------------------------------------------ #
-
-    def _panel_point_to_surface(
-        self,
-        local_x: float,
-        local_y: float,
-        rect: pygame.Rect,
-        visual: VisualProfile,
-    ) -> tuple[float, float]:
-        """
-        Forward-transform a point from panel-local coordinates into surface-space,
-        using the same math as apply_visual_panel().
-        """
-        # Centered panel coords
-        dx = local_x - rect.width / 2.0
-        dy = local_y - rect.height / 2.0
-
-        # Scale
-        dx *= visual.scale_x
-        dy *= visual.scale_y
-
-        # Flips
-        if visual.flip_x:
-            dx = -dx
-        if visual.flip_y:
-            dy = -dy
-
-        # Rotation (pygame uses CCW-positive angles)
-        if visual.angle:
-            angle_rad = math.radians(visual.angle)
-            cos_a = math.cos(angle_rad)
-            sin_a = math.sin(angle_rad)
-            dx, dy = (dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a)
-
-        # Translate back to surface-space center + offset
-        sx = dx + rect.centerx + visual.offset_x
-        sy = dy + rect.centery + visual.offset_y
-        return sx, sy
-
-    def _draw_panel(self, manager: "SceneManager", options: list[str]) -> None:  # type: ignore[name-defined]
-        """
-        Default popup panel drawing: simple framed box, ascii art title,
-        menu options, and a standard footer inside window_rect.
-        """
-        renderer = manager.renderer
-        assert self.window_rect is not None
-
-        rect = self.window_rect
-        panel = pygame.Surface(self.window_rect.size, pygame.SRCALPHA)
-
-        # Panel background + border
-        eff = _active_effects(self, renderer)
-
-        bg_rgb = apply_entity_color_effects(self, (10, 10, 20), eff)
-        border_rgb = apply_entity_color_effects(self, (220, 220, 240), eff)
-
-        panel.fill((*bg_rgb, 240))
-        pygame.draw.rect(panel, (*border_rgb, 255), panel.get_rect(), 2)
-
-        font = renderer.font
-        small_font = renderer.small_font
-
-        y = 16
-
-        # ASCII art / title, if any
-        ascii_art = self.get_ascii_art()
-        if ascii_art:
-            for line in ascii_art.splitlines():
-                if not line.strip():
-                    y += font.get_height()
-                    continue
-
-                col = apply_entity_color_effects(self, renderer.fg, _active_effects(self, renderer))
-                text = font.render(line, True, col)
-                x = (panel.get_width() - text.get_width()) // 2
-                panel.blit(text, (x, y))
-                y += text.get_height()
-            y += 8
-
-        # Menu items drawn in panel-local space
-        self._option_rects = []  # panel-local
-
-        for idx, label in enumerate(options):
-            selected = (idx == self.selected_idx)
-            base_col = renderer.player_color if selected else renderer.fg
-            color = apply_entity_color_effects(self, base_col, _active_effects(self, renderer))
-
-            prefix = "▶ " if selected else "  "
-            text = font.render(prefix + label, True, color)
-
-            local_x = (panel.get_width() - text.get_width()) // 2
-            local_y = y
-
-            local_rect = text.get_rect(topleft=(local_x, local_y))
-            panel.blit(text, local_rect.topleft)
-            self._option_rects.append(local_rect)
-
-            y += text.get_height() + 4
-
-        # Footer remains panel-local
-        footer = getattr(self, "FOOTER_TEXT", MENU_FOOTER_HELP)
-        if footer:
-            footer_col = apply_entity_color_effects(self, renderer.dim, _active_effects(self, renderer))
-            footer_text = small_font.render(footer, True, footer_col)
-            fx = (panel.get_width() - footer_text.get_width()) // 2
-            fy = panel.get_height() - footer_text.get_height() - 8
-            panel.blit(footer_text, (fx, fy))
-
-        # Surface overlay lane (particles/shimmer/etc.)
-        eff = _active_effects(self, renderer)
-        # Surface overlay lane (particles/shimmer/etc.)
-        eff = _active_effects(self, renderer)
-        if eff:
-            apply_surface_overlays(self, panel, panel.get_rect(), eff)
-
-
-        # Finally, draw the panel to the main surface with the active visual profile
-        visual = build_visual_profile(
-            self.visual_profile or VisualProfile(),
-            getattr(self, "visual_effects", []) or [],
-        )
-        apply_visual_panel(renderer.surface, panel, rect, visual)
-
-
+        # Keep your existing “overlay widget layers” behavior (HUD over dim)
+        layers = getattr(self, "overlay_layers", set())
+        for layer in layers:
+            if hasattr(manager, "draw_widget_layer"):
+                manager.draw_widget_layer(layer, surface=renderer.surface, game=getattr(self, "game", None), scene=self)

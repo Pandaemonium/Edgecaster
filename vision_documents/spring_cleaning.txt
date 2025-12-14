@@ -1,5 +1,5 @@
 ﻿SPRING CLEANING — ACTIONABLE PLAN
-(Current Status: Widget system online; VisualProfile + VisualEffect pipeline active)
+(Current Status: Widget system online; PanelScene foundation online; VisualProfile + VisualEffect pipeline active)
 
 Legend:
 [CLEANUP] structure/no-behavior change
@@ -13,119 +13,107 @@ SLICE 1: Unified TargetMode [FOUNDATION COMPLETE]
 ✓ Inspect mode uses entity inheritance
 
 Next:
-
-Cone / line shapes
-
-Ranged preview layering
-
-Multi-step targeting for complex spells
+- Cone / line shapes
+- Ranged preview layering
+- Multi-step targeting for complex spells
 
 ===============================================================================
 SLICE 2: Menu & UI System Rework [CLEANUP — ACTIVE]
 
 Problem:
 Menus, keybinds, inventory, and special scenes historically used ad-hoc layout
-code and scene-specific hacks (especially for visuals).
+code and scene-specific hacks (especially for visuals and mouse hit-testing).
 
-New foundation:
-✓ Panel-local rendering everywhere
-✓ Scene-level VisualProfiles
-✓ General VisualEffect system (named, stackable, recursive)
-✓ Widget API introduced
-✓ Overlay widget layers (SceneManager-owned; scenes opt-in)
+New foundation (now real):
+✓ PanelScene: panel-local rendering + root widget tree + UI-first input routing
+✓ GeneralMenuScene: selection model + confirm/cancel + scrolling
+✓ Legacy wrappers: MenuScene and PopupMenuScene now wrap GeneralMenuScene
+✓ VisualProfile / VisualEffects apply consistently via visuals.py + visual_effects.py
+✓ Mouse hit-testing works under rotation/scale via unproject_mouse(...)
+✓ Multi-line banners restored via MultiLineLabelWidget (urgent/dialogue headers)
+
+Important gotchas learned (don’t regress):
+- Init ordering: GeneralMenuScene builds widgets during __init__ and may call
+  get_ascii_art() early. Subclasses MUST set fields used by get_ascii_art()
+  BEFORE calling super().__init__().
+- Import hygiene: avoid circular imports (events ↔ scenes ↔ renderer). Prefer:
+    from edgecaster.scenes.manager import SceneManager
+  and avoid importing SceneManager from edgecaster.scenes package root.
+
+Temporary scaffolding (do not let this linger):
+- dungeon.py still contains an F8 debug overlay used to validate widget input
+  interception. Keep as fallback until the widget-based HUD is stable across
+  Dungeon + Inventory + Popup flows, then remove.
+
+Migration order (stay disciplined):
+HUD → widget in its own file (overlay layer)  [DONE]
+Ability Bar → widgetized + preserve clickiness  [DONE]
+MenuScene/PopupMenuScene → wrappers over GeneralMenuScene  [DONE]
+InventoryScene/UrgentMessageScene/Dialogue → still “legacy wrapper” scenes; functional parity first
+Next: Make menus less ugly (spacing/borders/fonts), then two-pane inventory.
+
+Near-term to-do (UI polish / correctness):
+[CLEANUP] Add basic panel chrome (border + title region) for popups
+[CLEANUP] Standardize padding + font choices across menus
+[CLEANUP] ListWidget: consistent scroll behavior + ensure_visible on selection
+[CLEANUP] Footer clipping: reserve footer height reliably in layouts
+[CLEANUP] Make urgent messages & dialogue use the same “banner” conventions (title/body above choices)
+[CLEANUP] Remove duplicate/legacy methods in urgent/dialogue scenes (wrap_text variants, old _draw_panel paths)
+
+===============================================================================
+SLICE 3: Visual Effects & Presentation [FOUNDATION STRONG]
 
 Visual effects milestone (expanded):
 ✓ visual_effects.py is the single registry for named effects
-✓ Effects now support multiple “lanes”:
-
-geometry lane (VisualProfile transforms)
-
-color lane (tint/flicker)
-
-present lane (shake/vibrate impulses)
-
-overlay lane (particles/shimmer/scanlines drawn onto surfaces)
+✓ Effects support multiple “lanes”:
+  - geometry lane (VisualProfile transforms)
+  - color lane (tint/flicker)
+  - present lane (shake/vibrate impulses)
+  - overlay lane (particles/shimmer/scanlines drawn onto surfaces)
 ✓ Effects can define overlay bounds (local rect) to localize auras/smoke/embers
-around entities/tiles or within panels, preventing whole-screen bleed.
-✓ Effects apply uniformly across scenes, popups, and entities (renderer-driven)
+  around entities/tiles or within panels, preventing whole-screen bleed.
+✓ Effects apply uniformly across scenes, popups, and entities
 ✓ Duplicate effects intentionally compound (fractal recursion)
 
-Temporary scaffolding (do not let this linger):
-
-dungeon.py still contains an F8 debug overlay used to validate widget input
-interception. Keep as fallback until HUD + AbilityBar widgetization is stable,
-then remove.
-
-Migration order (stay disciplined):
-
-HUD → widget in its own file (overlay layer)
-
-Ability Bar → widgetized + preserve clickiness
-
-MenuScene → generalized widget-based menus
-(keep MenuScene classic as a thin legacy wrapper during migration)
+Next:
+[CLEANUP] Define a consistent default “menu background” and popup dim level
+[CLEANUP] Create a small library of reusable panel styles (fullscreen menu, small popup, wide popup)
 
 ===============================================================================
-SLICE 3: Data-Driven Everything [VISION]
+SLICE 4: Data-Driven Everything [VISION]
 
-Expand prototypes with materials, physiology, resistances
+Expand prototypes with:
+- materials, physiology, resistances
+- behavior components (curious, brittle, fractal, volatile)
+- conditions/adjectives system that attaches gameplay + visual effects
+  (e.g. "Fiery" condition → VisualEffect + resistances)
 
-Behavior components (curious, brittle, fractal, volatile)
-
-Conditions/adjectives system that can attach gameplay + visual effects
-(e.g. "Fiery" condition → fiery VisualEffect, plus resistances, etc.)
-
-Longer-term: descriptions/names generated dynamically from trait stacks
-(avoid hardcoded "bismuth imp" prefixes once the system exists)
-
-===============================================================================
-CURRENT TACTICAL FOCUS (UI / SCENE LAYER)
-
-→ Finish widget primitives (Label, Button, List)
-→ Flexible menu layouts (two-pane, mixed text/graphics)
-→ InventoryScene → widget-based (list + details)
-→ KeybindsScene → data-driven grid widget
-→ Normalize visual style across all menus
-→ Keep all visual effects registry-driven (no scene-specific hacks)
+Longer-term:
+- descriptions/names generated dynamically from trait stacks
+- avoid hardcoded prefixes once the system exists
 
 ===============================================================================
 ONGOING ENGINE CLEANUPS
 
 [CLEANUP] Decompose game.py into systems/*
-
 [CLEANUP] Scheduler/event semantics cleanup
-
 [CLEANUP] MessageLog performance (deque)
-
 [CLEANUP] Dataclass defaults & typing consistency
-
 [CLEANUP] Actor/entity identification consistency
-
 [CLEANUP] Level registry invariants
-
 [CLEANUP] Kill-path ID consistency
-
 [CLEANUP] Overmap thread safety
-
 [CLEANUP] Centralize tuning constants
-
 [CLEANUP] Inventory/entity lookup optimizations
-
 [CLEANUP] Actor/entity position indexes
-
 [CLEANUP] Normalize content-file resolution
-
 [CLEANUP] Remove leftover debug scaffolding
-
 [CLEANUP] Explicit initialization pipeline
-
 [CLEANUP] Tighten scheduler typing
-
 [CLEANUP] Unify ignite/regrow effect logic
-
 [CLEANUP] Distinguish movement vs LOS blocking
 
 Guiding principles:
 Keep the geometry weird.
 Keep responsibilities clean.
-Refactor early, but surgically
+Refactor early, but surgically.

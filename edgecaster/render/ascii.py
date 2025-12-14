@@ -9,7 +9,7 @@ from edgecaster.game import Game
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns.library import action_preview_geometry
-from edgecaster.ui.ability_bar import AbilityBarRenderer
+from edgecaster.ui.ability_bar import AbilityBarRenderer, AbilityBarWidget
 from edgecaster.visuals import VisualProfile, apply_visual_panel
 from edgecaster.ui.widgets import WidgetContext, HUDWidget
 from edgecaster.ui.status_header import StatusHeaderWidget
@@ -1067,30 +1067,19 @@ class AsciiRenderer:
         return lines or [text]
 
     def draw_ability_bar(self, game: Game) -> None:
-        bar_rect = pygame.Rect(0, self.height - self.ability_bar_height, self.width, self.ability_bar_height)
-        pygame.draw.rect(self.surface, (15, 15, 28), bar_rect)
+        """Draw the bottom ability bar (delegates to AbilityBarWidget)."""
+        if not hasattr(self, "ability_bar_widget") or self.ability_bar_widget is None:
+            self.ability_bar_widget = AbilityBarWidget()
 
-        bar_state = getattr(game, "ability_bar_state", None)
-        if not bar_state:
-            return
-
-        # Dynamic hotkeys: renumber visible abilities 1..N every frame
-        visible = bar_state.visible_abilities()
-        for idx, ability in enumerate(visible):
-            if hasattr(ability, "hotkey"):
-                ability.hotkey = idx + 1
-
-        # Model is maintained by DungeonScene/AbilityBarState; renderer is view-only.
-        self.ability_bar_view.draw(
-            surface=self.surface,
-            game=game,
-            bar_state=bar_state,
-            bar_rect=bar_rect,
-            small_font=self.small_font,
-            fg=self.fg,
-            width=self.width,
-            icon_drawer=self._draw_ability_icon_for_bar,
+        ctx = WidgetContext(surface=self.surface, game=game, scene=None, renderer=self)
+        self.ability_bar_widget.rect = pygame.Rect(
+            0,
+            self.height - self.ability_bar_height,
+            self.width,
+            self.ability_bar_height,
         )
+        self.ability_bar_widget.layout(ctx)
+        self.ability_bar_widget.draw(ctx)
 
 
     def _draw_ability_icon(self, rect: pygame.Rect, ability_or_action, game: Game) -> None:

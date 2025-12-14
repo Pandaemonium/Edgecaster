@@ -411,7 +411,7 @@ class AbilityBarRenderer:
         vis = bar_state.visible_abilities()
         slot_rects = self._layout_bar(bar_rect, len(vis))
 
-        for ability, rect in zip(vis, slot_rects):
+        for slot_i, (ability, rect) in enumerate(zip(vis, slot_rects), start=1):
             # Attach the main rect for hit-testing
             ability.rect = rect
 
@@ -424,10 +424,8 @@ class AbilityBarRenderer:
             # Main icon on the left
             icon_area = pygame.Rect(rect.x + 3, rect.y + 3, rect.height - 6, rect.height - 6)
             if icon_drawer is not None:
-                # ascii.AsciiRenderer._draw_ability_icon_for_bar(surface, rect, ability, game)
                 icon_drawer(surface, icon_area, ability, game)
             else:
-                # tiny fallback glyph
                 pygame.draw.rect(surface, (90, 90, 120), icon_area, 1)
 
             # Label (with radius hint for activate_all)
@@ -439,8 +437,15 @@ class AbilityBarRenderer:
                 except Exception:
                     label = "Activate R"
 
-            if ability.hotkey:
-                label = f"{ability.hotkey}:{label}"
+            # ALWAYS page-local numbering:
+            label = f"{slot_i}:{label}"
+
+            text = small_font.render(label, True, fg)
+            text_x = icon_area.right + 4
+            text_y = rect.y + (rect.height - text.get_height()) // 2
+            surface.blit(text, (text_x, text_y))
+
+            # (rest of sub-button code unchanged)
 
             text = small_font.render(label, True, fg)
             text_x = icon_area.right + 4
@@ -578,3 +583,120 @@ class AbilityBarRenderer:
                         (panel.x + 18, tri_y + 5),
                     ],
                 )
+
+
+# ---------------------------------------------------------------------
+# AbilityBarWidget (pygame-facing controller / hit-testing)
+# ---------------------------------------------------------------------
+
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class AbilityBarHit:
+    """Result of clicking on the ability bar.
+
+    kind:
+      - "ability": clicked an ability slot (main body)
+      - "sub_button": clicked a sub-button (plus/minus/gear/etc.)
+      - "page_prev" / "page_next": clicked any of the paging arrows
+      - "open_reorder": clicked the left "Abilities" label/button
+    """
+    kind: str
+    ability: Optional[Ability] = None
+    sub_meta: Optional[SubButtonMeta] = None
+
+
+class AbilityBarWidget:
+    """Thin widget wrapper around AbilityBarRenderer.
+
+    - Owns the pygame-facing view object (AbilityBarRenderer).
+    - Uses Game.ability_bar_state as the model/controller.
+    - Provides click() hit-testing used by DungeonScene.
+    """
+
+    def __init__(self) -> None:
+        self.rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self.visible: bool = True
+        self.enabled: bool = True
+        self._renderer = AbilityBarRenderer()
+
+    def layout(self, _ctx) -> None:
+        # Layout is driven entirely by self.rect; nothing else to compute.
+        return
+
+    def draw(self, ctx) -> None:
+        if not self.visible:
+            return
+
+        game = ctx.game
+        if game is None:
+            return
+
+        # Ensure the game has a model/controller for abilities.
+        bar_state: AbilityBarState = getattr(game, "ability_bar_state", None)
+        if bar_state is None:
+            bar_state = AbilityBarState()
+            game.ability_bar_state = bar_state
+
+        self._renderer.draw(
+            surface=ctx.surface,
+            game=game,
+            bar_state=bar_state,
+            bar_rect=self.rect,
+            small_font=getattr(ctx.renderer, "small_font", getattr(ctx.renderer, "font")),
+            fg=getattr(ctx.renderer, "fg", (255, 255, 255)),
+            width=getattr(ctx.renderer, "width", self.rect.w),
+            icon_drawer=getattr(ctx.renderer, "_draw_ability_icon_for_bar", None),
+        )
+
+    def click(self, pos: tuple[int, int], ctx) -> Optional[AbilityBarHit]:
+        """Hit-test a click in logical-surface coordinates."""
+        if not (self.visible and self.enabled):
+            return None
+
+        game = ctx.game
+        if game is None:
+            return None
+
+        bar_state: AbilityBarState = getattr(game, "ability_bar_state", None)
+        if bar_state is None:
+            bar_state = AbilityBarState()
+            game.ability_bar_state = bar_state
+
+        x, y = pos
+
+        # "Abilities" label/button -> open reorder overlay
+        if (
+            self._renderer.abilities_button_rect
+            and self._renderer.abilities_button_rect.collidepoint((x, y))
+        ):
+            return AbilityBarHit(kind="open_reorder")
+
+        # Paging arrows
+        for r in getattr(self._renderer, "page_prev_rects", []) or []:
+            if r.collidepoint((x, y)):
+                return AbilityBarHit(kind="page_prev")
+        for r in getattr(self._renderer, "page_next_rects", []) or []:
+            if r.collidepoint((x, y)):
+                return AbilityBarHit(kind="page_next")
+
+        # Ability slots + sub-buttons
+        for ability in bar_state.visible_abilities():
+            rect = getattr(ability, "rect", None)
+            if rect is None or not rect.collidepoint((x, y)):
+                continue
+
+            mapping = getattr(ability, "sub_button_rects", None) or {}
+            for sub_id, sub_rect in mapping.items():
+                if sub_rect and sub_rect.collidepoint((x, y)):
+                    meta = None
+                    for spec in ACTION_SUB_BUTTONS.get(ability.action, []):
+                        if getattr(spec, "id", None) == sub_id:
+                            meta = spec
+                            break
+                    return AbilityBarHit(kind="sub_button", ability=ability, sub_meta=meta)
+
+            return AbilityBarHit(kind="ability", ability=ability)
+
+        return None
