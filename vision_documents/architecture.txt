@@ -33,73 +33,109 @@ Implement simulation rules
 Key scene modules:
 
 manager.py
-- Scene stack + window stack
-- Overlay widget layer service ("hud", etc.)
+
+Scene stack + window stack
+
+Overlay widget layer service ("hud", etc.)
 
 base.py
-- Scene base types
-- PanelScene foundation (widget-driven)
-- GeneralMenuScene (selection, confirm/cancel, scrolling)
-- Legacy wrappers (MenuScene / PopupMenuScene) over GeneralMenuScene
+
+Scene base types
+
+PanelScene foundation (widget-driven)
+
+GeneralMenuScene (selection, confirm/cancel, scrolling)
+
+MenuFrameWidget (shared banner/body/list/footer layout helper)
+
+Legacy wrappers (MenuScene / PopupMenuScene) over GeneralMenuScene
+
+Popup underlay snapshot logic (see gotchas in Section 4)
 
 dungeon.py
-- Primary gameplay scene
-- TargetMode flow + UI routing
-- Transitions to inventory/popups
+
+Primary gameplay scene
+
+TargetMode flow + UI routing
+
+Transitions to inventory/popups
 
 inventory_scene.py
-- Nested inventories (effect-driven; recursive)
-- Built as a (legacy) popup wrapper over GeneralMenuScene during migration
+
+Nested inventories (effect-driven; recursive)
+
+Implemented as popup-window scenes during migration (functional parity first)
 
 urgent_message_scene.py
-- Generic urgent popup/dialog (death/level-up confirmations)
-- Built as a (legacy) popup wrapper over GeneralMenuScene during migration
+
+Generic urgent popup/dialog (confirmations, alerts)
+
+Uses widget-driven banner/body/choices conventions
 
 dialogue_scene.py
-- Dialogue popups (dialogue trees + callbacks)
-- IMPORTANT: avoid importing events/scenes package root at module import time
+
+Dialogue popups (dialogue trees + callbacks)
+
+IMPORTANT: avoid importing events/scenes package root at module import time
 
 Other menus:
-- options / keybinds / character creation etc.
+
+options / keybinds / character creation etc.
 
 RENDERERS (edgecaster/render/)
 Pure view layer.
 
 ascii.py:
-- Draws map, entities, overlays
-- Draws panel-local UI for popup/menu scenes
-- Applies VisualProfiles and VisualEffects at draw time
-- Owns any “present” stage utilities (screen shake impulses etc.)
+
+Draws map, entities, overlays
+
+Draws panel-local UI for popup/menu scenes
+
+Applies VisualProfiles and VisualEffects at draw time
+
+Owns any “present” stage utilities (screen shake impulses etc.)
 
 Renderers NEVER:
-- Read input events
-- Interpret GameCommands
-- Store gameplay or UI state
+
+Read input events
+
+Interpret GameCommands
+
+Store gameplay or UI state
 
 INPUT (edgecaster/scenes/game_input.py)
 Single conversion point:
 Pygame Event → GameCommand(kind=...)
-
 Scenes interpret GameCommands.
 Renderers are input-agnostic.
 
 GAME CORE (edgecaster/game.py)
 Authoritative simulation:
-- Entities, actors, stats
-- Turn updates, movement, collisions, combat
-- Fractal mechanics, patterns, rune interactions
-- Procedural world state, RNG
+
+Entities, actors, stats
+
+Turn updates, movement, collisions, combat
+
+Fractal mechanics, patterns, rune interactions
+
+Procedural world state, RNG
 
 Does NOT:
-- Know about rendering
-- Contain UI logic or transforms
+
+Know about rendering
+
+Contain UI logic or transforms
 
 SYSTEMS (edgecaster/systems/)
 Pure logic modules:
-- actions.py → Action metadata + targeting specs
-- abilities.py → Actor abilities
-- patterns/* → Fractal generation
-- ai.py → Behavior stubs
+
+actions.py → Action metadata + targeting specs
+
+abilities.py → Actor abilities
+
+patterns/* → Fractal generation
+
+ai.py → Behavior stubs
 
 ===============================================================================
 SECTION 2 — VISUAL TRANSFORM & EFFECT PIPELINE
@@ -107,9 +143,12 @@ SECTION 2 — VISUAL TRANSFORM & EFFECT PIPELINE
 Two distinct but cooperating systems:
 
 visuals.py:
-- VisualProfile (scale, offset, rotation, alpha, flips)
-- apply_visual_panel(...) → transforms & blits a panel/surface to screen
-- unproject_mouse(...) → invert transforms for hit-testing (mouse ↔ rotated/shrunk panels)
+
+VisualProfile (scale, offset, rotation, alpha, flips)
+
+apply_visual_panel(...) → transforms & blits a panel/surface to screen
+
+unproject_mouse(...) → invert transforms for hit-testing (mouse ↔ rotated/shrunk panels)
 
 visual_effects.py:
 Registry of named VisualEffects (e.g. "clockwise", "ghostly", "fiery", "bismuth")
@@ -121,9 +160,12 @@ Effects may modify:
 • Surface overlays (overlay lane: particles/shimmer/scanlines)
 
 Rules:
-- Effects are stackable and order-preserving
-- Duplicate effects intentionally compound (fractal recursion)
-- Scenes/entities declare effect names only; all effect behavior lives in visual_effects.py
+
+Effects are stackable and order-preserving
+
+Duplicate effects intentionally compound (fractal recursion)
+
+Scenes/entities declare effect names only; all effect behavior lives in visual_effects.py
 
 Overlay bounds:
 Effects can optionally specify an overlay drawing rect (local coordinates),
@@ -134,74 +176,140 @@ bleeding across the whole screen.
 SECTION 3 — TARGETING (UNIFIED TARGETMODE)
 
 TargetingSpec (actions.py):
-- kind: tile | vertex | look
-- mode: aim | terminus | inspect
-- range parameters
+
+kind: tile | vertex | look
+
+mode: aim | terminus | inspect
+
+range parameters
 
 TargetState (scene-local):
-- cursor, origin, mode
+
+cursor, origin, mode
 
 DungeonScene:
-- Owns targeting flow
+
+Owns targeting flow
 
 Renderer:
-- Draws cursor only
+
+Draws cursor only
 
 ===============================================================================
 SECTION 4 — WIDGET SYSTEM, PANELSCENE, AND MENU MIGRATION
 
 Widget foundation (edgecaster/ui/widgets.py):
-- WidgetContext(surface, game, scene, renderer)
-- Widget base class (layout, draw, handle_event, update)
-- Layout containers (VBox/HBox)
-- Interactive widgets (Label, MultiLineLabel, Button, List, etc.)
+
+WidgetContext(surface, game, scene, renderer)
+
+Widget base class (layout, draw, handle_event, update)
+
+Layout containers (VBox/HBox)
+
+Interactive widgets (Label, MultiLineLabel, Button, List, etc.)
+
+Wrapped text widgets for pixel-based wrapping (avoid ellipses)
+
+Scaled label widgets for title hierarchy (big title vs normal body)
 
 Ownership model:
-- Scenes own widget trees and route input
-- Renderer remains draw-only
+
+Scenes own widget trees and route input
+
+Renderer remains draw-only
 
 PanelScene (edgecaster/scenes/base.py):
-- Owns a logical panel surface + rect (fullscreen or popup)
-- Owns a root widget tree
-- Routes input to widgets FIRST (UI priority)
-- Applies VisualProfile/VisualEffects consistently via visuals.py + visual_effects.py
-- Converts mouse events into panel-local coordinates by inverting the visual transform
+
+Owns a logical panel surface + rect (fullscreen or popup)
+
+Owns a root widget tree
+
+Routes input to widgets FIRST (UI priority)
+
+Applies VisualProfile/VisualEffects consistently via visuals.py + visual_effects.py
+
+Converts mouse events into panel-local coordinates by inverting the visual transform
 
 GeneralMenuScene:
-- Built on PanelScene
-- Provides:
-  - selection model
-  - confirm/cancel behavior
-  - scrolling (ListWidget)
-  - keyboard + mouse arbitration:
-    keyboard navigation “wins” until the mouse moves again
+
+Built on PanelScene
+
+Provides:
+
+selection model
+
+confirm/cancel behavior
+
+scrolling
+
+keyboard + mouse arbitration:
+keyboard navigation “wins” until the mouse moves again
+
+Hook points used by subclasses:
+
+get_ascii_art() for title/banner
+
+get_body_text() for wrapped body text
+
+wants_wrapped_choices() for wrapped choice lists
+
+wants_banner_background() for “banner overlaps list” behavior (Main Menu disables)
+
+MenuFrameWidget:
+
+Shared “good default” layout:
+title/banner at top, optional body, list, optional footer pinned bottom
+
+IMPORTANT: clamps list/body width to panel inner width (prevents clipped tails in snug popups)
 
 Legacy wrappers:
-- MenuScene and PopupMenuScene are thin wrappers over GeneralMenuScene
-- Existing menu subclasses should continue to work (functional parity required)
-- Visual/aesthetic changes acceptable during transition
 
-Multiline banners:
-- Many legacy scenes relied on multi-line ASCII art or header/body text.
-- Use MultiLineLabelWidget for banners containing newlines.
+MenuScene and PopupMenuScene are thin wrappers over GeneralMenuScene
+
+Existing menu subclasses should continue to work (functional parity required)
+
+Visual/aesthetic changes acceptable during transition
+
+Popup underlay snapshot (important for translucent menus):
+
+PopupMenuScene caches an underlay snapshot to support dimming/transparency.
+
+Correct behavior is: snapshot must represent the scene stack BELOW the popup,
+not a previous frame that may already include another popup (“burn-in”).
+
+Clean approach: on first draw, re-render scenes below the popup to rebuild underlay,
+then copy the surface.
+
+GOTCHA: scenes (especially DungeonScene) may call renderer.present() or renderer._present().
+During underlay rebuild, presenting MUST be suppressed to avoid visible “stack flicker”.
+Current implementation temporarily disables present/_present during the snapshot render.
 
 Overlay widget layers:
-- SceneManager maintains named widget layers (e.g. "hud")
-- Scenes opt in via overlay_layers
-- Popup dimming occurs before overlays
-- Allows live HUD during inventory/popups
+
+SceneManager maintains named widget layers (e.g. "hud")
+
+Scenes opt in via overlay_layers
+
+Popup dimming occurs before overlays
+
+Allows live HUD during inventory/popups
 
 HUD widgets:
-- status_header.py → StatusHeaderWidget
-- ability_bar.py → AbilityBarWidget (wraps AbilityBarRenderer + hit-testing)
+
+status_header.py → StatusHeaderWidget
+
+ability_bar.py → AbilityBarWidget (wraps AbilityBarRenderer + hit-testing)
 
 ===============================================================================
 SECTION 5 — DATA-DRIVEN ENTITIES & INHERITANCE
 
 YAML prototypes define:
-- parent, glyph, color
-- description (inherited)
-- stats, tags, behaviors
+
+parent, glyph, color
+
+description (inherited)
+
+stats, tags, behaviors
 
 Runtime entities are fully resolved archetypes.
 Look-mode displays inherited descriptions.
@@ -214,25 +322,33 @@ SECTION 6 — IMPORT HYGIENE (AVOID CIRCULAR IMPORTS)
 
 Avoid importing heavyweight modules at package import time.
 In particular:
-- Do NOT make edgecaster/scenes/__init__.py import SceneManager (or other heavy modules).
-- Prefer direct imports:
-    from edgecaster.scenes.manager import SceneManager
-  rather than:
-    from edgecaster.scenes import SceneManager
+
+Do NOT make edgecaster/scenes/init.py import SceneManager (or other heavy modules).
+
+Prefer direct imports:
+from edgecaster.scenes.manager import SceneManager
+rather than:
+from edgecaster.scenes import SceneManager
 
 Dialogue/events:
-- events.py should not import scenes at module import time.
-- dialogue_scene.py should not import events at module import time.
+
+events.py should not import scenes at module import time.
+
+dialogue_scene.py should not import events at module import time.
 Use local imports inside functions if needed.
 
 ===============================================================================
 SECTION 7 — CURRENT STRATEGIC WORK
 
-The current UI migration order (stay disciplined):
+UI migration order (stay disciplined):
 HUD → Ability Bar → generalized MenuScene widgets → Inventory → Keybinds → Options
 
 Immediate next improvements:
-- Normalize menu aesthetics (padding, borders, fonts)
-- Two-pane inventory (list + details)
-- Keybinds/options unification using widgets
-- Reduce ad-hoc coordinate math; keep all transforms via VisualProfile/VisualEffects
+
+Normalize menu aesthetics (padding, borders, fonts)
+
+Two-pane inventory (list + details)
+
+Keybinds/options unification using widgets
+
+Keep all transforms via VisualProfile/VisualEffects (no ad-hoc pygame transforms)

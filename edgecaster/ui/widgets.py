@@ -1037,3 +1037,126 @@ class WrappedListWidget(Widget):
                         return True
 
         return super().handle_event(event, ctx)
+
+
+class TwoColumnListWidget(ListWidget):
+    """
+    ListWidget variant that renders a right-aligned "value" column.
+
+    Expected item shape:
+      - item.label (or .name / str(item)) for the left column
+      - item.value (optional) for the right column
+
+    This is used by OptionsScene to restore the legacy ON/OFF display.
+    """
+
+    def __init__(
+        self,
+        items: List[Any],
+        *,
+        selected_index: int = 0,
+        on_activate: Optional[Callable[[int, Any], None]] = None,
+        line_spacing: int = 2,
+        padding: int = 4,
+        value_gap: int = 24,   # min gap between left label and right value
+    ) -> None:
+        super().__init__(
+            items,
+            selected_index=selected_index,
+            on_activate=on_activate,
+            line_spacing=line_spacing,
+            padding=padding,
+        )
+        self.value_gap = int(value_gap)
+
+    def _item_value(self, item: Any) -> str:
+        # OptionsScene OptionItem has .value already; default to "" otherwise.
+        v = getattr(item, "value", "")
+        return "" if v is None else str(v)
+
+    def layout(self, ctx: WidgetContext) -> None:
+        """
+        Compute a reasonable width if not preset, accounting for BOTH columns.
+        """
+        font = getattr(
+            ctx.renderer,
+            "font",
+            getattr(ctx.renderer, "small_font"),
+        )
+
+        base_h = font.get_height()
+        self._line_height = base_h + self.line_spacing
+
+        max_label_w = 0
+        max_value_w = 0
+
+        for item in self.items:
+            label = self._item_label(item)
+            value = self._item_value(item)
+            max_label_w = max(max_label_w, font.size("▶ " + label)[0])
+            if value:
+                max_value_w = max(max_value_w, font.size(value)[0])
+
+        if self.rect.width == 0:
+            # padding on both sides + gap between columns
+            self.rect.width = (
+                max_label_w
+                + (self.value_gap if max_value_w > 0 else 0)
+                + max_value_w
+                + 2 * self.padding
+            )
+
+        if self.rect.height == 0:
+            total_h = len(self.items) * self._line_height + 2 * self.padding
+            self.rect.height = total_h
+
+        self.ensure_visible(self.selected_index)
+        super().layout(ctx)
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        font = getattr(
+            ctx.renderer,
+            "font",
+            getattr(ctx.renderer, "small_font"),
+        )
+        fg = getattr(ctx.renderer, "fg", (255, 255, 255))
+        sel = getattr(
+            ctx.renderer,
+            "player_color",
+            getattr(ctx.renderer, "sel", (255, 255, 0)),
+        )
+
+        cap = self._visible_capacity()
+        start = self.scroll_offset
+        end = min(len(self.items), start + cap)
+
+        x_left = self.rect.x + self.padding
+        x_right = self.rect.right - self.padding
+        y = self.rect.y + self.padding
+
+        for idx in range(start, end):
+            item = self.items[idx]
+            label = self._item_label(item)
+            value = self._item_value(item)
+
+            selected = (idx == self.selected_index)
+            color = sel if selected else fg
+            prefix = "▶ " if selected else "  "
+
+            # Left column
+            left_surf = font.render(prefix + label, True, color)
+            ctx.surface.blit(left_surf, (x_left, y))
+
+            # Right column (right-aligned)
+            if value:
+                val_surf = font.render(value, True, color)
+                vx = x_right - val_surf.get_width()
+                # Ensure some separation; if too tight, still draw right-aligned (legacy did too).
+                ctx.surface.blit(val_surf, (vx, y))
+
+            y += self._line_height
+
+        super().draw(ctx)
