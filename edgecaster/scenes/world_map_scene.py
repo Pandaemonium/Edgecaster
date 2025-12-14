@@ -45,6 +45,16 @@ class WorldMapScene(Scene):
         pending_corruption = float(getattr(self.game, "corruption_level", 0.0) or 0.0)
         dragging_slider = False
 
+        # Worldmap zoom (digital zoom of the rendered surface for now).
+        zoom = 1.0
+        view_min_wx = 0.0
+        view_min_wy = 0.0
+        # Cache the zoomed/cropped surface so we don't rescale every frame.
+        zoomed_surface: Optional[pygame.Surface] = None
+        zoomed_last_src_id: Optional[int] = None
+        zoomed_last_crop: Optional[pygame.Rect] = None
+        zoomed_last_show_corr: Optional[bool] = None
+
         # Ensure map_surface exists before the first event pump (mouse click safety).
         show_corr = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
         map_surface = self._build_cached_surface(renderer, show_corruption=show_corr)
@@ -61,9 +71,62 @@ class WorldMapScene(Scene):
                     if event.key == pygame.K_F11:
                         renderer.toggle_fullscreen()
                         continue
+                    if event.key == pygame.K_0:
+                        zoom = 1.0
+                        view_min_wx = 0.0
+                        view_min_wy = 0.0
+                        zoomed_surface = None
                     if event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE, pygame.K_LESS, pygame.K_COMMA, pygame.K_PERIOD, pygame.K_GREATER):
                         running = False
                         break
+
+                # Mousewheel zoom (pygame 2.x)
+                if event.type == pygame.MOUSEWHEEL:
+                    if dragging_slider:
+                        continue
+                    if not self.game.world_map_ready:
+                        continue
+
+                    mx, my = renderer._to_surface(pygame.mouse.get_pos())
+                    map_w, map_h = map_surface.get_size()
+                    ox = (renderer.width - map_w) // 2
+                    oy = (renderer.height - map_h) // 2
+                    rel_x = mx - ox
+                    rel_y = my - oy
+                    if not (0 <= rel_x < map_w and 0 <= rel_y < map_h):
+                        continue
+
+                    total_w = float(self.game.cfg.world_map_screens * self.game.cfg.world_width)
+                    total_h = float(self.game.cfg.world_map_screens * self.game.cfg.world_height)
+                    if total_w <= 1 or total_h <= 1:
+                        continue
+
+                    old_zoom = float(zoom)
+                    step = 1.15
+                    if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                        step = 1.25
+                    if event.y > 0:
+                        zoom = min(8.0, zoom * (step ** event.y))
+                    elif event.y < 0:
+                        zoom = max(1.0, zoom / (step ** (-event.y)))
+
+                    if abs(zoom - old_zoom) < 1e-9:
+                        continue
+
+                    old_span_wx = total_w / old_zoom
+                    old_span_wy = total_h / old_zoom
+                    wx_under = view_min_wx + (rel_x / max(1, map_w)) * old_span_wx
+                    wy_under = view_min_wy + (rel_y / max(1, map_h)) * old_span_wy
+
+                    new_span_wx = total_w / zoom
+                    new_span_wy = total_h / zoom
+                    view_min_wx = wx_under - (rel_x / max(1, map_w)) * new_span_wx
+                    view_min_wy = wy_under - (rel_y / max(1, map_h)) * new_span_wy
+
+                    # Clamp view window to world extents.
+                    view_min_wx = max(0.0, min(view_min_wx, max(0.0, total_w - new_span_wx)))
+                    view_min_wy = max(0.0, min(view_min_wy, max(0.0, total_h - new_span_wy)))
+                    zoomed_surface = None
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     # Convert display coords to render-surface coords to account for letterboxing/fullscreen.
@@ -85,10 +148,12 @@ class WorldMapScene(Scene):
                         rel_y = my - oy
                         if 0 <= rel_x < map_w and 0 <= rel_y < map_h:
                             # convert to world tiles then zones
-                            total_w = self.game.cfg.world_map_screens * self.game.cfg.world_width
-                            total_h = self.game.cfg.world_map_screens * self.game.cfg.world_height
-                            wx = int(rel_x / map_w * total_w)
-                            wy = int(rel_y / map_h * total_h)
+                            total_w = float(self.game.cfg.world_map_screens * self.game.cfg.world_width)
+                            total_h = float(self.game.cfg.world_map_screens * self.game.cfg.world_height)
+                            span_wx = total_w / max(1.0, float(zoom))
+                            span_wy = total_h / max(1.0, float(zoom))
+                            wx = int(view_min_wx + (rel_x / map_w) * span_wx)
+                            wy = int(view_min_wy + (rel_y / map_h) * span_wy)
                             zx = wx // self.game.cfg.world_width
                             zy = wy // self.game.cfg.world_height
                             self.game.fast_travel_to_zone(zx, zy)
@@ -113,35 +178,78 @@ class WorldMapScene(Scene):
             surf.fill(renderer.bg)
             show_corr = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
             map_surface = self._build_cached_surface(renderer, show_corruption=show_corr)
-            ox = (renderer.width - map_surface.get_width()) // 2
-            oy = (renderer.height - map_surface.get_height()) // 2
-            surf.blit(map_surface, (ox, oy))
+
+            map_w, map_h = map_surface.get_size()
+            ox = (renderer.width - map_w) // 2
+            oy = (renderer.height - map_h) // 2
+
+            draw_surface = map_surface
+            if self.game.world_map_ready and float(zoom) > 1.0001:
+                total_w = float(self.game.cfg.world_map_screens * self.game.cfg.world_width)
+                total_h = float(self.game.cfg.world_map_screens * self.game.cfg.world_height)
+                span_wx = total_w / float(zoom)
+                span_wy = total_h / float(zoom)
+
+                crop_w = max(1, int(round(map_w / float(zoom))))
+                crop_h = max(1, int(round(map_h / float(zoom))))
+                crop_x = int(round((view_min_wx / max(1.0, total_w)) * map_w))
+                crop_y = int(round((view_min_wy / max(1.0, total_h)) * map_h))
+                crop_rect = pygame.Rect(crop_x, crop_y, crop_w, crop_h)
+                crop_rect.clamp_ip(pygame.Rect(0, 0, map_w, map_h))
+
+                src_id = id(map_surface)
+                if (
+                    zoomed_surface is None
+                    or zoomed_last_src_id != src_id
+                    or zoomed_last_show_corr != show_corr
+                    or zoomed_last_crop != crop_rect
+                ):
+                    zoomed_last_src_id = src_id
+                    zoomed_last_show_corr = show_corr
+                    zoomed_last_crop = crop_rect.copy()
+                    sub = map_surface.subsurface(crop_rect)
+                    zoomed_surface = pygame.transform.smoothscale(sub, (map_w, map_h))
+
+                draw_surface = zoomed_surface or map_surface
+
+            surf.blit(draw_surface, (ox, oy))
+
+            # Helper: world tile -> on-screen map pixel (supports zoomed view).
+            def world_to_view(wx: float, wy: float) -> Optional[tuple[int, int]]:
+                total_w = float(self.game.cfg.world_map_screens * self.game.cfg.world_width)
+                total_h = float(self.game.cfg.world_map_screens * self.game.cfg.world_height)
+                span_wx = total_w / max(1.0, float(zoom))
+                span_wy = total_h / max(1.0, float(zoom))
+                mx = int((float(wx) - view_min_wx) / max(1e-9, span_wx) * map_w)
+                my = int((float(wy) - view_min_wy) / max(1e-9, span_wy) * map_h)
+                if 0 <= mx < map_w and 0 <= my < map_h:
+                    return (mx, my)
+                return None
 
             # marker for player
             px, py = self._player_world_pos()
-            marker = self._world_to_map(px, py, map_surface.get_size())
-            pygame.draw.circle(surf, (255, 230, 120), (ox + marker[0], oy + marker[1]), 4)
+            marker = world_to_view(px, py)
+            if marker is not None:
+                pygame.draw.circle(surf, (255, 230, 120), (ox + marker[0], oy + marker[1]), 4)
 
             # marker for lab zone (if known)
             if hasattr(self.game, "lab_zone") and self.game.lab_zone:
                 lab_zx, lab_zy = self.game.lab_zone
-                total_w = self.game.cfg.world_map_screens * self.game.cfg.world_width
-                total_h = self.game.cfg.world_map_screens * self.game.cfg.world_height
                 lab_wx = lab_zx * self.game.cfg.world_width + self.game.cfg.world_width // 2
                 lab_wy = lab_zy * self.game.cfg.world_height + self.game.cfg.world_height // 2
-                lx, ly = self._world_to_map(lab_wx, lab_wy, map_surface.get_size())
-                pygame.draw.circle(surf, (200, 120, 255), (ox + lx, oy + ly), 4)
+                lab_marker = world_to_view(lab_wx, lab_wy)
+                if lab_marker is not None:
+                    pygame.draw.circle(surf, (200, 120, 255), (ox + lab_marker[0], oy + lab_marker[1]), 4)
 
             # markers for POIs (e.g., Academy)
             if getattr(self.game, "poi_locations", None):
                 for pid, (pz_x, pz_y, _pz_z) in self.game.poi_locations.items():
-                    total_w = self.game.cfg.world_map_screens * self.game.cfg.world_width
-                    total_h = self.game.cfg.world_map_screens * self.game.cfg.world_height
                     wx = pz_x * self.game.cfg.world_width + self.game.cfg.world_width // 2
                     wy = pz_y * self.game.cfg.world_height + self.game.cfg.world_height // 2
-                    mx, my = self._world_to_map(wx, wy, map_surface.get_size())
-                    color = (120, 210, 240) if pid == "academy" else (180, 180, 200)
-                    pygame.draw.circle(surf, color, (ox + mx, oy + my), 3)
+                    poi_marker = world_to_view(wx, wy)
+                    if poi_marker is not None:
+                        color = (120, 210, 240) if pid == "academy" else (180, 180, 200)
+                        pygame.draw.circle(surf, color, (ox + poi_marker[0], oy + poi_marker[1]), 3)
 
             # If corruption changed and we're regenerating the overmap, surface a distinct message.
             if getattr(self.game, "world_map_rendering", False) and getattr(self.game, "world_map_render_reason", "") == "corruption":
@@ -150,7 +258,7 @@ class WorldMapScene(Scene):
 
             title = renderer.big_label("World Map")
             surf.blit(title, (ox, oy - 36))
-            hint = renderer.small_font.render("Esc/Enter/< to return", True, renderer.fg)
+            hint = renderer.small_font.render("Esc/Enter/< to return  |  Scroll to zoom (0 resets)", True, renderer.fg)
             surf.blit(hint, (ox, oy + map_surface.get_height() + 8))
 
             # --- Temporary corruption slider UI (tuning) ------------------------

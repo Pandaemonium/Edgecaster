@@ -28,7 +28,7 @@ class CorruptionParams:
     # Right-side "mountains of corruption" shaping (in normalized Julia x space).
     # 0.0 = start at far left of the current Julia view, 1.0 = only at far right.
     right_start: float = 0.4
-    right_sharpness: float = 1.5
+    right_sharpness: float = 2.5
     right_weight: float = 1.0
 
     # Scattered hotspots (rare peaks) derived from noise.
@@ -163,7 +163,7 @@ def _noise_lut(
                 zx * float(freq) * base_mult,
                 zy * float(freq) * base_mult,
                 seed + 11,
-                octaves=3,
+                octaves=4,
                 persistence=persistence,
                 lacunarity=lacunarity,
             )
@@ -171,7 +171,7 @@ def _noise_lut(
                 zx * float(freq),
                 zy * float(freq),
                 seed + 101,
-                octaves=6,
+                octaves=8,
                 persistence=persistence,
                 lacunarity=lacunarity,
             )
@@ -182,14 +182,14 @@ def _noise_lut(
             # to distorted_Julia.py's `init_landscape()` scheme.
             x_norm = ix / max(1, (res - 1))
             m = smoothstep(mountain_start, 1.0, float(x_norm))
-            m = m * m
+            m = m ** 2.5
 
-            # Apply the left->right mask to ALL layers so the left side is
+            # Apply the left->right mask to all layers except the base map so the left side is
             # mathematically flat (H=0) and therefore has zero distortion
             # (d(z)=0). This keeps the far-left of the overmap close to an
             # uncorrupted Julia set, while still allowing strong "mountain"
             # ridges on the right.
-            h_tex[idx] = float((0.30 * base + 0.90 * detail + ridge_strength * ridge) * m)
+            h_tex[idx] = float(0.35 * base + m * (0.70 * detail + ridge_strength * ridge))
 
             # Scattered peaks derived from a separate low-frequency noise.
             sx = zx * float(spot_freq)

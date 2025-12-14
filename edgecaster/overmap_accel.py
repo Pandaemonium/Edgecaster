@@ -227,26 +227,52 @@ def render_overmap_buffers_numpy(
     h2 = h.reshape((px_h, px_w))
     peak2 = peak_env.reshape((px_h, px_w))
 
-    # Palette mapping via the same thresholds as mapgen._classify_tile(fields, 0.5).
-    idx_map = np.full((px_h, px_w), 2, dtype=np.int8)
-    idx_map[h2 < 0.16] = 0
-    idx_map[(h2 >= 0.16) & (h2 < 0.24)] = 1
-    idx_map[(h2 >= 0.64) & (h2 < 0.68)] = 3
-    idx_map[(h2 >= 0.68) & (h2 < 0.82)] = 4
-    idx_map[h2 >= 0.82] = 5
-
-    palette = np.asarray(
+    # Smooth palette mapping (matches mapgen._color_from_fields anchors).
+    anchors_h = np.asarray([0.00, 0.15, 0.32, 0.52, 0.72, 1.00], dtype=np.float64)
+    anchors_rgb = np.asarray(
         [
-            (70, 110, 200),
-            (120, 170, 190),
-            (150, 200, 120),
-            (70, 150, 90),
-            (170, 140, 100),
-            (200, 200, 210),
+            (50, 90, 170),    # deep water
+            (110, 160, 190),  # shore/shallows
+            (150, 200, 140),  # plains
+            (90, 170, 110),   # forested low hills
+            (170, 150, 110),  # hills
+            (210, 210, 215),  # high/mountains
         ],
-        dtype=np.uint8,
+        dtype=np.float64,
     )
-    rgb_main = palette[idx_map]
+    r = np.interp(h2, anchors_h, anchors_rgb[:, 0]).astype(np.float64)
+    g = np.interp(h2, anchors_h, anchors_rgb[:, 1]).astype(np.float64)
+    b = np.interp(h2, anchors_h, anchors_rgb[:, 2]).astype(np.float64)
+    rgb_main = np.stack([r, g, b], axis=2)
+
+    # Simple hillshading from the height gradient to give a higher-res/relief look.
+    gx = np.zeros_like(h2, dtype=np.float64)
+    gy = np.zeros_like(h2, dtype=np.float64)
+    gx[:, 1:-1] = (h2[:, 2:] - h2[:, :-2]) * 0.5
+    gx[:, 0] = h2[:, 1] - h2[:, 0]
+    gx[:, -1] = h2[:, -1] - h2[:, -2]
+    gy[1:-1, :] = (h2[2:, :] - h2[:-2, :]) * 0.5
+    gy[0, :] = h2[1, :] - h2[0, :]
+    gy[-1, :] = h2[-1, :] - h2[-2, :]
+
+    z_scale = 3.0
+    nxn = -gx * z_scale
+    nyn = -gy * z_scale
+    nzn = 1.0
+    inv_len = 1.0 / np.sqrt(nxn * nxn + nyn * nyn + nzn * nzn)
+    nxn *= inv_len
+    nyn *= inv_len
+
+    # Light from the top-left (northwest), slightly "above" the surface.
+    lx, ly, lz = -0.6, -0.8, 1.0
+    l_inv = 1.0 / math.sqrt(lx * lx + ly * ly + lz * lz)
+    lx *= l_inv
+    ly *= l_inv
+    lz *= l_inv
+
+    dot = nxn * lx + nyn * ly + (nzn * inv_len) * lz
+    shade = np.clip(0.70 + 0.30 * dot, 0.0, 1.0)
+    rgb_main = np.clip(rgb_main * shade[:, :, None], 0.0, 255.0).astype(np.uint8)
 
     # ALT corruption field visualization.
     if corr_level > 0.0:
@@ -264,4 +290,3 @@ def render_overmap_buffers_numpy(
         rgb_corr = np.zeros((px_h, px_w, 3), dtype=np.uint8)
 
     return rgb_main, rgb_corr, peak2
-
