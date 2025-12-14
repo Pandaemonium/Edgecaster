@@ -233,35 +233,39 @@ def apply_screen_tint_overlays(
     surface: pygame.Surface,
     effect_names: Iterable[str],
     *,
-    base_color: RGB = (255, 255, 255),
-    alpha: int = 60,
+    base_color: RGB = (128, 128, 128),
+    alpha: int = 70,
     now_ms: Optional[int] = None,
 ) -> None:
     """
     Screen-space tint lane.
 
-    Some effects define only an *entity* color modifier (e.g. syrupy), but when an
-    effect is applied globally we often want a gentle screen wash, not per-entity
-    recoloring. This helper converts any modify_entity_color hooks into a
-    translucent full-surface tint overlay.
+    Convert any modify_entity_color hooks into a translucent full-surface tint overlay.
 
-    - base_color is the neutral input into modify_entity_color.
-    - alpha controls tint strength (0-255).
+    Important:
+    - If no modify_entity_color hooks actually run, we DO NOTHING (prevents "white wash").
+    - base_color defaults to mid-gray so lerps can go darker as well as lighter.
     """
     if not effect_names:
         return
 
     t = pygame.time.get_ticks() if now_ms is None else int(now_ms)
 
-    # Chain tint through any modify_entity_color hooks (same order as entities).
     tint = base_color
+    touched = False
+
     for name in effect_names:
         eff = get_effect(name)
         if eff and eff.modify_entity_color:
+            touched = True
             try:
                 tint = eff.modify_entity_color(obj, tint, t)
             except Exception:
                 pass
+
+    # If nothing had a color hook, or it effectively didn't change, don't overlay.
+    if not touched or tint == base_color:
+        return
 
     a = max(0, min(255, int(alpha)))
     if a <= 0:
@@ -270,6 +274,7 @@ def apply_screen_tint_overlays(
     overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
     overlay.fill((int(tint[0]), int(tint[1]), int(tint[2]), a))
     surface.blit(overlay, (0, 0))
+
 
 
 def apply_surface_overlays(

@@ -41,18 +41,23 @@ class InventoryScene(PopupMenuScene):
         title: Optional[str] = None,
         base_effects: Optional[list[str]] = None,
     ) -> None:
-        super().__init__(window_rect=window_rect, dim_background=True, scale=0.7)
+        # IMPORTANT: GeneralMenuScene builds widgets during super().__init__(),
+        # which calls get_ascii_art(). That needs game/owner_id/title to exist first.
         self.game = game
-
         self.owner_id: Optional[str] = owner_id
         self.parent_owner_id: Optional[str] = parent_owner_id
         self.explicit_title: Optional[str] = title
 
+        # Effects available immediately (banner/background may depend on them later)
+        self.visual_effects: list[str] = list(base_effects or [])
+
+        super().__init__(window_rect=window_rect, dim_background=True, scale=0.7)
+
         self.overlay_layers = {"hud"}
 
         # Effects: inherit from parent + add owner/container declared effects
-        self.visual_effects: list[str] = list(base_effects or [])
         self._inherit_owner_visual_effects()
+
 
     # ---------------------------------------------------------------------
     # Effects inheritance (no inventory-specific math here)

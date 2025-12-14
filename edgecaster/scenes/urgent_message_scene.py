@@ -24,31 +24,79 @@ class UrgentMessageScene(PopupMenuScene):
     - Used both for "real" urgent events (level-up, death, etc.)
       and lightweight context menus (e.g. inventory item actions).
     """
+    FOOTER_TEXT = ""
 
     def __init__(
-        self,
-        game,
-        message: str,
-        *,
-        title: str = "",
-        choices: Optional[List[str]] = None,
-        on_choice: Optional[Callable[[int, "SceneManager"], None]] = None,
-        window_rect: Optional[pygame.Rect] = None,
-        back_confirms: bool = True,
+            self,
+            game,
+            message: str,
+            *,
+            title: str = "",
+            choices: Optional[List[str]] = None,
+            on_choice: Optional[Callable[[int, "SceneManager"], None]] = None,
+            window_rect: Optional[pygame.Rect] = None,
+            back_confirms: bool = True,
     ) -> None:
-        # Let PopupMenuScene handle snapshot, dimming, generic layout, etc.
-        super().__init__(window_rect=window_rect, dim_background=True, scale=0.3)
-
+        # IMPORTANT:
+        # GeneralMenuScene builds widgets during super().__init__(),
+        # which calls get_ascii_art(). So all fields used by get_ascii_art()
+        # must exist BEFORE super().__init__ runs.
         self.game = game
         self.message = message
         self.title = title
+
         self.choices = choices or ["Continue..."]
         self.on_choice = on_choice
-
-        # Controls how Esc behaves:
-        # - True  → Esc acts like Activate on the current choice
-        # - False → Esc just closes the popup
         self.back_confirms = back_confirms
+
+        # Visual knobs some menus expect to exist
+        self.visual_effects: list[str] = []
+
+        super().__init__(window_rect=window_rect, dim_background=True, scale=0.60)
+
+        # Safeguard: if a window_rect was passed in and it’s too small, bump it.
+        if self.window_rect is not None:
+            min_w, min_h = 520, 260
+            if self.window_rect.w < min_w or self.window_rect.h < min_h:
+                cx, cy = self.window_rect.center
+                w = max(self.window_rect.w, min_w)
+                h = max(self.window_rect.h, min_h)
+                self.window_rect = pygame.Rect(0, 0, w, h)
+                self.window_rect.center = (cx, cy)
+
+
+
+    def get_ascii_art(self) -> str:
+        # Title + wrapped body text
+        lines: list[str] = []
+        if self.title:
+            lines.append(self.title)
+            lines.append("")
+        lines.extend(self._wrap_text(self.message, width_chars=64))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _wrap_text(text: str, *, width_chars: int = 64) -> list[str]:
+        """Simple word-wrap by character count; preserves explicit newlines."""
+        out: list[str] = []
+        for raw_line in text.splitlines() or [""]:
+            words = raw_line.split()
+            if not words:
+                out.append("")
+                continue
+            current = words[0]
+            for word in words[1:]:
+                test = current + " " + word
+                if len(test) <= width_chars:
+                    current = test
+                else:
+                    out.append(current)
+                    current = word
+            out.append(current)
+        return out
+
+
+
 
 
     # NEW: ensure the Game has a link to the SceneManager while this popup lives
@@ -173,13 +221,13 @@ class UrgentMessageScene(PopupMenuScene):
     # Text layout helpers
 
     @staticmethod
-    def _wrap_text(
-        text: str,
-        font: pygame.font.Font,
-        max_width: int,
+    def _wrap_text_px(
+            text: str,
+            font: pygame.font.Font,
+            max_width: int,
     ) -> List[str]:
         """
-        Simple word-wrapping in pixel space using the given font.
+        Word-wrapping in pixel space using the given font.
         Respects explicit newlines in `text`.
         """
         lines: List[str] = []
@@ -187,7 +235,6 @@ class UrgentMessageScene(PopupMenuScene):
         for raw_line in text.splitlines() or [""]:
             words = raw_line.split()
             if not words:
-                # Preserve blank lines
                 lines.append("")
                 continue
 
@@ -203,90 +250,5 @@ class UrgentMessageScene(PopupMenuScene):
 
         return lines
 
-    # ------------------------------------------------------------------ #
-    # Drawing - override PopupMenuScene's default panel layout
 
-    def _draw_panel(self, manager: "SceneManager", options: list[str]) -> None:  # type: ignore[name-defined]
-        """
-        Custom panel for urgent messages.
 
-        Layout:
-          [Title  (big)]
-          [Wrapped body text (small)...]
-          [Choices (small)...]
-          (no footer)
-        """
-        assert self.window_rect is not None
-
-        rect = self.window_rect
-        renderer = manager.renderer
-
-        # Fonts: title larger, body + choices same smaller size
-        title_font = renderer.font
-        body_font = renderer.small_font
-
-        padding_x = 24
-        padding_y = 16
-
-        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
-
-        # Panel background + border (same visual language as other popups)
-        panel.fill((10, 10, 20, 240))
-        pygame.draw.rect(
-            panel,
-            (220, 220, 240, 255),
-            panel.get_rect(),
-            2,
-        )
-
-        y = padding_y
-
-        # Title (biggest font)
-        if self.title:
-            title_surf = title_font.render(self.title, True, renderer.player_color)
-            tx = (panel.get_width() - title_surf.get_width()) // 2
-            panel.blit(title_surf, (tx, y))
-            y += title_surf.get_height() + 8
-
-        # Body text, re-wrapped to the *actual* panel width
-        max_body_width = panel.get_width() - 2 * padding_x
-        if self.message:
-            body_lines = self._wrap_text(self.message, body_font, max_body_width)
-        else:
-            body_lines = []
-
-        for line in body_lines:
-            line_text = line if line else " "
-            body_surf = body_font.render(line_text, True, renderer.fg)
-            bx = (panel.get_width() - body_surf.get_width()) // 2
-            panel.blit(body_surf, (bx, y))
-            y += body_surf.get_height() + 2
-
-        if body_lines:
-            y += 12
-        else:
-            y += 4
-
-        # Choices (same size as body text)
-        self._option_rects = []  # panel-local rects used for mouse hit-testing
-        for idx, label in enumerate(options):
-            selected = (idx == self.selected_idx)
-            color = renderer.player_color if selected else renderer.fg
-            prefix = "▶ " if selected else "  "
-            text_surf = body_font.render(prefix + label, True, color)
-
-            local_x = (panel.get_width() - text_surf.get_width()) // 2
-            local_y = y
-
-            local_rect = text_surf.get_rect(topleft=(local_x, local_y))
-            panel.blit(text_surf, local_rect.topleft)
-
-            # Store panel-local rects for hit-testing via unprojected mouse coords
-            self._option_rects.append(local_rect)
-
-            y += text_surf.get_height() + 4
-
-        # Note: no footer hint for urgent messages.
-
-        visual = self.visual_profile or VisualProfile()
-        apply_visual_panel(renderer.surface, panel, rect, visual)

@@ -185,6 +185,75 @@ class LabelWidget(Widget):
         super().draw(ctx)
 
 
+class MultiLineLabelWidget(Widget):
+    """A label that supports '\\n' newlines by drawing one line at a time.
+
+    Used for legacy menu 'ASCII art' banners and popup text blocks (death/level-up/dialogue)
+    that were previously rendered line-by-line.
+    """
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        color: Optional[tuple[int, int, int]] = None,
+        font: Optional[pygame.font.Font] = None,
+        padding: int = 0,
+        align: str = "left",  # "left" | "center" | "right"
+        line_spacing: int = 0,
+    ) -> None:
+        super().__init__()
+        self.text = text
+        self.color = color
+        self.font = font
+        self.padding = padding
+        self.align = align
+        self.line_spacing = line_spacing
+
+    def layout(self, ctx: WidgetContext) -> None:
+        font = self.font or getattr(
+            ctx.renderer,
+            "small_font",
+            getattr(ctx.renderer, "font"),
+        )
+        lines = self.text.splitlines() or [""]
+        widths = [font.size(line)[0] for line in lines]
+        w = max(widths) if widths else 0
+        h_line = font.get_height()
+        h = len(lines) * h_line + max(0, len(lines) - 1) * self.line_spacing
+        self.rect.width = w + 2 * self.padding
+        self.rect.height = h + 2 * self.padding
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        font = self.font or getattr(
+            ctx.renderer,
+            "small_font",
+            getattr(ctx.renderer, "font"),
+        )
+        col = self.color or getattr(ctx.renderer, "fg", (220, 220, 220))
+        lines = self.text.splitlines() or [""]
+
+        x0 = self.rect.x + self.padding
+        y = self.rect.y + self.padding
+        h_line = font.get_height()
+
+        for line in lines:
+            surf = font.render(line, True, col)
+            if self.align == "center":
+                x = x0 + (self.rect.width - 2 * self.padding - surf.get_width()) // 2
+            elif self.align == "right":
+                x = x0 + (self.rect.width - 2 * self.padding - surf.get_width())
+            else:
+                x = x0
+            ctx.surface.blit(surf, (x, y))
+            y += h_line + self.line_spacing
+
+        super().draw(ctx)
+
+
 class ButtonWidget(Widget):
     def __init__(
         self,
@@ -272,6 +341,11 @@ class ListWidget(Widget):
     Items can be strings, or any object with .label or .name; falls
     back to str(item). Selection is tracked internally; activation is
     reported via on_activate(index, item).
+
+    Now supports:
+      - scroll_offset (for long lists)
+      - mousewheel scrolling
+      - keeping selected item visible
     """
 
     def __init__(
@@ -291,10 +365,34 @@ class ListWidget(Widget):
         self.padding = padding
         self._line_height: int = 0
 
+        # NEW
+        self.scroll_offset: int = 0
+
     def _item_label(self, item: Any) -> str:
         if isinstance(item, str):
             return item
         return getattr(item, "label", getattr(item, "name", str(item)))
+
+    def set_items(self, items: List[Any]) -> None:
+        self.items = items
+        self.selected_index = max(0, min(self.selected_index, max(0, len(items) - 1)))
+        self.scroll_offset = max(0, min(self.scroll_offset, max(0, len(items) - 1)))
+
+    def _visible_capacity(self) -> int:
+        if self._line_height <= 0:
+            return max(1, len(self.items))
+        usable_h = max(0, self.rect.height - 2 * self.padding)
+        return max(1, usable_h // self._line_height)
+
+    def ensure_visible(self, index: int) -> None:
+        cap = self._visible_capacity()
+        if index < self.scroll_offset:
+            self.scroll_offset = index
+        elif index >= self.scroll_offset + cap:
+            self.scroll_offset = max(0, index - cap + 1)
+
+        max_off = max(0, len(self.items) - cap)
+        self.scroll_offset = max(0, min(self.scroll_offset, max_off))
 
     def layout(self, ctx: WidgetContext) -> None:
         font = getattr(
@@ -302,19 +400,29 @@ class ListWidget(Widget):
             "font",
             getattr(ctx.renderer, "small_font"),
         )
-        max_w = 0
-        total_h = 0
 
+        # Compute line height based on a representative item or font height.
+        base_h = font.get_height()
+        self._line_height = base_h + self.line_spacing
+
+        # Determine a reasonable width from item labels
+        max_w = 0
         for item in self.items:
             label = self._item_label(item)
-            w, h = font.size(label)
+            w, _ = font.size(label)
             max_w = max(max_w, w)
-            total_h += h + self.line_spacing
-            self._line_height = h + self.line_spacing
 
-        # Respect any pre-set rect.width/height if non-zero, otherwise compute.
-        self.rect.width = max(self.rect.width, max_w + 2 * self.padding)
-        self.rect.height = max(self.rect.height, total_h + 2 * self.padding)
+        # If rect.width/height are pre-set by container, respect them.
+        if self.rect.width == 0:
+            self.rect.width = max_w + 2 * self.padding
+
+        # If height not preset, compute height to show all items (legacy behavior).
+        if self.rect.height == 0:
+            total_h = len(self.items) * self._line_height + 2 * self.padding
+            self.rect.height = total_h
+
+        # Clamp scroll if needed
+        self.ensure_visible(self.selected_index)
 
         super().layout(ctx)
 
@@ -334,17 +442,22 @@ class ListWidget(Widget):
             getattr(ctx.renderer, "sel", (255, 255, 0)),
         )
 
+        cap = self._visible_capacity()
+        start = self.scroll_offset
+        end = min(len(self.items), start + cap)
+
         x = self.rect.x + self.padding
         y = self.rect.y + self.padding
 
-        for idx, item in enumerate(self.items):
+        for idx in range(start, end):
+            item = self.items[idx]
             label = self._item_label(item)
             selected = (idx == self.selected_index)
             color = sel if selected else fg
             prefix = "▶ " if selected else "  "
             surf = font.render(prefix + label, True, color)
             ctx.surface.blit(surf, (x, y))
-            y += surf.get_height() + self.line_spacing
+            y += self._line_height
 
         super().draw(ctx)
 
@@ -352,21 +465,31 @@ class ListWidget(Widget):
         if not (self.visible and self.enabled):
             return False
 
+        if event.type == pygame.MOUSEWHEEL:
+            # wheel up => y=1, wheel down => y=-1 (pygame convention)
+            if self.rect.collidepoint(getattr(pygame.mouse, "get_pos", lambda: (0, 0))()):
+                cap = self._visible_capacity()
+                max_off = max(0, len(self.items) - cap)
+                self.scroll_offset = max(0, min(self.scroll_offset - int(event.y), max_off))
+                return True
+
         if event.type == pygame.MOUSEMOTION:
             if self.rect.collidepoint(event.pos):
                 rel_y = event.pos[1] - self.rect.y - self.padding
                 if self._line_height > 0:
-                    idx = rel_y // self._line_height
+                    idx = self.scroll_offset + (rel_y // self._line_height)
                     if 0 <= idx < len(self.items):
                         self.selected_index = int(idx)
+                        self.ensure_visible(self.selected_index)
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.rect.collidepoint(event.pos):
                 rel_y = event.pos[1] - self.rect.y - self.padding
                 if self._line_height > 0:
-                    idx = rel_y // self._line_height
+                    idx = self.scroll_offset + (rel_y // self._line_height)
                     if 0 <= idx < len(self.items):
                         self.selected_index = int(idx)
+                        self.ensure_visible(self.selected_index)
                         if self.on_activate:
                             self.on_activate(
                                 self.selected_index,
@@ -375,6 +498,7 @@ class ListWidget(Widget):
                         return True
 
         return super().handle_event(event, ctx)
+
 
 
 class VBox(Widget):

@@ -1379,99 +1379,51 @@ class DungeonScene(Scene):
 
             mx, my = renderer._to_surface(cmd.mouse_pos)
 
-            # Ability bar page arrows.
-            bar_view = getattr(renderer, "ability_bar_view", None)
-            if bar_view is not None:
-                prev_rects = []
-                next_rects = []
-                # Support multiple arrow hitboxes (above/below on both sides).
-                if hasattr(bar_view, "page_prev_rects"):
-                    prev_rects.extend(bar_view.page_prev_rects)
-                if hasattr(bar_view, "page_next_rects"):
-                    next_rects.extend(bar_view.page_next_rects)
-                if bar_view.page_prev_rect:
-                    prev_rects.append(bar_view.page_prev_rect)
-                if bar_view.page_next_rect:
-                    next_rects.append(bar_view.page_next_rect)
+            # Ability bar interaction is handled via the AbilityBarWidget.
+            bar_widget = getattr(renderer, "ability_bar_widget", None)
+            if bar_widget is not None:
+                ctx = WidgetContext(surface=renderer.surface, game=game, scene=self, renderer=renderer)
+                hit = bar_widget.click((mx, my), ctx)
+                if hit is not None:
+                    if hit.kind == "page_prev":
+                        _page_bar(bar, forward=False)
+                        return
+                    if hit.kind == "page_next":
+                        _page_bar(bar, forward=True)
+                        return
+                    if hit.kind == "open_reorder":
+                        game.ability_reorder_open = True
+                        if bar.active_action and bar.active_action in bar.order:
+                            bar.selected_index = bar.order.index(bar.active_action)
+                            bar.page = bar.selected_index // bar.page_size if bar.page_size else 0
+                        return
 
-                if any(r.collidepoint(mx, my) for r in prev_rects):
-                    _page_bar(bar, forward=False)
-                    return
-                if any(r.collidepoint(mx, my) for r in next_rects):
-                    _page_bar(bar, forward=True)
-                    return
+                    ability = hit.ability
+                    if ability is None:
+                        return
 
-            # Open ability reorder manager.
-            if (
-                bar_view is not None
-                and bar_view.abilities_button_rect
-                and bar_view.abilities_button_rect.collidepoint(mx, my)
-            ):
-                game.ability_reorder_open = True
-                if bar.active_action and bar.active_action in bar.order:
-                    bar.selected_index = bar.order.index(bar.active_action)
-                    bar.page = bar.selected_index // bar.page_size if bar.page_size else 0
-                return
-
-            # Ability bar buttons: rects are attached to Ability instances by the AbilityBarRenderer.
-            for ability in bar.visible_abilities():
-                rect = getattr(ability, "rect", None)
-                if rect and rect.collidepoint(mx, my):
+                    # Any click on an ability slot selects it.
                     bar.set_active(ability.action)
 
-                    plus_rect = getattr(ability, "plus_rect", None)
-                    minus_rect = getattr(ability, "minus_rect", None)
-                    gear_rect = getattr(ability, "gear_rect", None)
-
-                    # +/- param tweak using sub-button metadata.
-                    if plus_rect and plus_rect.collidepoint(mx, my):
-                        from edgecaster.systems.actions import action_sub_buttons
-
-                        for meta in action_sub_buttons(ability.action):
-                            if (
-                                meta.kind == "param_delta"
-                                and (meta.delta or 0) > 0
-                                and meta.param_key
-                            ):
-                                changed, msg = game.adjust_param(
-                                    ability.action,
-                                    meta.param_key,
-                                    meta.delta,
-                                )
-                                if not changed and msg:
-                                    renderer._set_flash(msg)
-                                self._refresh_aim_prediction(game)
-                                break
-                        return
-
-                    if minus_rect and minus_rect.collidepoint(mx, my):
-                        from edgecaster.systems.actions import action_sub_buttons
-
-                        for meta in action_sub_buttons(ability.action):
-                            if (
-                                meta.kind == "param_delta"
-                                and (meta.delta or 0) < 0
-                                and meta.param_key
-                            ):
-                                changed, _ = game.adjust_param(
-                                    ability.action,
-                                    meta.param_key,
-                                    meta.delta,
-                                )
-                                self._refresh_aim_prediction(game)
-                                break
-                        return
-
-                    # Gear opens config overlay (still generic).
-                    if gear_rect and gear_rect.collidepoint(mx, my):
-                        _set_ui("config_open", True)
-                        _set_ui("config_action", ability.action)
-                        _set_ui("config_selection", 0)
-                        return
+                    # Sub-button intents (param tweak / open config).
+                    if hit.kind == "sub_button" and hit.sub_meta is not None:
+                        meta = hit.sub_meta
+                        if meta.kind == "param_delta" and meta.param_key and meta.delta:
+                            changed, msg = game.adjust_param(ability.action, meta.param_key, meta.delta)
+                            if not changed and msg:
+                                renderer._set_flash(msg)
+                            self._refresh_aim_prediction(game)
+                            return
+                        if meta.kind == "open_config":
+                            _set_ui("config_open", True)
+                            _set_ui("config_action", ability.action)
+                            _set_ui("config_selection", 0)
+                            return
 
                     # Main ability click: delegate to Action metadata.
-                    self._begin_action_from_def(game, ability)
-                    return
+                    if hit.kind == "ability":
+                        self._begin_action_from_def(game, ability)
+                        return
 
             # Map / world clicks.
             tx = int((mx - renderer.origin_x) // renderer.tile)

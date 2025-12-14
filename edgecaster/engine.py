@@ -13,7 +13,7 @@ import pygame
 
 from edgecaster import config
 from edgecaster.render.ascii import AsciiRenderer
-from edgecaster.scenes import SceneManager
+from edgecaster.scenes.manager import SceneManager
 from edgecaster.rng import new_rng
 
 
