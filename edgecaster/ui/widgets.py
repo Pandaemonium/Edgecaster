@@ -23,6 +23,127 @@ class WidgetContext:
     renderer: object
 
 
+# ---------------------------------------------------------------------------
+# Font selection helpers
+# ---------------------------------------------------------------------------
+
+def _menu_font(ctx: WidgetContext) -> pygame.font.Font:
+    """
+    Preferred font for menus/popups.
+    If renderer has menu_font, use it. Otherwise fall back to small_font/font.
+    """
+    r = ctx.renderer
+    return getattr(
+        r,
+        "menu_font",
+        getattr(r, "small_font", getattr(r, "font")),
+    )
+
+
+def _menu_title_font(ctx: WidgetContext) -> pygame.font.Font:
+    """
+    Preferred font for menu titles/banners.
+    If renderer has menu_title_font, use it; else fall back to menu_font.
+    """
+    r = ctx.renderer
+    return getattr(
+        r,
+        "menu_title_font",
+        getattr(r, "menu_font", getattr(r, "font", getattr(r, "small_font"))),
+    )
+
+
+def _generic_font(ctx: WidgetContext) -> pygame.font.Font:
+    """
+    Generic UI font fallback (non-menu widgets may call this).
+    """
+    r = ctx.renderer
+    return getattr(r, "font", getattr(r, "small_font"))
+
+
+
+# ---------------------------------------------------------------------------
+# Auto font sizing + caching
+# ---------------------------------------------------------------------------
+
+# Widgets sometimes need to "fill the space" (especially menus) so that as the
+# panel shrinks (recursion / transforms) we still use the biggest readable font
+# that fits the allocated rect.
+#
+# We do this purely in the widget layer: choose a pygame SysFont size that fits
+# within the widget's rect constraints, and cache the resulting Font objects.
+
+_FONT_CACHE: dict[tuple[str, int, bool], pygame.font.Font] = {}
+
+
+def _get_sys_font(name: str, size: int, *, bold: bool = False) -> pygame.font.Font:
+    key = (name, int(size), bool(bold))
+    f = _FONT_CACHE.get(key)
+    if f is None:
+        f = pygame.font.SysFont(name, int(size), bold=bool(bold))
+        _FONT_CACHE[key] = f
+    return f
+
+
+def _fit_font_size(
+    *,
+    font_name: str,
+    bold: bool,
+    lines: list[str],
+    max_width_px: int,
+    max_height_px: int,
+    line_spacing: int,
+    padding: int,
+    min_size: int,
+    max_size: int,
+    # If provided, we only require fitting THIS many lines vertically.
+    # (Useful for scrollable lists: keep text big even if there are 80 items.)
+    target_lines: int | None = None,
+    prefix_px: int = 0,
+) -> pygame.font.Font:
+    max_width_px = max(1, int(max_width_px))
+    max_height_px = max(1, int(max_height_px))
+    padding = max(0, int(padding))
+    line_spacing = max(0, int(line_spacing))
+    min_size = max(6, int(min_size))
+    max_size = max(min_size, int(max_size))
+
+    usable_w = max(1, max_width_px - 2 * padding - int(prefix_px))
+    usable_h = max(1, max_height_px - 2 * padding)
+
+    want_lines = len(lines) if target_lines is None else max(1, int(target_lines))
+
+    def fits(sz: int) -> bool:
+        font = _get_sys_font(font_name, sz, bold=bold)
+        h_line = font.get_height()
+        total_h = want_lines * h_line + max(0, want_lines - 1) * line_spacing
+        if total_h > usable_h:
+            return False
+        if lines:
+            # Worst-case width across sample lines.
+            max_w = 0
+            for ln in lines:
+                w = font.size(ln)[0]
+                if w > max_w:
+                    max_w = w
+            if max_w > usable_w:
+                return False
+        return True
+
+    lo, hi = min_size, max_size
+    best = lo
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    return _get_sys_font(font_name, best, bold=bold)
+
+
+
 class Widget:
     """
     Minimal base class for UI widgets.
@@ -150,13 +271,8 @@ class LabelWidget(Widget):
         self.align = align
 
     def layout(self, ctx: WidgetContext) -> None:
-        font = self.font or getattr(
-            ctx.renderer,
-            "small_font",
-            getattr(ctx.renderer, "font"),
-        )
+        font = self.font or _menu_font(ctx)
         w, h = font.size(self.text)
-        # If rect.x/rect.y were already chosen by a container, we leave them.
         self.rect.width = w + 2 * self.padding
         self.rect.height = h + 2 * self.padding
         super().layout(ctx)
@@ -165,11 +281,7 @@ class LabelWidget(Widget):
         if not self.visible:
             return
 
-        font = self.font or getattr(
-            ctx.renderer,
-            "small_font",
-            getattr(ctx.renderer, "font"),
-        )
+        font = self.font or _menu_font(ctx)
         color = self.color or getattr(ctx.renderer, "fg", (255, 255, 255))
         text_surf = font.render(self.text, True, color)
 
@@ -181,16 +293,11 @@ class LabelWidget(Widget):
         y = self.rect.y + self.padding
 
         ctx.surface.blit(text_surf, (x, y))
-        # Children (if any) draw on top.
         super().draw(ctx)
 
 
 class MultiLineLabelWidget(Widget):
-    """A label that supports '\\n' newlines by drawing one line at a time.
-
-    Used for legacy menu 'ASCII art' banners and popup text blocks (death/level-up/dialogue)
-    that were previously rendered line-by-line.
-    """
+    """A label that supports '\\n' newlines by drawing one line at a time."""
 
     def __init__(
         self,
@@ -211,11 +318,7 @@ class MultiLineLabelWidget(Widget):
         self.line_spacing = line_spacing
 
     def layout(self, ctx: WidgetContext) -> None:
-        font = self.font or getattr(
-            ctx.renderer,
-            "small_font",
-            getattr(ctx.renderer, "font"),
-        )
+        font = self.font or _menu_font(ctx)
         lines = self.text.splitlines() or [""]
         widths = [font.size(line)[0] for line in lines]
         w = max(widths) if widths else 0
@@ -228,11 +331,7 @@ class MultiLineLabelWidget(Widget):
         if not self.visible:
             return
 
-        font = self.font or getattr(
-            ctx.renderer,
-            "small_font",
-            getattr(ctx.renderer, "font"),
-        )
+        font = self.font or _menu_font(ctx)
         col = self.color or getattr(ctx.renderer, "fg", (220, 220, 220))
         lines = self.text.splitlines() or [""]
 
@@ -274,11 +373,8 @@ class ButtonWidget(Widget):
         self.pressed = False
 
     def layout(self, ctx: WidgetContext) -> None:
-        font = getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        # Buttons are menu UI: prefer menu_font.
+        font = _menu_font(ctx)
         w, h = font.size(self.text)
         self.rect.width = w + 2 * self.padding_x
         self.rect.height = h + 2 * self.padding_y
@@ -288,11 +384,7 @@ class ButtonWidget(Widget):
         if not self.visible:
             return
 
-        font = getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        font = _menu_font(ctx)
         fg = getattr(ctx.renderer, "fg", (255, 255, 255))
         sel = getattr(ctx.renderer, "sel", (255, 255, 0))
         dim = getattr(ctx.renderer, "dim", (150, 150, 150))
@@ -320,32 +412,27 @@ class ButtonWidget(Widget):
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.rect.collidepoint(event.pos):
                 self.pressed = True
-                return True  # consume click-down
+                return True
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+
             was_pressed = self.pressed
+
             self.pressed = False
-            if was_pressed and self.rect.collidepoint(event.pos):
+
+            if was_pressed:
+
                 if self.on_click:
                     self.on_click(self)
-                return True  # consume click-up
 
-        # Optional: hotkey (keyboard) support later.
-        return super().handle_event(event, ctx)
+                return True
+
+                return super().handle_event(event, ctx)
 
 
 class ListWidget(Widget):
     """
     Simple vertical list for left-hand “choices” panes.
-
-    Items can be strings, or any object with .label or .name; falls
-    back to str(item). Selection is tracked internally; activation is
-    reported via on_activate(index, item).
-
-    Now supports:
-      - scroll_offset (for long lists)
-      - mousewheel scrolling
-      - keeping selected item visible
     """
 
     def __init__(
@@ -356,6 +443,12 @@ class ListWidget(Widget):
         on_activate: Optional[Callable[[int, Any], None]] = None,
         line_spacing: int = 2,
         padding: int = 4,
+        auto_font: bool = True,
+        font_name: str = "consolas",
+        font_bold: bool = True,
+        min_font_size: int = 12,
+        max_font_size: int = 30,
+        target_visible_items: int = 18,
     ) -> None:
         super().__init__()
         self.items = items
@@ -365,7 +458,16 @@ class ListWidget(Widget):
         self.padding = padding
         self._line_height: int = 0
 
-        # NEW
+
+        self.auto_font = bool(auto_font)
+        self.font_name = str(font_name)
+        self.font_bold = bool(font_bold)
+        self.min_font_size = int(min_font_size)
+        self.max_font_size = int(max_font_size)
+        self.target_visible_items = int(target_visible_items)
+
+        self._font: pygame.font.Font | None = None
+
         self.scroll_offset: int = 0
 
     def _item_label(self, item: Any) -> str:
@@ -373,10 +475,55 @@ class ListWidget(Widget):
             return item
         return getattr(item, "label", getattr(item, "name", str(item)))
 
+
+    def _pick_font(self, ctx: WidgetContext) -> pygame.font.Font:
+        # If we already picked a fitted font this frame, reuse it.
+        if self._font is not None:
+            return self._font
+
+        # Default: renderer-provided menu font.
+        base = _menu_font(ctx)
+
+        if not self.auto_font:
+            self._font = base
+            return base
+
+        # If we have no rect constraints yet, fall back.
+        if self.rect.width <= 0 or self.rect.height <= 0:
+            self._font = base
+            return base
+
+        # Sample some labels to bound width. (Use the longest N labels; cheap and stable.)
+        labels = [self._item_label(it) for it in (self.items or [])]
+        labels.sort(key=lambda s: len(s), reverse=True)
+        samples = labels[: min(12, len(labels))] or [""]
+
+        # Scrollable list: don't require fitting ALL items. Fit a "reasonable" number.
+        want_items = min(len(self.items), max(1, self.target_visible_items)) if self.items else 1
+
+        # Account for the "▶ " prefix width so we don't clip.
+        prefix_px = base.size("▶ ")[0]
+
+        self._font = _fit_font_size(
+            font_name=self.font_name,
+            bold=self.font_bold,
+            lines=samples,
+            max_width_px=self.rect.width,
+            max_height_px=self.rect.height,
+            line_spacing=self.line_spacing,
+            padding=self.padding,
+            min_size=self.min_font_size,
+            max_size=self.max_font_size,
+            target_lines=want_items,
+            prefix_px=prefix_px,
+        )
+        return self._font
+
     def set_items(self, items: List[Any]) -> None:
         self.items = items
         self.selected_index = max(0, min(self.selected_index, max(0, len(items) - 1)))
         self.scroll_offset = max(0, min(self.scroll_offset, max(0, len(items) - 1)))
+        self._font = None
 
     def _visible_capacity(self) -> int:
         if self._line_height <= 0:
@@ -395,46 +542,33 @@ class ListWidget(Widget):
         self.scroll_offset = max(0, min(self.scroll_offset, max_off))
 
     def layout(self, ctx: WidgetContext) -> None:
-        font = getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        self._font = None
+        font = self._pick_font(ctx)
 
-        # Compute line height based on a representative item or font height.
         base_h = font.get_height()
         self._line_height = base_h + self.line_spacing
 
-        # Determine a reasonable width from item labels
         max_w = 0
         for item in self.items:
             label = self._item_label(item)
             w, _ = font.size(label)
             max_w = max(max_w, w)
 
-        # If rect.width/height are pre-set by container, respect them.
         if self.rect.width == 0:
             self.rect.width = max_w + 2 * self.padding
 
-        # If height not preset, compute height to show all items (legacy behavior).
         if self.rect.height == 0:
             total_h = len(self.items) * self._line_height + 2 * self.padding
             self.rect.height = total_h
 
-        # Clamp scroll if needed
         self.ensure_visible(self.selected_index)
-
         super().layout(ctx)
 
     def draw(self, ctx: WidgetContext) -> None:
         if not self.visible:
             return
 
-        font = getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        font = self._pick_font(ctx)
         fg = getattr(ctx.renderer, "fg", (255, 255, 255))
         sel = getattr(
             ctx.renderer,
@@ -466,7 +600,6 @@ class ListWidget(Widget):
             return False
 
         if event.type == pygame.MOUSEWHEEL:
-            # wheel up => y=1, wheel down => y=-1 (pygame convention)
             if self.rect.collidepoint(getattr(pygame.mouse, "get_pos", lambda: (0, 0))()):
                 cap = self._visible_capacity()
                 max_off = max(0, len(self.items) - cap)
@@ -491,23 +624,15 @@ class ListWidget(Widget):
                         self.selected_index = int(idx)
                         self.ensure_visible(self.selected_index)
                         if self.on_activate:
-                            self.on_activate(
-                                self.selected_index,
-                                self.items[self.selected_index],
-                            )
+                            self.on_activate(self.selected_index, self.items[self.selected_index])
                         return True
 
         return super().handle_event(event, ctx)
 
 
-
 class VBox(Widget):
     """
     Vertical layout container.
-
-    - Positions children top → bottom
-    - Uses spacing and padding
-    - Aligns children horizontally: "left" | "center" | "right"
     """
 
     def __init__(
@@ -523,11 +648,9 @@ class VBox(Widget):
         self.align = align
 
     def layout(self, ctx: WidgetContext) -> None:
-        # Let children figure out their preferred sizes first
         for child in self.children:
             child.layout(ctx)
 
-        # Determine container width if not preset
         max_w = max((child.rect.width for child in self.children), default=0)
         if self.rect.width == 0:
             self.rect.width = max_w + 2 * self.padding
@@ -540,17 +663,15 @@ class VBox(Widget):
                 child_x = x_left
             elif self.align == "center":
                 child_x = self.rect.x + (self.rect.width - child.rect.width) // 2
-            else:  # "right"
+            else:
                 child_x = self.rect.right - self.padding - child.rect.width
 
             child.rect.topleft = (child_x, y)
             y += child.rect.height + self.spacing
 
-        # If height not preset, infer from children
         if self.rect.height == 0:
             self.rect.height = (y - self.rect.y) + self.padding - self.spacing
 
-        # Children may have their own children; propagate layout
         for child in self.children:
             child.layout(ctx)
 
@@ -558,10 +679,6 @@ class VBox(Widget):
 class HBox(Widget):
     """
     Horizontal layout container.
-
-    - Positions children left → right
-    - Uses spacing and padding
-    - Aligns children vertically: "top" | "center" | "bottom"
     """
 
     def __init__(
@@ -592,7 +709,7 @@ class HBox(Widget):
                 child_y = y_top
             elif self.valign == "center":
                 child_y = self.rect.y + (self.rect.height - child.rect.height) // 2
-            else:  # "bottom"
+            else:
                 child_y = self.rect.bottom - self.padding - child.rect.height
 
             child.rect.topleft = (x, child_y)
@@ -605,11 +722,9 @@ class HBox(Widget):
             child.layout(ctx)
 
 
-
 class ScaledLabelWidget(Widget):
     """
-    Label drawn using a base font but scaled up (cheap “big font” without new font assets).
-    Useful for title headers.
+    Label drawn using a base font but scaled up.
     """
 
     def __init__(
@@ -631,11 +746,7 @@ class ScaledLabelWidget(Widget):
         self.align = align
 
     def _base_font(self, ctx: WidgetContext) -> pygame.font.Font:
-        return self.font or getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        return self.font or _menu_title_font(ctx)
 
     def layout(self, ctx: WidgetContext) -> None:
         font = self._base_font(ctx)
@@ -669,7 +780,7 @@ class ScaledLabelWidget(Widget):
 class ScaledMultiLineLabelWidget(Widget):
     """
     Multi-line label drawn at a base font size, then scaled.
-    Great for ASCII banners (Main Menu).
+    Great for ASCII banners.
     """
 
     def __init__(
@@ -693,11 +804,7 @@ class ScaledMultiLineLabelWidget(Widget):
         self.line_spacing = line_spacing
 
     def _base_font(self, ctx: WidgetContext) -> pygame.font.Font:
-        return self.font or getattr(
-            ctx.renderer,
-            "small_font",
-            getattr(ctx.renderer, "font"),
-        )
+        return self.font or _menu_title_font(ctx)
 
     def layout(self, ctx: WidgetContext) -> None:
         font = self._base_font(ctx)
@@ -717,7 +824,6 @@ class ScaledMultiLineLabelWidget(Widget):
         col = self.color or getattr(ctx.renderer, "fg", (220, 220, 220))
         lines = self.text.splitlines() or [""]
 
-        # Render at base size first
         widths = [font.size(line)[0] for line in lines] or [0]
         w0 = max(widths)
         h_line = font.get_height()
@@ -736,7 +842,6 @@ class ScaledMultiLineLabelWidget(Widget):
             temp.blit(s, (x, y))
             y += h_line + self.line_spacing
 
-        # Scale up
         surf = pygame.transform.scale(
             temp,
             (temp.get_width() * self.scale, temp.get_height() * self.scale),
@@ -782,7 +887,6 @@ def _wrap_text_px(font: pygame.font.Font, text: str, max_width_px: int) -> List[
 class WrappedMultiLineLabelWidget(Widget):
     """
     Like MultiLineLabelWidget, but wraps automatically to a max pixel width.
-    This avoids ellipses and prevents long lines from running off the panel.
     """
 
     def __init__(
@@ -807,16 +911,11 @@ class WrappedMultiLineLabelWidget(Widget):
         self._wrapped_lines: List[str] = [""]
 
     def _base_font(self, ctx: WidgetContext) -> pygame.font.Font:
-        return self.font or getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        return self.font or _menu_font(ctx)
 
     def layout(self, ctx: WidgetContext) -> None:
         font = self._base_font(ctx)
 
-        # If the container set our rect.width already, respect it for wrapping.
         inner_max = self.max_width_px
         if self.rect.width > 0:
             inner_max = max(1, self.rect.width - 2 * self.padding)
@@ -859,7 +958,6 @@ class WrappedMultiLineLabelWidget(Widget):
 class WrappedListWidget(Widget):
     """
     ListWidget variant that wraps long item labels to multiple lines (pixel wrap).
-    Selection still selects an "item", but it may render as multiple lines.
     """
 
     def __init__(
@@ -871,6 +969,14 @@ class WrappedListWidget(Widget):
         padding: int = 4,
         line_spacing: int = 2,
         wrap_width_px: int = 520,
+        auto_font: bool = True,
+        font_name: str = "consolas",
+        font_bold: bool = True,
+        min_font_size: int = 12,
+        max_font_size: int = 38,
+        target_visible_items: int = 14,
+        scrollable: bool = True,
+
     ) -> None:
         super().__init__()
         self.items = items
@@ -879,12 +985,21 @@ class WrappedListWidget(Widget):
         self.padding = padding
         self.line_spacing = line_spacing
         self.wrap_width_px = int(wrap_width_px)
+        self.scrollable = bool(scrollable)
+
+        self.auto_font = bool(auto_font)
+        self.font_name = str(font_name)
+        self.font_bold = bool(font_bold)
+        self.min_font_size = int(min_font_size)
+        self.max_font_size = int(max_font_size)
+        self.target_visible_items = int(target_visible_items)
+
+        self._font_override: pygame.font.Font | None = None
 
         self.scroll_offset: int = 0
         self._font_h: int = 0
         self._line_h: int = 0
 
-        # cache: item index -> wrapped lines (no prefix)
         self._wrapped: List[List[str]] = []
 
     def _item_label(self, item: Any) -> str:
@@ -896,14 +1011,49 @@ class WrappedListWidget(Widget):
         self.items = items
         self.selected_index = max(0, min(self.selected_index, max(0, len(items) - 1)))
         self.scroll_offset = max(0, min(self.scroll_offset, max(0, len(items) - 1)))
+
+        # IMPORTANT:
+        # Do NOT assign self._font = None here — that would shadow the _font(ctx) method
+        # and cause "NoneType is not callable" in layout().
+        self._font_override = None
         self._wrapped = []
 
+
     def _font(self, ctx: WidgetContext) -> pygame.font.Font:
-        return getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
+        if self._font_override is not None:
+            return self._font_override
+
+        base = _menu_font(ctx)
+        if not self.auto_font:
+            self._font_override = base
+            return base
+
+        if self.rect.width <= 0 or self.rect.height <= 0:
+            self._font_override = base
+            return base
+
+        labels = [self._item_label(it) for it in (self.items or [])]
+        labels.sort(key=lambda s: len(s), reverse=True)
+        samples = labels[: min(10, len(labels))] or [""]
+
+        want_items = min(len(self.items), max(1, self.target_visible_items)) if self.items else 1
+        prefix_px = base.size("▶ ")[0]
+
+        self._font_override = _fit_font_size(
+            font_name=self.font_name,
+            bold=self.font_bold,
+            lines=samples,
+            max_width_px=self.rect.width,
+            max_height_px=self.rect.height,
+            line_spacing=self.line_spacing,
+            padding=self.padding,
+            min_size=self.min_font_size,
+            max_size=self.max_font_size,
+            target_lines=want_items,
+            prefix_px=prefix_px,
         )
+        return self._font_override
+
 
     def _rebuild_wrap_cache(self, ctx: WidgetContext) -> None:
         font = self._font(ctx)
@@ -914,7 +1064,6 @@ class WrappedListWidget(Widget):
         if self.rect.width > 0:
             inner_w = max(1, self.rect.width - 2 * self.padding)
 
-        # Reserve space for the prefix ("▶ " / "  ")
         prefix_w = font.size("▶ ")[0]
         inner_w = max(1, inner_w - prefix_w)
 
@@ -925,14 +1074,16 @@ class WrappedListWidget(Widget):
             self._wrapped.append(lines or [""])
 
     def _visible_capacity(self) -> int:
-        # Capacity in "rows" (each row is a rendered wrapped line).
         if self._line_h <= 0:
             return max(1, len(self.items))
         usable_h = max(0, self.rect.height - 2 * self.padding)
         return max(1, usable_h // self._line_h)
 
     def ensure_visible(self, index: int) -> None:
-        # Scroll is by item, not by wrapped-line row; keep item in view.
+        if not self.scrollable:
+            self.scroll_offset = 0
+            return
+
         cap_items = max(1, self._visible_items_capacity())
         if index < self.scroll_offset:
             self.scroll_offset = index
@@ -943,10 +1094,6 @@ class WrappedListWidget(Widget):
         self.scroll_offset = max(0, min(self.scroll_offset, max_off))
 
     def _visible_items_capacity(self) -> int:
-        """
-        Conservative: estimate how many items fit by treating each item as 2 lines.
-        Good enough for popups (urgent/dialogue) where lists are short.
-        """
         if self._line_h <= 0:
             return max(1, len(self.items))
         usable_h = max(0, self.rect.height - 2 * self.padding)
@@ -954,17 +1101,15 @@ class WrappedListWidget(Widget):
         return max(1, approx_lines // 2)
 
     def layout(self, ctx: WidgetContext) -> None:
+        self._font_override = None
         font = self._font(ctx)
         self._font_h = font.get_height()
         self._line_h = self._font_h + self.line_spacing
 
-        # If width not preset, use wrap_width_px + padding
         if self.rect.width == 0:
             self.rect.width = self.wrap_width_px + 2 * self.padding
 
-        # If height not preset, show all items (approx) in a compact way
         if self.rect.height == 0:
-            # Assume average 2 lines per item
             est_lines = max(1, len(self.items) * 2)
             self.rect.height = est_lines * self._line_h + 2 * self.padding
 
@@ -989,7 +1134,6 @@ class WrappedListWidget(Widget):
         cap_lines = self._visible_capacity()
         lines_drawn = 0
 
-        # Draw starting at scroll_offset item, consuming up to cap_lines wrapped rows
         idx = self.scroll_offset
         while idx < len(self.items) and lines_drawn < cap_lines:
             wrapped = self._wrapped[idx] if idx < len(self._wrapped) else [self._item_label(self.items[idx])]
@@ -1014,7 +1158,9 @@ class WrappedListWidget(Widget):
         if not (self.visible and self.enabled):
             return False
 
-        # Keep it simple: mouse hover selects by item index based on approximate 2 lines per item.
+        if not self.scrollable:
+            return False
+
         if event.type == pygame.MOUSEMOTION:
             if self.rect.collidepoint(event.pos):
                 rel_y = event.pos[1] - self.rect.y - self.padding
@@ -1042,12 +1188,7 @@ class WrappedListWidget(Widget):
 class TwoColumnListWidget(ListWidget):
     """
     ListWidget variant that renders a right-aligned "value" column.
-
-    Expected item shape:
-      - item.label (or .name / str(item)) for the left column
-      - item.value (optional) for the right column
-
-    This is used by OptionsScene to restore the legacy ON/OFF display.
+    Used by OptionsScene.
     """
 
     def __init__(
@@ -1058,7 +1199,7 @@ class TwoColumnListWidget(ListWidget):
         on_activate: Optional[Callable[[int, Any], None]] = None,
         line_spacing: int = 2,
         padding: int = 4,
-        value_gap: int = 24,   # min gap between left label and right value
+        value_gap: int = 24,
     ) -> None:
         super().__init__(
             items,
@@ -1070,19 +1211,11 @@ class TwoColumnListWidget(ListWidget):
         self.value_gap = int(value_gap)
 
     def _item_value(self, item: Any) -> str:
-        # OptionsScene OptionItem has .value already; default to "" otherwise.
         v = getattr(item, "value", "")
         return "" if v is None else str(v)
 
     def layout(self, ctx: WidgetContext) -> None:
-        """
-        Compute a reasonable width if not preset, accounting for BOTH columns.
-        """
-        font = getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        font = self._pick_font(ctx)
 
         base_h = font.get_height()
         self._line_height = base_h + self.line_spacing
@@ -1098,7 +1231,6 @@ class TwoColumnListWidget(ListWidget):
                 max_value_w = max(max_value_w, font.size(value)[0])
 
         if self.rect.width == 0:
-            # padding on both sides + gap between columns
             self.rect.width = (
                 max_label_w
                 + (self.value_gap if max_value_w > 0 else 0)
@@ -1117,11 +1249,7 @@ class TwoColumnListWidget(ListWidget):
         if not self.visible:
             return
 
-        font = getattr(
-            ctx.renderer,
-            "font",
-            getattr(ctx.renderer, "small_font"),
-        )
+        font = self._pick_font(ctx)
         fg = getattr(ctx.renderer, "fg", (255, 255, 255))
         sel = getattr(
             ctx.renderer,
@@ -1146,17 +1274,36 @@ class TwoColumnListWidget(ListWidget):
             color = sel if selected else fg
             prefix = "▶ " if selected else "  "
 
-            # Left column
             left_surf = font.render(prefix + label, True, color)
             ctx.surface.blit(left_surf, (x_left, y))
 
-            # Right column (right-aligned)
             if value:
                 val_surf = font.render(value, True, color)
                 vx = x_right - val_surf.get_width()
-                # Ensure some separation; if too tight, still draw right-aligned (legacy did too).
                 ctx.surface.blit(val_surf, (vx, y))
 
             y += self._line_height
 
         super().draw(ctx)
+
+
+
+class SpacerWidget(Widget):
+    """
+    A blank fixed-size widget used to reserve layout space (e.g. art area).
+    """
+    def __init__(self, *, width: int = 0, height: int = 0) -> None:
+        super().__init__()
+        self._w = max(0, int(width))
+        self._h = max(0, int(height))
+
+    def layout(self, ctx: WidgetContext) -> None:
+        # If width/height are 0, we keep whatever the parent layout assigned.
+        if self._w > 0:
+            self.rect.width = self._w
+        if self._h > 0:
+            self.rect.height = self._h
+
+    def draw(self, ctx: WidgetContext) -> None:
+        # Intentionally draws nothing.
+        return
