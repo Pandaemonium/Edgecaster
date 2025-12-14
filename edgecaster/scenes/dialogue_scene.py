@@ -64,12 +64,17 @@ class DialoguePopupScene(PopupMenuScene):
     def get_ascii_art(self) -> Optional[str]:
         node = self._node()
         if node is None:
+            return "Dialogue"
+        return (getattr(node, "title", "") or "Dialogue").strip()
+
+    def get_body_text(self) -> Optional[str]:
+        node = self._node()
+        if node is None:
             return "Dialogue error: missing node."
-        title = getattr(node, "title", "") or ""
-        body = getattr(node, "body", "") or ""
-        if title and body:
-            return f"{title}\n\n{body}"
-        return title or body
+        return (getattr(node, "body", "") or "").strip()
+
+    def wants_wrapped_choices(self) -> bool:
+        return True
 
     def get_menu_items(self):
         node = self._node()

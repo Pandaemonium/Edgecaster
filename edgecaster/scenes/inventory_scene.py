@@ -203,7 +203,6 @@ class InventoryScene(PopupMenuScene):
         if not choices:
             return False
 
-        window_rect = manager.compute_child_window_rect(scale=0.4)
 
         def handle_choice(choice_idx: int, mgr: "SceneManager") -> None:
             if choice_idx < 0 or choice_idx >= len(choices):
@@ -270,6 +269,25 @@ class InventoryScene(PopupMenuScene):
                             child_tags = getattr(child, "tags", {}) or {}
                             child_is_container = bool(child_tags.get("container"))
 
+                            # If a berry is inside, actually "eat" it so HP/log happen.
+                            child_is_berry = bool(child_tags.get("test_berry")) or child_tags.get("item_type") in {
+                                "blueberry",
+                                "raspberry",
+                                "strawberry",
+                            }
+                            if child_is_berry:
+                                try:
+                                    if hasattr(self.game, "eat_item_from_inventory"):
+                                        # Find its index in the actual list at this moment
+                                        idx = inv_list.index(child)
+                                        self.game.eat_item_from_inventory(owner_id, idx)
+                                    elif owner_id == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
+                                        idx = inv_list.index(child)
+                                        self.game.eat_inventory_item(idx)
+                                except Exception:
+                                    # If berry-eat fails for any reason, still consume it via deletion below.
+                                    pass
+
                             if child_is_container and child_id and child_id in inv_map:
                                 _consume_inventory_tree(str(child_id), visited)
 
@@ -302,6 +320,15 @@ class InventoryScene(PopupMenuScene):
 
                     return
 
+                # Otherwise: eating a berry directly from this inventory menu
+                if cur_is_berry:
+                    if hasattr(self.game, "eat_item_from_inventory"):
+                        self.game.eat_item_from_inventory(current_owner_id, index)
+                    elif current_owner_id == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
+                        self.game.eat_inventory_item(index)
+                return
+
+
 
 
             elif choice == "Take" and current_owner_id != self.game.player_id:
@@ -319,7 +346,6 @@ class InventoryScene(PopupMenuScene):
                     return
 
                 target_labels = [label for (_oid, label) in targets]
-                target_rect = mgr.compute_child_window_rect(scale=0.4)
 
                 def on_target_choice(target_idx: int, mgr2: "SceneManager") -> None:
                     if target_idx < 0 or target_idx >= len(targets):
@@ -346,10 +372,12 @@ class InventoryScene(PopupMenuScene):
                         title="Put into which container?",
                         choices=target_labels,
                         on_choice=on_target_choice,
-                        window_rect=target_rect,
+                        # IMPORTANT: omit window_rect so it snug-fits the labels.
                         back_confirms=False,
                     )
                 )
+
+
 
             elif choice == "Open" and cur_is_container:
                 nested_owner_id = getattr(cur_ent, "id", None)
@@ -388,10 +416,11 @@ class InventoryScene(PopupMenuScene):
                 title="",
                 choices=choices,
                 on_choice=handle_choice,
-                window_rect=window_rect,
+                # IMPORTANT: omit window_rect so UrgentMessageScene can snug-fit.
                 back_confirms=False,
             )
         )
+
         return True
 
     def on_back(self, manager: "SceneManager") -> bool:

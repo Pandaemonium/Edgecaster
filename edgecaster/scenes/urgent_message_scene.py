@@ -5,6 +5,7 @@ from typing import Optional, Callable, List
 import pygame
 
 from edgecaster.visuals import VisualProfile, apply_visual_panel
+from edgecaster.ui.widgets import _wrap_text_px
 
 from .base import PopupMenuScene
 
@@ -26,6 +27,8 @@ class UrgentMessageScene(PopupMenuScene):
     """
     FOOTER_TEXT = ""
 
+    FOOTER_TEXT = ""
+
     def __init__(
             self,
             game,
@@ -37,10 +40,7 @@ class UrgentMessageScene(PopupMenuScene):
             window_rect: Optional[pygame.Rect] = None,
             back_confirms: bool = True,
     ) -> None:
-        # IMPORTANT:
-        # GeneralMenuScene builds widgets during super().__init__(),
-        # which calls get_ascii_art(). So all fields used by get_ascii_art()
-        # must exist BEFORE super().__init__ runs.
+        # These must exist BEFORE super().__init__ (GeneralMenuScene builds widgets immediately).
         self.game = game
         self.message = message
         self.title = title
@@ -52,28 +52,52 @@ class UrgentMessageScene(PopupMenuScene):
         # Visual knobs some menus expect to exist
         self.visual_effects: list[str] = []
 
-        super().__init__(window_rect=window_rect, dim_background=True, scale=0.60)
+        # IMPORTANT:
+        # Do NOT use scale=0.0; if the snug rect hasn't been computed yet,
+        # PopupMenuScene's fallback _ensure_window_rect() would create a 0x0 window.
+        super().__init__(window_rect=window_rect, dim_background=True, scale=0.7)
 
-        # Safeguard: if a window_rect was passed in and it’s too small, bump it.
-        if self.window_rect is not None:
-            min_w, min_h = 520, 260
-            if self.window_rect.w < min_w or self.window_rect.h < min_h:
-                cx, cy = self.window_rect.center
-                w = max(self.window_rect.w, min_w)
-                h = max(self.window_rect.h, min_h)
-                self.window_rect = pygame.Rect(0, 0, w, h)
-                self.window_rect.center = (cx, cy)
+        # We'll compute a snug rect lazily in _ensure_window_rect() once we have renderer fonts.
+
+    def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """
+        Ensure we have a usable popup rect.
+
+        In the new live-loop architecture, SceneManager does NOT call scene.run()
+        for PanelScene-derived scenes, so we must do our 'snug sizing' here
+        (render/update/input paths will call this).
+        """
+        if self.window_rect is not None and self.window_rect.width > 0 and self.window_rect.height > 0:
+            return
+
+        # Prefer snug measurement using real renderer font metrics.
+        try:
+            self.window_rect = self._compute_snug_rect(manager)
+        except Exception:
+            # Fallback: a reasonable scaled popup if measurement fails
+            self.window_rect = manager.compute_child_window_rect(scale=self.popup_scale)
+
+        # If we just changed rect/width, rebuild widgets so wrapping matches the new panel width.
+        try:
+            self._build_widgets(self.get_menu_items())
+        except Exception:
+            pass
+
+
+
 
 
 
     def get_ascii_art(self) -> str:
-        # Title + wrapped body text
-        lines: list[str] = []
-        if self.title:
-            lines.append(self.title)
-            lines.append("")
-        lines.extend(self._wrap_text(self.message, width_chars=64))
-        return "\n".join(lines)
+        # Title only; body is handled by get_body_text so it can wrap and size nicely.
+        return (self.title or "").strip()
+
+    def get_body_text(self) -> Optional[str]:
+        return (self.message or "").strip()
+
+    def wants_wrapped_choices(self) -> bool:
+        return True
+
 
     @staticmethod
     def _wrap_text(text: str, *, width_chars: int = 64) -> list[str]:
@@ -99,27 +123,81 @@ class UrgentMessageScene(PopupMenuScene):
 
 
 
-    # NEW: ensure the Game has a link to the SceneManager while this popup lives
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        # Let dialogue helpers see the real SceneManager instead of
-        # falling back to the legacy nested-urgent behaviour.
-        if getattr(self.game, "scene_manager", None) is None:
-            self.game.scene_manager = manager  # type: ignore[attr-defined]
-        super().run(manager)
+
 
 
     # ------------------------------------------------------------------ #
     # Window rect helpers
 
-    def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        """
-        Override PopupMenuScene's default to integrate with the
-        window_stack via manager.compute_child_window_rect, so urgent
-        popups stack nicely with other windows.
-        """
-        if self.window_rect is not None:
-            return
-        self.window_rect = manager.compute_child_window_rect(scale=self.popup_scale)
+
+
+
+    def _compute_snug_rect(self, manager: "SceneManager") -> pygame.Rect:  # type: ignore[name-defined]
+        r = manager.renderer
+        screen_w, screen_h = r.width, r.height
+
+        pad_x = 28
+        pad_y = 24
+        border = 2
+        gap_title_body = 10
+        gap_body_choices = 14
+
+        # Fonts: title is "scaled x2" of the normal menu font.
+        font = getattr(r, "font", getattr(r, "small_font"))
+        title_scale = 2
+        title = (self.title or "").strip()
+        body = (self.message or "").strip()
+        choices = list(self.choices or ["Continue..."])
+
+        # Choose a target text width (clamped to screen)
+        max_text_w = min(760, int(screen_w * 0.78))
+        max_text_w = max(360, max_text_w)
+
+        # Measure title
+        title_w0, title_h0 = font.size(title or " ")
+        title_w = title_w0 * title_scale
+        title_h = title_h0 * title_scale
+
+        # Wrap and measure body
+        body_lines = _wrap_text_px(font, body, max_text_w) if body else []
+        body_w = max((font.size(line)[0] for line in body_lines), default=0)
+        body_h = len(body_lines) * font.get_height() + max(0, len(body_lines) - 1) * 2
+
+        # Wrap and measure choices (with room for prefix)
+        prefix_w = font.size("▶ ")[0]
+        choice_lines_total = 0
+        choice_w = 0
+        for c in choices:
+            lines = _wrap_text_px(font, str(c), max(1, max_text_w - prefix_w))
+            choice_lines_total += max(1, len(lines))
+            for line in lines:
+                choice_w = max(choice_w, font.size(line)[0] + prefix_w)
+        choice_h = choice_lines_total * (font.get_height() + 2)
+
+        content_w = max(title_w, body_w, choice_w, 280)
+        content_h = 0
+        if title:
+            content_h += title_h
+        if body_lines:
+            if title:
+                content_h += gap_title_body
+            content_h += body_h
+        if choices:
+            if body_lines:
+                content_h += gap_body_choices
+            content_h += choice_h
+
+        win_w = content_w + pad_x * 2 + border * 2
+        win_h = content_h + pad_y * 2 + border * 2
+
+        # Clamp to screen (still “snug” but never off-screen)
+        win_w = min(win_w, int(screen_w * 0.92))
+        win_h = min(win_h, int(screen_h * 0.92))
+
+        rect = pygame.Rect(0, 0, int(win_w), int(win_h))
+        rect.center = (screen_w // 2, screen_h // 2)
+        return rect
+
 
     # ------------------------------------------------------------------ #
 

@@ -256,7 +256,19 @@ class MenuInput:
 # PanelScene: widget-driven panel foundation (fullscreen or popup)
 # ---------------------------------------------------------------------------
 
-from edgecaster.ui.widgets import Widget, WidgetContext, VBox, LabelWidget, MultiLineLabelWidget, ListWidget
+from edgecaster.ui.widgets import (
+    Widget,
+    WidgetContext,
+    VBox,
+    LabelWidget,
+    MultiLineLabelWidget,
+    ScaledLabelWidget,
+    ScaledMultiLineLabelWidget,
+    ListWidget,
+    WrappedMultiLineLabelWidget,
+    WrappedListWidget,
+)
+
 from edgecaster.visuals import VisualProfile, apply_visual_panel, unproject_mouse
 from edgecaster.visual_effects import build_visual_profile, apply_entity_color_effects, apply_surface_overlays
 
@@ -451,11 +463,130 @@ class PanelScene(Scene):
         visual = self._current_visual_profile()
         apply_visual_panel(renderer.surface, panel, self.window_rect, visual)
 
-        # NEW: actually show it on the display
+        # IMPORTANT: if we're doing an offscreen stack rebuild for a popup background,
+        # DO NOT present intermediate frames (prevents dungeon/inventory "blink").
+        if getattr(renderer, "suspend_present", False):
+            return
+
         if hasattr(renderer, "present"):
             renderer.present()
         else:
             pygame.display.flip()
+
+
+class MenuFrameWidget(Widget):
+    """
+    Frame-style layout for menus:
+      - banner at the top (optionally background)
+      - optional body text block beneath banner
+      - option list beneath body
+      - footer pinned to the bottom
+    """
+
+    def __init__(
+        self,
+        *,
+        banner: Widget | None,
+        body: Widget | None,
+        list_widget: ListWidget,
+        footer: Widget | None,
+        top_pad: int = 16,
+        bottom_pad: int = 8,
+        gap_after_banner: int = 8,
+        gap_after_body: int = 10,
+        min_list_height: int = 120,
+        max_list_width: int = 520,
+        max_body_width: int = 600,
+        banner_is_background: bool = False,
+    ) -> None:
+        super().__init__()
+
+        self.banner = banner
+        self.body = body
+        self.list_widget = list_widget
+        self.footer = footer
+
+        self.top_pad = top_pad
+        self.bottom_pad = bottom_pad
+        self.gap_after_banner = gap_after_banner
+        self.gap_after_body = gap_after_body
+        self.min_list_height = min_list_height
+        self.max_list_width = max_list_width
+        self.max_body_width = max_body_width
+        self.banner_is_background = banner_is_background
+
+        if self.banner is not None:
+            self.add_child(self.banner)
+        if self.body is not None:
+            self.add_child(self.body)
+        self.add_child(self.list_widget)
+        if self.footer is not None:
+            self.add_child(self.footer)
+
+    def layout(self, ctx: WidgetContext) -> None:
+        if self.rect.width == 0 or self.rect.height == 0:
+            self.rect = ctx.surface.get_rect()
+
+        # Pre-layout children so they have intrinsic sizes
+        if self.banner:
+            self.banner.layout(ctx)
+        if self.body:
+            self.body.layout(ctx)
+        self.list_widget.layout(ctx)
+        if self.footer:
+            self.footer.layout(ctx)
+
+        y = self.rect.y + self.top_pad
+
+        # Inner usable width for centered content (prevents negative x centering in snug popups)
+        inner_w = max(1, self.rect.width - 2 * self.top_pad)
+
+        # Banner
+        if self.banner and self.banner.visible:
+            bx = self.rect.x + (self.rect.width - self.banner.rect.width) // 2
+
+            if self.banner_is_background:
+                by = self.rect.y + self.top_pad
+                self.banner.rect.topleft = (bx, by)
+                # y unchanged
+            else:
+                self.banner.rect.topleft = (bx, y)
+                y = self.banner.rect.bottom + self.gap_after_banner
+
+        # Body (centered, clamped width)
+        if self.body and self.body.visible:
+            # Give the body a usable width hint before layout for wrapping widgets
+            body_w = min(self.max_body_width, inner_w)
+            if body_w > 0:
+                self.body.rect.width = body_w
+            self.body.layout(ctx)
+
+            bx = self.rect.x + (self.rect.width - self.body.rect.width) // 2
+            self.body.rect.topleft = (bx, y)
+            y = self.body.rect.bottom + self.gap_after_body
+
+        # Footer
+        footer_h = 0
+        if self.footer and self.footer.visible:
+            footer_h = self.footer.rect.height
+            fx = self.rect.x + (self.rect.width - self.footer.rect.width) // 2
+            fy = self.rect.bottom - self.bottom_pad - footer_h
+            self.footer.rect.topleft = (fx, fy)
+
+        # List fills remaining space
+        avail_h = (self.rect.bottom - self.bottom_pad - footer_h) - y
+        self.list_widget.rect.height = max(self.min_list_height, avail_h)
+
+        # CRITICAL: clamp list width to panel inner width so it can't center offscreen
+        desired_w = self.list_widget.rect.width or self.max_list_width
+        desired_w = min(desired_w, self.max_list_width)
+        desired_w = min(desired_w, inner_w)
+        self.list_widget.rect.width = max(1, desired_w)
+
+        lx = self.rect.x + (self.rect.width - self.list_widget.rect.width) // 2
+        self.list_widget.rect.topleft = (lx, y)
+        self.list_widget.layout(ctx)
+
 
 
 
@@ -507,42 +638,128 @@ class GeneralMenuScene(PanelScene):
     def draw_extra(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         return None
 
+    def get_body_text(self) -> Optional[str]:
+        """Optional body text block shown between title/banner and the option list."""
+        return None
+
+    def wants_wrapped_choices(self) -> bool:
+        """If True, use WrappedListWidget so long choices wrap instead of running off."""
+        return False
+
+
+
+    def wants_banner_background(self, ascii_art: str) -> bool:
+        """
+        If True, the banner does NOT consume vertical layout space and the option list
+        may overlap it. Default heuristic: very tall ASCII banners become background.
+        Scenes can override (e.g. Main Menu wants the title above options).
+        """
+        try:
+            return ("\n" in ascii_art) and (len(ascii_art.splitlines()) >= 12)
+        except Exception:
+            return False
+
+
     # ---- widget tree ----------------------------------------------------
 
     def _build_widgets(self, items: list[Any]) -> None:
-        root = VBox(spacing=10, padding=16, align="center")
-        root.rect = pygame.Rect(0, 0, 0, 0)
+        ascii_art = self.get_ascii_art() or ""
+        body_text = self.get_body_text() or ""
 
-        ascii_art = self.get_ascii_art()
+        # -----------------
+        # Banner / Title
+        # -----------------
         if ascii_art:
-            # Legacy banners/popup text are often multi-line.
             if "\n" in ascii_art:
-                self._banner = MultiLineLabelWidget(ascii_art, align="center", line_spacing=0)
+                lines = ascii_art.splitlines()
+                if len(lines) >= 12:
+                    self._banner = ScaledMultiLineLabelWidget(
+                        ascii_art,
+                        align="center",
+                        line_spacing=0,
+                        scale=2,
+                    )
+                else:
+                    self._banner = MultiLineLabelWidget(
+                        ascii_art,
+                        align="center",
+                        line_spacing=0,
+                    )
             else:
-                self._banner = LabelWidget(ascii_art, align="center")
-            root.add_child(self._banner)
+                self._banner = ScaledLabelWidget(
+                    ascii_art,
+                    align="center",
+                    scale=2,
+                )
         else:
             self._banner = None
 
-        self._list = ListWidget(
-            items,
-            selected_index=self.selected_idx,
-            on_activate=self._on_list_activate,
-            line_spacing=6,
-            padding=6,
-        )
-        # Default width; height will be set in draw_panel based on panel size.
-        self._list.rect = pygame.Rect(0, 0, 520, 0)
-        root.add_child(self._list)
+        # -----------------
+        # Body (wrapped)
+        # -----------------
+        if body_text:
+            # Wrap in pixel space; width hint is applied by MenuFrameWidget during layout.
+            self._body = WrappedMultiLineLabelWidget(
+                body_text,
+                align="left",
+                line_spacing=2,
+                max_width_px=600,
+            )
+        else:
+            self._body = None
 
+        # -----------------
+        # Choice list
+        # -----------------
+        if self.wants_wrapped_choices():
+            self._list = WrappedListWidget(
+                items,
+                selected_index=self.selected_idx,
+                on_activate=self._on_list_activate,
+                padding=4,
+                line_spacing=2,
+                wrap_width_px=520,
+            )
+        else:
+            self._list = ListWidget(
+                items,
+                selected_index=self.selected_idx,
+                on_activate=self._on_list_activate,
+                line_spacing=4,
+                padding=4,
+            )
+        self._list.rect = pygame.Rect(0, 0, 0, 0)
+
+        # -----------------
+        # Footer
+        # -----------------
         if self.FOOTER_TEXT:
             self._footer = LabelWidget(self.FOOTER_TEXT, align="center")
-            root.add_child(self._footer)
         else:
             self._footer = None
 
-        self.root = root
-        self._last_banner_text = ascii_art or ""
+        banner_is_background = False
+        if ascii_art:
+            banner_is_background = self.wants_banner_background(ascii_art)
+
+        self.root = MenuFrameWidget(
+            banner=self._banner,
+            body=self._body,
+            list_widget=self._list,
+            footer=self._footer,
+            top_pad=16,
+            bottom_pad=8,
+            gap_after_banner=10,
+            gap_after_body=12,
+            min_list_height=120,
+            max_list_width=520,
+            max_body_width=600,
+            banner_is_background=banner_is_background,
+        )
+
+        self.root.rect = pygame.Rect(0, 0, 0, 0)
+        self._last_banner_text = ascii_art
+        self._last_body_text = body_text
 
 
     def _on_list_activate(self, idx: int, item: Any) -> None:
@@ -650,60 +867,54 @@ class GeneralMenuScene(PanelScene):
                     # banner removed
                     self._build_widgets(list(self._last_items))
 
+        body_text = self.get_body_text() or ""
+        if getattr(self, "_last_body_text", "") != body_text:
+            self._last_body_text = body_text
+            # simplest and safest: rebuild
+            self._build_widgets(list(self._last_items))
 
         super().update(dt_ms, manager)
 
-    def draw_panel(self, panel: pygame.Surface, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        # Allow subclasses to draw extra decorations (panel-local)
-        self.draw_extra(manager)
-
-        # Background
+    def draw_panel(self, panel: pygame.Surface, renderer, manager) -> None:
         eff = self._active_effects(renderer)
-        bg = apply_entity_color_effects(self, getattr(renderer, "bg", (0, 0, 0)), eff)
-        panel.fill((*bg, 255))
 
-        # Layout sizing: make list height fill most of the panel
-        if self._list is not None:
-            # Reserve room for banner/footer
-            top_pad = 16
-            bottom_pad = 16
-            banner_h = 0
-            footer_h = 0
+        # Background + border (legacy look)
+        bg_rgb = apply_entity_color_effects(self, (10, 10, 20), eff)
+        border_rgb = apply_entity_color_effects(self, (220, 220, 240), eff)
 
-            # Rough measurement via font heights; if banner is multi-line, scale accordingly.
-            if self._banner is not None:
-                font = getattr(renderer, "small_font", getattr(renderer, "font", None))
-                h_line = font.get_height() if font else 16
-                text = getattr(self._banner, "text", "") or ""
-                n_lines = max(1, len(text.splitlines())) if text else 1
-                line_spacing = getattr(self._banner, "line_spacing", 0)
-                padding = getattr(self._banner, "padding", 0)
-                banner_h = n_lines * h_line + max(0, n_lines - 1) * line_spacing + 2 * padding + 10
+        panel.fill((*bg_rgb, 240))
+        pygame.draw.rect(panel, (*border_rgb, 255), panel.get_rect(), 2)
 
-            if self._footer is not None:
-                font = getattr(renderer, "small_font", getattr(renderer, "font", None))
-                footer_h = (font.get_height() if font else 16) + 8
-
-
-            list_h = max(120, panel.get_height() - (top_pad + bottom_pad + banner_h + footer_h + 40))
-            self._list.rect.height = list_h
-
-        # Widget draw
-        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=renderer)
-
-        # IMPORTANT: prevent VBox from auto-sizing to giant ASCII banner width,
-        # which can push centered children (the list) off-screen.
+        # Make draw_extra() panel-local
         try:
-            self.root.rect = pygame.Rect(0, 0, panel.get_width(), panel.get_height())
-        except Exception:
-            pass
+            orig_surface = renderer.surface
+            orig_w = getattr(renderer, "width", None)
+            orig_h = getattr(renderer, "height", None)
 
+            renderer.surface = panel
+            renderer.width = panel.get_width()
+            renderer.height = panel.get_height()
+
+            self.draw_extra(manager)
+        finally:
+            renderer.surface = orig_surface
+            if orig_w is not None:
+                renderer.width = orig_w
+            if orig_h is not None:
+                renderer.height = orig_h
+
+        ctx = WidgetContext(
+            surface=panel,
+            game=getattr(manager, "current_game", None),
+            scene=self,
+            renderer=renderer,
+        )
+
+        self.root.rect = panel.get_rect()
         self.root.layout(ctx)
 
-
-        # Keep selection consistent (mouse hover may have updated ListWidget)
-        if self._list is not None:
-            # If mouse is driving (not keyboard mode), accept hover selection
+        # Sync selection state
+        if self._list:
             if not self._keyboard_mode:
                 self.selected_idx = self._list.selected_index
             else:
@@ -712,7 +923,6 @@ class GeneralMenuScene(PanelScene):
 
         self.root.draw(ctx)
 
-        # Overlays (particles, etc)
         if eff:
             apply_surface_overlays(self, panel, panel.get_rect(), eff)
 
@@ -769,8 +979,69 @@ class PopupMenuScene(GeneralMenuScene):
         self.window_rect = pygame.Rect(x, y, w, h)
 
     def draw_underlay(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        # Snapshot beneath the popup once.
+        """
+        Draw whatever is "beneath" this popup.
+
+        CLEAN FIX:
+        Instead of snapshotting whatever happened to be on renderer.surface from the
+        previous frame (which can include another popup), re-render the scene stack
+        BELOW this popup into the surface once, then snapshot that.
+        """
+        # Snapshot beneath the popup once (but build it from a fresh render of stack below).
         if self._background is None:
+            stack = getattr(manager, "scene_stack", None) or []
+            try:
+                idx = stack.index(self)
+            except ValueError:
+                idx = len(stack) - 1  # fallback: assume top
+
+            renderer.surface.fill(renderer.bg)
+
+            # Prevent intermediate stack renders from presenting to screen (avoids flicker).
+            #
+            # IMPORTANT: not all scenes are PanelScene-based (DungeonScene is not),
+            # and DungeonScene.render() may call renderer._present() directly.
+            # So we suppress BOTH renderer.present() and renderer._present() during
+            # this offscreen stack rebuild.
+            prev_suspend = getattr(renderer, "suspend_present", False)
+            prev_present = getattr(renderer, "present", None)
+            prev__present = getattr(renderer, "_present", None)
+
+            renderer.suspend_present = True
+
+            # Monkey-patch presenters to no-ops for the duration of snapshot rendering.
+            if callable(prev_present):
+                renderer.present = lambda *a, **k: None  # type: ignore[assignment]
+            if callable(prev__present):
+                renderer._present = lambda *a, **k: None  # type: ignore[assignment]
+
+            try:
+                for s in stack[:idx]:
+                    try:
+                        renderer.active_visual_effects = list(getattr(s, "visual_effects", []) or [])
+                    except Exception:
+                        pass
+                    s.render(renderer, manager)
+            finally:
+                # Restore presentation behavior
+                renderer.suspend_present = prev_suspend
+                if prev_present is not None:
+                    renderer.present = prev_present  # type: ignore[assignment]
+                else:
+                    try:
+                        delattr(renderer, "present")
+                    except Exception:
+                        pass
+
+                if prev__present is not None:
+                    renderer._present = prev__present  # type: ignore[assignment]
+                else:
+                    try:
+                        delattr(renderer, "_present")
+                    except Exception:
+                        pass
+
+
             self._background = renderer.surface.copy()
 
         # Restore background snapshot
@@ -789,4 +1060,10 @@ class PopupMenuScene(GeneralMenuScene):
         layers = getattr(self, "overlay_layers", set())
         for layer in layers:
             if hasattr(manager, "draw_widget_layer"):
-                manager.draw_widget_layer(layer, surface=renderer.surface, game=getattr(self, "game", None), scene=self)
+                manager.draw_widget_layer(
+                    layer,
+                    surface=renderer.surface,
+                    game=getattr(self, "game", None),
+                    scene=self,
+                )
+

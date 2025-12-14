@@ -76,3 +76,9 @@ class MainMenuScene(MenuScene):
             manager.set_scene(None)
 
         return True
+
+
+    def wants_banner_background(self, ascii_art: str) -> bool:
+        # For the main menu, we want the big ASCII title ABOVE the options,
+        # not acting as a background layer behind them.
+        return False
