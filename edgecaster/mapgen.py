@@ -3,6 +3,7 @@ import math
 import random
 from typing import Tuple, Optional, Dict, List
 from edgecaster.content import pois
+from edgecaster.corruption import CorruptionParams, julia_height_norm_corrupted
 
 from edgecaster.state.world import World
 
@@ -307,6 +308,32 @@ def _color_from_fields(fields: dict) -> tuple[int, int, int]:
             return tuple(int(c0[j] + t * (c1[j] - c0[j])) for j in range(3))
     return anchors[-1][1]
 
+
+def _apply_corruption_tint(color: tuple[int, int, int], strength: float) -> tuple[int, int, int]:
+    """Blend base tint towards a demonic purple based on corruption strength.
+
+    strength is allowed to be an unbounded "corruption intensity" signal.
+    We compress it into 0..1 so strong cones don't turn the overmap neon pink.
+    """
+    s = max(0.0, float(strength))
+    if s <= 0.0:
+        return color
+
+    # Convert unbounded signal to 0..1 with diminishing returns.
+    strength01 = 1.0 - math.exp(-0.55 * s)
+    strength01 = max(0.0, min(1.0, strength01))
+
+    # Darker purple target (less magenta/pink).
+    target = (70, 30, 90)
+    r, g, b = color
+    tr, tg, tb = target
+    t = 0.35 * strength01
+    return (
+        int(r + (tr - r) * t),
+        int(g + (tg - g) * t),
+        int(b + (tb - b) * t),
+    )
+
 def _julia_height_norm(nx: float, ny: float, c: complex, scale: float = 1.0, iters: int = 96) -> float:
     """Julia escape-time normalized height (0..1)."""
     zx = nx * scale
@@ -322,6 +349,36 @@ def _julia_height_norm(nx: float, ny: float, c: complex, scale: float = 1.0, ite
     mod = math.sqrt(zx * zx + zy * zy)
     smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
     return max(0.0, min(1.0, smooth / iters))
+
+
+def _julia_height_norm_with_corruption(
+    nx: float,
+    ny: float,
+    c: complex,
+    *,
+    scale: float = 1.0,
+    iters: int = 96,
+    corruption_level: float = 0.0,
+    corruption_seed: int = 1337,
+    j_min_x: float = -2.0,
+    j_max_x: float = 2.0,
+    hotspots: Optional[List[tuple[float, float, float, float]]] = None,
+) -> tuple[float, float]:
+    """Return (height, corruption_strength), where height is 0..1."""
+    if corruption_level <= 0.0:
+        return _julia_height_norm(nx, ny, c, scale=scale, iters=iters), 0.0
+    params = CorruptionParams(seed=int(corruption_seed), hotspots=list(hotspots or []))
+    return julia_height_norm_corrupted(
+        nx,
+        ny,
+        c,
+        iters=iters,
+        scale=scale,
+        corruption_level=float(corruption_level),
+        params=params,
+        j_min_x=float(j_min_x),
+        j_max_x=float(j_max_x),
+    )
 
 
 def _classify_tile(fields: dict, noise: float) -> Tuple[str, bool]:
@@ -377,6 +434,12 @@ def generate_fractal_overworld(
     if surf is not None:
         surf_w, surf_h = surf.get_size()
 
+    corruption_level = float(overmap_params.get("corruption_level", 0.0) or 0.0)
+    corruption_seed = int(overmap_params.get("corruption_seed", 1337) or 1337)
+    hotspots = overmap_params.get("corruption_hotspots") or []
+    j_min_x = float(overmap_params.get("view_min_jx", overmap_params.get("orig_min_jx", -2.0)) or -2.0)
+    j_max_x = float(overmap_params.get("view_max_jx", overmap_params.get("orig_max_jx", 2.0)) or 2.0)
+
     for y in range(h):
         for x in range(w):
             wx = cx0 + x
@@ -384,15 +447,26 @@ def generate_fractal_overworld(
             if jx_slice is not None and jy_slice is not None:
                 jx = jx_slice[x]
                 jy = jy_slice[y]
-                h_val = _julia_height_norm(jx, jy, overmap_params["visual_c"], scale=1.0, iters=96)
+                h_val, corr = _julia_height_norm_with_corruption(
+                    jx,
+                    jy,
+                    overmap_params["visual_c"],
+                    scale=1.0,
+                    iters=96,
+                    corruption_level=corruption_level,
+                    corruption_seed=corruption_seed,
+                    j_min_x=j_min_x,
+                    j_max_x=j_max_x,
+                    hotspots=hotspots,
+                )
                 fields = {
                     "height": h_val,
                     "moisture": h_val,
                     "pattern": 0.0,
-                    "corruption": 0.0,
+                    "corruption": corr,
                 }
                 glyph, _ = _classify_tile(fields, 0.5)
-                tint = _color_from_fields(fields)
+                tint = _apply_corruption_tint(_color_from_fields(fields), corr)
             else:
                 if surf is None or surf_w is None or surf_h is None or min_wx is None or span_x is None:
                     raise RuntimeError("Overmap surface missing for tint sampling.")
@@ -454,6 +528,77 @@ def generate_fractal_overworld(
                 break
         if placed:
             break
+
+
+def refresh_fractal_overworld_visuals(
+    world: World,
+    coord: Tuple[int, int, int],
+    *,
+    overmap_params: dict,
+    jx_slice: Optional[List[float]] = None,
+    jy_slice: Optional[List[float]] = None,
+) -> None:
+    """Recompute glyph+tint for an existing overworld zone without touching structures.
+
+    This is used for corruption morphing (phase 1: visuals only).
+    """
+    zx, zy, depth = coord
+    if depth != 0:
+        return
+    if jx_slice is None or jy_slice is None:
+        return
+
+    w, h = world.width, world.height
+    cx0 = zx * w
+    cy0 = zy * h
+
+    # Respect any known structure footprints (e.g., starting-zone depot).
+    protected: set[tuple[int, int]] = set()
+    depot_info = getattr(world, "depot_info", None)
+    if depot_info and isinstance(depot_info, dict):
+        rect = depot_info.get("rect")
+        if rect and len(rect) == 4:
+            rx, ry, rw, rh = rect
+            for yy in range(int(ry), int(ry + rh)):
+                for xx in range(int(rx), int(rx + rw)):
+                    protected.add((xx, yy))
+
+    for pos in (getattr(world, "up_stairs", None), getattr(world, "down_stairs", None)):
+        if pos and isinstance(pos, tuple) and len(pos) == 2:
+            protected.add((int(pos[0]), int(pos[1])))
+
+    visual_c = overmap_params["visual_c"]
+    corruption_level = float(overmap_params.get("corruption_level", 0.0) or 0.0)
+    corruption_seed = int(overmap_params.get("corruption_seed", 1337) or 1337)
+    hotspots = overmap_params.get("corruption_hotspots") or []
+    j_min_x = float(overmap_params.get("view_min_jx", overmap_params.get("orig_min_jx", -2.0)) or -2.0)
+    j_max_x = float(overmap_params.get("view_max_jx", overmap_params.get("orig_max_jx", 2.0)) or 2.0)
+
+    for y in range(h):
+        for x in range(w):
+            if (x, y) in protected:
+                continue
+            jx = jx_slice[x]
+            jy = jy_slice[y]
+            h_val, corr = _julia_height_norm_with_corruption(
+                jx,
+                jy,
+                visual_c,
+                scale=1.0,
+                iters=96,
+                corruption_level=corruption_level,
+                corruption_seed=corruption_seed,
+                j_min_x=j_min_x,
+                j_max_x=j_max_x,
+                hotspots=hotspots,
+            )
+            fields = {"height": h_val, "moisture": h_val, "pattern": 0.0, "corruption": corr}
+            glyph, _ = _classify_tile(fields, 0.5)
+            tint = _apply_corruption_tint(_color_from_fields(fields), corr)
+            tile = world.get_tile(x, y)
+            if tile:
+                tile.glyph = glyph if glyph != "~" else "."
+                tile.tint = tint
 
 
 def generate_overworld(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) -> None:

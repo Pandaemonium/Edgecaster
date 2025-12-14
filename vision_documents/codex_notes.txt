@@ -1,0 +1,8 @@
+Codex quick notes (temporary, can be deleted when not needed)
+
+- Currency: bismuth wallet lives on Game; bismuth piles are tagged currency/amount in content/entities.yaml. Icon loaded from project-root assets/icons/bismuth.png (renderer uses PNG, no ASCII fallback). Pickup plays assets/sfx/chaching.mp3 and auto-adds to wallet.
+- Starting zone: POI spawns caged demon (neutral, regen), depot, and 5 scattered bismuth piles near entry.
+- Push/motion: pattern motion now steps every tick (pattern_motion.start_motion interval=1); act_push_pattern no longer advances time itself.
+- Ability bar/state: bar rebuilt via AbilityBarState; scroll-wheel zoom restored; mouse-wheel also adjusts radius only in targeting mode.
+- Keybindings: custom keybind scene supports three bindings per action with clear buttons; bindings are per scene, stored in keybindings.json; F11 toggle handled globally.
+- ASCII renderer: refactored to be view-only; removed bismuth debug logging; world map icon cache scaled on zoom.

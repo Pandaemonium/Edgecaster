@@ -733,6 +733,13 @@ def _action_freeze(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_freeze(actor_id)
 
 
+@register_action("corruption_cone", label="Corruption Cone", speed="fast", show_in_bar=True)
+def _action_corruption_cone(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Create a localized cone of corruption centered on the actor."""
+    if hasattr(game, "act_corruption_cone"):
+        game.act_corruption_cone(actor_id)
+
+
 @register_action(
     "push_pattern",
     label="Push",

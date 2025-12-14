@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 import heapq
+import traceback
+import time
 import threading
 from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
@@ -182,12 +184,24 @@ class Game:
         else:
             self.fractal_seed = getattr(self.character, "seed", None) or getattr(cfg, "seed", None)
         self.fractal_field = mapgen.FractalField(seed=self.fractal_seed)
+        # Corruption: Julia distortion intensity (phase 1: visuals-only in terrain generation).
+        # Must be shared between world-map rendering and local zone generation.
+        # Default: make corruption clearly visible on the overmap so it's easy to tune.
+        # The World Map scene also includes a temporary slider to adjust this.
+        self.corruption_level: float = 1.4
+        self.corruption_seed: int = int(self.fractal_seed) + 9001
+        self.corruption_version: int = 0
+        self.corruption_hotspots: List[Tuple[float, float, float, float]] = []
         # world map render cache (surface + view window)
         self.world_map_cache = None
         self.world_map_c: complex | None = None
         self.world_map_rendering = False
         self.world_map_ready = False
         self.world_map_thread_started = False
+        self.world_map_version: int = 0
+        # What is currently driving a (re)render of the world map.
+        # "loading" = initial generation; "corruption" = corruption forcing rerender.
+        self.world_map_render_reason: str = "loading"
         # per-tile julia grid (x coords, y coords) derived from overmap view
         self.tile_julia_grid: dict[str, list[float]] | None = None
         # flags
@@ -319,6 +333,7 @@ class Game:
             actions.append("ignite")
             actions.append("regrow")
             actions.append("push_pattern")
+            actions.append("corruption_cone")
 
         # For now, all other classes keep only move/wait (empty ability bar).
         player.actions = tuple(actions)
@@ -502,6 +517,10 @@ class Game:
             "freeze": {
                 "damage_scale": {"values": [0.05, 0.1, 0.2, 0.3], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Dmg / Blue"},
                 "slow_scale": {"values": [0.02, 0.04, 0.06, 0.08], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Slow / Blue"},
+            },
+            "corruption_cone": {
+                "height": {"values": [0.5, 1.0, 1.5, 2.0], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Height"},
+                "slope": {"values": [0.25, 0.18, 0.12, 0.08], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Slope"},
             },
         }
 
@@ -851,6 +870,9 @@ class Game:
             "span_x": max_wx,
             "span_y": max_wy,
             "visual_c": entry["c"],
+            "corruption_level": float(getattr(self, "corruption_level", 0.0) or 0.0),
+            "corruption_seed": int(getattr(self, "corruption_seed", 1337) or 1337),
+            "corruption_hotspots": list(getattr(self, "corruption_hotspots", []) or []),
             "surface_size": (0, 0),
             "surface": None,
             "orig_min_wx": min_wx,
@@ -871,18 +893,25 @@ class Game:
         # build grid immediately so locals can generate
         self.build_tile_julia_grid()
         # kick off background render
-        self._start_world_map_thread()
+        self._start_world_map_thread(reason="loading")
 
-    def _start_world_map_thread(self) -> None:
-        if self.world_map_thread_started:
-            return
+    def _start_world_map_thread(self, *, reason: str = "loading") -> None:
         self.world_map_thread_started = True
+        # Allow restarting renders (e.g. when corruption changes). Older results are discarded.
+        self.world_map_version += 1
+        version = self.world_map_version
+        self.world_map_render_reason = str(reason or "loading")
         self.world_map_rendering = True
-        t = threading.Thread(target=self._background_render_map, daemon=True)
+        try:
+            self._debug(f"[world_map] thread start version={version} reason={self.world_map_render_reason}")
+        except Exception:
+            pass
+        t = threading.Thread(target=self._background_render_map, args=(version,), daemon=True)
         t.start()
 
-    def _background_render_map(self) -> None:
+    def _background_render_map(self, version: int) -> None:
         """Render overmap in a background thread using fixed params."""
+        t0 = time.perf_counter()
         try:
             from edgecaster.scenes.world_map_scene import WorldMapScene
             wm = WorldMapScene(self, span=16)
@@ -891,11 +920,27 @@ class Game:
                     self.width = w
                     self.height = h
             stub = Stub(self.cfg.view_width, self.cfg.view_height)
-            surf, view = wm._render_overmap(stub)
-            self.world_map_cache = {"surface": surf, "view": view, "key": (stub.width, stub.height, wm.span)}
-            self.world_map_ready = True
+            try:
+                surf, view, surf_corr = wm._render_overmap(stub)
+            except Exception as e:
+                try:
+                    self._debug(f"[world_map] thread error version={version}: {e!r}")
+                    self._debug(traceback.format_exc())
+                except Exception:
+                    pass
+                return
+            if version == self.world_map_version:
+                self.world_map_cache = {"surface": surf, "surface_corr": surf_corr, "view": view, "key": (stub.width, stub.height, wm.span)}
+                self.world_map_ready = True
+                try:
+                    dt = time.perf_counter() - t0
+                    self._debug(f"[world_map] thread done version={version} dt={dt:.2f}s")
+                except Exception:
+                    pass
         finally:
-            self.world_map_rendering = False
+            if version == self.world_map_version:
+                self.world_map_rendering = False
+                self.world_map_render_reason = "ready"
 
     def _ensure_overmap_ready(self) -> None:
         """Ensure overmap params/grid exist; kick off background render if needed."""
@@ -913,11 +958,75 @@ class Game:
                         self.width = w
                         self.height = h
                 stub = Stub(self.cfg.view_width, self.cfg.view_height)
-                surf, view = wm._render_overmap(stub)
-                self.world_map_cache = {"surface": surf, "view": view, "key": (stub.width, stub.height, wm.span)}
+                surf, view, surf_corr = wm._render_overmap(stub)
+                # This synchronous render is the newest by definition.
+                self.world_map_version += 1
+                self.world_map_cache = {"surface": surf, "surface_corr": surf_corr, "view": view, "key": (stub.width, stub.height, wm.span)}
                 self.world_map_ready = True
             finally:
                 self.world_map_rendering = False
+
+    def _jx_jy_slices_for_zone(self, coord: Tuple[int, int, int]) -> tuple[Optional[List[float]], Optional[List[float]]]:
+        """Return (jx_slice, jy_slice) for this zone coord using the global tile_julia_grid."""
+        if getattr(self, "tile_julia_grid", None) is None:
+            return None, None
+        zx, zy, depth = coord
+        if depth != 0:
+            return None, None
+        w = self.cfg.world_width
+        h = self.cfg.world_height
+        gx0 = zx * w
+        gx1 = gx0 + w
+        gy0 = zy * h
+        gy1 = gy0 + h
+        xgrid = self.tile_julia_grid.get("x", [])  # type: ignore[union-attr]
+        ygrid = self.tile_julia_grid.get("y", [])  # type: ignore[union-attr]
+        if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
+            return None, None
+        return xgrid[gx0:gx1], ygrid[gy0:gy1]
+
+    def set_corruption_level(self, level: float) -> None:
+        """Set global corruption intensity (phase 1: visuals-only morphing)."""
+        level = max(0.0, float(level))
+        if abs(level - getattr(self, "corruption_level", 0.0)) < 1e-9:
+            return
+        self.corruption_level = level
+        self.corruption_version += 1
+        self._refresh_corruption_visuals()
+
+    def add_corruption_hotspot(self, jx: float, jy: float, strength: float, sigma: float) -> None:
+        """Add a localized corruption 'cone' (Gaussian bump) in Julia-plane coordinates."""
+        self.corruption_hotspots.append((float(jx), float(jy), float(strength), float(sigma)))
+        self.corruption_version += 1
+        self._refresh_corruption_visuals()
+
+    def _refresh_corruption_visuals(self) -> None:
+        """Refresh already-instantiated overworld visuals and kick off overmap rerender."""
+        if getattr(self, "overmap_params", None):
+            self.overmap_params["corruption_level"] = float(self.corruption_level)
+            self.overmap_params["corruption_seed"] = int(self.corruption_seed)
+            self.overmap_params["corruption_hotspots"] = list(getattr(self, "corruption_hotspots", []) or [])
+
+        for coord, lvl in list(getattr(self, "levels", {}).items()):
+            if coord[2] != 0:
+                continue
+            jx_slice, jy_slice = self._jx_jy_slices_for_zone(coord)
+            if jx_slice is None or jy_slice is None:
+                continue
+            try:
+                mapgen.refresh_fractal_overworld_visuals(
+                    lvl.world,
+                    coord,
+                    overmap_params=self.overmap_params,
+                    jx_slice=jx_slice,
+                    jy_slice=jy_slice,
+                )
+            except Exception:
+                continue
+
+        # Force overmap re-render to reflect new corruption.
+        self.world_map_ready = False
+        self._start_world_map_thread(reason="corruption")
 
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
         x, y, depth = coord
@@ -1665,7 +1774,7 @@ class Game:
                 except Exception:
                     continue
 
-    def debug_spawn_inventory_near_player(self, radius: int = 3) -> None:
+    def debug_spawn_inventory_near_player(self, radius: int = 3, *, count: int | None = None) -> None:
         """Debug helper: conjure a curated batch of meta-Inventories near the player.
 
         Spawns:
@@ -3739,6 +3848,133 @@ class Game:
                     tags["frozen_slow"] = slow_mult
                     tags["frozen_slow_timer"] = 0.0
                     target.tags = tags
+
+    def act_corruption_cone(self, actor_id: str) -> None:
+        """Create a localized 'cone' of corruption centered on the actor's current position.
+
+        Phase 1: this only affects fractal-derived visuals/biomes, not walkability.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+
+        # Ensure we have a stable world->Julia mapping.
+        try:
+            self._ensure_overmap_ready()
+        except Exception:
+            pass
+        if getattr(self, "tile_julia_grid", None) is None:
+            try:
+                self.build_tile_julia_grid()
+            except Exception:
+                return
+        if getattr(self, "tile_julia_grid", None) is None:
+            return
+
+        zx, zy, depth = self.zone_coord
+        if depth != 0:
+            # Only overworld zones participate in the overmap-Julia correspondence right now.
+            if actor_id == self.player_id:
+                self.log.add("The seals resist corruption beneath the surface.")
+            return
+
+        wx = zx * self.cfg.world_width + int(actor.pos[0])
+        wy = zy * self.cfg.world_height + int(actor.pos[1])
+
+        try:
+            jx = float(self.tile_julia_grid["x"][wx])  # type: ignore[index]
+            jy = float(self.tile_julia_grid["y"][wy])  # type: ignore[index]
+        except Exception:
+            return
+
+        # Julia-plane units: sigma is measured in the same coordinate system as (jx, jy).
+        # A useful conversion for humans is "sigma in tiles", using the world->Julia step size.
+        mean_step = None
+        try:
+            step_x = float(self.tile_julia_grid.get("step_x", 0.0))  # type: ignore[union-attr]
+            step_y = float(self.tile_julia_grid.get("step_y", 0.0))  # type: ignore[union-attr]
+            if abs(step_x) > 1e-12 and abs(step_y) > 1e-12:
+                mean_step = 0.5 * (abs(step_x) + abs(step_y))
+        except Exception:
+            mean_step = None
+
+        def sigma_from_tiles(sigma_tiles: float) -> float:
+            step = mean_step or 0.01
+            return max(0.01, float(sigma_tiles) * step)
+
+        # NPC/AI callers: fall back to gear params.
+        if actor_id != self.player_id:
+            height = float(self.get_param_value("corruption_cone", "height"))
+            slope = float(self.get_param_value("corruption_cone", "slope"))
+            sigma = max(0.01, slope)
+            self.add_corruption_hotspot(jx, jy, strength=height, sigma=sigma)
+            return
+
+        # Player: prompt for a very visible, high-impact cone.
+        strength_choices: list[tuple[str, Optional[float]]] = [
+            ("Whisper (strength 3)", 3.0),
+            ("Ritual (strength 8)", 8.0),
+            ("Cataclysm (strength 18)", 18.0),
+            ("Cancel", None),
+        ]
+
+        def after_strength(idx: int, game: "Game") -> None:
+            chosen = strength_choices[idx][1] if 0 <= idx < len(strength_choices) else None
+            if chosen is None:
+                game.log.add("You let the land remain unwarped, for now.")
+                return
+
+            sigma_tiles_choices: list[tuple[str, Optional[float]]] = [
+                ("Steep (sigma ~25 tiles)", 25.0),
+                ("Medium (sigma ~60 tiles)", 60.0),
+                ("Wide (sigma ~140 tiles)", 140.0),
+                ("Apocalyptic (sigma ~260 tiles)", 260.0),
+                ("Cancel", None),
+            ]
+
+            def after_sigma(idx2: int, game2: "Game") -> None:
+                sigma_tiles = sigma_tiles_choices[idx2][1] if 0 <= idx2 < len(sigma_tiles_choices) else None
+                if sigma_tiles is None:
+                    game2.log.add("The cone collapses back into possibility.")
+                    return
+
+                sigma = sigma_from_tiles(sigma_tiles)
+                game2.add_corruption_hotspot(jx, jy, strength=float(chosen), sigma=float(sigma))
+
+                approx_tiles = sigma_tiles
+                if mean_step:
+                    approx_tiles = sigma / mean_step
+
+                game2.log.add("You twist the land into a cone of corruption.")
+                game2.log.add(
+                    f"(Slope uses sigma in Julia-plane units; here sigma≈{sigma:.3f} (~{approx_tiles:.0f} tiles).)"
+                )
+
+            slope_body = (
+                "Choose the slope/spread of the cone.\n\n"
+                "Notes:\n"
+                "- 'Slope' is represented as Gaussian sigma.\n"
+                "- Smaller sigma = steeper (sharper) cone.\n"
+                "- Sigma is measured in Julia-plane units; the options below are expressed in tiles.\n"
+            )
+            game.set_urgent(
+                slope_body,
+                title="Corruption Cone: Slope",
+                choices=[t for t, _v in sigma_tiles_choices],
+                on_choice_effect=after_sigma,
+            )
+
+        strength_body = (
+            "Choose the strength (height) of the cone.\n\n"
+            "This will visibly warp the world map and any overworld zones you have already visited."
+        )
+        self.set_urgent(
+            strength_body,
+            title="Corruption Cone: Strength",
+            choices=[t for t, _v in strength_choices],
+            on_choice_effect=after_strength,
+        )
 
     def act_fractal(self, actor_id: str, kind: str) -> None:
         """Generic action entry point: apply a fractal generator to the current pattern."""
