@@ -293,11 +293,11 @@ class PanelScene(Scene):
         super().__init__()
         self.window_rect: Optional[pygame.Rect] = window_rect
         self.root: Widget = Widget()
+
+        # NOTE: _panel is the *logical* panel surface (may differ from window_rect.size)
         self._panel: Optional[pygame.Surface] = None
 
         # Input mode arbitration:
-        # - mouse hover focus is "implicit"
-        # - keyboard navigation overrides UNTIL the mouse moves
         self._keyboard_mode: bool = False
         self._last_mouse_pos: Optional[tuple[int, int]] = None
 
@@ -309,9 +309,28 @@ class PanelScene(Scene):
         r = manager.renderer
         self.window_rect = pygame.Rect(0, 0, r.width, r.height)
 
-    def _get_panel(self) -> pygame.Surface:
+    def get_logical_panel_size(self, manager: "SceneManager") -> Optional[tuple[int, int]]:  # type: ignore[name-defined]
+        """
+        Override to enable "text scales with popup" behavior.
+
+        If this returns (w, h), widgets are laid out/drawn into a logical surface of
+        that size, then scaled to window_rect.size before VisualProfile transforms.
+
+        Default None = logical size == window_rect.size (current behavior).
+        """
+        return None
+
+    def _get_panel(self, manager: "SceneManager") -> pygame.Surface:  # type: ignore[name-defined]
         assert self.window_rect is not None
-        size = self.window_rect.size
+
+        logical = self.get_logical_panel_size(manager)
+        if logical is None:
+            size = self.window_rect.size
+        else:
+            lw = max(1, int(logical[0]))
+            lh = max(1, int(logical[1]))
+            size = (lw, lh)
+
         if self._panel is None or self._panel.get_size() != size:
             self._panel = pygame.Surface(size, pygame.SRCALPHA)
         return self._panel
@@ -324,7 +343,6 @@ class PanelScene(Scene):
         return build_visual_profile(base, effects)
 
     def _active_effects(self, renderer) -> list[str]:
-        # Prefer the manager-fed renderer.active_visual_effects if present.
         eff = getattr(renderer, "active_visual_effects", None)
         if isinstance(eff, (list, tuple)) and eff:
             return [str(x) for x in eff if x]
@@ -338,21 +356,16 @@ class PanelScene(Scene):
     # ---- input routing --------------------------------------------------
 
     def _panel_event(self, event, manager: "SceneManager"):
-        """
-        Panel-local event hook, called only if widgets didn't consume the event.
-        Subclasses can override for non-UI hotkeys, etc.
-        """
         return None
 
     def _to_panel_event(self, event, manager: "SceneManager"):
         """
-        Convert event.pos (surface coords) into panel-local coords by inverting
-        the current visual transform.
+        Convert event.pos (surface coords) into *logical panel* coords by inverting
+        the current visual transform, then applying logical scaling if enabled.
         """
         self._ensure_window_rect(manager)
         assert self.window_rect is not None
 
-        # Convert display -> surface coords if renderer provides helper
         renderer = manager.renderer
         if hasattr(renderer, "_to_surface") and hasattr(event, "pos"):
             sx, sy = renderer._to_surface(event.pos)
@@ -363,12 +376,23 @@ class PanelScene(Scene):
             return event
 
         visual = self._current_visual_profile()
+
+        # unproject_mouse returns coords in the "window_rect-sized logical space"
         px, py = unproject_mouse((sx, sy), self.window_rect, visual)
 
-        # Clone a minimal event-like object with panel-local pos
-        # (pygame events are not meant to be mutated)
+        # If our real widget/layout surface is a different logical size, rescale
+        logical = self.get_logical_panel_size(manager)
+        if logical is not None:
+            lw = max(1, int(logical[0]))
+            lh = max(1, int(logical[1]))
+            ww = max(1, int(self.window_rect.width))
+            wh = max(1, int(self.window_rect.height))
+            px = px * (lw / ww)
+            py = py * (lh / wh)
+
         class _E:
             pass
+
         e2 = _E()
         for k in dir(event):
             if k.startswith("_"):
@@ -381,30 +405,34 @@ class PanelScene(Scene):
         return e2
 
     def handle_event(self, event, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        # Track whether keyboard currently "owns" navigation focus
         if event.type == pygame.KEYDOWN:
             self._keyboard_mode = True
 
-        # If mouse moved, mouse takes over hover focus again
         if event.type == pygame.MOUSEMOTION:
-            # display/surface position doesn't matter; any movement is enough
             pos = getattr(event, "pos", None)
             if pos is not None and pos != self._last_mouse_pos:
                 self._last_mouse_pos = pos
                 self._keyboard_mode = False
 
-        # Route mouse events through panel-space before widgets see them
         e_for_widgets = event
-        if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEWHEEL):
+        if event.type in (
+            pygame.MOUSEMOTION,
+            pygame.MOUSEBUTTONDOWN,
+            pygame.MOUSEBUTTONUP,
+            pygame.MOUSEWHEEL,
+        ):
             if event.type != pygame.MOUSEWHEEL and hasattr(event, "pos"):
                 e_for_widgets = self._to_panel_event(event, manager)
 
-        # Build a WidgetContext on the panel surface for widget handling
         self._ensure_window_rect(manager)
-        panel = self._get_panel()
-        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=manager.renderer)
+        panel = self._get_panel(manager)
+        ctx = WidgetContext(
+            surface=panel,
+            game=getattr(manager, "current_game", None),
+            scene=self,
+            renderer=manager.renderer,
+        )
 
-        # Widgets first
         handled = False
         try:
             handled = self.root.handle_event(e_for_widgets, ctx)
@@ -414,34 +442,35 @@ class PanelScene(Scene):
         if handled:
             return
 
-        # Fall through to scene-level input
         self._panel_event(event, manager)
 
     def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         self._ensure_window_rect(manager)
-        panel = self._get_panel()
-        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=manager.renderer)
+        panel = self._get_panel(manager)
+        ctx = WidgetContext(
+            surface=panel,
+            game=getattr(manager, "current_game", None),
+            scene=self,
+            renderer=manager.renderer,
+        )
         self.root.update(dt_ms, ctx)
 
     # ---- rendering ------------------------------------------------------
 
     def draw_underlay(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        """
-        Hook: draw behind the panel (e.g. popup background snapshot + dim).
-        Default: clear screen to renderer.bg.
-        """
         renderer.surface.fill(renderer.bg)
 
     def draw_panel(self, panel: pygame.Surface, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        """
-        Hook: draw panel background + widgets into `panel`.
-        Default: fill panel to bg + draw widgets.
-        """
         eff = self._active_effects(renderer)
         bg = apply_entity_color_effects(self, getattr(renderer, "bg", (0, 0, 0)), eff)
         panel.fill((*bg, 255))
 
-        ctx = WidgetContext(surface=panel, game=getattr(manager, "current_game", None), scene=self, renderer=renderer)
+        ctx = WidgetContext(
+            surface=panel,
+            game=getattr(manager, "current_game", None),
+            scene=self,
+            renderer=renderer,
+        )
         self.root.layout(ctx)
         self.root.draw(ctx)
 
@@ -452,19 +481,22 @@ class PanelScene(Scene):
         self._ensure_window_rect(manager)
         assert self.window_rect is not None
 
-        # Underlay on real surface
         self.draw_underlay(renderer, manager)
 
-        # Draw into logical panel
-        panel = self._get_panel()
+        # Draw widgets into *logical* panel
+        panel = self._get_panel(manager)
         self.draw_panel(panel, renderer, manager)
 
-        # Apply visual transform and blit panel -> surface
-        visual = self._current_visual_profile()
-        apply_visual_panel(renderer.surface, panel, self.window_rect, visual)
+        # If logical != window_rect, scale panel to window_rect.size BEFORE VisualProfile
+        logical = self.get_logical_panel_size(manager)
+        if logical is not None and panel.get_size() != self.window_rect.size:
+            panel_to_blit = pygame.transform.smoothscale(panel, self.window_rect.size)
+        else:
+            panel_to_blit = panel
 
-        # IMPORTANT: if we're doing an offscreen stack rebuild for a popup background,
-        # DO NOT present intermediate frames (prevents dungeon/inventory "blink").
+        visual = self._current_visual_profile()
+        apply_visual_panel(renderer.surface, panel_to_blit, self.window_rect, visual)
+
         if getattr(renderer, "suspend_present", False):
             return
 
@@ -472,6 +504,7 @@ class PanelScene(Scene):
             renderer.present()
         else:
             pygame.display.flip()
+
 
 
 class MenuFrameWidget(Widget):
@@ -498,6 +531,10 @@ class MenuFrameWidget(Widget):
         max_list_width: int = 520,
         max_body_width: int = 600,
         banner_is_background: bool = False,
+
+        # NEW: if True, the list expands to available width (up to max_list_width),
+        # instead of sticking to its intrinsic text width.
+        fill_list_width: bool = True,
     ) -> None:
         super().__init__()
 
@@ -514,6 +551,7 @@ class MenuFrameWidget(Widget):
         self.max_list_width = max_list_width
         self.max_body_width = max_body_width
         self.banner_is_background = banner_is_background
+        self.fill_list_width = bool(fill_list_width)
 
         if self.banner is not None:
             self.add_child(self.banner)
@@ -538,7 +576,7 @@ class MenuFrameWidget(Widget):
 
         y = self.rect.y + self.top_pad
 
-        # Inner usable width for centered content (prevents negative x centering in snug popups)
+        # Inner usable width for centered content
         inner_w = max(1, self.rect.width - 2 * self.top_pad)
 
         # Banner
@@ -548,14 +586,12 @@ class MenuFrameWidget(Widget):
             if self.banner_is_background:
                 by = self.rect.y + self.top_pad
                 self.banner.rect.topleft = (bx, by)
-                # y unchanged
             else:
                 self.banner.rect.topleft = (bx, y)
                 y = self.banner.rect.bottom + self.gap_after_banner
 
         # Body (centered, clamped width)
         if self.body and self.body.visible:
-            # Give the body a usable width hint before layout for wrapping widgets
             body_w = min(self.max_body_width, inner_w)
             if body_w > 0:
                 self.body.rect.width = body_w
@@ -573,19 +609,26 @@ class MenuFrameWidget(Widget):
             fy = self.rect.bottom - self.bottom_pad - footer_h
             self.footer.rect.topleft = (fx, fy)
 
-        # List fills remaining space
+        # List fills remaining height
         avail_h = (self.rect.bottom - self.bottom_pad - footer_h) - y
         self.list_widget.rect.height = max(self.min_list_height, avail_h)
 
-        # CRITICAL: clamp list width to panel inner width so it can't center offscreen
-        desired_w = self.list_widget.rect.width or self.max_list_width
+        # Width policy
+        if self.fill_list_width:
+            desired_w = min(self.max_list_width, inner_w)
+            desired_w = max(desired_w, self.list_widget.rect.width)  # allow intrinsic to win if larger
+        else:
+            desired_w = self.list_widget.rect.width or self.max_list_width
+
         desired_w = min(desired_w, self.max_list_width)
         desired_w = min(desired_w, inner_w)
         self.list_widget.rect.width = max(1, desired_w)
 
+
         lx = self.rect.x + (self.rect.width - self.list_widget.rect.width) // 2
         self.list_widget.rect.topleft = (lx, y)
         self.list_widget.layout(ctx)
+
 
 
 
@@ -605,6 +648,11 @@ class GeneralMenuScene(PanelScene):
     """
 
     FOOTER_TEXT = MENU_FOOTER_HELP
+    # NEW defaults: fullscreen menus feel better with wider content.
+    MAX_LIST_WIDTH: int = 9999  # fill available panel width
+    MAX_BODY_WIDTH: int = 9999  # fill available panel width
+    FILL_LIST_WIDTH: bool = True
+    WRAP_SELECTION: bool = True
 
     def __init__(self, *, window_rect: Optional[pygame.Rect] = None) -> None:
         super().__init__(window_rect=window_rect)
@@ -752,20 +800,23 @@ class GeneralMenuScene(PanelScene):
             gap_after_banner=10,
             gap_after_body=12,
             min_list_height=120,
-            max_list_width=520,
-            max_body_width=600,
+            max_list_width=self.MAX_LIST_WIDTH,
+            max_body_width=self.MAX_BODY_WIDTH,
             banner_is_background=banner_is_background,
+            fill_list_width=self.FILL_LIST_WIDTH,
         )
+
 
         self.root.rect = pygame.Rect(0, 0, 0, 0)
         self._last_banner_text = ascii_art
         self._last_body_text = body_text
 
-
     def _on_list_activate(self, idx: int, item: Any) -> None:
+        # Mouse click path: ListWidget consumes the click event, so we must
+        # schedule activation for the scene to execute during update() where
+        # we have access to manager (scene stack / pop / set_scene).
         self.selected_idx = idx
-        # Activation is handled by scene-level path (so it can close/pop cleanly).
-        # We intentionally do nothing here; mouse click will still be consumed.
+        self._pending_mouse_activate = idx  # type: ignore[attr-defined]
 
     # ---- input ----------------------------------------------------------
 
@@ -793,9 +844,17 @@ class GeneralMenuScene(PanelScene):
             return
 
         if action == MENU_ACTION_UP:
-            self.selected_idx = (self.selected_idx - 1) % n
+            if self.WRAP_SELECTION:
+                self.selected_idx = (self.selected_idx - 1) % n
+            else:
+                self.selected_idx = max(0, self.selected_idx - 1)
+
         elif action == MENU_ACTION_DOWN:
-            self.selected_idx = (self.selected_idx + 1) % n
+            if self.WRAP_SELECTION:
+                self.selected_idx = (self.selected_idx + 1) % n
+            else:
+                self.selected_idx = min(n - 1, self.selected_idx + 1)
+
         elif action == MENU_ACTION_BACK:
             # Let legacy code decide what to do. Only auto-close if we're still active.
             before = manager.scene_stack[-1] if getattr(manager, "scene_stack", None) else None
@@ -834,6 +893,22 @@ class GeneralMenuScene(PanelScene):
         repeat_action = self._menu_input.update()
         if repeat_action is not None:
             self._handle_action(repeat_action, manager)
+
+        # Execute any pending mouse activation (set by ListWidget click).
+        pending = getattr(self, "_pending_mouse_activate", None)
+        if pending is not None:
+            self._pending_mouse_activate = None  # type: ignore[attr-defined]
+
+            # Mirror the keyboard Enter/Space behavior exactly.
+            before = manager.scene_stack[-1] if getattr(manager, "scene_stack", None) else None
+            should_close = self.on_activate(int(pending), manager)
+            after = manager.scene_stack[-1] if getattr(manager, "scene_stack", None) else None
+
+            if should_close and after is before and after is self:
+                if hasattr(manager, "pop_scene"):
+                    manager.pop_scene()
+                else:
+                    manager.set_scene(None)
 
         # Rebuild list items if changed
         items = self.get_menu_items()
@@ -954,6 +1029,12 @@ class PopupMenuScene(GeneralMenuScene):
       - fixed/preset sizing for now (scale), window_rect can be provided
     """
 
+    # Keep popups tighter by default
+    MAX_LIST_WIDTH: int = 520
+    MAX_BODY_WIDTH: int = 600
+    FILL_LIST_WIDTH: bool = False
+
+
     def __init__(
         self,
         window_rect: Optional[pygame.Rect] = None,
@@ -966,6 +1047,104 @@ class PopupMenuScene(GeneralMenuScene):
         self.popup_scale = scale
         self._background: Optional[pygame.Surface] = None
 
+    # --- Text scaling / “logical panel” behavior ------------------------
+
+    # Baseline behavior (old OptionsScene): draw the menu at a mostly-fullscreen
+    # logical size, then scale into the popup rect. This makes text squash/stretch
+    # with the popup. We extend that idea with an *auto-upscale* heuristic:
+    # if the menu content is sparse relative to the available popup space, we
+    # shrink the logical surface so the final scaled result uses chunkier text.
+    LOGICAL_SCREEN_FRACTION: float = 0.90
+
+    # Allow popups to enlarge their text when there is lots of unused space.
+    AUTO_TEXT_SCALE: bool = True
+    AUTO_TEXT_SCALE_MAX: float = 2.00
+    AUTO_TEXT_SCALE_MIN_ITEMS: int = 4  # don’t overreact for tiny menus
+
+    def _estimate_content_width_px(self, renderer) -> int:
+        """Rough width estimate for the menu list at *current* font size."""
+        try:
+            font = getattr(renderer, "menu_font", getattr(renderer, "small_font", renderer.font))
+        except Exception:
+            return 0
+        max_w = 0
+        # Prefer the actual widget list items if present (TwoColumnListWidget etc.)
+        items = getattr(self, "items", None) or []
+        for it in items:
+            label = getattr(it, "label", getattr(it, "name", str(it)))
+            value = getattr(it, "value", "")
+            value = "" if value is None else str(value)
+            # account for selection arrow + a bit of gap for two-column displays
+            s = "▶ " + str(label)
+            w = font.size(s)[0]
+            if value:
+                w += 24 + font.size(value)[0]
+            max_w = max(max_w, w)
+        return int(max_w)
+
+    def _estimate_content_lines(self) -> int:
+        """Rough line-count for height scaling (list + header/footer/body)."""
+        n = len(getattr(self, "items", None) or [])
+        # Header + footer are almost always present; body is sometimes present.
+        base = 2
+        if getattr(self, "title", None):
+            base += 1
+        if getattr(self, "body_text", None):
+            # Body tends to be a few wrapped lines; we keep it conservative.
+            base += 3
+        return max(1, n + base)
+
+    def _desired_text_scale(self, manager: "SceneManager") -> float:  # type: ignore[name-defined]
+        """Return a scale >= 1.0 for how much we want to enlarge text/spacing."""
+        if not self.AUTO_TEXT_SCALE:
+            return 1.0
+        items = getattr(self, "items", None) or []
+        if len(items) < int(self.AUTO_TEXT_SCALE_MIN_ITEMS):
+            return 1.0
+
+        r = manager.renderer
+        try:
+            font = getattr(r, "menu_font", getattr(r, "small_font", r.font))
+            base_h = max(1, int(font.get_height()))
+        except Exception:
+            return 1.0
+
+        # Height-driven scale: aim to fill ~85% of popup height with text rows.
+        rows = self._estimate_content_lines()
+        avail_h = max(1, int(self.window_rect.height * 0.85)) if self.window_rect else max(1, int(r.height * 0.85))
+        desired_h = max(1.0, avail_h / max(1, rows))
+        scale_h = desired_h / float(base_h)
+
+        # Width-driven cap: don’t scale so far that the widest row can’t fit.
+        avail_w = max(1, int(self.window_rect.width * 0.92)) if self.window_rect else max(1, int(r.width * 0.92))
+        content_w = max(1, self._estimate_content_width_px(r))
+        scale_w = avail_w / float(content_w)
+
+        # Only ever upscale here (>= 1.0).
+        s = max(1.0, min(float(scale_h), float(scale_w)))
+        return max(1.0, min(float(self.AUTO_TEXT_SCALE_MAX), s))
+
+    def get_logical_panel_size(self, manager: "SceneManager") -> Optional[tuple[int, int]]:  # type: ignore[name-defined]
+        """
+        Draw UI on a logical panel, then scale into this popup's rect.
+
+        We preserve the old squash/stretch behavior, but we also allow popups
+        with lots of dead space to *upscale* the whole UI (text + spacing) so
+        it feels less tiny/central.
+        """
+        r = manager.renderer
+        # The popup rect is already sized by popup_scale; choose a logical size
+        # that yields the scale factor we want.
+        desired_scale = self._desired_text_scale(manager)
+
+        # scale = window / logical  =>  logical_fraction = popup_scale / desired_scale
+        # Clamp so we never allocate a microscopic logical surface.
+        frac = float(self.popup_scale) / max(1e-6, float(desired_scale))
+        frac = max(0.35, min(float(self.LOGICAL_SCREEN_FRACTION), frac))
+
+        w = max(1, int(r.width * frac))
+        h = max(1, int(r.height * frac))
+        return (w, h)
     def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         if self.window_rect is not None:
             return
@@ -1066,4 +1245,3 @@ class PopupMenuScene(GeneralMenuScene):
                     game=getattr(self, "game", None),
                     scene=self,
                 )
-

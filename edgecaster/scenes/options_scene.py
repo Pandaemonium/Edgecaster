@@ -226,6 +226,8 @@ class OptionsScene(PopupMenuScene):
             max_list_width=700,
             max_body_width=600,
             banner_is_background=banner_is_background,
+            fill_list_width=True,
+
         )
 
         self.root.rect = pygame.Rect(0, 0, 0, 0)
@@ -533,10 +535,10 @@ class VisualOptionsScene(PopupMenuScene):
 
 class DeveloperOptionsScene(PopupMenuScene):
     """
-    Minimal dev stat editor (ported to PopupMenuScene).
+    Developer stat editor (restores Schwab's original debug logic).
 
-    Preserves the old behavior:
-    - Select a stat, use left/right to adjust, enter to bump, esc to return.
+    - Edits `character.stats` dict keys (CON/RES/INT/AGI).
+    - ↑/↓ select • ←/→ adjust • Enter/Space (or click) bumps • Esc back • F11 fullscreen
     """
 
     FOOTER_TEXT = (
@@ -544,13 +546,10 @@ class DeveloperOptionsScene(PopupMenuScene):
     )
 
     _FIELDS: List[Tuple[str, float]] = [
-        ("hp", 1.0),
-        ("max_hp", 1.0),
-        ("mp", 1.0),
-        ("max_mp", 1.0),
-        ("strength", 1.0),
-        ("dexterity", 1.0),
-        ("intelligence", 1.0),
+        ("con", 1.0),
+        ("res", 1.0),
+        ("int", 1.0),
+        ("agi", 1.0),
     ]
 
     def __init__(self, *, base_rect: pygame.Rect, depth: int, character: Any) -> None:
@@ -563,34 +562,90 @@ class DeveloperOptionsScene(PopupMenuScene):
         self.visual_profile = VisualProfile(angle=0.0, alpha=1.0)
         self.visual_effects = []
 
+    # ------------------------------ #
+    # Data plumbing
+    # ------------------------------ #
+
+    def _get_stats_dict(self) -> Dict[str, int]:
+        stats = getattr(self.character, "stats", None)
+        if not isinstance(stats, dict):
+            stats = {}
+            try:
+                setattr(self.character, "stats", stats)
+            except Exception:
+                # If the character object is strict, we still operate on a local dict.
+                pass
+        return stats  # type: ignore[return-value]
+
+    def _get_stat(self, key: str) -> int:
+        stats = self._get_stats_dict()
+        try:
+            return int(stats.get(key, 0))
+        except Exception:
+            return 0
+
+    def _set_stat(self, key: str, value: int) -> None:
+        stats = self._get_stats_dict()
+        stats[key] = int(max(0, value))
+
+    def _bump(self, key: str, delta: int) -> None:
+        self._set_stat(key, self._get_stat(key) + int(delta))
+
+    # ------------------------------ #
+    # PopupMenuScene hooks
+    # ------------------------------ #
+
     def get_ascii_art(self) -> Optional[str]:
         return "Developer mode"
 
     def get_body_text(self) -> Optional[str]:
         name = getattr(self.character, "name", None) or "character"
-        return f"Editing stats for {name}."
+        return f"Editing base stats for {name}."
 
     def get_menu_items(self) -> list[Any]:
+        # Build fresh every time so the UI reflects edits immediately.
         items: List[OptionItem] = []
-        for key, step in self._FIELDS:
-            v = getattr(self.character, key, None)
-            items.append(OptionItem("label", f"{key}: {v}", key=key))
+        for key, _step in self._FIELDS:
+            val = self._get_stat(key)
+            label = f"Base[{key.upper()}]"
+            items.append(OptionItem("label", label, key=key, value=str(val)))
         items.append(OptionItem("back", "Back"))
         self._items = items
         return list(items)
 
-    def _adjust(self, key: str, delta: float) -> None:
-        if not hasattr(self.character, key):
-            return
-        cur = getattr(self.character, key, 0)
-        try:
-            cur_f = float(cur)
-        except Exception:
-            return
-        new = cur_f + float(delta)
-        if key in ("hp", "max_hp", "mp", "max_mp"):
-            new = max(0.0, new)
-        setattr(self.character, key, int(new) if float(new).is_integer() else new)
+    def _build_widgets(self, items: list[Any]) -> None:
+        # Use TwoColumnListWidget so values show in the right column.
+        super()._build_widgets(items)
+
+        self._list = TwoColumnListWidget(
+            items,
+            selected_index=self.selected_idx,
+            on_activate=self._on_list_activate,
+            line_spacing=4,
+            padding=4,
+            value_gap=24,
+        )
+        self._list.rect = pygame.Rect(0, 0, 0, 0)
+
+        ascii_art = self.get_ascii_art() or ""
+        banner_is_background = bool(ascii_art) and self.wants_banner_background(ascii_art)
+
+        self.root = MenuFrameWidget(
+            banner=self._banner,
+            body=self._body,
+            list_widget=self._list,
+            footer=self._footer,
+            top_pad=16,
+            bottom_pad=8,
+            gap_after_banner=10,
+            gap_after_body=12,
+            min_list_height=120,
+            max_list_width=700,
+            max_body_width=600,
+            banner_is_background=banner_is_background,
+            fill_list_width=True,
+        )
+        self.root.rect = pygame.Rect(0, 0, 0, 0)
 
     def _handle_action(self, action: Optional[str], manager: "SceneManager") -> None:  # type: ignore[name-defined]
         if action is None:
@@ -604,7 +659,11 @@ class DeveloperOptionsScene(PopupMenuScene):
             self.on_back(manager)
             return
 
-        n = len(self._items) if self._items else 0
+        # Ensure we have an item list to index into.
+        if not self._items:
+            self.get_menu_items()
+
+        n = len(self._items)
         if n <= 0:
             return
 
@@ -614,6 +673,7 @@ class DeveloperOptionsScene(PopupMenuScene):
                 self._list.selected_index = self.selected_idx
                 self._list.ensure_visible(self.selected_idx)
             return
+
         if action == MENU_ACTION_DOWN:
             self.selected_idx = (self.selected_idx + 1) % n
             if self._list is not None:
@@ -624,27 +684,34 @@ class DeveloperOptionsScene(PopupMenuScene):
         if action in (MENU_ACTION_LEFT, MENU_ACTION_RIGHT, MENU_ACTION_ACTIVATE):
             idx = max(0, min(self.selected_idx, n - 1))
             item = self._items[idx]
+
             if item.kind == "back":
                 self.on_back(manager)
                 return
+
             if not item.key:
                 return
 
-            step = 1.0
-            for k, s in self._FIELDS:
-                if k == item.key:
-                    step = float(s)
-                    break
+            delta = -1 if action == MENU_ACTION_LEFT else 1
+            self._bump(item.key, delta)
 
-            if action == MENU_ACTION_LEFT:
-                self._adjust(item.key, -step)
-            else:
-                self._adjust(item.key, step)
+            # Refresh the list text so the new values show immediately.
+            try:
+                items = self.get_menu_items()
+                self._build_widgets(items)
+                if self._list is not None:
+                    self._list.selected_index = self.selected_idx
+                    self._list.ensure_visible(self.selected_idx)
+            except Exception:
+                pass
             return
 
         super()._handle_action(action, manager)
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        # Mouse click should behave like "bump forward" (legacy Enter behavior).
+        self.selected_idx = int(index)
+        self._handle_action(MENU_ACTION_ACTIVATE, manager)
         return False
 
     def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]

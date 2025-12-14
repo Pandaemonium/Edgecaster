@@ -489,7 +489,7 @@ class KeybindsRootWidget(Widget):
         self.rect = ctx.surface.get_rect()
 
         pad = 16
-        gap = 36
+        gap = 16
 
         # --- TITLE + RESET ROW (TOP) ---
         self.title.layout(ctx)
