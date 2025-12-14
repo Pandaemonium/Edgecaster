@@ -603,3 +603,437 @@ class HBox(Widget):
 
         for child in self.children:
             child.layout(ctx)
+
+
+
+class ScaledLabelWidget(Widget):
+    """
+    Label drawn using a base font but scaled up (cheap “big font” without new font assets).
+    Useful for title headers.
+    """
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        scale: int = 2,
+        color: Optional[tuple[int, int, int]] = None,
+        font: Optional[pygame.font.Font] = None,
+        padding: int = 0,
+        align: str = "left",
+    ) -> None:
+        super().__init__()
+        self.text = text
+        self.scale = max(1, int(scale))
+        self.color = color
+        self.font = font
+        self.padding = padding
+        self.align = align
+
+    def _base_font(self, ctx: WidgetContext) -> pygame.font.Font:
+        return self.font or getattr(
+            ctx.renderer,
+            "font",
+            getattr(ctx.renderer, "small_font"),
+        )
+
+    def layout(self, ctx: WidgetContext) -> None:
+        font = self._base_font(ctx)
+        w, h = font.size(self.text)
+        self.rect.width = w * self.scale + 2 * self.padding
+        self.rect.height = h * self.scale + 2 * self.padding
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+        font = self._base_font(ctx)
+        color = self.color or getattr(ctx.renderer, "fg", (255, 255, 255))
+
+        base = font.render(self.text, True, color)
+        surf = pygame.transform.scale(
+            base,
+            (base.get_width() * self.scale, base.get_height() * self.scale),
+        )
+
+        x = self.rect.x + self.padding
+        if self.align == "center":
+            x = self.rect.x + (self.rect.width - surf.get_width()) // 2
+        elif self.align == "right":
+            x = self.rect.right - self.padding - surf.get_width()
+        y = self.rect.y + self.padding
+
+        ctx.surface.blit(surf, (x, y))
+        super().draw(ctx)
+
+
+class ScaledMultiLineLabelWidget(Widget):
+    """
+    Multi-line label drawn at a base font size, then scaled.
+    Great for ASCII banners (Main Menu).
+    """
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        scale: int = 2,
+        color: Optional[tuple[int, int, int]] = None,
+        font: Optional[pygame.font.Font] = None,
+        padding: int = 0,
+        align: str = "left",
+        line_spacing: int = 0,
+    ) -> None:
+        super().__init__()
+        self.text = text
+        self.scale = max(1, int(scale))
+        self.color = color
+        self.font = font
+        self.padding = padding
+        self.align = align
+        self.line_spacing = line_spacing
+
+    def _base_font(self, ctx: WidgetContext) -> pygame.font.Font:
+        return self.font or getattr(
+            ctx.renderer,
+            "small_font",
+            getattr(ctx.renderer, "font"),
+        )
+
+    def layout(self, ctx: WidgetContext) -> None:
+        font = self._base_font(ctx)
+        lines = self.text.splitlines() or [""]
+        widths = [font.size(line)[0] for line in lines]
+        w = max(widths) if widths else 0
+        h_line = font.get_height()
+        h = len(lines) * h_line + max(0, len(lines) - 1) * self.line_spacing
+        self.rect.width = w * self.scale + 2 * self.padding
+        self.rect.height = h * self.scale + 2 * self.padding
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        font = self._base_font(ctx)
+        col = self.color or getattr(ctx.renderer, "fg", (220, 220, 220))
+        lines = self.text.splitlines() or [""]
+
+        # Render at base size first
+        widths = [font.size(line)[0] for line in lines] or [0]
+        w0 = max(widths)
+        h_line = font.get_height()
+        h0 = len(lines) * h_line + max(0, len(lines) - 1) * self.line_spacing
+
+        temp = pygame.Surface((max(1, w0), max(1, h0)), pygame.SRCALPHA)
+        y = 0
+        for line in lines:
+            s = font.render(line, True, col)
+            if self.align == "center":
+                x = (w0 - s.get_width()) // 2
+            elif self.align == "right":
+                x = (w0 - s.get_width())
+            else:
+                x = 0
+            temp.blit(s, (x, y))
+            y += h_line + self.line_spacing
+
+        # Scale up
+        surf = pygame.transform.scale(
+            temp,
+            (temp.get_width() * self.scale, temp.get_height() * self.scale),
+        )
+
+        x = self.rect.x + self.padding
+        y = self.rect.y + self.padding
+        ctx.surface.blit(surf, (x, y))
+        super().draw(ctx)
+
+
+# ---------------------------------------------------------------------------
+# Wrapping helpers + wrapped widgets
+# ---------------------------------------------------------------------------
+
+def _wrap_text_px(font: pygame.font.Font, text: str, max_width_px: int) -> List[str]:
+    """
+    Word-wrap in pixel space using `font.size()`.
+    Preserves explicit newlines.
+    """
+    max_width_px = max(1, int(max_width_px))
+    out: List[str] = []
+
+    for raw_line in (text.splitlines() or [""]):
+        words = raw_line.split()
+        if not words:
+            out.append("")
+            continue
+
+        cur = words[0]
+        for w in words[1:]:
+            test = cur + " " + w
+            if font.size(test)[0] <= max_width_px:
+                cur = test
+            else:
+                out.append(cur)
+                cur = w
+        out.append(cur)
+
+    return out
+
+
+class WrappedMultiLineLabelWidget(Widget):
+    """
+    Like MultiLineLabelWidget, but wraps automatically to a max pixel width.
+    This avoids ellipses and prevents long lines from running off the panel.
+    """
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        max_width_px: int = 520,
+        color: Optional[tuple[int, int, int]] = None,
+        font: Optional[pygame.font.Font] = None,
+        padding: int = 0,
+        align: str = "left",
+        line_spacing: int = 0,
+    ) -> None:
+        super().__init__()
+        self.text = text
+        self.max_width_px = int(max_width_px)
+        self.color = color
+        self.font = font
+        self.padding = padding
+        self.align = align
+        self.line_spacing = line_spacing
+        self._wrapped_lines: List[str] = [""]
+
+    def _base_font(self, ctx: WidgetContext) -> pygame.font.Font:
+        return self.font or getattr(
+            ctx.renderer,
+            "font",
+            getattr(ctx.renderer, "small_font"),
+        )
+
+    def layout(self, ctx: WidgetContext) -> None:
+        font = self._base_font(ctx)
+
+        # If the container set our rect.width already, respect it for wrapping.
+        inner_max = self.max_width_px
+        if self.rect.width > 0:
+            inner_max = max(1, self.rect.width - 2 * self.padding)
+
+        self._wrapped_lines = _wrap_text_px(font, self.text, inner_max)
+
+        widths = [font.size(line)[0] for line in self._wrapped_lines] or [0]
+        w = max(widths)
+        h_line = font.get_height()
+        h = len(self._wrapped_lines) * h_line + max(0, len(self._wrapped_lines) - 1) * self.line_spacing
+
+        self.rect.width = w + 2 * self.padding
+        self.rect.height = h + 2 * self.padding
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        font = self._base_font(ctx)
+        col = self.color or getattr(ctx.renderer, "fg", (220, 220, 220))
+
+        x0 = self.rect.x + self.padding
+        y = self.rect.y + self.padding
+        h_line = font.get_height()
+
+        for line in (self._wrapped_lines or [""]):
+            surf = font.render(line, True, col)
+            if self.align == "center":
+                x = x0 + (self.rect.width - 2 * self.padding - surf.get_width()) // 2
+            elif self.align == "right":
+                x = x0 + (self.rect.width - 2 * self.padding - surf.get_width())
+            else:
+                x = x0
+            ctx.surface.blit(surf, (x, y))
+            y += h_line + self.line_spacing
+
+        super().draw(ctx)
+
+
+class WrappedListWidget(Widget):
+    """
+    ListWidget variant that wraps long item labels to multiple lines (pixel wrap).
+    Selection still selects an "item", but it may render as multiple lines.
+    """
+
+    def __init__(
+        self,
+        items: List[Any],
+        *,
+        selected_index: int = 0,
+        on_activate: Optional[Callable[[int, Any], None]] = None,
+        padding: int = 4,
+        line_spacing: int = 2,
+        wrap_width_px: int = 520,
+    ) -> None:
+        super().__init__()
+        self.items = items
+        self.selected_index = selected_index
+        self.on_activate = on_activate
+        self.padding = padding
+        self.line_spacing = line_spacing
+        self.wrap_width_px = int(wrap_width_px)
+
+        self.scroll_offset: int = 0
+        self._font_h: int = 0
+        self._line_h: int = 0
+
+        # cache: item index -> wrapped lines (no prefix)
+        self._wrapped: List[List[str]] = []
+
+    def _item_label(self, item: Any) -> str:
+        if isinstance(item, str):
+            return item
+        return getattr(item, "label", getattr(item, "name", str(item)))
+
+    def set_items(self, items: List[Any]) -> None:
+        self.items = items
+        self.selected_index = max(0, min(self.selected_index, max(0, len(items) - 1)))
+        self.scroll_offset = max(0, min(self.scroll_offset, max(0, len(items) - 1)))
+        self._wrapped = []
+
+    def _font(self, ctx: WidgetContext) -> pygame.font.Font:
+        return getattr(
+            ctx.renderer,
+            "font",
+            getattr(ctx.renderer, "small_font"),
+        )
+
+    def _rebuild_wrap_cache(self, ctx: WidgetContext) -> None:
+        font = self._font(ctx)
+        self._font_h = font.get_height()
+        self._line_h = self._font_h + self.line_spacing
+
+        inner_w = self.wrap_width_px
+        if self.rect.width > 0:
+            inner_w = max(1, self.rect.width - 2 * self.padding)
+
+        # Reserve space for the prefix ("▶ " / "  ")
+        prefix_w = font.size("▶ ")[0]
+        inner_w = max(1, inner_w - prefix_w)
+
+        self._wrapped = []
+        for it in self.items:
+            label = self._item_label(it)
+            lines = _wrap_text_px(font, label, inner_w)
+            self._wrapped.append(lines or [""])
+
+    def _visible_capacity(self) -> int:
+        # Capacity in "rows" (each row is a rendered wrapped line).
+        if self._line_h <= 0:
+            return max(1, len(self.items))
+        usable_h = max(0, self.rect.height - 2 * self.padding)
+        return max(1, usable_h // self._line_h)
+
+    def ensure_visible(self, index: int) -> None:
+        # Scroll is by item, not by wrapped-line row; keep item in view.
+        cap_items = max(1, self._visible_items_capacity())
+        if index < self.scroll_offset:
+            self.scroll_offset = index
+        elif index >= self.scroll_offset + cap_items:
+            self.scroll_offset = max(0, index - cap_items + 1)
+
+        max_off = max(0, len(self.items) - cap_items)
+        self.scroll_offset = max(0, min(self.scroll_offset, max_off))
+
+    def _visible_items_capacity(self) -> int:
+        """
+        Conservative: estimate how many items fit by treating each item as 2 lines.
+        Good enough for popups (urgent/dialogue) where lists are short.
+        """
+        if self._line_h <= 0:
+            return max(1, len(self.items))
+        usable_h = max(0, self.rect.height - 2 * self.padding)
+        approx_lines = max(1, usable_h // self._line_h)
+        return max(1, approx_lines // 2)
+
+    def layout(self, ctx: WidgetContext) -> None:
+        font = self._font(ctx)
+        self._font_h = font.get_height()
+        self._line_h = self._font_h + self.line_spacing
+
+        # If width not preset, use wrap_width_px + padding
+        if self.rect.width == 0:
+            self.rect.width = self.wrap_width_px + 2 * self.padding
+
+        # If height not preset, show all items (approx) in a compact way
+        if self.rect.height == 0:
+            # Assume average 2 lines per item
+            est_lines = max(1, len(self.items) * 2)
+            self.rect.height = est_lines * self._line_h + 2 * self.padding
+
+        self._rebuild_wrap_cache(ctx)
+        self.ensure_visible(self.selected_index)
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        font = self._font(ctx)
+        fg = getattr(ctx.renderer, "fg", (255, 255, 255))
+        sel = getattr(
+            ctx.renderer,
+            "player_color",
+            getattr(ctx.renderer, "sel", (255, 255, 0)),
+        )
+
+        x = self.rect.x + self.padding
+        y = self.rect.y + self.padding
+
+        cap_lines = self._visible_capacity()
+        lines_drawn = 0
+
+        # Draw starting at scroll_offset item, consuming up to cap_lines wrapped rows
+        idx = self.scroll_offset
+        while idx < len(self.items) and lines_drawn < cap_lines:
+            wrapped = self._wrapped[idx] if idx < len(self._wrapped) else [self._item_label(self.items[idx])]
+            selected = (idx == self.selected_index)
+            color = sel if selected else fg
+
+            prefix = "▶ " if selected else "  "
+            for li, line in enumerate(wrapped):
+                if lines_drawn >= cap_lines:
+                    break
+                text = (prefix if li == 0 else "  ") + line
+                surf = font.render(text, True, color)
+                ctx.surface.blit(surf, (x, y))
+                y += self._line_h
+                lines_drawn += 1
+
+            idx += 1
+
+        super().draw(ctx)
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        if not (self.visible and self.enabled):
+            return False
+
+        # Keep it simple: mouse hover selects by item index based on approximate 2 lines per item.
+        if event.type == pygame.MOUSEMOTION:
+            if self.rect.collidepoint(event.pos):
+                rel_y = event.pos[1] - self.rect.y - self.padding
+                if self._line_h > 0:
+                    approx_item = self.scroll_offset + int(rel_y // (self._line_h * 2))
+                    if 0 <= approx_item < len(self.items):
+                        self.selected_index = approx_item
+                        self.ensure_visible(self.selected_index)
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                rel_y = event.pos[1] - self.rect.y - self.padding
+                if self._line_h > 0:
+                    approx_item = self.scroll_offset + int(rel_y // (self._line_h * 2))
+                    if 0 <= approx_item < len(self.items):
+                        self.selected_index = approx_item
+                        self.ensure_visible(self.selected_index)
+                        if self.on_activate:
+                            self.on_activate(self.selected_index, self.items[self.selected_index])
+                        return True
+
+        return super().handle_event(event, ctx)
