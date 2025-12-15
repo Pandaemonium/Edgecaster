@@ -533,8 +533,12 @@ class Game:
             "place_rune_anchor": {
                 # Range is expressed in tiles for ergonomics, then converted to Julia-plane sigma
                 # using tile_julia_grid step size at runtime.
-                "range": {"values": [25.0, 60.0, 140.0, 260.0], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Range (tiles)"},
-                "strength": {"values": [0.5, 0.75, 1.0], "thresholds": [0, 4, 8], "stat": "res", "label": "Strength"},
+                #
+                # NOTE: Rune anchors are intentionally *not* stat-gated. We want designers (and
+                # later players, via progression systems) to be able to freely tune anchor
+                # range/strength regardless of the host body's attributes.
+                "range": {"values": [25.0, 60.0, 140.0, 260.0], "thresholds": [0, 0, 0, 0], "stat": "res", "label": "Range (tiles)"},
+                "strength": {"values": [0.5, 0.75, 1.0], "thresholds": [0, 0, 0], "stat": "res", "label": "Strength"},
             },
         }
 
@@ -551,6 +555,9 @@ class Game:
             for key in params:
                 if action == "custom" and key == "amplitude":
                     # keep custom amplitude at user choice (default 1.0)
+                    continue
+                if action == "place_rune_anchor":
+                    # Rune-anchor range/strength are designer/player-tuned, not auto-maxed by stats.
                     continue
                 allowed = self._allowed_index(action, key)
                 if allowed < 0:

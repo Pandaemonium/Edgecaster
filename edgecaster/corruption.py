@@ -259,6 +259,56 @@ def _sample_tex_nn(tex: "array[float]", res: int, zx: float, zy: float) -> float
     return float(tex[iy * res + ix])
 
 
+def _sample_tex_bilinear(tex: "array[float]", res: int, zx: float, zy: float) -> float:
+    """Bilinear sample of a flat res*res float texture over [_LUT_MIN_Z, _LUT_MAX_Z]^2.
+
+    This reduces visible "blockiness" caused by nearest-neighbor LUT sampling,
+    at the cost of 4 texture reads instead of 1.
+    """
+    # Map to texture space in [0, res-1], clamped at bounds.
+    if zx <= _LUT_MIN_Z:
+        tx = 0.0
+    elif zx >= _LUT_MAX_Z:
+        tx = float(res - 1)
+    else:
+        tx = ((zx - _LUT_MIN_Z) * _LUT_INV_SPAN_Z) * (res - 1)
+
+    if zy <= _LUT_MIN_Z:
+        ty = 0.0
+    elif zy >= _LUT_MAX_Z:
+        ty = float(res - 1)
+    else:
+        ty = ((zy - _LUT_MIN_Z) * _LUT_INV_SPAN_Z) * (res - 1)
+
+    ix0 = int(math.floor(tx))
+    iy0 = int(math.floor(ty))
+    ix0 = 0 if ix0 < 0 else (res - 1 if ix0 >= res else ix0)
+    iy0 = 0 if iy0 < 0 else (res - 1 if iy0 >= res else iy0)
+    ix1 = ix0 + 1
+    iy1 = iy0 + 1
+    if ix1 >= res:
+        ix1 = res - 1
+    if iy1 >= res:
+        iy1 = res - 1
+
+    fx = float(tx) - float(ix0)
+    fy = float(ty) - float(iy0)
+    fx = 0.0 if fx < 0.0 else (1.0 if fx > 1.0 else fx)
+    fy = 0.0 if fy < 0.0 else (1.0 if fy > 1.0 else fy)
+
+    w00 = (1.0 - fx) * (1.0 - fy)
+    w10 = fx * (1.0 - fy)
+    w01 = (1.0 - fx) * fy
+    w11 = fx * fy
+
+    i00 = iy0 * res + ix0
+    i10 = iy0 * res + ix1
+    i01 = iy1 * res + ix0
+    i11 = iy1 * res + ix1
+
+    return float(tex[i00]) * w00 + float(tex[i10]) * w10 + float(tex[i01]) * w01 + float(tex[i11]) * w11
+
+
 def _fbm_value_noise_2d(
     x: float,
     y: float,
@@ -843,7 +893,7 @@ def distortion_dz(
         anchor_factor = 1.0
         try:
             a_tex = _anchor_lut(_anchors_cache_key(params.anchors), int(_LUT_RES))
-            anchor_factor = _sample_tex_nn(a_tex, _LUT_RES, zx, zy)
+            anchor_factor = _sample_tex_bilinear(a_tex, _LUT_RES, zx, zy)
         except Exception:
             # Fallback: direct (non-LUT) evaluation.
             anchor_factor = 1.0
@@ -893,22 +943,22 @@ def distortion_dz(
                 int(_LUT_RES),
             )
             w = float(getattr(params, "spline_weight", 0.0) or 0.0)
-            nx = _sample_tex_nn(spline_x_tex, _LUT_RES, zx, zy) * w
-            ny = _sample_tex_nn(spline_y_tex, _LUT_RES, zx, zy) * w
+            nx = _sample_tex_bilinear(spline_x_tex, _LUT_RES, zx, zy) * w
+            ny = _sample_tex_bilinear(spline_y_tex, _LUT_RES, zx, zy) * w
         else:
-            nx = _sample_tex_nn(nx_tex, _LUT_RES, zx, zy)
-            ny = _sample_tex_nn(ny_tex, _LUT_RES, zx, zy)
-        spots = _sample_tex_nn(spots_tex, _LUT_RES, zx, zy)
+            nx = _sample_tex_bilinear(nx_tex, _LUT_RES, zx, zy)
+            ny = _sample_tex_bilinear(ny_tex, _LUT_RES, zx, zy)
+        spots = _sample_tex_bilinear(spots_tex, _LUT_RES, zx, zy)
 
         hot = 0.0
         hot_dir_x = 0.0
         hot_dir_y = 0.0
         if params.hotspots:
             hot_tex, hot_gx_tex, hot_gy_tex = _hot_lut(_hotspots_cache_key(params.hotspots), int(_LUT_RES))
-            hot = _sample_tex_nn(hot_tex, _LUT_RES, zx, zy)
+            hot = _sample_tex_bilinear(hot_tex, _LUT_RES, zx, zy)
             if hot > 0.0:
-                gx = _sample_tex_nn(hot_gx_tex, _LUT_RES, zx, zy)
-                gy = _sample_tex_nn(hot_gy_tex, _LUT_RES, zx, zy)
+                gx = _sample_tex_bilinear(hot_gx_tex, _LUT_RES, zx, zy)
+                gy = _sample_tex_bilinear(hot_gy_tex, _LUT_RES, zx, zy)
                 mag = math.sqrt(gx * gx + gy * gy)
                 if mag > 1e-9:
                     hot_dir_x = gx / mag
@@ -1012,17 +1062,41 @@ def distortion_np(
         t = np.clip(t, 0.0, 1.0)
         return t * t * (3.0 - 2.0 * t)
 
-    def sample_nn_flat(tex: "np.ndarray", zx: "np.ndarray", zy: "np.ndarray") -> "np.ndarray":
-        ix = np.rint(((zx - lut_min_z) * lut_inv_span) * lut_scale).astype(np.int32)
-        iy = np.rint(((zy - lut_min_z) * lut_inv_span) * lut_scale).astype(np.int32)
-        ix = np.clip(ix, 0, lut_res - 1)
-        iy = np.clip(iy, 0, lut_res - 1)
-        return tex[iy * lut_res + ix]
+    # Bilinear LUT sampling (computed once per call and reused for all textures).
+    #
+    # This is noticeably smoother than nearest-neighbor sampling (less blockiness in
+    # both the main overmap and the ALT corruption view), at the cost of ~4x more
+    # texture reads inside the corruption math.
+    tx = ((zx_a - lut_min_z) * lut_inv_span) * lut_scale
+    ty = ((zy_a - lut_min_z) * lut_inv_span) * lut_scale
+    tx = np.clip(tx, 0.0, lut_scale)
+    ty = np.clip(ty, 0.0, lut_scale)
+
+    ix0 = np.floor(tx).astype(np.int32)
+    iy0 = np.floor(ty).astype(np.int32)
+    fx = (tx - ix0).astype(np.float64, copy=False)
+    fy = (ty - iy0).astype(np.float64, copy=False)
+
+    ix1 = np.minimum(ix0 + 1, lut_res - 1)
+    iy1 = np.minimum(iy0 + 1, lut_res - 1)
+
+    idx00 = iy0 * lut_res + ix0
+    idx10 = iy0 * lut_res + ix1
+    idx01 = iy1 * lut_res + ix0
+    idx11 = iy1 * lut_res + ix1
+
+    w00 = (1.0 - fx) * (1.0 - fy)
+    w10 = fx * (1.0 - fy)
+    w01 = (1.0 - fx) * fy
+    w11 = fx * fy
+
+    def sample_bilinear_flat(tex: "np.ndarray") -> "np.ndarray":
+        return tex[idx00] * w00 + tex[idx10] * w10 + tex[idx01] * w01 + tex[idx11] * w11
 
     # Rune anchors: multiplicatively suppress the effective corruption level.
     if params.anchors:
         if anchor_tex is not None:
-            anchor = sample_nn_flat(anchor_tex, zx_a, zy_a).astype(np.float64, copy=False)
+            anchor = sample_bilinear_flat(anchor_tex).astype(np.float64, copy=False)
         else:
             anchor = np.ones_like(zx_a, dtype=np.float64)
             for ax, ay, sigma, strength in params.anchors:
@@ -1038,7 +1112,7 @@ def distortion_np(
         corr_level_eff = corr_level
 
     # Sample LUT textures at the current z.
-    spots = sample_nn_flat(spots_tex, zx_a, zy_a).astype(np.float64, copy=False)
+    spots = sample_bilinear_flat(spots_tex).astype(np.float64, copy=False)
 
     # Choose the underlying vector field:
     # - landscape (gradient) by default
@@ -1050,25 +1124,27 @@ def distortion_np(
     )
     if use_spline:
         w = float(getattr(params, "spline_weight", 0.0) or 0.0)
-        nx = sample_nn_flat(spline_x_tex, zx_a, zy_a).astype(np.float64, copy=False) * w
-        ny = sample_nn_flat(spline_y_tex, zx_a, zy_a).astype(np.float64, copy=False) * w
+        nx = sample_bilinear_flat(spline_x_tex).astype(np.float64, copy=False) * w
+        ny = sample_bilinear_flat(spline_y_tex).astype(np.float64, copy=False) * w
     else:
-        nx = sample_nn_flat(nx_tex, zx_a, zy_a).astype(np.float64, copy=False)
-        ny = sample_nn_flat(ny_tex, zx_a, zy_a).astype(np.float64, copy=False)
+        nx = sample_bilinear_flat(nx_tex).astype(np.float64, copy=False)
+        ny = sample_bilinear_flat(ny_tex).astype(np.float64, copy=False)
 
     # Hotspots: scalar envelope + direction from its gradient.
     hot = np.zeros_like(nx, dtype=np.float64)
     hot_dir_x = np.zeros_like(nx, dtype=np.float64)
     hot_dir_y = np.zeros_like(nx, dtype=np.float64)
     if hot_tex is not None and hot_gx_tex is not None and hot_gy_tex is not None:
-        hot = sample_nn_flat(hot_tex, zx_a, zy_a).astype(np.float64, copy=False)
+        hot = sample_bilinear_flat(hot_tex).astype(np.float64, copy=False)
         if np.any(hot > 0.0):
-            gx = sample_nn_flat(hot_gx_tex, zx_a, zy_a).astype(np.float64, copy=False)
-            gy = sample_nn_flat(hot_gy_tex, zx_a, zy_a).astype(np.float64, copy=False)
+            gx = sample_bilinear_flat(hot_gx_tex).astype(np.float64, copy=False)
+            gy = sample_bilinear_flat(hot_gy_tex).astype(np.float64, copy=False)
             mag = np.sqrt(gx * gx + gy * gy)
             ok = mag > 1e-9
-            hot_dir_x = np.where(ok, gx / mag, 0.0)
-            hot_dir_y = np.where(ok, gy / mag, 0.0)
+            # Use np.divide with `where=` to avoid warnings from 0/0 (np.where would
+            # still evaluate both branches).
+            hot_dir_x = np.divide(gx, mag, out=np.zeros_like(gx), where=ok)
+            hot_dir_y = np.divide(gy, mag, out=np.zeros_like(gy), where=ok)
 
     # Right-side ramp only gates "spots" (and drives UI positioning), not a baseline corruption floor.
     span = float(j_max_x) - float(j_min_x)
