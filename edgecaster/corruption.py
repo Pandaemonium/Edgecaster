@@ -19,17 +19,32 @@ class CorruptionParams:
     """
 
     seed: int = 1337
-    # Base distortion frequency in Julia-plane units.
-    # (Used as the "detail" frequency for the mountain-like field.)
-    freq: float = 3.2
+    # Global frequency multiplier for the landscape heightfield used to build
+    # the distortion vector field (see _noise_lut). 1.0 matches the reference
+    # "Landscape" feel from distorted_Julia.py when combined with base_res/detail_res.
+    freq: float = 1.0
     # Distortion amplitude at corruption_level=1, before envelope scaling.
     amp: float = 0.5
 
     # Right-side "mountains of corruption" shaping (in normalized Julia x space).
     # 0.0 = start at far left of the current Julia view, 1.0 = only at far right.
-    right_start: float = 0.4
-    right_sharpness: float = 2.5
+    right_start: float = 0.30
+    right_sharpness: float = 2.0
     right_weight: float = 1.0
+
+    # Landscape builder knobs (ported from distorted_Julia.py init_landscape).
+    base_res: float = 3.0
+    detail_res: float = 3.0
+    ridge_strength: float = 0.90
+
+    # "Mountain-ness" shaping: we threshold the local distortion vector magnitude
+    # so the right side is not uniformly corrupted. Values are in the same units
+    # as the LUT vector field magnitude (after normalization in _noise_lut).
+    #
+    # - mag <= mount_mag_floor: treated as "near zero" (no corruption)
+    # - mag >= mount_mag_ceil: treated as "full mountain"
+    mount_mag_floor: float = 0.08
+    mount_mag_ceil: float = 0.35
 
     # Scattered hotspots (rare peaks) derived from noise.
     spot_freq: float = 1.1
@@ -119,10 +134,17 @@ def _fbm_value_noise_2d(
 def _noise_lut(
     seed: int,
     freq: float,
+    base_res: float,
+    detail_res: float,
+    ridge_strength: float,
     spot_freq: float,
     spot_threshold: float,
     spot_weight: float,
     right_start: float,
+    right_sharpness: float,
+    right_weight: float,
+    j_min_x: float,
+    j_max_x: float,
     res: int,
 ) -> tuple["array[float]", "array[float]", "array[float]"]:
     """Return (nx_tex, ny_tex, spots_tex) over the bounded z-plane domain.
@@ -142,14 +164,30 @@ def _noise_lut(
 
     step = _LUT_SPAN_Z / (res - 1)
 
-    # Build mountain-ish heightfield H (normalized) first.
+    # Build a "landscape" heightfield H (normalized) first, based on the
+    # prototype `init_landscape()` in distorted_Julia.py.
     h_tex = array("f", [0.0]) * (res * res)
-    base_mult = 0.25
-    ridge_strength = 1.25
     persistence = 0.55
     lacunarity = 2.0
 
     mountain_start = clamp(float(right_start), 0.0, 0.98)
+    sharpness = max(0.25, float(right_sharpness))
+    right_weight = float(right_weight)
+    base_res = max(0.01, float(base_res))
+    detail_res = max(0.01, float(detail_res))
+    ridge_strength = float(ridge_strength)
+
+    span = float(j_max_x) - float(j_min_x)
+    if abs(span) < 1e-9:
+        span = 1.0
+
+    # Precompute left->right mountain mask per column (saves work in the inner loop).
+    m_by_ix: list[float] = [0.0] * res
+    for ix in range(res):
+        zx = _LUT_MIN_Z + ix * step
+        x_norm = (float(zx) - float(j_min_x)) / span
+        m = smoothstep(mountain_start, 1.0, x_norm)
+        m_by_ix[ix] = (m ** sharpness) * right_weight
 
     for iy in range(res):
         zy = _LUT_MIN_Z + iy * step
@@ -157,38 +195,29 @@ def _noise_lut(
             zx = _LUT_MIN_Z + ix * step
             idx = iy * res + ix
 
-            # Two fBm layers: big hills + detail. Keep both tied to `freq` so
-            # a single knob changes the overall "grain size".
+            m = m_by_ix[ix]
+
+            # Two fBm layers: big hills + detail.
             base = _fbm_value_noise_2d(
-                zx * float(freq) * base_mult,
-                zy * float(freq) * base_mult,
+                zx * float(freq) * base_res,
+                zy * float(freq) * base_res,
                 seed + 11,
-                octaves=4,
+                octaves=3,
                 persistence=persistence,
                 lacunarity=lacunarity,
             )
             detail = _fbm_value_noise_2d(
-                zx * float(freq),
-                zy * float(freq),
+                zx * float(freq) * detail_res,
+                zy * float(freq) * detail_res,
                 seed + 101,
-                octaves=8,
+                octaves=5,
                 persistence=persistence,
                 lacunarity=lacunarity,
             )
             ridge = (1.0 - abs(detail)) ** 2.0
 
-            # Left->right mountain mask in the bounded z-domain. This produces
-            # clearer "mountain ridges" on the right side of the map, similar
-            # to distorted_Julia.py's `init_landscape()` scheme.
-            x_norm = ix / max(1, (res - 1))
-            m = smoothstep(mountain_start, 1.0, float(x_norm))
-            m = m ** 2.5
-
-            # Apply the left->right mask to all layers except the base map so the left side is
-            # mathematically flat (H=0) and therefore has zero distortion
-            # (d(z)=0). This keeps the far-left of the overmap close to an
-            # uncorrupted Julia set, while still allowing strong "mountain"
-            # ridges on the right.
+            # Heightfield: gentle base + mountains on the right.
+            # Note: we gate the *gradient* by m later so the far-left is exactly uncorrupted.
             h_tex[idx] = float(0.35 * base + m * (0.70 * detail + ridge_strength * ridge))
 
             # Scattered peaks derived from a separate low-frequency noise.
@@ -197,14 +226,18 @@ def _noise_lut(
             s = abs(_fbm_value_noise_2d(sx, sy, seed + 9001, octaves=3, persistence=0.6, lacunarity=2.0))
             spots_tex[idx] = float(smoothstep(float(spot_threshold), 1.0, s) * float(spot_weight))
 
-    # Normalize H to ~[-1,1].
-    max_val = max(h_tex, default=1.0)
-    if max_val < 1e-9:
-        max_val = 1.0
+    # Normalize H to ~[-1,1] like the prototype: subtract mean, divide by max-abs.
+    mean_h = float(sum(h_tex) / max(1, len(h_tex)))
     for i in range(len(h_tex)):
-        h_tex[i] = float(h_tex[i] / max_val)
+        h_tex[i] = float(h_tex[i] - mean_h)
+    max_abs = max((abs(float(v)) for v in h_tex), default=1.0)
+    if max_abs < 1e-9:
+        max_abs = 1.0
+    for i in range(len(h_tex)):
+        h_tex[i] = float(h_tex[i] / max_abs)
 
-    # Compute gradient of H into nx/ny.
+    # Compute gradient of H into nx/ny, and gate the vector field by the same
+    # left->right mask so d(z)=0 on the far-left.
     inv_step = 1.0 / step if abs(step) > 1e-12 else 1.0
     max_g2 = 1e-18
     for iy in range(res):
@@ -221,6 +254,9 @@ def _noise_lut(
             # Central differences (clamped at edges).
             gx = (h_r - h_l) * 0.5 * inv_step
             gy = (h_u - h_d) * 0.5 * inv_step
+            m = float(m_by_ix[ix])
+            gx *= m
+            gy *= m
             nx_tex[idx] = float(gx)
             ny_tex[idx] = float(gy)
             max_g2 = max(max_g2, gx * gx + gy * gy)
@@ -422,7 +458,7 @@ def corruption_envelope(
 
     # Global corruption scales *everything* (including explicit hotspots) so that a
     # "scale to 0" UI can cleanly return to the classic Julia set.
-    env = (right + spots * spot_mask + hot) * corruption_level
+    env = (spots * spot_mask + hot) * corruption_level
     return max(0.0, env)
 
 
@@ -431,37 +467,42 @@ def distortion_dz(
     zy: float,
     *,
     params: CorruptionParams,
-    j_min_x: float, # These are now ignored for masking logic
-    j_max_x: float, # These are now ignored for masking logic
+    j_min_x: float,
+    j_max_x: float,
     corruption_level: float,
 ) -> tuple[float, float, float]:
-    """Return (dx, dy, env) for d(z) = amp*env*(nx+i*ny)."""
-    
+    """Return (dx, dy, env) for z_{n+1} = z_n^2 + c + d(z_n)."""
+
     corruption_level = max(0.0, float(corruption_level))
     if corruption_level <= 0.0:
         return 0.0, 0.0, 0.0
 
     try:
-        # 1. Sample the Noise Texture (Generated in World Space -2.0 to 2.0)
         nx_tex, ny_tex, spots_tex = _noise_lut(
             int(params.seed),
             float(params.freq),
+            float(params.base_res),
+            float(params.detail_res),
+            float(params.ridge_strength),
             float(params.spot_freq),
             float(params.spot_threshold),
             float(params.spot_weight),
             float(params.right_start),
+            float(params.right_sharpness),
+            float(params.right_weight),
+            float(j_min_x),
+            float(j_max_x),
             int(_LUT_RES),
         )
+
         nx = _sample_tex_nn(nx_tex, _LUT_RES, zx, zy)
         ny = _sample_tex_nn(ny_tex, _LUT_RES, zx, zy)
         spots = _sample_tex_nn(spots_tex, _LUT_RES, zx, zy)
 
-        # 2. Hotspot Sampling
         hot = 0.0
         hot_dir_x = 0.0
         hot_dir_y = 0.0
         if params.hotspots:
-             # ... (Keep existing hotspot logic) ...
             hot_tex, hot_gx_tex, hot_gy_tex = _hot_lut(_hotspots_cache_key(params.hotspots), int(_LUT_RES))
             hot = _sample_tex_nn(hot_tex, _LUT_RES, zx, zy)
             if hot > 0.0:
@@ -472,10 +513,11 @@ def distortion_dz(
                     hot_dir_x = gx / mag
                     hot_dir_y = gy / mag
 
-        # 3. FIX: Calculate Mask in GLOBAL WORLD SPACE, not Screen Space.
-        #    This ensures x=-1.5 is ALWAYS safe, regardless of camera position.
-        #    (Using the same bounds as the LUT generation: -2.0 to 2.0)
-        x_norm = (float(zx) - _LUT_MIN_Z) / _LUT_SPAN_Z
+        span = float(j_max_x) - float(j_min_x)
+        if abs(span) < 1e-9:
+            x_norm = 0.0
+        else:
+            x_norm = (float(zx) - float(j_min_x)) / span
 
         right = smoothstep(float(params.right_start), 1.0, x_norm)
         if params.right_sharpness > 0:
@@ -485,48 +527,24 @@ def distortion_dz(
         right01 = clamp(float(right), 0.0, 1.0)
         spot_mask = smoothstep(0.0, 0.5, right01)
 
-        env_base = (right + float(spots) * spot_mask)
-        env_total = (env_base + float(hot)) * corruption_level
-        
-        if env_total <= 0.0:
+        # The LUT vector field already includes the left->right mountain mask.
+        # We additionally threshold the *magnitude* so the right side contains
+        # quiet valleys (near-zero corruption) and distinct "mountains".
+        spot_boost = 1.0 + float(spots) * spot_mask
+        field_x = spot_boost * float(nx) + float(hot) * hot_dir_x
+        field_y = spot_boost * float(ny) + float(hot) * hot_dir_y
+
+        mag = math.sqrt(field_x * field_x + field_y * field_y)
+        mount = smoothstep(float(params.mount_mag_floor), float(params.mount_mag_ceil), mag)
+        if mount <= 0.0:
             return 0.0, 0.0, 0.0
 
-        dx = float(params.amp) * corruption_level * (env_base * float(nx) + float(hot) * hot_dir_x)
-        dy = float(params.amp) * corruption_level * (env_base * float(ny) + float(hot) * hot_dir_y)
+        dx = float(params.amp) * corruption_level * field_x * mount
+        dy = float(params.amp) * corruption_level * field_y * mount
+        env_total = mount * corruption_level
         return dx, dy, env_total
 
     except Exception:
-        # Fallback must ALSO use global bounds to match visual expectations
-        # (We inline the logic here to ensure it uses _LUT constants)
-        x_norm = (float(zx) - _LUT_MIN_Z) / _LUT_SPAN_Z
-        
-        right = smoothstep(float(params.right_start), 1.0, x_norm)
-        if params.right_sharpness > 0: right = right ** float(params.right_sharpness)
-        right *= float(params.right_weight)
-        
-        # Recalculate spots/hot raw
-        s = abs(_fbm_value_noise_2d(zx * params.spot_freq, zy * params.spot_freq, params.seed + 9001, octaves=3, persistence=0.6, lacunarity=2.0))
-        spots = smoothstep(params.spot_threshold, 1.0, s) * params.spot_weight
-        
-        hot = 0.0
-        if params.hotspots:
-             hot = _hotspot_envelope(zx, zy, params.hotspots)
-             
-        spot_mask = smoothstep(0.0, 0.5, clamp(right, 0.0, 1.0))
-        env = (right + spots * spot_mask + hot) * corruption_level
-        
-        if env <= 0.0: return 0.0, 0.0, 0.0
-        
-        fx = zx * params.freq
-        fy = zy * params.freq
-        nx = value_noise_2d(fx, fy, params.seed + 101)
-        ny = value_noise_2d(fx, fy, params.seed + 202)
-        dx = params.amp * env * nx
-        dy = params.amp * env * ny
-        return dx, dy, env
-
-    except Exception:
-        # Defensive fallback: exact evaluation.
         env = corruption_envelope(
             zx,
             zy,
@@ -537,13 +555,115 @@ def distortion_dz(
         )
         if env <= 0.0:
             return 0.0, 0.0, 0.0
-        fx = zx * params.freq
-        fy = zy * params.freq
+        fx = zx * float(params.freq) * float(params.detail_res)
+        fy = zy * float(params.freq) * float(params.detail_res)
         nx = value_noise_2d(fx, fy, params.seed + 101)
         ny = value_noise_2d(fx, fy, params.seed + 202)
-        dx = params.amp * env * nx
-        dy = params.amp * env * ny
+        dx = float(params.amp) * env * nx
+        dy = float(params.amp) * env * ny
         return dx, dy, env
+
+
+def distortion_np(
+    zx_a,
+    zy_a,
+    *,
+    params: CorruptionParams,
+    j_min_x: float,
+    j_max_x: float,
+    corruption_level: float,
+    nx_tex,
+    ny_tex,
+    spots_tex,
+    hot_tex=None,
+    hot_gx_tex=None,
+    hot_gy_tex=None,
+    lut_res: int = _LUT_RES,
+):
+    """Vectorized analogue of distortion_dz for numpy arrays.
+
+    This exists so the overmap "numpy fast-path" uses the exact same corruption
+    rules as the scalar path (local mapgen + python fallback renderer).
+    """
+    # Local import so core gameplay doesn't require numpy.
+    import numpy as np
+
+    corr_level = float(corruption_level or 0.0)
+    if corr_level <= 0.0:
+        z = np.zeros_like(zx_a, dtype=np.float64)
+        return z, z, z
+
+    lut_res = int(lut_res)
+    if lut_res <= 2:
+        lut_res = 2
+
+    lut_min_z = float(_LUT_MIN_Z)
+    lut_inv_span = float(_LUT_INV_SPAN_Z)
+    lut_scale = float(lut_res - 1)
+
+    def smoothstep_np(edge0: float, edge1: float, x: "np.ndarray") -> "np.ndarray":
+        denom = float(edge1) - float(edge0)
+        if abs(denom) < 1e-12:
+            return np.zeros_like(x, dtype=np.float64)
+        t = (x - float(edge0)) / denom
+        t = np.clip(t, 0.0, 1.0)
+        return t * t * (3.0 - 2.0 * t)
+
+    def sample_nn_flat(tex: "np.ndarray", zx: "np.ndarray", zy: "np.ndarray") -> "np.ndarray":
+        ix = np.rint(((zx - lut_min_z) * lut_inv_span) * lut_scale).astype(np.int32)
+        iy = np.rint(((zy - lut_min_z) * lut_inv_span) * lut_scale).astype(np.int32)
+        ix = np.clip(ix, 0, lut_res - 1)
+        iy = np.clip(iy, 0, lut_res - 1)
+        return tex[iy * lut_res + ix]
+
+    # Sample LUT textures at the current z.
+    nx = sample_nn_flat(nx_tex, zx_a, zy_a).astype(np.float64, copy=False)
+    ny = sample_nn_flat(ny_tex, zx_a, zy_a).astype(np.float64, copy=False)
+    spots = sample_nn_flat(spots_tex, zx_a, zy_a).astype(np.float64, copy=False)
+
+    # Hotspots: scalar envelope + direction from its gradient.
+    hot = np.zeros_like(nx, dtype=np.float64)
+    hot_dir_x = np.zeros_like(nx, dtype=np.float64)
+    hot_dir_y = np.zeros_like(nx, dtype=np.float64)
+    if hot_tex is not None and hot_gx_tex is not None and hot_gy_tex is not None:
+        hot = sample_nn_flat(hot_tex, zx_a, zy_a).astype(np.float64, copy=False)
+        if np.any(hot > 0.0):
+            gx = sample_nn_flat(hot_gx_tex, zx_a, zy_a).astype(np.float64, copy=False)
+            gy = sample_nn_flat(hot_gy_tex, zx_a, zy_a).astype(np.float64, copy=False)
+            mag = np.sqrt(gx * gx + gy * gy)
+            ok = mag > 1e-9
+            hot_dir_x = np.where(ok, gx / mag, 0.0)
+            hot_dir_y = np.where(ok, gy / mag, 0.0)
+
+    # Right-side ramp only gates "spots" (and drives UI positioning), not a baseline corruption floor.
+    span = float(j_max_x) - float(j_min_x)
+    if abs(span) < 1e-12:
+        x_norm = np.zeros_like(nx, dtype=np.float64)
+    else:
+        x_norm = (zx_a - float(j_min_x)) / span
+
+    right = smoothstep_np(float(params.right_start), 1.0, x_norm)
+    if float(params.right_sharpness) > 0.0:
+        right = right ** float(params.right_sharpness)
+    right = right * float(params.right_weight)
+
+    right01 = np.clip(right, 0.0, 1.0)
+    spot_mask = smoothstep_np(0.0, 0.5, right01)
+
+    # The LUT vector field already includes the left->right mountain mask.
+    # We additionally threshold the *magnitude* so the right side contains
+    # quiet valleys (near-zero corruption) and distinct "mountains".
+    spot_boost = 1.0 + spots * spot_mask
+    field_x = spot_boost * nx + hot * hot_dir_x
+    field_y = spot_boost * ny + hot * hot_dir_y
+
+    mag = np.sqrt(field_x * field_x + field_y * field_y)
+    mount = smoothstep_np(float(params.mount_mag_floor), float(params.mount_mag_ceil), mag)
+
+    dx = float(params.amp) * corr_level * field_x * mount
+    dy = float(params.amp) * corr_level * field_y * mount
+    env_total = mount * corr_level
+    return dx, dy, env_total
 
 
 def julia_height_norm_corrupted(

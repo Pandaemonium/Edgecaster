@@ -33,6 +33,9 @@ def render_overmap_buffers_numpy(
 
     This avoids per-pixel Python loops by vectorizing the Julia iteration across the
     entire low-res overmap grid.
+
+    Corruption logic is delegated to `edgecaster.corruption.distortion_np` so the
+    numpy fast-path cannot drift from the scalar corruption rules used elsewhere.
     """
     import math
 
@@ -93,17 +96,21 @@ def render_overmap_buffers_numpy(
     # Corruption LUTs (sampled by nearest-neighbor in bounded z domain).
     # -------------------------------------------------------------------------
     lut_res = int(getattr(corr, "_LUT_RES", 256))
-    lut_min_z = float(getattr(corr, "_LUT_MIN_Z", -2.0))
-    lut_inv_span = float(getattr(corr, "_LUT_INV_SPAN_Z", 1.0 / 4.0))
-    lut_scale = float(lut_res - 1)
 
     nx_arr, ny_arr, spots_arr = corr._noise_lut(  # type: ignore[attr-defined]
         int(corr_params.seed),
         float(corr_params.freq),
+        float(corr_params.base_res),
+        float(corr_params.detail_res),
+        float(corr_params.ridge_strength),
         float(corr_params.spot_freq),
         float(corr_params.spot_threshold),
         float(corr_params.spot_weight),
         float(corr_params.right_start),
+        float(corr_params.right_sharpness),
+        float(corr_params.right_weight),
+        float(j_min_x),
+        float(j_max_x),
         int(lut_res),
     )
     nx_tex = np.frombuffer(nx_arr, dtype=np.float32)
@@ -123,64 +130,24 @@ def render_overmap_buffers_numpy(
         hot_gx_tex = None
         hot_gy_tex = None
 
-    def smoothstep(edge0: float, edge1: float, x: "np.ndarray") -> "np.ndarray":
-        denom = float(edge1) - float(edge0)
-        if abs(denom) < 1e-12:
-            return np.zeros_like(x, dtype=np.float64)
-        t = (x - float(edge0)) / denom
-        t = np.clip(t, 0.0, 1.0)
-        return t * t * (3.0 - 2.0 * t)
-
-    def sample_nn_flat(tex: "np.ndarray", zx_a: "np.ndarray", zy_a: "np.ndarray") -> "np.ndarray":
-        ix = np.rint(((zx_a - lut_min_z) * lut_inv_span) * lut_scale).astype(np.int32)
-        iy = np.rint(((zy_a - lut_min_z) * lut_inv_span) * lut_scale).astype(np.int32)
-        ix = np.clip(ix, 0, lut_res - 1)
-        iy = np.clip(iy, 0, lut_res - 1)
-        return tex[iy * lut_res + ix]
-
     def distortion_np(zx_a: "np.ndarray", zy_a: "np.ndarray") -> tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
-        """Vectorized analogue of edgecaster.corruption.distortion_dz (for arrays)."""
-        if corr_level <= 0.0:
-            z = np.zeros_like(zx_a, dtype=np.float64)
-            return z, z, z
-
-        nx = sample_nn_flat(nx_tex, zx_a, zy_a).astype(np.float64, copy=False)
-        ny = sample_nn_flat(ny_tex, zx_a, zy_a).astype(np.float64, copy=False)
-        spots = sample_nn_flat(spots_tex, zx_a, zy_a).astype(np.float64, copy=False)
-
-        hot = np.zeros_like(zx_a, dtype=np.float64)
-        hot_dir_x = np.zeros_like(zx_a, dtype=np.float64)
-        hot_dir_y = np.zeros_like(zx_a, dtype=np.float64)
-        if hot_tex is not None and hot_gx_tex is not None and hot_gy_tex is not None:
-            hot = sample_nn_flat(hot_tex, zx_a, zy_a).astype(np.float64, copy=False)
-            if np.any(hot > 0.0):
-                gx = sample_nn_flat(hot_gx_tex, zx_a, zy_a).astype(np.float64, copy=False)
-                gy = sample_nn_flat(hot_gy_tex, zx_a, zy_a).astype(np.float64, copy=False)
-                mag = np.sqrt(gx * gx + gy * gy)
-                ok = mag > 1e-9
-                hot_dir_x = np.where(ok, gx / mag, 0.0)
-                hot_dir_y = np.where(ok, gy / mag, 0.0)
-
-        span = float(j_max_x) - float(j_min_x)
-        if abs(span) < 1e-12:
-            x_norm = np.zeros_like(zx_a, dtype=np.float64)
-        else:
-            x_norm = (zx_a - float(j_min_x)) / span
-
-        right = smoothstep(float(corr_params.right_start), 1.0, x_norm)
-        if float(corr_params.right_sharpness) > 0.0:
-            right = right ** float(corr_params.right_sharpness)
-        right = right * float(corr_params.right_weight)
-
-        right01 = np.clip(right, 0.0, 1.0)
-        spot_mask = smoothstep(0.0, 0.5, right01)
-
-        env_base = right + spots * spot_mask
-        env_total = (env_base + hot) * corr_level
-
-        dx = float(corr_params.amp) * corr_level * (env_base * nx + hot * hot_dir_x)
-        dy = float(corr_params.amp) * corr_level * (env_base * ny + hot * hot_dir_y)
-        return dx, dy, env_total
+        # Delegate to the canonical implementation so we never drift from
+        # the scalar corruption rules (used by local mapgen and the python renderer fallback).
+        return corr.distortion_np(  # type: ignore[attr-defined]
+            zx_a,
+            zy_a,
+            params=corr_params,
+            j_min_x=float(j_min_x),
+            j_max_x=float(j_max_x),
+            corruption_level=corr_level,
+            nx_tex=nx_tex,
+            ny_tex=ny_tex,
+            spots_tex=spots_tex,
+            hot_tex=hot_tex,
+            hot_gx_tex=hot_gx_tex,
+            hot_gy_tex=hot_gy_tex,
+            lut_res=lut_res,
+        )
 
     # -------------------------------------------------------------------------
     # Julia iteration (vectorized over alive points).

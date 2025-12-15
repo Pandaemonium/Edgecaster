@@ -409,8 +409,11 @@ class WorldMapScene(Scene):
 
         used_numpy = False
         try:
-            # Optional fast path: vectorized numpy Julia iteration across the whole overmap grid.
-            # Falls back to the slower per-pixel loop if numpy isn't available or something fails.
+            # Optional fast path: numpy-accelerated Julia iteration across the whole overmap grid.
+            # If numpy isn't available (or something fails), we fall back to the slower per-pixel loop.
+            #
+            # NOTE: Both paths use the same corruption rules from edgecaster.corruption
+            # (distortion_dz / distortion_np), so this switch should affect performance only.
             from edgecaster.overmap_accel import render_overmap_buffers_numpy
 
             rgb_main, rgb_corr, _peak_env = render_overmap_buffers_numpy(
