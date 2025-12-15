@@ -65,6 +65,16 @@ class AsciiRenderer:
         self.font = pygame.font.SysFont("consolas", self.base_tile)  # UI font (fixed)
         self.map_font = pygame.font.SysFont("consolas", self.tile)  # map glyphs, scales with zoom
         self.small_font = pygame.font.SysFont("consolas", 16)
+        # --- Menu fonts (chunkier defaults for widget-driven menus/popups) ---
+        # Keep the log / HUD using small_font; only widgets will prefer menu_font.
+        menu_size = int(round(self.base_tile * 1.15))  # e.g. 16 -> 18
+        menu_size = max(16, min(26, menu_size))
+        self.menu_font = pygame.font.SysFont("consolas", menu_size, bold=True)
+
+        # Optional: a slightly bigger title font for headers (used by ScaledLabelWidget etc. if you want)
+        title_size = int(round(menu_size * 1.15))  # e.g. 18 -> 21
+        title_size = max(menu_size, min(32, title_size))
+        self.menu_title_font = pygame.font.SysFont("consolas", title_size, bold=True)
         self.bg = (10, 10, 20)
         self.fg = (220, 230, 240)
         self.dim = (120, 130, 150)

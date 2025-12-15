@@ -457,6 +457,79 @@ def _with_alpha_layer(surf: pygame.Surface, rect: pygame.Rect) -> pygame.Surface
     return pygame.Surface((max(1, rect.w), max(1, rect.h)), pygame.SRCALPHA)
 
 
+# ---------------------------------------------------------------------------
+# Persistent particle fields (to avoid "teleporting" overlays)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+from typing import Dict, Tuple
+
+@dataclass
+class _Particle:
+    x: float
+    y: float
+    vx: float
+    vy: float
+    r: float
+    a: int
+    wobble: float = 0.0
+    wobble_speed: float = 0.0
+
+
+@dataclass
+class _ParticleField:
+    particles: list[_Particle]
+    last_t: int
+    # Cache key info so we can detect rect changes and rebuild.
+    w: int
+    h: int
+
+
+# Module-level cache: (effect_name, stable_seed) -> particle field
+_PARTICLE_FIELDS: Dict[Tuple[str, int], _ParticleField] = {}
+
+
+def _get_particle_field(
+    effect_name: str,
+    obj: Any,
+    rect: pygame.Rect,
+    *,
+    salt: int,
+    count: int,
+    init_fn,
+) -> _ParticleField:
+    """
+    Get or create a persistent particle field for (effect_name, obj).
+    Rebuilds automatically if the overlay rect size changes.
+    """
+    w, h = rect.size
+    if w <= 0 or h <= 0:
+        # Still return something safe
+        return _ParticleField([], pygame.time.get_ticks(), max(1, w), max(1, h))
+
+    key = (effect_name, _stable_seed(obj, salt))
+    field = _PARTICLE_FIELDS.get(key)
+
+    if field is None or field.w != w or field.h != h:
+        rng = random.Random(key[1] ^ 0xA5A5A5A5)
+        particles = [init_fn(rng, w, h) for _ in range(count)]
+        field = _ParticleField(particles=particles, last_t=pygame.time.get_ticks(), w=w, h=h)
+        _PARTICLE_FIELDS[key] = field
+
+    return field
+
+
+def _field_dt_ms(field: _ParticleField, t: int) -> int:
+    dt = int(t) - int(field.last_t)
+    if dt < 0:
+        dt = 0
+    # Clamp huge dt spikes (alt-tab) so particles don't jump across the screen.
+    if dt > 100:
+        dt = 100
+    field.last_t = int(t)
+    return dt
+
+
 
 def _clockwise_profile(p: VisualProfile, t: int) -> VisualProfile:
     # Historical behavior: -5 degrees
@@ -614,16 +687,81 @@ def _fiery_color(ent: Any, base: RGB, t: int) -> RGB:
 
 
 def _fiery_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
-    # Tiny ember puffs; deterministic per object, animated by time buckets.
-    rng = random.Random(_stable_seed(obj, 1337) ^ ((t // 90) & 0xFFFFFFFF))
-    n = max(6, (rect.w * rect.h) // 8000)  # scale with area (cheap)
-    for _ in range(n):
-        x = rng.randrange(rect.left, rect.right)
-        y = rng.randrange(rect.top, rect.bottom)
-        r = rng.randrange(1, 3)
-        # Ember color with slight variance
-        col = (255, rng.randrange(120, 200), rng.randrange(40, 90), rng.randrange(90, 170))
-        pygame.draw.circle(surf, col, (x, y), r)
+    if rect.w <= 0 or rect.h <= 0:
+        return
+
+    # Ember count scales with area, cap for perf.
+    n = max(6, min(26, (rect.w * rect.h) // 9000))
+
+    def init_ember(rng: random.Random, w: int, h: int) -> _Particle:
+        # Spawn near the bottom half, since the effect rect often extends upward.
+        x = rng.uniform(0.0, w)
+        y = rng.uniform(h * 0.55, h * 1.05)
+
+        # Upward drift with small sideways motion
+        vy = -rng.uniform(35.0, 95.0)     # px/s
+        vx = rng.uniform(-18.0, 18.0)     # px/s
+
+        r = rng.uniform(1.0, 3.0)
+        a = rng.randrange(85, 170)
+
+        wobble = rng.uniform(0.0, math.tau)
+        wobble_speed = rng.uniform(1.2, 3.4)
+
+        return _Particle(x=x, y=y, vx=vx, vy=vy, r=r, a=a, wobble=wobble, wobble_speed=wobble_speed)
+
+    field = _get_particle_field(
+        "fiery",
+        obj,
+        rect,
+        salt=1337,
+        count=n,
+        init_fn=init_ember,
+    )
+
+    dt_ms = _field_dt_ms(field, t)
+    dt = dt_ms / 1000.0
+    w, h = field.w, field.h
+
+    for p in field.particles:
+        # Motion
+        p.x += p.vx * dt
+        p.y += p.vy * dt
+
+        # Flickery meander (hot air)
+        p.wobble += p.wobble_speed * dt
+        p.x += math.sin(p.wobble) * 14.0 * dt
+        p.y += math.cos(p.wobble * 0.7) * 6.0 * dt
+
+        # If it rises out, respawn low-ish with fresh parameters (but no global teleporting)
+        if p.y < -p.r * 3:
+            rng = random.Random((_stable_seed(obj, 1337) ^ int(t) ^ (id(p) & 0xFFFF)) & 0xFFFFFFFF)
+            p.x = rng.uniform(0.0, w)
+            p.y = rng.uniform(h * 0.65, h * 1.05)
+            p.vy = -rng.uniform(35.0, 95.0)
+            p.vx = rng.uniform(-18.0, 18.0)
+            p.r = rng.uniform(1.0, 3.0)
+            p.a = rng.randrange(85, 170)
+            p.wobble = rng.uniform(0.0, math.tau)
+            p.wobble_speed = rng.uniform(1.2, 3.4)
+
+        # Soft wrap sideways so embers don't "stick" at edges
+        if p.x < -p.r * 2:
+            p.x = w + p.r * 2
+        elif p.x > w + p.r * 2:
+            p.x = -p.r * 2
+
+        x = int(rect.left + p.x)
+        y = int(rect.top + p.y)
+
+        # Ember color: orange/yellow with slight per-particle jitter.
+        # (We avoid time-bucket reseed; we do a tiny deterministic flicker instead.)
+        flick = 0.65 + 0.35 * (0.5 + 0.5 * math.sin(p.wobble * 3.0 + (t * 0.01)))
+        g = int(120 + 95 * flick)
+        b = int(35 + 60 * (1.0 - flick))
+        a = int(p.a * (0.70 + 0.30 * flick))
+
+        pygame.draw.circle(surf, (255, g, b, a), (x, y), max(1, int(p.r)))
 
 
 
@@ -661,30 +799,61 @@ def _colossal_profile(p: VisualProfile, t: int) -> VisualProfile:
 
 
 def _smoky_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
-    # Big, slow, billowy smoke
-    # - slower time bucket so it doesn't "sparkle"
-    # - larger radii + softer alpha
-    # - upward drift so it reads as smoke
-    rng = random.Random(_stable_seed(obj, 4242) ^ ((t // 340) & 0xFFFFFFFF))
+    if rect.w <= 0 or rect.h <= 0:
+        return
 
-    # fewer blobs overall
-    n = max(5, (rect.w * rect.h) // 18000)
+    # Fewer blobs overall; scale with area, cap for perf.
+    n = max(5, min(24, (rect.w * rect.h) // 14000))
 
-    # slow rise
-    rise = (t // 22) % max(1, rect.h)
+    def init_smoke(rng: random.Random, w: int, h: int) -> _Particle:
+        # Start slightly below center so it "rises"
+        x = rng.uniform(0.0, w)
+        y = rng.uniform(h * 0.35, h * 1.05)
+        vx = rng.uniform(-8.0, 8.0)
+        vy = -rng.uniform(10.0, 28.0)
+        r = rng.uniform(6.0, 14.0)
+        a = rng.randrange(18, 55)
+        wobble = rng.uniform(0.0, math.tau)
+        wobble_speed = rng.uniform(0.6, 1.4)
+        return _Particle(x=x, y=y, vx=vx, vy=vy, r=r, a=a, wobble=wobble, wobble_speed=wobble_speed)
 
-    for _ in range(n):
-        x = rng.randrange(rect.left, rect.right)
-        # bias towards lower half, then drift upward
-        y0 = rng.randrange(rect.top + rect.h // 3, rect.bottom)
-        y = y0 - rise
-        # wrap if needed
-        while y < rect.top:
-            y += rect.h
+    field = _get_particle_field(
+        "smoky",
+        obj,
+        rect,
+        salt=4242,
+        count=n,
+        init_fn=init_smoke,
+    )
 
-        r = rng.randrange(5, 11)
-        alpha = rng.randrange(18, 55)
-        pygame.draw.circle(surf, (180, 180, 180, alpha), (x, y), r)
+    dt_ms = _field_dt_ms(field, t)
+    dt = dt_ms / 1000.0
+    w, h = field.w, field.h
+
+    for p in field.particles:
+        # Drift + rise
+        p.x += p.vx * dt
+        p.y += p.vy * dt
+
+        # Very gentle meander
+        p.wobble += p.wobble_speed * dt
+        p.x += math.sin(p.wobble) * 6.0 * dt
+
+        # Wrap: when it goes above, respawn low
+        if p.y < -p.r * 2:
+            p.y = h + p.r * 2
+            p.x = (p.x + random.uniform(-20, 20)) % w
+
+        # Wrap sideways
+        if p.x < -p.r * 2:
+            p.x = w + p.r * 2
+        elif p.x > w + p.r * 2:
+            p.x = -p.r * 2
+
+        x = int(rect.left + p.x)
+        y = int(rect.top + p.y)
+        pygame.draw.circle(surf, (180, 180, 180, p.a), (x, y), int(p.r))
+
 
 
 
@@ -729,19 +898,65 @@ def _carbonated_color(ent: Any, base: RGB, t: int) -> RGB:
 
 
 def _carbonated_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
-    rng = random.Random(_stable_seed(obj, 777) ^ ((t // 260) & 0xFFFFFFFF))
+    if rect.w <= 0 or rect.h <= 0:
+        return
 
-    bubbles = 4
-    rise = (t // 16)
+    # Bubble count scales with area, but stays modest.
+    bubbles = max(4, min(18, (rect.w * rect.h) // 9000))
 
-    for _ in range(bubbles):
-        x = rng.randrange(rect.left, rect.right)
-        y = rect.bottom - ((rise + rng.randrange(0, rect.h)) % max(1, rect.h))
-        r = rng.randrange(3, 7)
+    def init_bubble(rng: random.Random, w: int, h: int) -> _Particle:
+        x = rng.uniform(0.0, w)
+        y = rng.uniform(0.0, h)
+        # Rising speed (px/s), with slight variation
+        vy = -rng.uniform(20.0, 55.0)
+        vx = rng.uniform(-6.0, 6.0)
+        r = rng.uniform(2.5, 6.5)
+        a = rng.randrange(70, 130)
+        wobble = rng.uniform(0.0, math.tau)
+        wobble_speed = rng.uniform(1.0, 2.5)
+        return _Particle(x=x, y=y, vx=vx, vy=vy, r=r, a=a, wobble=wobble, wobble_speed=wobble_speed)
 
-        # fizzy: faint green fill + white-ish outline
-        pygame.draw.circle(surf, (190, 255, 190, 28), (x, y), r)
-        pygame.draw.circle(surf, (245, 255, 245, 95), (x, y), r, 1)
+    field = _get_particle_field(
+        "carbonated",
+        obj,
+        rect,
+        salt=777,
+        count=bubbles,
+        init_fn=init_bubble,
+    )
+
+    dt_ms = _field_dt_ms(field, t)
+    dt = dt_ms / 1000.0
+
+    w, h = field.w, field.h
+    for p in field.particles:
+        # Update motion
+        p.y += p.vy * dt
+        p.x += p.vx * dt
+
+        # Gentle horizontal wobble
+        p.wobble += p.wobble_speed * dt
+        wob = math.sin(p.wobble) * 0.6
+
+        # Wrap upward: if it leaves the top, respawn at bottom with new x.
+        if p.y < -p.r * 2:
+            p.y = h + p.r * 2
+            # Keep continuity but vary lane a bit
+            p.x = (p.x + random.uniform(-12, 12)) % w
+
+        # Wrap sideways softly
+        if p.x < -p.r * 2:
+            p.x = w + p.r * 2
+        elif p.x > w + p.r * 2:
+            p.x = -p.r * 2
+
+        x = int(rect.left + p.x + wob)
+        y = int(rect.top + p.y)
+
+        # Fizzy: faint green fill + white-ish outline
+        pygame.draw.circle(surf, (190, 255, 190, 28), (x, y), int(p.r))
+        pygame.draw.circle(surf, (245, 255, 245, p.a), (x, y), int(p.r), 1)
+
 
 
 # ---------------------------------------------------------------------------
@@ -819,34 +1034,71 @@ def _entropic_profile(p: VisualProfile, t: int) -> VisualProfile:
 
 
 def _entropic_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
-    # Decay/diffusion: motes originate near center and drift outward.
+    # Decay/diffusion: motes originate near center and drift outward continuously.
     if rect.w <= 0 or rect.h <= 0:
         return
 
-    rng = random.Random(_stable_seed(obj, 303) ^ ((t // 260) & 0xFFFFFFFF))
-    n = max(6, (rect.w * rect.h) // 22000)
+    n = max(6, min(26, (rect.w * rect.h) // 18000))
 
-    cx = rect.left + rect.w // 2
-    cy = rect.top + rect.h // 2
+    def init_mote(rng: random.Random, w: int, h: int) -> _Particle:
+        cx = w * 0.5
+        cy = h * 0.5
+        # Start near center
+        x = rng.uniform(cx - w * 0.08, cx + w * 0.08)
+        y = rng.uniform(cy - h * 0.08, cy + h * 0.08)
+        # Drift outward
+        ang = rng.uniform(0.0, math.tau)
+        speed = rng.uniform(8.0, 26.0)
+        vx = math.cos(ang) * speed
+        vy = math.sin(ang) * speed
+        r = rng.uniform(1.0, 2.5)
+        a = rng.randrange(18, 60)
+        wobble = rng.uniform(0.0, math.tau)
+        wobble_speed = rng.uniform(0.8, 2.0)
+        return _Particle(x=x, y=y, vx=vx, vy=vy, r=r, a=a, wobble=wobble, wobble_speed=wobble_speed)
 
-    # radius grows with time (slow)
-    R = int((t // 24) % max(1, min(rect.w, rect.h) // 2))
+    field = _get_particle_field(
+        "entropic",
+        obj,
+        rect,
+        salt=303,
+        count=n,
+        init_fn=init_mote,
+    )
 
-    for _ in range(n):
-        # direction-ish in [-1,1]
-        dx = rng.uniform(-1.0, 1.0)
-        dy = rng.uniform(-1.0, 1.0)
-        # push outward
-        x = int(cx + dx * R)
-        y = int(cy + dy * R)
+    dt_ms = _field_dt_ms(field, t)
+    dt = dt_ms / 1000.0
+    w, h = field.w, field.h
 
-        if not rect.collidepoint(x, y):
-            continue
+    for p in field.particles:
+        # Move
+        p.x += p.vx * dt
+        p.y += p.vy * dt
 
-        r = rng.randrange(1, 3)
-        alpha = rng.randrange(18, 60)
-        # slightly brown/gray “dust”
-        pygame.draw.circle(surf, (170, 165, 150, alpha), (x, y), r)
+        # Tiny wandering
+        p.wobble += p.wobble_speed * dt
+        p.x += math.sin(p.wobble) * 5.0 * dt
+        p.y += math.cos(p.wobble * 0.7) * 3.0 * dt
+
+        # If out of bounds, respawn near center with a new outward direction.
+        if p.x < -10 or p.x > w + 10 or p.y < -10 or p.y > h + 10:
+            # Re-seed this particle in-place (keeps count stable)
+            rng = random.Random((_stable_seed(obj, 303) ^ int(t)) & 0xFFFFFFFF)
+            cx = w * 0.5
+            cy = h * 0.5
+            p.x = rng.uniform(cx - w * 0.06, cx + w * 0.06)
+            p.y = rng.uniform(cy - h * 0.06, cy + h * 0.06)
+            ang = rng.uniform(0.0, math.tau)
+            speed = rng.uniform(8.0, 26.0)
+            p.vx = math.cos(ang) * speed
+            p.vy = math.sin(ang) * speed
+            p.r = rng.uniform(1.0, 2.5)
+            p.a = rng.randrange(18, 60)
+
+        x = int(rect.left + p.x)
+        y = int(rect.top + p.y)
+        pygame.draw.circle(surf, (170, 165, 150, p.a), (x, y), max(1, int(p.r)))
+
 
 
 

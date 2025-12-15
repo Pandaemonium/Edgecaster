@@ -1,88 +1,87 @@
 from __future__ import annotations
 
-from typing import List, Dict, Optional
+from dataclasses import dataclass
+from typing import Dict, Optional, Any, List, Tuple
 
 import pygame
 
 from .base import (
-    Scene,
-    MenuInput,
-    MENU_ACTION_UP,
-    MENU_ACTION_DOWN,
+    PopupMenuScene,
     MENU_ACTION_LEFT,
     MENU_ACTION_RIGHT,
     MENU_ACTION_ACTIVATE,
+    MENU_ACTION_UP,
+    MENU_ACTION_DOWN,
     MENU_ACTION_BACK,
     MENU_ACTION_FULLSCREEN,
 )
-from edgecaster.visuals import VisualProfile, apply_visual_panel
+
+from edgecaster.visuals import VisualProfile
+
 from .keybinds_scene import KeybindsScene
-from .game_input import load_bindings_full, save_bindings_file
+from .base import MenuFrameWidget
+from edgecaster.ui.widgets import TwoColumnListWidget
 
 
 # ---------------------------------------------------------------------------#
-# OptionsScene
+# Small menu item model (keeps get_menu_items() simple & debuggable)
 # ---------------------------------------------------------------------------#
 
+@dataclass(frozen=True)
+class OptionItem:
+    kind: str  # "toggle" | "submenu" | "action" | "back" | "label"
+    label: str
+    key: Optional[str] = None
+    value: Optional[str] = None
 
-class OptionsScene(Scene):
+    def __str__(self) -> str:
+        # IMPORTANT: For TwoColumnListWidget we want the left column to just be the label.
+        return self.label
+
+
+# ---------------------------------------------------------------------------#
+# OptionsScene (widget-driven, recursive "artichoke" popups)
+# ---------------------------------------------------------------------------#
+
+class OptionsScene(PopupMenuScene):
     """
-    Recursive options popup.
+    Recursive options popup (now PanelScene/Widget-based).
 
-    Semantics:
-
-    - Each OptionsScene has:
-        * applied_visual: how THIS menu is drawn (rotation, etc.)
-        * child_visual: how its CHILD Options menus will be drawn.
-
-    - "Options Options" edits child_visual only. It does NOT change this
-      menu's own appearance; it previews what the NEXT depth will look like.
-
-    - Root Options (depth 0) has a fixed applied_visual so it always looks
-      the same, regardless of player tweaks.
+    Preserves legacy semantics:
+      - Left column: option name
+      - Right column: current value (On/Off)
+      - Left/Right/Enter all "activate/adjust" like the old Options menu
     """
 
-    MAX_DEPTH = 99  # we can go deep
+    MAX_DEPTH = 99
+
+    FOOTER_TEXT = (
+        "↑/↓ to move • ←/→ or Enter/Space to change • Esc to return • F11 fullscreen"
+    )
 
     def __init__(
         self,
+        *,
         window_rect: Optional[pygame.Rect] = None,
         depth: int = 0,
         applied_visual: Optional[Dict[str, float]] = None,
         child_visual: Optional[Dict[str, float]] = None,
     ) -> None:
-        self.window_rect = window_rect
-        self.depth = depth
-        self.selected_idx = 0
-
-        # Background snapshot (for the artichoke / CRT effect)
-        self._background: Optional[pygame.Surface] = None
-
-        # Fonts
-        self.ui_font: Optional[pygame.font.Font] = None
-        self.small_font: Optional[pygame.font.Font] = None
-
-        # Standardized menu input (with key-repeat + numpad)
-        self._menu_input = MenuInput()
-
-        # Panel hitboxes (panel-local rects)
-        self.item_rects: List[pygame.Rect] = []
+        self.depth = int(depth)
+        self._items: List[OptionItem] = []
 
         # How THIS menu is drawn
         if applied_visual is None:
-            if depth == 0:
-                # Root appearance: big, centered, no twist, fully opaque.
+            if self.depth == 0:
                 self.applied_visual: Dict[str, float] = {
                     "scale_x": 0.90,
                     "scale_y": 0.90,
                     "offset_x": 0.0,
                     "offset_y": 0.0,
                     "angle": 0.0,
-                    "alpha": 1.0,  # 1.0 = fully solid
+                    "alpha": 1.0,
                 }
             else:
-                # Child menus normally get this explicitly from parent,
-                # but fall back to a neutral look if needed.
                 self.applied_visual = {
                     "scale_x": 0.90,
                     "scale_y": 0.90,
@@ -93,894 +92,628 @@ class OptionsScene(Scene):
                 }
         else:
             self.applied_visual = dict(applied_visual)
-            # Ensure alpha is always present
             self.applied_visual.setdefault("alpha", 1.0)
 
-        # How CHILD menus will be drawn (edited by Options Options)
+        # How CHILD menus are drawn (editable by VisualOptionsScene)
         if child_visual is None:
-            # Defaults consistent with root: 0.90, 0.90, 0, 0, 0°, fully opaque.
             self.child_visual: Dict[str, float] = {
-                "scale_x": 0.90,
-                "scale_y": 0.90,
+                "scale_x": 0.92,
+                "scale_y": 0.92,
                 "offset_x": 0.0,
                 "offset_y": 0.0,
                 "angle": 0.0,
-                "alpha": 1.0,  # 1.0 = fully solid
+                "alpha": 0.92,
             }
         else:
             self.child_visual = dict(child_visual)
-            # Ensure we always have an alpha key
             self.child_visual.setdefault("alpha", 1.0)
 
+        super().__init__(
+            window_rect=window_rect,
+            dim_background=(self.depth == 0),
+            scale=0.7,
+        )
+
+        self.visual_profile = VisualProfile(
+            angle=float(self.applied_visual.get("angle", 0.0)),
+            alpha=float(self.applied_visual.get("alpha", 1.0)),
+        )
+        self.visual_effects = []
+
     # ------------------------------------------------------------------ #
-    # Geometry / font helpers
+    # Geometry helpers
+    # ------------------------------------------------------------------ #
 
-    def _ensure_window_rect(self, renderer) -> None:
-        """
-        Establish the logical, unrotated rect for layout & hitboxes.
-
-        - For depth 0, size is based on applied_visual.scale_x/y vs full screen.
-        - For depth > 0, we respect whatever rect the parent/manager passed.
-        """
-        if self.depth == 0:
-            if self.window_rect is not None:
-                return
-
-            scale_x = float(self.applied_visual.get("scale_x", 0.90))
-            scale_y = float(self.applied_visual.get("scale_y", 0.90))
-            off_x = float(self.applied_visual.get("offset_x", 0.0))
-            off_y = float(self.applied_visual.get("offset_y", 0.0))
-
-            base_w, base_h = renderer.width, renderer.height
-            w = int(base_w * scale_x)
-            h = int(base_h * scale_y)
-            x = (base_w - w) // 2 + int(off_x)
-            y = (base_h - h) // 2 + int(off_y)
-            self.window_rect = pygame.Rect(x, y, w, h)
-        else:
-            # Child rects should usually be passed in by parent.
-            if self.window_rect is None:
-                base_w, base_h = renderer.width, renderer.height
-                w = int(base_w * 0.6)
-                h = int(base_h * 0.6)
-                x = (base_w - w) // 2
-                y = (base_h - h) // 2
-                self.window_rect = pygame.Rect(x, y, w, h)
-
-    def _ensure_fonts(self, renderer) -> None:
-        """Make fonts sized relative to a fixed logical panel (chunky)."""
-        if self.ui_font is not None and self.small_font is not None:
+    def _ensure_window_rect(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        if self.window_rect is not None:
             return
 
-        # Logical panel is 90% of the screen
-        logical_scale = 0.90
+        r = manager.renderer
+        base = pygame.Rect(0, 0, r.width, r.height)
 
-        # Chunkier base sizes
-        base_ui = renderer.base_tile * 2
-        base_small = 18
+        sx = float(self.applied_visual.get("scale_x", 0.9))
+        sy = float(self.applied_visual.get("scale_y", 0.9))
+        ox = float(self.applied_visual.get("offset_x", 0.0))
+        oy = float(self.applied_visual.get("offset_y", 0.0))
 
-        ui_size = max(18, int(base_ui * logical_scale))
-        small_size = max(12, int(base_small * logical_scale))
+        w = max(40, int(base.width * sx))
+        h = max(40, int(base.height * sy))
 
-        self.ui_font = pygame.font.SysFont("consolas", ui_size)
-        self.small_font = pygame.font.SysFont("consolas", small_size)
+        x = base.x + (base.width - w) // 2 + int(ox)
+        y = base.y + (base.height - h) // 2 + int(oy)
+
+        self.window_rect = pygame.Rect(x, y, w, h)
 
     def _compute_child_rect(self) -> pygame.Rect:
-        """
-        Compute the rect for a CHILD Options window (depth+1) using child_visual.
+        assert self.window_rect is not None
+        base = self.window_rect
 
-        Uses THIS menu's window_rect as the parent frame.
-        """
-        parent = self.window_rect
-        assert parent is not None
+        sx = float(self.child_visual.get("scale_x", 0.92))
+        sy = float(self.child_visual.get("scale_y", 0.92))
+        ox = float(self.child_visual.get("offset_x", 0.0))
+        oy = float(self.child_visual.get("offset_y", 0.0))
 
-        scale_x = float(self.child_visual.get("scale_x", 0.90))
-        scale_y = float(self.child_visual.get("scale_y", 0.90))
-        off_x = float(self.child_visual.get("offset_x", 0.0))
-        off_y = float(self.child_visual.get("offset_y", 0.0))
+        w = max(30, int(base.width * sx))
+        h = max(30, int(base.height * sy))
 
-        w = int(parent.width * scale_x)
-        h = int(parent.height * scale_y)
-        x = parent.x + (parent.width - w) // 2 + int(off_x)
-        y = parent.y + (parent.height - h) // 2 + int(off_y)
+        x = base.x + (base.width - w) // 2 + int(ox)
+        y = base.y + (base.height - h) // 2 + int(oy)
+
         return pygame.Rect(x, y, w, h)
 
     # ------------------------------------------------------------------ #
+    # GeneralMenuScene hooks
+    # ------------------------------------------------------------------ #
 
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        renderer = manager.renderer
-        surface = renderer.surface
-        clock = pygame.time.Clock()
-        menu = self._menu_input
+    def get_ascii_art(self) -> Optional[str]:
+        return "Options"
 
-        # Snapshot current screen (dungeon, or parent options stack)
-        # Only do this once per instance, so popping a child doesn't "bake in" its pixels.
-        if self._background is None:
-            self._background = surface.copy()
+    def get_body_text(self) -> Optional[str]:
+        if self.depth == 0:
+            return "Use child menus to tweak visuals"
+        return None
 
-        # Geometry + fonts
-        self._ensure_window_rect(renderer)
-        self._ensure_fonts(renderer)
+    def get_menu_items(self) -> list[Any]:
+        items: List[OptionItem] = []
 
-        rect = self.window_rect
-        assert rect is not None
+        mgr = getattr(self, "_last_manager", None)
+        toggles = getattr(mgr, "options", None) if mgr is not None else None
 
-        ui_font = self.ui_font
-        small_font = self.small_font
-        assert ui_font is not None and small_font is not None
+        if isinstance(toggles, dict) and toggles:
+            for k in list(toggles.keys()):
+                v = "On" if bool(toggles.get(k)) else "Off"
+                items.append(OptionItem("toggle", str(k), key=str(k), value=v))
 
-        # Shared boolean options
-        toggles: Dict[str, bool] = manager.options
-        toggle_keys: List[str] = list(toggles.keys())
+        items.append(OptionItem("submenu", "Options"))
+        items.append(OptionItem("submenu", "Options Options"))
+        items.append(OptionItem("submenu", "Controls"))
+        items.append(OptionItem("submenu", "Developer mode"))
+        items.append(OptionItem("back", "Back"))
 
-        # Menu layout:
-        # 0..len(toggles)-1 : boolean toggles
-        # len(toggles)      : "Options" (recursive)
-        # len(toggles)+1    : "Options Options" (visual submenu)
-        # len(toggles)+2    : "Controls" (keybindings)
-        # len(toggles)+3    : "Developer mode" (stat editor)
-        # len(toggles)+4    : "Back"
-        num_toggles = len(toggles)
-        options_index = num_toggles
-        options_options_index = num_toggles + 1
-        controls_index = num_toggles + 2
-        dev_index = num_toggles + 3
-        back_index = num_toggles + 4
-        num_items = num_toggles + 5
+        self._items = items
+        return list(items)
 
-        # Logical panel size (used for anisotropic scaling)
-        logical_w = int(renderer.width * 0.90)
-        logical_h = int(renderer.height * 0.90)
-        logical_scale_x = logical_w / renderer.width
-        logical_scale_y = logical_h / renderer.height
+    def _build_widgets(self, items: list[Any]) -> None:
+        """
+        Override standard menu build to use a two-column list (label + value).
+        """
+        # Build banner/body/footer, but we will replace the list widget.
+        super()._build_widgets(items)
 
-        # Precompute some static text
-        title_str = "Options" if self.depth == 0 else f"Options (depth {self.depth})"
-        title_text = ui_font.render(title_str, True, renderer.fg)
+        self._list = TwoColumnListWidget(
+            items,
+            selected_index=self.selected_idx,
+            on_activate=self._on_list_activate,
+            line_spacing=4,
+            padding=4,
+            value_gap=24,
+        )
+        self._list.rect = pygame.Rect(0, 0, 0, 0)
 
-        seed_str = "Use child menus to tweak visuals"
-        seed_text = small_font.render(seed_str, True, renderer.dim)
+        ascii_art = self.get_ascii_art() or ""
+        banner_is_background = bool(ascii_art) and self.wants_banner_background(ascii_art)
 
-        running = True
+        self.root = MenuFrameWidget(
+            banner=self._banner,
+            body=self._body,
+            list_widget=self._list,
+            footer=self._footer,
+            top_pad=16,
+            bottom_pad=8,
+            gap_after_banner=10,
+            gap_after_body=12,
+            min_list_height=120,
+            max_list_width=700,
+            max_body_width=600,
+            banner_is_background=banner_is_background,
+            fill_list_width=True,
 
-        def handle_action(action: Optional[str]) -> bool:
-            """
-            Handle a logical menu action. Returns True if this menu should close.
-            """
-            nonlocal running
+        )
 
-            if action is None:
-                return False
+        self.root.rect = pygame.Rect(0, 0, 0, 0)
 
-            if action == MENU_ACTION_FULLSCREEN:
-                renderer.toggle_fullscreen()
-                return False
+    def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Let get_menu_items show live toggle values.
+        self._last_manager = manager  # type: ignore[attr-defined]
+        super().update(dt_ms, manager)
 
-            if action == MENU_ACTION_BACK:
-                manager.pop_scene()
-                running = False
-                return True
+    # ------------------------------------------------------------------ #
+    # Input behavior (faithful to legacy)
+    # ------------------------------------------------------------------ #
 
-            if action == MENU_ACTION_UP:
-                self.selected_idx = (self.selected_idx - 1) % num_items
-                return False
+    def _handle_action(self, action: Optional[str], manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        if action is None:
+            return
 
-            if action == MENU_ACTION_DOWN:
-                self.selected_idx = (self.selected_idx + 1) % num_items
-                return False
+        if action == MENU_ACTION_FULLSCREEN:
+            manager.renderer.toggle_fullscreen()
+            return
 
-            if action in (
-                MENU_ACTION_LEFT,
-                MENU_ACTION_RIGHT,
-                MENU_ACTION_ACTIVATE,
-            ):
-                idx = self.selected_idx
+        # Legacy: left/right/activate all "adjust/enter"
+        if action in (MENU_ACTION_LEFT, MENU_ACTION_RIGHT, MENU_ACTION_ACTIVATE):
+            self._activate_or_adjust(manager)
+            return
 
-                # Boolean toggles (manager.options)
-                if idx < num_toggles:
-                    key = toggle_keys[idx]
-                    toggles[key] = not toggles[key]
-                    if key.lower() == "fullscreen":
-                        renderer.toggle_fullscreen()
-                    return False
+        super()._handle_action(action, manager)
 
-                # "Options" -> recursive child
-                if idx == options_index:
-                    if self.depth < self.MAX_DEPTH:
-                        child_rect = self._compute_child_rect()
+    def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        # IMPORTANT: this prevents the base NotImplementedError and makes mouse-click activation work.
+        self.selected_idx = index
+        self._activate_or_adjust(manager)
+        return False
 
-                        child_applied = dict(self.applied_visual)
+    def _activate_or_adjust(self, manager: "SceneManager") -> None:
+        if not self._items:
+            return
 
-                        # Angle accumulates: parent angle + step
-                        parent_angle = float(
-                            self.applied_visual.get("angle", 0.0)
-                        )
-                        step_angle = float(
-                            self.child_visual.get("angle", 0.0)
-                        )
-                        child_applied["angle"] = parent_angle + step_angle
+        idx = max(0, min(self.selected_idx, len(self._items) - 1))
+        item = self._items[idx]
 
-                        # Opacity accumulates multiplicatively:
-                        # child opacity = parent opacity * child factor
-                        parent_alpha = float(
-                            self.applied_visual.get("alpha", 1.0)
-                        )
-                        step_alpha = float(
-                            self.child_visual.get("alpha", 1.0)
-                        )
-                        new_alpha = parent_alpha * step_alpha
-                        # Clamp to a sane visible range
-                        if new_alpha < 0.05:
-                            new_alpha = 0.05
-                        if new_alpha > 1.0:
-                            new_alpha = 1.0
-                        child_applied["alpha"] = new_alpha
+        # Boolean toggle
+        if item.kind == "toggle" and item.key:
+            toggles = getattr(manager, "options", None)
+            if isinstance(toggles, dict):
+                toggles[item.key] = not bool(toggles.get(item.key))
+                if item.key.lower() == "fullscreen":
+                    manager.renderer.toggle_fullscreen()
+            return
 
-                        # Child's child_visual starts as our current child_visual
-                        child_child = dict(self.child_visual)
+        # Submenus
+        if item.label == "Options":
+            if self.depth >= self.MAX_DEPTH:
+                return
 
-                        child = OptionsScene(
-                            window_rect=child_rect,
-                            depth=self.depth + 1,
-                            applied_visual=child_applied,
-                            child_visual=child_child,
-                        )
-                        manager.push_scene(child)
+            child_rect = self._compute_child_rect()
 
-                    running = False
-                    return True
+            child_applied = dict(self.applied_visual)
+            child_applied["angle"] = float(self.applied_visual.get("angle", 0.0)) + float(self.child_visual.get("angle", 0.0))
 
-                # "Options Options" -> visual submenu (edits child_visual)
-                if idx == options_options_index:
-                    parent_angle = float(
-                        self.applied_visual.get("angle", 0.0)
-                    )
-                    parent_alpha = float(
-                        self.applied_visual.get("alpha", 1.0)
-                    )
-                    visual_scene = VisualOptionsScene(
-                        base_rect=self.window_rect,
-                        depth=self.depth + 1,
-                        visual=self.child_visual,  # reference
-                        parent_angle=parent_angle,
-                        parent_alpha=parent_alpha,
-                    )
-                    manager.push_scene(visual_scene)
-                    running = False
-                    return True
+            parent_alpha = float(self.applied_visual.get("alpha", 1.0))
+            step_alpha = float(self.child_visual.get("alpha", 1.0))
+            new_alpha = max(0.05, min(1.0, parent_alpha * step_alpha))
+            child_applied["alpha"] = new_alpha
 
-                # Controls -> keybindings
-                if idx == controls_index:
-                    child_rect = self._compute_child_rect()
-                    kb_scene = KeybindsScene(
-                        base_rect=child_rect,
-                        depth=self.depth + 1,
-                        bindings=dict(manager.keybindings.get("bindings", {})),
-                        move_bindings=dict(manager.keybindings.get("move_bindings", {})),
-                    )
-                    manager.push_scene(kb_scene)
-                    running = False
-                    return True
-
-                # Developer mode -> stat editor
-                if idx == dev_index:
-                    target_char = getattr(manager, "character", None)
-                    if target_char is None and getattr(manager, "current_game", None):
-                        target_char = getattr(manager.current_game, "character", None)
-                    if target_char is not None:
-                        child_rect = self._compute_child_rect()
-                        dev_scene = DeveloperOptionsScene(
-                            base_rect=child_rect,
-                            depth=self.depth + 1,
-                            character=target_char,
-                        )
-                        manager.push_scene(dev_scene)
-                        running = False
-                        return True
-                    return False
-
-                # "Back"
-                manager.pop_scene()
-                running = False
-                return True
-
-            return False
-
-        while running:
-            # ----------------- EVENTS -----------------
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
-
-                if event.type == pygame.KEYDOWN:
-                    action = menu.handle_keydown(event.key)
-                    if handle_action(action):
-                        break
-
-                elif event.type == pygame.KEYUP:
-                    menu.handle_keyup(event.key)
-
-            if not running:
-                break
-
-            # Key repeat (hold-to-accelerate for navigation)
-            repeat_action = menu.update()
-            if handle_action(repeat_action):
-                break
-
-            # ----------------- DRAW -----------------
-            # Restore snapshot (which already contains deeper stack)
-            if self._background is not None:
-                surface.blit(self._background, (0, 0))
-            else:
-                surface.fill(renderer.bg)
-
-            overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
-            if self.depth == 0:
-                overlay.fill((0, 0, 0, 140))  # dim at root only
-            surface.blit(overlay, (0, 0))
-
-            # ---- Draw panel to logical surface (for anisotropic scaling) ----
-            logical_surface = pygame.Surface((logical_w, logical_h), pygame.SRCALPHA)
-
-            # Panel background + border
-            border_thickness = max(
-                1, int(2 * min(logical_scale_x, logical_scale_y))
-            )
-            pygame.draw.rect(
-                logical_surface,
-                (20, 20, 40, 235),
-                (0, 0, logical_w, logical_h),
-            )
-            pygame.draw.rect(
-                logical_surface,
-                (220, 220, 240, 240),
-                (0, 0, logical_w, logical_h),
-                border_thickness,
-            )
-
-            y = 20
-            logical_surface.blit(title_text, (20, y))
-            y += title_text.get_height() + 10
-
-            logical_surface.blit(seed_text, (20, y))
-            y += seed_text.get_height() + 15
-
-            # Build display options list (labels + values)
-            self.item_rects = []
-            for idx in range(num_items):
-                is_selected = (idx == self.selected_idx)
-                color = renderer.player_color if is_selected else renderer.fg
-
-                if idx < num_toggles:
-                    label = toggle_keys[idx]
-                    value = "On" if toggles[label] else "Off"
-                elif idx == options_index:
-                    label = "Options"
-                    value = ""
-                elif idx == options_options_index:
-                    label = "Options Options"
-                    value = ""
-                elif idx == controls_index:
-                    label = "Controls"
-                    value = ""
-                elif idx == dev_index:
-                    label = "Developer mode"
-                    value = ""
-                else:
-                    label = "Back"
-                    value = ""
-
-                left_text = ui_font.render(label, True, color)
-                logical_surface.blit(left_text, (40, y))
-
-                if value:
-                    value_text = ui_font.render(str(value), True, color)
-                    vx = logical_w - value_text.get_width() - 40
-                    logical_surface.blit(value_text, (vx, y))
-                else:
-                    value_text = None
-
-                # Store panel-local rect
-                self.item_rects.append(
-                    pygame.Rect(
-                        40,
-                        y,
-                        logical_w - 80,
-                        left_text.get_height(),
-                    )
+            manager.push_scene(
+                OptionsScene(
+                    window_rect=child_rect,
+                    depth=self.depth + 1,
+                    applied_visual=child_applied,
+                    child_visual=dict(self.child_visual),
                 )
-
-                y += left_text.get_height() + 10
-
-            # Footer hint
-            hint = small_font.render(
-                "↑/↓ to move • ←/→ or Enter to change • Esc to return • F11 fullscreen",
-                True,
-                renderer.dim,
             )
-            hint_y = logical_h - hint.get_height() - 16
-            hint_x = (logical_w - hint.get_width()) // 2
-            logical_surface.blit(hint, (hint_x, hint_y))
+            return
 
-            # ---- Anisotropic scale logical panel to this menu's rect ----
-            panel = pygame.transform.smoothscale(
-                logical_surface, rect.size
+        if item.label == "Options Options":
+            if self.window_rect is None:
+                return
+            manager.push_scene(
+                VisualOptionsScene(
+                    base_rect=self.window_rect,
+                    depth=self.depth + 1,
+                    visual=self.child_visual,  # reference
+                    parent_angle=float(self.applied_visual.get("angle", 0.0)),
+                    parent_alpha=float(self.applied_visual.get("alpha", 1.0)),
+                )
             )
+            return
 
-            # ---- Blit via VisualProfile ----
-            angle = float(self.applied_visual.get("angle", 0.0))
-            alpha = float(self.applied_visual.get("alpha", 1.0))
-            visual = self.visual_profile or VisualProfile(angle=angle, alpha=alpha)
+        if item.label == "Controls":
+            child_rect = self._compute_child_rect()
+            kb = getattr(manager, "keybindings", None)
+            bindings = dict(getattr(kb, "bindings", {})) if kb is not None else dict(getattr(kb, "get", lambda *_: {})("bindings", {}))
+            move_bindings = dict(getattr(kb, "move_bindings", {})) if kb is not None else dict(getattr(kb, "get", lambda *_: {})("move_bindings", {}))
 
-            apply_visual_panel(surface, panel, rect, visual)
+            manager.push_scene(
+                KeybindsScene(
+                    base_rect=child_rect,
+                    depth=self.depth + 1,
+                    bindings=bindings,
+                    move_bindings=move_bindings,
+                )
+            )
+            return
 
-            renderer.present()
-            clock.tick(60)
+        if item.label == "Developer mode":
+            target_char = getattr(manager, "character", None)
+            if target_char is None and getattr(manager, "current_game", None):
+                target_char = getattr(manager.current_game, "character", None)
+            if target_char is None:
+                return
+
+            manager.push_scene(
+                DeveloperOptionsScene(
+                    base_rect=self._compute_child_rect(),
+                    depth=self.depth + 1,
+                    character=target_char,
+                )
+            )
+            return
+
+        if item.kind == "back":
+            self.on_back(manager)
+            return
+
+    def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        manager.pop_scene()
+        return True
 
 
 # ---------------------------------------------------------------------------#
-# VisualOptionsScene
-# ---------------------------------------------------------------------------#
+# VisualOptionsScene + DeveloperOptionsScene
+ 
 
-
-class VisualOptionsScene(Scene):
+class VisualOptionsScene(PopupMenuScene):
     """
-    Submenu for tweaking the visual properties for CHILD Options menus:
+    Submenu for tweaking the visual properties for CHILD Options menus.
 
     Edits a `visual` dict with keys:
-        - scale_x
-        - scale_y
-        - offset_x
-        - offset_y
+        - scale_x, scale_y
+        - offset_x, offset_y
         - angle
         - alpha
 
-    It uses the *current* Options window rect as a base, and draws itself
-    as a preview of what the CHILD Options menu will look like. So as you
-    change angle / scales / offsets, this menu twists and slides in realtime.
-
-    The actual rotation used is (parent_angle + visual['angle']), matching
-    how the real child Options menu will be rendered.
+    This scene is drawn as a PREVIEW of the child Options menu (so it uses
+    the child rect and accumulates parent_angle/parent_alpha for rendering).
     """
+
+    FOOTER_TEXT = (
+        "↑/↓ select • ←/→ adjust • Enter/Space bump • Esc back • F11 fullscreen"
+    )
+
+    _FIELDS: List[Tuple[str, float, float, float]] = [
+        # (key, step, min, max)
+        ("scale_x", 0.02, 0.20, 1.20),
+        ("scale_y", 0.02, 0.20, 1.20),
+        ("offset_x", 6.0, -600.0, 600.0),
+        ("offset_y", 6.0, -600.0, 600.0),
+        ("angle", 3.0, -180.0, 180.0),
+        ("alpha", 0.05, 0.05, 1.00),
+    ]
 
     def __init__(
         self,
+        *,
         base_rect: pygame.Rect,
         depth: int,
         visual: Dict[str, float],
         parent_angle: float,
         parent_alpha: float,
     ) -> None:
-        # base_rect is the parent Options window rect; we preview the child.
         self.base_rect = base_rect
-        self.depth = depth
-        self.visual = visual  # reference, not copy
-        self.parent_angle = parent_angle
-        self.parent_alpha = parent_alpha
-        self.selected_idx = 0
+        self.depth = int(depth)
+        self.visual = visual  # reference (edits persist)
+        self.parent_angle = float(parent_angle)
+        self.parent_alpha = float(parent_alpha)
 
-        self._background: Optional[pygame.Surface] = None
-        self.ui_font: Optional[pygame.font.Font] = None
-        self.small_font: Optional[pygame.font.Font] = None
+        self._items: List[OptionItem] = []
 
-        # Standard menu input (with hold-to-accelerate + numpad)
-        self._menu_input = MenuInput()
+        preview_rect = self._compute_preview_rect()
 
-    def _ensure_fonts(self, renderer) -> None:
-        if self.ui_font is not None and self.small_font is not None:
-            return
+        super().__init__(
+            window_rect=preview_rect,
+            dim_background=False,
+            scale=0.7,
+        )
 
-        logical_scale = 0.90
-        base_ui = renderer.base_tile * 2
-        base_small = 18
+        angle = self.parent_angle + float(self.visual.get("angle", 0.0))
+        alpha = self.parent_alpha * float(self.visual.get("alpha", 1.0))
+        alpha = max(0.05, min(1.0, alpha))
 
-        ui_size = max(18, int(base_ui * logical_scale))
-        small_size = max(12, int(base_small * logical_scale))
-
-        self.ui_font = pygame.font.SysFont("consolas", ui_size)
-        self.small_font = pygame.font.SysFont("consolas", small_size)
+        self.visual_profile = VisualProfile(angle=angle, alpha=alpha)
+        self.visual_effects = []
 
     def _compute_preview_rect(self) -> pygame.Rect:
-        """
-        Compute where the CHILD window would be, relative to base_rect,
-        using the current visual (scale_x/y + offset_x/y).
-        """
-        parent = self.base_rect
+        base = self.base_rect
+        sx = float(self.visual.get("scale_x", 0.92))
+        sy = float(self.visual.get("scale_y", 0.92))
+        ox = float(self.visual.get("offset_x", 0.0))
+        oy = float(self.visual.get("offset_y", 0.0))
 
-        scale_x = float(self.visual.get("scale_x", 0.90))
-        scale_y = float(self.visual.get("scale_y", 0.90))
-        off_x = float(self.visual.get("offset_x", 0.0))
-        off_y = float(self.visual.get("offset_y", 0.0))
-
-        w = int(parent.width * scale_x)
-        h = int(parent.height * scale_y)
-        x = parent.x + (parent.width - w) // 2 + int(off_x)
-        y = parent.y + (parent.height - h) // 2 + int(off_y)
+        w = max(30, int(base.width * sx))
+        h = max(30, int(base.height * sy))
+        x = base.x + (base.width - w) // 2 + int(ox)
+        y = base.y + (base.height - h) // 2 + int(oy)
         return pygame.Rect(x, y, w, h)
 
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        renderer = manager.renderer
-        surface = renderer.surface
-        clock = pygame.time.Clock()
-        menu = self._menu_input
+    def _refresh_preview_geometry(self) -> None:
+        self.window_rect = self._compute_preview_rect()
 
-        # Snapshot (includes parent Options + deeper stack)
-        # Only capture once so we don't accidentally include any children on re-entry.
-        if self._background is None:
-            self._background = surface.copy()
+        angle = self.parent_angle + float(self.visual.get("angle", 0.0))
+        alpha = self.parent_alpha * float(self.visual.get("alpha", 1.0))
+        alpha = max(0.05, min(1.0, alpha))
+        self.visual_profile = VisualProfile(angle=angle, alpha=alpha)
 
-        self._ensure_fonts(renderer)
+    def get_ascii_art(self) -> Optional[str]:
+        return "Options Options"
 
-        ui_font = self.ui_font
-        small_font = self.small_font
-        assert ui_font is not None and small_font is not None
+    def get_body_text(self) -> Optional[str]:
+        return "Edits how the *next* Options popup will look. This menu is a live preview."
 
-        visual_keys: List[str] = [
-            "scale_x",
-            "scale_y",
-            "offset_x",
-            "offset_y",
-            "angle",
-        ]
-        visual_labels: Dict[str, str] = {
-            "scale_x": "Child scale X",
-            "scale_y": "Child scale Y",
-            "offset_x": "Child X offset",
-            "offset_y": "Child Y offset",
-            "angle": "Child angle",
-        }
-        visual_steps: Dict[str, float] = {
-            "scale_x": 0.05,
-            "scale_y": 0.05,
-            "offset_x": 25.0,  # wider step
-            "offset_y": 25.0,
-            "angle": 5.0,
-        }
-        visual_minmax: Dict[str, tuple[float, float]] = {
-            # Very wide scale range
-            "scale_x": (0.05, 20.0),
-            "scale_y": (0.05, 20.0),
-            # Much larger translation range
-            "offset_x": (-250.0, 250.0),
-            "offset_y": (-250.0, 250.0),
-            # Full spins both ways
-            "angle": (-360.0, 360.0),
-        }
-
-        # Add alpha control
-        visual_keys.append("alpha")
-        visual_labels["alpha"] = "Child opacity"
-        visual_steps["alpha"] = 0.05
-        # Never let it go fully invisible; minimum 0.05-ish.
-        visual_minmax["alpha"] = (0.05, 1.0)
-
-        num_visuals = len(visual_keys)
-        back_index = num_visuals
-        num_items = num_visuals + 1
-
-        # Logical panel for preview
-        logical_w = int(renderer.width * 0.90)
-        logical_h = int(renderer.height * 0.90)
-        logical_scale_x = logical_w / renderer.width
-        logical_scale_y = logical_h / renderer.height
-
-        running = True
-
-        def handle_action(action: Optional[str]) -> bool:
-            """
-            Handle a logical menu action. Returns True if this menu should close.
-            """
-            nonlocal running
-
-            if action is None:
-                return False
-
-            if action == MENU_ACTION_FULLSCREEN:
-                renderer.toggle_fullscreen()
-                return False
-
-            if action == MENU_ACTION_BACK:
-                manager.pop_scene()
-                running = False
-                return True
-
-            if action == MENU_ACTION_UP:
-                self.selected_idx = (self.selected_idx - 1) % num_items
-                return False
-
-            if action == MENU_ACTION_DOWN:
-                self.selected_idx = (self.selected_idx + 1) % num_items
-                return False
-
-            if action in (
-                MENU_ACTION_LEFT,
-                MENU_ACTION_RIGHT,
-                MENU_ACTION_ACTIVATE,
-            ):
-                idx = self.selected_idx
-
-                # Back
-                if idx == back_index:
-                    manager.pop_scene()
-                    running = False
-                    return True
-
-                # Adjust a visual parameter
-                if idx < num_visuals:
-                    v_key = visual_keys[idx]
-                    step = visual_steps[v_key]
-                    v_min, v_max = visual_minmax[v_key]
-                    cur = float(self.visual.get(v_key, 0.0))
-
-                    if action == MENU_ACTION_LEFT:
-                        cur -= step
-                    else:
-                        # Right or Activate both move forward
-                        cur += step
-
-                    cur = max(v_min, min(v_max, cur))
-                    self.visual[v_key] = cur
-                    return False
-
-            return False
-
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
-
-                if event.type == pygame.KEYDOWN:
-                    action = menu.handle_keydown(event.key)
-                    if handle_action(action):
-                        break
-
-                elif event.type == pygame.KEYUP:
-                    menu.handle_keyup(event.key)
-
-            if not running:
-                break
-
-            # Key-repeat (for held nav / sliders)
-            repeat_action = menu.update()
-            if handle_action(repeat_action):
-                break
-
-            # ----------------- DRAW -----------------
-            if self._background is not None:
-                surface.blit(self._background, (0, 0))
+    def get_menu_items(self) -> list[Any]:
+        items: List[OptionItem] = []
+        for key, step, lo, hi in self._FIELDS:
+            v = float(self.visual.get(key, 0.0))
+            if key.startswith("scale") or key == "alpha":
+                sval = f"{v:.2f}"
+            elif key in ("offset_x", "offset_y"):
+                sval = f"{int(v):d}"
             else:
-                surface.fill(renderer.bg)
+                sval = f"{v:.1f}"
+            items.append(OptionItem("label", f"{key}: {sval}", key=key))
 
-            overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
+        items.append(OptionItem("back", "Back"))
+        self._items = items
+        return list(items)
 
-            # Preview rect for the child window
-            panel_rect = self._compute_preview_rect()
-            panel_x, panel_y, panel_w, panel_h = panel_rect
-
-            border_thickness = max(
-                1, int(2 * min(logical_scale_x, logical_scale_y))
-            )
-
-            # Draw to logical panel surface
-            logical_surface = pygame.Surface((logical_w, logical_h), pygame.SRCALPHA)
-            pygame.draw.rect(
-                logical_surface, (20, 20, 40, 235), (0, 0, logical_w, logical_h)
-            )
-            pygame.draw.rect(
-                logical_surface,
-                (220, 220, 240, 240),
-                (0, 0, logical_w, logical_h),
-                border_thickness,
-            )
-
-            # Title
-            title_str = "Options Options"
-            title_text = ui_font.render(title_str, True, renderer.fg)
-            title_y = int(16 * logical_scale_y)
-            logical_surface.blit(
-                title_text,
-                ((logical_w - title_text.get_width()) // 2, title_y),
-            )
-
-            # Entries
-            y = int(90 * logical_scale_y)
-            line_gap = max(1, int(6 * logical_scale_y))
-            base_x = int(32 * logical_scale_x)
-
-            for i, v_key in enumerate(visual_keys):
-                selected = i == self.selected_idx
-                color = renderer.player_color if selected else renderer.fg
-                prefix = "▶ " if selected else "  "
-
-                val = self.visual.get(v_key, 0.0)
-                if "scale" in v_key:
-                    val_str = f"{val:.2f}"
-                elif v_key == "angle":
-                    val_str = f"{val:.0f}°"
-                elif v_key == "alpha":
-                    val_str = f"{val:.2f}"  # show opacity as 0.00–1.00
-                else:
-                    val_str = str(int(val))
-
-                label = visual_labels[v_key]
-                line = f"{prefix}{label}: {val_str}"
-                text = ui_font.render(line, True, color)
-                logical_surface.blit(text, (base_x, y))
-                y += text.get_height() + line_gap
-
-            # Back
-            selected = self.selected_idx == back_index
-            color = renderer.player_color if selected else renderer.fg
-            prefix = "▶ " if selected else "  "
-            back_text = ui_font.render(prefix + "Back", True, color)
-            logical_surface.blit(back_text, (base_x, y))
-
-            # Hint
-            hint = small_font.render(
-                "↑/↓, W/S, or Numpad 8/2 to move • "
-                "←/→, A/D, or Numpad 4/6 to change • "
-                "Enter/Space/KP Enter to change • Esc to return • F11 fullscreen",
-                True,
-                renderer.dim,
-            )
-            hint_y = logical_h - int(32 * logical_scale_y)
-            hint_x = (logical_w - hint.get_width()) // 2
-            logical_surface.blit(hint, (hint_x, hint_y))
-
-            # Anisotropic scale logical panel to preview rect
-            scaled_panel = pygame.transform.smoothscale(
-                logical_surface, (panel_w, panel_h)
-            )
-
-            # Rotate preview with total angle (parent + child step)
-            step_angle = float(self.visual.get("angle", 0.0))
-            angle_total = self.parent_angle + step_angle
-            rotated = pygame.transform.rotozoom(scaled_panel, angle_total, 1.0)
-            rot_rect = rotated.get_rect(
-                center=(panel_x + panel_w // 2, panel_y + panel_h // 2)
-            )
-
-            # Opacity factor (preview): multiplicative, like the real child.
-            # total_alpha = parent_alpha * child_factor
-            child_factor = float(self.visual.get("alpha", 1.0))
-            child_factor = max(0.05, min(1.0, child_factor))
-
-            total_alpha = self.parent_alpha * child_factor
-            total_alpha = max(0.05, min(1.0, total_alpha))
-
-            rotated.set_alpha(int(total_alpha * 255))
-            overlay.blit(rotated, rot_rect.topleft)
-
-            surface.blit(overlay, (0, 0))
-            renderer.present()
-            clock.tick(60)
-
-
-# ---------------------------------------------------------------------------#
-# DeveloperOptionsScene (stat editor)
-# ---------------------------------------------------------------------------#
-
-
-class DeveloperOptionsScene(Scene):
-    """Simple developer page to tweak base character stats."""
-
-    def __init__(self, base_rect: pygame.Rect, depth: int, character) -> None:
-        self.base_rect = base_rect
-        self.depth = depth
-        self.character = character
-        self.selected_idx = 0
-        self._background: Optional[pygame.Surface] = None
-        self.ui_font: Optional[pygame.font.Font] = None
-        self.small_font: Optional[pygame.font.Font] = None
-        self._menu_input = MenuInput()
-
-    def _ensure_fonts(self, renderer) -> None:
-        if self.ui_font is not None and self.small_font is not None:
+    def _handle_action(self, action: Optional[str], manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        if action is None:
             return
-        base_ui = renderer.base_tile * 2
-        ui_size = max(18, int(base_ui * 0.9))
-        small_size = max(12, int(18 * 0.9))
-        self.ui_font = pygame.font.SysFont("consolas", ui_size)
-        self.small_font = pygame.font.SysFont("consolas", small_size)
 
-    def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        renderer = manager.renderer
-        surface = renderer.surface
-        clock = pygame.time.Clock()
-        menu = self._menu_input
+        if action == MENU_ACTION_FULLSCREEN:
+            manager.renderer.toggle_fullscreen()
+            return
 
-        if self._background is None:
-            self._background = surface.copy()
+        if action == MENU_ACTION_BACK:
+            self.on_back(manager)
+            return
 
-        self._ensure_fonts(renderer)
-        ui_font = self.ui_font
-        small_font = self.small_font
-        assert ui_font and small_font
+        n = len(self._items) if self._items else 0
+        if n <= 0:
+            return
 
-        stats_keys = ["con", "res", "int", "agi"]
+        if action == MENU_ACTION_UP:
+            self.selected_idx = (self.selected_idx - 1) % n
+            if self._list is not None:
+                self._list.selected_index = self.selected_idx
+                self._list.ensure_visible(self.selected_idx)
+            return
+        if action == MENU_ACTION_DOWN:
+            self.selected_idx = (self.selected_idx + 1) % n
+            if self._list is not None:
+                self._list.selected_index = self.selected_idx
+                self._list.ensure_visible(self.selected_idx)
+            return
 
-        def handle_action(action: Optional[str]) -> bool:
-            nonlocal stats_keys
-            if action is None:
-                return False
-            if action == MENU_ACTION_FULLSCREEN:
-                renderer.toggle_fullscreen()
-                return False
-            if action == MENU_ACTION_BACK:
-                manager.pop_scene()
-                return True
-            if action == MENU_ACTION_UP:
-                self.selected_idx = (self.selected_idx - 1) % (len(stats_keys) + 1)
-                return False
-            if action == MENU_ACTION_DOWN:
-                self.selected_idx = (self.selected_idx + 1) % (len(stats_keys) + 1)
-                return False
-            if action in (MENU_ACTION_LEFT, MENU_ACTION_RIGHT, MENU_ACTION_ACTIVATE):
-                # Back
-                if self.selected_idx == len(stats_keys):
-                    manager.pop_scene()
-                    return True
-                key = stats_keys[self.selected_idx]
-                delta = -1 if action == MENU_ACTION_LEFT else 1
-                self.character.stats[key] = max(0, self.character.stats.get(key, 0) + delta)
-                return False
-            return False
+        if action in (MENU_ACTION_LEFT, MENU_ACTION_RIGHT, MENU_ACTION_ACTIVATE):
+            idx = max(0, min(self.selected_idx, n - 1))
+            item = self._items[idx]
+            if item.kind == "back":
+                self.on_back(manager)
+                return
 
-        running = True
-        while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    manager.set_scene(None)
-                    return
-                if event.type == pygame.KEYDOWN:
-                    if handle_action(menu.handle_keydown(event.key)):
-                        running = False
-                        break
-                elif event.type == pygame.KEYUP:
-                    menu.handle_keyup(event.key)
-            if not running:
-                break
+            field_idx = idx
+            if field_idx < 0 or field_idx >= len(self._FIELDS):
+                return
 
-            repeat = menu.update()
-            if handle_action(repeat):
-                break
+            key, step, lo, hi = self._FIELDS[field_idx]
+            cur = float(self.visual.get(key, 0.0))
 
-            if self._background is not None:
-                surface.blit(self._background, (0, 0))
+            if action == MENU_ACTION_LEFT:
+                cur -= step
             else:
-                surface.fill(renderer.bg)
+                cur += step
 
-            panel = pygame.Surface((self.base_rect.width, self.base_rect.height), pygame.SRCALPHA)
-            pygame.draw.rect(panel, (20, 20, 40, 235), panel.get_rect())
-            pygame.draw.rect(panel, (220, 220, 240, 240), panel.get_rect(), 2)
+            cur = max(lo, min(hi, cur))
+            self.visual[key] = float(cur)
 
-            title = ui_font.render("Developer mode", True, renderer.fg)
-            panel.blit(title, ((panel.get_width() - title.get_width()) // 2, 12))
+            self._refresh_preview_geometry()
+            return
 
-            y = 60
-            line_gap = 8
-            for idx, key in enumerate(stats_keys):
-                selected = self.selected_idx == idx
-                prefix = "-> " if selected else "  "
-                val = self.character.stats.get(key, 0)
-                line = f"{prefix}Base[{key.upper()}]: {val}"
-                text = ui_font.render(line, True, renderer.player_color if selected else renderer.fg)
-                panel.blit(text, (24, y))
-                y += text.get_height() + line_gap
+        super()._handle_action(action, manager)
 
-            # Back
-            selected = self.selected_idx == len(stats_keys)
-            prefix = "-> " if selected else "  "
-            back_text = ui_font.render(prefix + "Back", True, renderer.player_color if selected else renderer.fg)
-            panel.blit(back_text, (24, y))
+    def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        return False
 
-            # Hint
-            hint = small_font.render("Arrows/Numpad to select, Left/Right to adjust, Esc to return", True, renderer.dim)
-            panel.blit(hint, (24, panel.get_height() - hint.get_height() - 12))
+    def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        manager.pop_scene()
+        return True
 
-            surface.blit(panel, self.base_rect.topleft)
-            renderer.present()
-            clock.tick(60)
+
+# ---------------------------------------------------------------------------#
+# DeveloperOptionsScene (widget-driven stat editor)
+# ---------------------------------------------------------------------------#
+
+class DeveloperOptionsScene(PopupMenuScene):
+    """
+    Developer stat editor (restores Schwab's original debug logic).
+
+    - Edits `character.stats` dict keys (CON/RES/INT/AGI).
+    - ↑/↓ select • ←/→ adjust • Enter/Space (or click) bumps • Esc back • F11 fullscreen
+    """
+
+    FOOTER_TEXT = (
+        "↑/↓ select • ←/→ adjust • Enter/Space bump • Esc back • F11 fullscreen"
+    )
+
+    _FIELDS: List[Tuple[str, float]] = [
+        ("con", 1.0),
+        ("res", 1.0),
+        ("int", 1.0),
+        ("agi", 1.0),
+    ]
+
+    def __init__(self, *, base_rect: pygame.Rect, depth: int, character: Any) -> None:
+        self.base_rect = base_rect
+        self.depth = int(depth)
+        self.character = character
+        self._items: List[OptionItem] = []
+
+        super().__init__(window_rect=base_rect, dim_background=False, scale=0.7)
+        self.visual_profile = VisualProfile(angle=0.0, alpha=1.0)
+        self.visual_effects = []
+
+    # ------------------------------ #
+    # Data plumbing
+    # ------------------------------ #
+
+    def _get_stats_dict(self) -> Dict[str, int]:
+        stats = getattr(self.character, "stats", None)
+        if not isinstance(stats, dict):
+            stats = {}
+            try:
+                setattr(self.character, "stats", stats)
+            except Exception:
+                # If the character object is strict, we still operate on a local dict.
+                pass
+        return stats  # type: ignore[return-value]
+
+    def _get_stat(self, key: str) -> int:
+        stats = self._get_stats_dict()
+        try:
+            return int(stats.get(key, 0))
+        except Exception:
+            return 0
+
+    def _set_stat(self, key: str, value: int) -> None:
+        stats = self._get_stats_dict()
+        stats[key] = int(max(0, value))
+
+    def _bump(self, key: str, delta: int) -> None:
+        self._set_stat(key, self._get_stat(key) + int(delta))
+
+    # ------------------------------ #
+    # PopupMenuScene hooks
+    # ------------------------------ #
+
+    def get_ascii_art(self) -> Optional[str]:
+        return "Developer mode"
+
+    def get_body_text(self) -> Optional[str]:
+        name = getattr(self.character, "name", None) or "character"
+        return f"Editing base stats for {name}."
+
+    def get_menu_items(self) -> list[Any]:
+        # Build fresh every time so the UI reflects edits immediately.
+        items: List[OptionItem] = []
+        for key, _step in self._FIELDS:
+            val = self._get_stat(key)
+            label = f"Base[{key.upper()}]"
+            items.append(OptionItem("label", label, key=key, value=str(val)))
+        items.append(OptionItem("back", "Back"))
+        self._items = items
+        return list(items)
+
+    def _build_widgets(self, items: list[Any]) -> None:
+        # Use TwoColumnListWidget so values show in the right column.
+        super()._build_widgets(items)
+
+        self._list = TwoColumnListWidget(
+            items,
+            selected_index=self.selected_idx,
+            on_activate=self._on_list_activate,
+            line_spacing=4,
+            padding=4,
+            value_gap=24,
+        )
+        self._list.rect = pygame.Rect(0, 0, 0, 0)
+
+        ascii_art = self.get_ascii_art() or ""
+        banner_is_background = bool(ascii_art) and self.wants_banner_background(ascii_art)
+
+        self.root = MenuFrameWidget(
+            banner=self._banner,
+            body=self._body,
+            list_widget=self._list,
+            footer=self._footer,
+            top_pad=16,
+            bottom_pad=8,
+            gap_after_banner=10,
+            gap_after_body=12,
+            min_list_height=120,
+            max_list_width=700,
+            max_body_width=600,
+            banner_is_background=banner_is_background,
+            fill_list_width=True,
+        )
+        self.root.rect = pygame.Rect(0, 0, 0, 0)
+
+    def _handle_action(self, action: Optional[str], manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        if action is None:
+            return
+
+        if action == MENU_ACTION_FULLSCREEN:
+            manager.renderer.toggle_fullscreen()
+            return
+
+        if action == MENU_ACTION_BACK:
+            self.on_back(manager)
+            return
+
+        # Ensure we have an item list to index into.
+        if not self._items:
+            self.get_menu_items()
+
+        n = len(self._items)
+        if n <= 0:
+            return
+
+        if action == MENU_ACTION_UP:
+            self.selected_idx = (self.selected_idx - 1) % n
+            if self._list is not None:
+                self._list.selected_index = self.selected_idx
+                self._list.ensure_visible(self.selected_idx)
+            return
+
+        if action == MENU_ACTION_DOWN:
+            self.selected_idx = (self.selected_idx + 1) % n
+            if self._list is not None:
+                self._list.selected_index = self.selected_idx
+                self._list.ensure_visible(self.selected_idx)
+            return
+
+        if action in (MENU_ACTION_LEFT, MENU_ACTION_RIGHT, MENU_ACTION_ACTIVATE):
+            idx = max(0, min(self.selected_idx, n - 1))
+            item = self._items[idx]
+
+            if item.kind == "back":
+                self.on_back(manager)
+                return
+
+            if not item.key:
+                return
+
+            delta = -1 if action == MENU_ACTION_LEFT else 1
+            self._bump(item.key, delta)
+
+            # Refresh the list text so the new values show immediately.
+            try:
+                items = self.get_menu_items()
+                self._build_widgets(items)
+                if self._list is not None:
+                    self._list.selected_index = self.selected_idx
+                    self._list.ensure_visible(self.selected_idx)
+            except Exception:
+                pass
+            return
+
+        super()._handle_action(action, manager)
+
+    def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        # Mouse click should behave like "bump forward" (legacy Enter behavior).
+        self.selected_idx = int(index)
+        self._handle_action(MENU_ACTION_ACTIVATE, manager)
+        return False
+
+    def on_back(self, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
+        manager.pop_scene()
+        return True

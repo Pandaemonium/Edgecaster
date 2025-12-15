@@ -61,15 +61,5 @@ class PauseMenuScene(MenuScene):
         # In all cases, we've finished with this Pause menu.
         return True
 
-    def draw_extra(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
-        """
-        Draw the 'Paused' title above the menu options.
-        """
-        renderer = manager.renderer
-        surface = renderer.surface
-
-        title = renderer.font.render("Paused", True, renderer.fg)
-        surface.blit(
-            title,
-            ((renderer.width - title.get_width()) // 2, 80),
-        )
+    def get_ascii_art(self) -> str | None:
+        return "Paused"
