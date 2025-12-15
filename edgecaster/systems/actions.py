@@ -324,6 +324,14 @@ ACTION_SUB_BUTTONS: Dict[str, list[SubButtonMeta]] = {
             kind="open_config",
         ),
     ],
+    "place_rune_anchor": [
+        SubButtonMeta(
+            id="config",
+            # Same "gear" glyph used elsewhere in the ability bar.
+            icon="ƒsT",
+            kind="open_config",
+        ),
+    ],
 }
 
 
@@ -731,6 +739,20 @@ def _action_freeze(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_freeze"):
         game.act_freeze(actor_id)
+
+
+@register_action("corruption_cone", label="Corruption Cone", speed="fast", show_in_bar=True)
+def _action_corruption_cone(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Create a localized cone of corruption centered on the actor."""
+    if hasattr(game, "act_corruption_cone"):
+        game.act_corruption_cone(actor_id)
+
+
+@register_action("place_rune_anchor", label="Rune Anchor", speed="fast", show_in_bar=True)
+def _action_place_rune_anchor(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Place a rune anchor at the actor's current overworld position."""
+    if hasattr(game, "act_place_rune_anchor"):
+        game.act_place_rune_anchor(actor_id)
 
 
 @register_action(

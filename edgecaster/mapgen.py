@@ -3,6 +3,7 @@ import math
 import random
 from typing import Tuple, Optional, Dict, List
 from edgecaster.content import pois
+from edgecaster.corruption import CorruptionParams, julia_height_norm_corrupted
 
 from edgecaster.state.world import World
 
@@ -307,6 +308,32 @@ def _color_from_fields(fields: dict) -> tuple[int, int, int]:
             return tuple(int(c0[j] + t * (c1[j] - c0[j])) for j in range(3))
     return anchors[-1][1]
 
+
+def _apply_corruption_tint(color: tuple[int, int, int], strength: float) -> tuple[int, int, int]:
+    """Blend base tint towards a demonic purple based on corruption strength.
+
+    strength is allowed to be an unbounded "corruption intensity" signal.
+    We compress it into 0..1 so strong cones don't turn the overmap neon pink.
+    """
+    s = max(0.0, float(strength))
+    if s <= 0.0:
+        return color
+
+    # Convert unbounded signal to 0..1 with diminishing returns.
+    strength01 = 1.0 - math.exp(-0.55 * s)
+    strength01 = max(0.0, min(1.0, strength01))
+
+    # Darker purple target (less magenta/pink).
+    target = (70, 30, 90)
+    r, g, b = color
+    tr, tg, tb = target
+    t = 0.35 * strength01
+    return (
+        int(r + (tr - r) * t),
+        int(g + (tg - g) * t),
+        int(b + (tb - b) * t),
+    )
+
 def _julia_height_norm(nx: float, ny: float, c: complex, scale: float = 1.0, iters: int = 96) -> float:
     """Julia escape-time normalized height (0..1)."""
     zx = nx * scale
@@ -322,6 +349,216 @@ def _julia_height_norm(nx: float, ny: float, c: complex, scale: float = 1.0, ite
     mod = math.sqrt(zx * zx + zy * zy)
     smooth = it + 1 - math.log(math.log(max(mod, 1e-6))) / math.log(2)
     return max(0.0, min(1.0, smooth / iters))
+
+
+def _julia_height_norm_with_corruption(
+    nx: float,
+    ny: float,
+    c: complex,
+    *,
+    scale: float = 1.0,
+    iters: int = 96,
+    corruption_level: float = 0.0,
+    corruption_seed: int = 1337,
+    spline_weight: float = 0.0,
+    j_min_x: float = -2.0,
+    j_max_x: float = 2.0,
+    hotspots: Optional[List[tuple[float, float, float, float]]] = None,
+    anchors: Optional[List[tuple[float, float, float, float]]] = None,
+) -> tuple[float, float]:
+    """Return (height, corruption_strength), where height is 0..1."""
+    if corruption_level <= 0.0:
+        return _julia_height_norm(nx, ny, c, scale=scale, iters=iters), 0.0
+    params = CorruptionParams(
+        seed=int(corruption_seed),
+        hotspots=list(hotspots or []),
+        anchors=list(anchors or []),
+        spline_weight=float(spline_weight or 0.0),
+    )
+    return julia_height_norm_corrupted(
+        nx,
+        ny,
+        c,
+        iters=iters,
+        scale=scale,
+        corruption_level=float(corruption_level),
+        params=params,
+        j_min_x=float(j_min_x),
+        j_max_x=float(j_max_x),
+    )
+
+
+def _julia_height_env_grid_numpy(
+    *,
+    jx_slice: List[float],
+    jy_slice: List[float],
+    visual_c: complex,
+    iters: int,
+    corruption_level: float,
+    corruption_seed: int,
+    spline_weight: float,
+    hotspots: List[tuple[float, float, float, float]],
+    anchors: List[tuple[float, float, float, float]],
+    j_min_x: float,
+    j_max_x: float,
+) -> Optional[tuple["object", "object"]]:
+    """Compute (height_grid, env_grid) for a local zone using numpy acceleration.
+
+    This keeps *exact* local/world correspondence because it operates directly on the
+    per-tile Julia coordinates provided by `tile_julia_grid` slices.
+
+    Returns numpy arrays (h, w) on success, otherwise None (falls back to scalar).
+    """
+    try:
+        import numpy as np
+    except Exception:
+        return None
+
+    from edgecaster import corruption as corr
+
+    w = int(len(jx_slice))
+    h = int(len(jy_slice))
+    if w <= 0 or h <= 0:
+        return None
+
+    iters = int(iters)
+    if iters <= 0:
+        iters = 1
+
+    corr_level = float(corruption_level or 0.0)
+    corr_params = corr.CorruptionParams(
+        seed=int(corruption_seed),
+        hotspots=list(hotspots or []),
+        anchors=list(anchors or []),
+        spline_weight=float(spline_weight or 0.0),
+    )
+
+    lut_res = int(getattr(corr, "_LUT_RES", 256))
+
+    # Precompute LUT textures once for the whole grid.
+    nx_arr, ny_arr, spots_arr = corr._noise_lut(  # type: ignore[attr-defined]
+        int(corr_params.seed),
+        float(corr_params.freq),
+        float(corr_params.base_res),
+        float(corr_params.detail_res),
+        float(corr_params.ridge_strength),
+        float(corr_params.spot_freq),
+        float(corr_params.spot_threshold),
+        float(corr_params.spot_weight),
+        float(corr_params.right_start),
+        float(corr_params.right_sharpness),
+        float(corr_params.right_weight),
+        float(j_min_x),
+        float(j_max_x),
+        int(lut_res),
+    )
+    nx_tex = np.frombuffer(nx_arr, dtype=np.float32)
+    ny_tex = np.frombuffer(ny_arr, dtype=np.float32)
+    spots_tex = np.frombuffer(spots_arr, dtype=np.float32)
+
+    spline_x_tex = spline_y_tex = None
+    if float(getattr(corr_params, "spline_weight", 0.0) or 0.0) > 1e-9:
+        sx_arr, sy_arr = corr._spline_lut(  # type: ignore[attr-defined]
+            int(corr_params.seed),
+            int(getattr(corr_params, "spline_points", 40) or 40),
+            float(getattr(corr_params, "spline_strength", 0.35) or 0.35),
+            int(getattr(corr_params, "spline_iters", 120) or 120),
+            int(lut_res),
+        )
+        spline_x_tex = np.frombuffer(sx_arr, dtype=np.float32)
+        spline_y_tex = np.frombuffer(sy_arr, dtype=np.float32)
+
+    anchor_tex = None
+    if corr_params.anchors:
+        a_arr = corr._anchor_lut(  # type: ignore[attr-defined]
+            corr._anchors_cache_key(corr_params.anchors),  # type: ignore[attr-defined]
+            int(lut_res),
+        )
+        anchor_tex = np.frombuffer(a_arr, dtype=np.float32)
+
+    hot_tex = hot_gx_tex = hot_gy_tex = None
+    if corr_params.hotspots:
+        h_arr, gx_arr, gy_arr = corr._hot_lut(  # type: ignore[attr-defined]
+            corr._hotspots_cache_key(corr_params.hotspots),  # type: ignore[attr-defined]
+            int(lut_res),
+        )
+        hot_tex = np.frombuffer(h_arr, dtype=np.float32)
+        hot_gx_tex = np.frombuffer(gx_arr, dtype=np.float32)
+        hot_gy_tex = np.frombuffer(gy_arr, dtype=np.float32)
+
+    # Build initial z grid (flattened, for faster alive indexing).
+    jx_line = np.asarray(jx_slice, dtype=np.float64)
+    jy_line = np.asarray(jy_slice, dtype=np.float64)
+    zx0 = np.tile(jx_line, (h, 1))
+    zy0 = np.tile(jy_line.reshape(-1, 1), (1, w))
+    zx = zx0.reshape(-1).astype(np.float64, copy=True)
+    zy = zy0.reshape(-1).astype(np.float64, copy=True)
+
+    n = zx.size
+    alive = np.ones(n, dtype=np.bool_)
+    escaped_it = np.full(n, iters, dtype=np.int32)
+    peak_env = np.zeros(n, dtype=np.float32)
+
+    c_real = float(visual_c.real)
+    c_imag = float(visual_c.imag)
+
+    for i in range(iters):
+        idx = np.nonzero(alive)[0]
+        if idx.size == 0:
+            break
+
+        zx_a = zx[idx]
+        zy_a = zy[idx]
+
+        if corr_level > 0.0:
+            dx_a, dy_a, env_a = corr.distortion_np(  # type: ignore[attr-defined]
+                zx_a,
+                zy_a,
+                params=corr_params,
+                j_min_x=float(j_min_x),
+                j_max_x=float(j_max_x),
+                corruption_level=corr_level,
+                nx_tex=nx_tex,
+                ny_tex=ny_tex,
+                spots_tex=spots_tex,
+                spline_x_tex=spline_x_tex,
+                spline_y_tex=spline_y_tex,
+                anchor_tex=anchor_tex,
+                hot_tex=hot_tex,
+                hot_gx_tex=hot_gx_tex,
+                hot_gy_tex=hot_gy_tex,
+                lut_res=lut_res,
+            )
+            peak_env[idx] = np.maximum(peak_env[idx], env_a.astype(np.float32, copy=False))
+        else:
+            dx_a = dy_a = 0.0
+
+        zx2 = zx_a * zx_a
+        zy2 = zy_a * zy_a
+        xt = zx2 - zy2 + c_real + dx_a
+        new_zy = 2.0 * zx_a * zy_a + c_imag + dy_a
+        zx[idx] = xt
+        zy[idx] = new_zy
+
+        r2 = xt * xt + new_zy * new_zy
+        escaped = r2 > 4.0
+        if np.any(escaped):
+            esc_idx = idx[escaped]
+            escaped_it[esc_idx] = i + 1
+            alive[esc_idx] = False
+
+    # Smooth escape-time height.
+    h_out = np.zeros(n, dtype=np.float64)
+    mask_escaped = escaped_it < iters
+    if np.any(mask_escaped):
+        zx_e = zx[mask_escaped]
+        zy_e = zy[mask_escaped]
+        it_e = escaped_it[mask_escaped].astype(np.float64)
+        mod = np.sqrt(zx_e * zx_e + zy_e * zy_e)
+        smooth = it_e + 1.0 - (np.log(np.log(np.maximum(mod, 1e-6))) / math.log(2.0))
+        h_out[mask_escaped] = np.clip(smooth / float(iters), 0.0, 1.0)
+
+    return h_out.reshape((h, w)), peak_env.reshape((h, w))
 
 
 def _classify_tile(fields: dict, noise: float) -> Tuple[str, bool]:
@@ -377,22 +614,79 @@ def generate_fractal_overworld(
     if surf is not None:
         surf_w, surf_h = surf.get_size()
 
+    visual_c = overmap_params["visual_c"]
+    corruption_level = float(overmap_params.get("corruption_level", 0.0) or 0.0)
+    corruption_seed = int(overmap_params.get("corruption_seed", 1337) or 1337)
+    spline_weight = float(overmap_params.get("corruption_spline_weight", 0.0) or 0.0)
+    hotspots = list(overmap_params.get("corruption_hotspots") or [])
+    anchors = list(overmap_params.get("corruption_anchors") or [])
+    j_min_x = float(overmap_params.get("view_min_jx", overmap_params.get("orig_min_jx", -2.0)) or -2.0)
+    j_max_x = float(overmap_params.get("view_max_jx", overmap_params.get("orig_max_jx", 2.0)) or 2.0)
+
+    # Critical performance note:
+    # The per-tile Julia loop is already heavy; avoid rebuilding CorruptionParams
+    # thousands of times per zone.
+    corr_params: CorruptionParams | None = None
+    if corruption_level > 0.0:
+        corr_params = CorruptionParams(
+            seed=int(corruption_seed),
+            hotspots=hotspots,
+            anchors=anchors,
+            spline_weight=float(spline_weight or 0.0),
+        )
+
+    # Fast-path: numpy vectorization for local zones (60x40) makes startup essentially instant,
+    # while still using the exact same corruption rules as the world map.
+    h_grid = env_grid = None
+    if jx_slice is not None and jy_slice is not None:
+        try:
+            h_grid, env_grid = _julia_height_env_grid_numpy(
+                jx_slice=jx_slice,
+                jy_slice=jy_slice,
+                visual_c=visual_c,
+                iters=96,
+                corruption_level=corruption_level,
+                corruption_seed=corruption_seed,
+                spline_weight=spline_weight,
+                hotspots=hotspots,
+                anchors=anchors,
+                j_min_x=j_min_x,
+                j_max_x=j_max_x,
+            ) or (None, None)
+        except Exception:
+            h_grid = env_grid = None
+
     for y in range(h):
         for x in range(w):
             wx = cx0 + x
             wy = cy0 + y
-            if jx_slice is not None and jy_slice is not None:
+            if jx_slice is not None and jy_slice is not None and h_grid is not None and env_grid is not None:
+                h_val = float(h_grid[y, x])
+                corr = float(env_grid[y, x])
+                fields = {"height": h_val, "moisture": h_val, "pattern": 0.0, "corruption": corr}
+                glyph, _ = _classify_tile(fields, 0.5)
+                tint = _apply_corruption_tint(_color_from_fields(fields), corr)
+            elif jx_slice is not None and jy_slice is not None:
                 jx = jx_slice[x]
                 jy = jy_slice[y]
-                h_val = _julia_height_norm(jx, jy, overmap_params["visual_c"], scale=1.0, iters=96)
-                fields = {
-                    "height": h_val,
-                    "moisture": h_val,
-                    "pattern": 0.0,
-                    "corruption": 0.0,
-                }
+                if corr_params is None:
+                    h_val = _julia_height_norm(jx, jy, visual_c, scale=1.0, iters=96)
+                    corr = 0.0
+                else:
+                    h_val, corr = julia_height_norm_corrupted(
+                        jx,
+                        jy,
+                        visual_c,
+                        iters=96,
+                        scale=1.0,
+                        corruption_level=corruption_level,
+                        params=corr_params,
+                        j_min_x=j_min_x,
+                        j_max_x=j_max_x,
+                    )
+                fields = {"height": h_val, "moisture": h_val, "pattern": 0.0, "corruption": corr}
                 glyph, _ = _classify_tile(fields, 0.5)
-                tint = _color_from_fields(fields)
+                tint = _apply_corruption_tint(_color_from_fields(fields), corr)
             else:
                 if surf is None or surf_w is None or surf_h is None or min_wx is None or span_x is None:
                     raise RuntimeError("Overmap surface missing for tint sampling.")
@@ -400,7 +694,7 @@ def generate_fractal_overworld(
                 py = int((wy - min_wy) / span_y * surf_h)
                 px = max(0, min(surf_w - 1, px))
                 py = max(0, min(surf_h - 1, py))
-                
+
                 fields = field.sample_full(wx, wy)
                 tint = _color_from_fields(fields)
                 glyph, _ = _classify_tile(fields, 0.5)
@@ -454,6 +748,112 @@ def generate_fractal_overworld(
                 break
         if placed:
             break
+
+
+def refresh_fractal_overworld_visuals(
+    world: World,
+    coord: Tuple[int, int, int],
+    *,
+    overmap_params: dict,
+    jx_slice: Optional[List[float]] = None,
+    jy_slice: Optional[List[float]] = None,
+) -> None:
+    """Recompute glyph+tint for an existing overworld zone without touching structures.
+
+    This is used for corruption morphing (phase 1: visuals only).
+    """
+    zx, zy, depth = coord
+    if depth != 0:
+        return
+    if jx_slice is None or jy_slice is None:
+        return
+
+    w, h = world.width, world.height
+    cx0 = zx * w
+    cy0 = zy * h
+
+    # Respect any known structure footprints (e.g., starting-zone depot).
+    protected: set[tuple[int, int]] = set()
+    depot_info = getattr(world, "depot_info", None)
+    if depot_info and isinstance(depot_info, dict):
+        rect = depot_info.get("rect")
+        if rect and len(rect) == 4:
+            rx, ry, rw, rh = rect
+            for yy in range(int(ry), int(ry + rh)):
+                for xx in range(int(rx), int(rx + rw)):
+                    protected.add((xx, yy))
+
+    for pos in (getattr(world, "up_stairs", None), getattr(world, "down_stairs", None)):
+        if pos and isinstance(pos, tuple) and len(pos) == 2:
+            protected.add((int(pos[0]), int(pos[1])))
+
+    visual_c = overmap_params["visual_c"]
+    corruption_level = float(overmap_params.get("corruption_level", 0.0) or 0.0)
+    corruption_seed = int(overmap_params.get("corruption_seed", 1337) or 1337)
+    spline_weight = float(overmap_params.get("corruption_spline_weight", 0.0) or 0.0)
+    hotspots = list(overmap_params.get("corruption_hotspots") or [])
+    anchors = list(overmap_params.get("corruption_anchors") or [])
+    j_min_x = float(overmap_params.get("view_min_jx", overmap_params.get("orig_min_jx", -2.0)) or -2.0)
+    j_max_x = float(overmap_params.get("view_max_jx", overmap_params.get("orig_max_jx", 2.0)) or 2.0)
+
+    corr_params: CorruptionParams | None = None
+    if corruption_level > 0.0:
+        corr_params = CorruptionParams(
+            seed=int(corruption_seed),
+            hotspots=hotspots,
+            anchors=anchors,
+            spline_weight=float(spline_weight or 0.0),
+        )
+
+    h_grid = env_grid = None
+    try:
+        h_grid, env_grid = _julia_height_env_grid_numpy(
+            jx_slice=jx_slice,
+            jy_slice=jy_slice,
+            visual_c=visual_c,
+            iters=96,
+            corruption_level=corruption_level,
+            corruption_seed=corruption_seed,
+            spline_weight=spline_weight,
+            hotspots=hotspots,
+            anchors=anchors,
+            j_min_x=j_min_x,
+            j_max_x=j_max_x,
+        ) or (None, None)
+    except Exception:
+        h_grid = env_grid = None
+
+    for y in range(h):
+        for x in range(w):
+            if (x, y) in protected:
+                continue
+            jx = jx_slice[x]
+            jy = jy_slice[y]
+            if h_grid is not None and env_grid is not None:
+                h_val = float(h_grid[y, x])
+                corr = float(env_grid[y, x])
+            elif corr_params is None:
+                h_val = _julia_height_norm(jx, jy, visual_c, scale=1.0, iters=96)
+                corr = 0.0
+            else:
+                h_val, corr = julia_height_norm_corrupted(
+                    jx,
+                    jy,
+                    visual_c,
+                    iters=96,
+                    scale=1.0,
+                    corruption_level=corruption_level,
+                    params=corr_params,
+                    j_min_x=j_min_x,
+                    j_max_x=j_max_x,
+                )
+            fields = {"height": h_val, "moisture": h_val, "pattern": 0.0, "corruption": corr}
+            glyph, _ = _classify_tile(fields, 0.5)
+            tint = _apply_corruption_tint(_color_from_fields(fields), corr)
+            tile = world.get_tile(x, y)
+            if tile:
+                tile.glyph = glyph if glyph != "~" else "."
+                tile.tint = tint
 
 
 def generate_overworld(world: World, rng, up_pos: Optional[Tuple[int, int]] = None) -> None:

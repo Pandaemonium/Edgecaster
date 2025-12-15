@@ -457,9 +457,14 @@ class DungeonScene(Scene):
                     # Look up any effect the Game attached to this urgent event.
                     effect = getattr(game, "urgent_choice_effect", None)
                     if effect is not None:
+                        # Support chained prompts: if the effect installs a new
+                        # urgent_choice_effect (e.g. by calling Game.set_urgent),
+                        # don't clear it out from under the follow-up popup.
+                        before = effect
                         effect(idx, game)
-                        # Clear it so it doesn't leak to the next popup.
-                        game.urgent_choice_effect = None
+                        if getattr(game, "urgent_choice_effect", None) is before:
+                            # Clear it so it doesn't leak to the next popup.
+                            game.urgent_choice_effect = None
 
                 manager.push_scene(
                     UrgentMessageScene(

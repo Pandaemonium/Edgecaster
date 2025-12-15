@@ -157,3 +157,16 @@
   tags:
     door_state: closed
     door: true
+
+# --- RUNE ANCHOR FEATURE --------------------------------------------
+- id: rune_anchor
+  name: Rune Anchor
+  glyph: "|"
+  color: [235, 235, 190]
+  kind: feature
+  render_layer: 0
+  blocks_movement: false
+  parent: entity
+  description: "A runic pylon that holds corruption at bay."
+  tags:
+    rune_anchor: true
