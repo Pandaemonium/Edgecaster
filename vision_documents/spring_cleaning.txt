@@ -1,145 +1,109 @@
 ﻿SPRING CLEANING — ACTIONABLE PLAN
-(Current Status: Widget system online; PanelScene foundation online; VisualProfile + VisualEffect pipeline active)
+Updated: 2025-12-15
+Status: UI migration largely complete; polish + consolidation phase
 
 Legend:
-[CLEANUP] structure/no-behavior change
+[CLEANUP] structure / correctness
 [BEHAVIOR] gameplay change
 [VISION] long-term direction
 
 ===============================================================================
-SLICE 1: Unified TargetMode [FOUNDATION COMPLETE]
-✓ Tile / vertex / look targeting unified
-✓ Mouse + keyboard symmetric
-✓ Inspect mode uses entity inheritance
+SLICE 1 — TARGETMODE (FOUNDATION COMPLETE)
+
+✓ Unified tile / vertex / look targeting
+✓ Mouse + keyboard parity
+✓ Inspect mode respects entity inheritance
 
 Next:
-
-Cone / line shapes
-
-Ranged preview layering
-
-Multi-step targeting for complex spells
+[BEHAVIOR] Cone / line targeting shapes
+[BEHAVIOR] Ranged preview overlays
+[BEHAVIOR] Multi-step targeting for complex spells
 
 ===============================================================================
-SLICE 2: Menu & UI System Rework [CLEANUP — ACTIVE]
+SLICE 2 — MENU & UI SYSTEM (MAJOR MILESTONE REACHED)
 
-Problem:
-Menus, keybinds, inventory, and special scenes historically used ad-hoc layout
-code and scene-specific hacks (especially for visuals and mouse hit-testing).
+Problem (historical):
+Menus, keybinds, inventory, and popups relied on
+scene-specific layout hacks and ad hoc hit-testing.
 
-New foundation (now real):
-✓ PanelScene: panel-local rendering + root widget tree + UI-first input routing
-✓ GeneralMenuScene: selection model + confirm/cancel + scrolling
-✓ Legacy wrappers: MenuScene and PopupMenuScene wrap GeneralMenuScene
-✓ VisualProfile / VisualEffects apply consistently via visuals.py + visual_effects.py
-✓ Mouse hit-testing works under rotation/scale via unproject_mouse(...)
-✓ MenuFrameWidget provides a sane shared layout (banner/body/list/footer)
-✓ Title hierarchy restored (big title header; normal body/options; tiny footer)
-✓ UrgentMessage/Dialogue: wrapped body + wrapped choices (no ellipses)
-✓ Popup underlay: “no burn-in” snapshot rebuilt from stack below popup
-✓ Popup underlay: “no flicker” by suppressing renderer.present/_present during snapshot rebuild
+Current reality:
+✓ PanelScene is the universal UI foundation
+✓ Widget system stable and in active use
+✓ GeneralMenuScene replaces legacy MenuScene logic
+✓ PopupMenuScene is a thin wrapper (parity preserved)
+✓ VisualProfiles / VisualEffects apply uniformly
+✓ Mouse hit-testing works under rotation/scale
+✓ MenuFrameWidget provides sane default layout
+✓ Wrapped text everywhere (no ellipses regressions)
+✓ Popup underlay rebuilt safely (no burn-in, no flicker)
 
-Important gotchas learned (don’t regress):
+Migrated scenes:
+✓ Main Menu
+✓ Options
+✓ Keybindings
+✓ Character Creation
+✓ Urgent Message
+✓ Dialogue
 
-Init ordering: GeneralMenuScene builds widgets during init and may call
-get_ascii_art() early. Subclasses MUST set fields used by get_ascii_art()
-BEFORE calling super().init().
-
-MenuFrameWidget must clamp list/body widths to panel width to avoid clipped tails.
-
-Popup underlay rebuild MUST suppress ALL presentation calls:
-some scenes use renderer.present(), others call renderer._present() directly (DungeonScene).
-If not suppressed, you will see “blink back to dungeon” when popups appear.
-
-Import hygiene: avoid circular imports (events ↔ scenes ↔ renderer). Prefer:
-from edgecaster.scenes.manager import SceneManager
-and avoid importing SceneManager from edgecaster.scenes package root.
-
-Temporary scaffolding (do not let this linger):
-
-dungeon.py still contains an F8 debug overlay used to validate widget input
-interception. Keep as fallback until widget-based HUD is stable across
-Dungeon + Inventory + Popup flows, then remove.
-
-Migration order (stay disciplined):
-HUD → widget in its own file (overlay layer) [DONE]
-Ability Bar → widgetized + preserve clickiness [DONE]
-MenuScene/PopupMenuScene → wrappers over GeneralMenuScene [DONE]
-InventoryScene/UrgentMessageScene/Dialogue → parity first; now wrapped text + snug popups are in place
-Next: Two-pane inventory; keybinds/options as widget panels; reduce legacy UI paths.
-
-Near-term to-do (UI polish / correctness):
-[CLEANUP] Make menu styles consistent (padding, border thickness, dim level)
-[CLEANUP] Standardize title/body/choice fonts across all menus (one style table)
-[CLEANUP] List scrolling: unify ensure_visible + scroll offsets across list variants
-[CLEANUP] Delete leftover legacy wrap_text variants and old draw paths (urgent/dialogue)
-[CLEANUP] Keep popup sizing “snug” by measuring content and clamping to screen %
-[CLEANUP] Ensure overlays/HUD render order stays: underlay → dim → popup → overlay layers
+Remaining UI work:
+[CLEANUP] Inventory UI refinement (two-pane list/details)
+[CLEANUP] Normalize menu padding, borders, and dim levels
+[CLEANUP] Standardize title/body/choice fonts
+[CLEANUP] Unify list scrolling behavior
+[CLEANUP] Remove leftover legacy wrap_text / draw paths
+[CLEANUP] Keep popup sizing snug but readable
 
 ===============================================================================
-SLICE 3: Visual Effects & Presentation [FOUNDATION STRONG]
+SLICE 3 — VISUAL EFFECTS & PRESENTATION
 
-Visual effects milestone (expanded):
-✓ visual_effects.py is the single registry for named effects
-✓ Effects support multiple “lanes”:
-
-geometry lane (VisualProfile transforms)
-
-color lane (tint/flicker)
-
-present lane (shake/vibrate impulses)
-
-overlay lane (particles/shimmer/scanlines drawn onto surfaces)
-✓ Effects can define overlay bounds (local rect) to localize auras/smoke/embers
-around entities/tiles or within panels, preventing whole-screen bleed.
-✓ Effects apply uniformly across scenes, popups, and entities
-✓ Duplicate effects intentionally compound (fractal recursion)
+Status:
+✓ visual_effects.py is the single registry
+✓ Effects support multiple lanes:
+  – geometry
+  – color
+  – overlay
+  – present
+✓ Overlay bounds allow localized auras / smoke
+✓ Effects stack intentionally (recursive weirdness preserved)
 
 Next:
-[CLEANUP] Define a consistent default “menu background” and popup dim level
-[CLEANUP] Small library of panel styles (fullscreen menu, compact popup, wide popup)
-[CLEANUP] Re-check global overlays brightness (avoid unintended lightening)
+[CLEANUP] Define canonical menu background + popup dim level
+[CLEANUP] Small library of panel styles (fullscreen / compact / wide)
+[CLEANUP] Re-audit overlay brightness (avoid unintended lightening)
 
 ===============================================================================
-SLICE 4: Data-Driven Everything [VISION]
+SLICE 4 — DATA-DRIVEN EVERYTHING [VISION]
 
-Expand prototypes with:
-
-materials, physiology, resistances
-
-behavior components (curious, brittle, fractal, volatile)
-
-conditions/adjectives system that attaches gameplay + visual effects
-(e.g. "Fiery" condition → VisualEffect + resistances)
+Expand entity prototypes with:
+• materials
+• physiology
+• resistances
+• behavior components
 
 Longer-term:
-
-descriptions/names generated dynamically from trait stacks
-
-avoid hardcoded prefixes once the system exists
+[VISION] Conditions/adjectives system attaching gameplay + visual effects
+[VISION] Procedural descriptions and naming
+[VISION] Reduced hardcoded flavor once systems mature
 
 ===============================================================================
 ONGOING ENGINE CLEANUPS
 
 [CLEANUP] Decompose game.py into systems/*
-[CLEANUP] Scheduler/event semantics cleanup
-[CLEANUP] MessageLog performance (deque)
-[CLEANUP] Dataclass defaults & typing consistency
-[CLEANUP] Actor/entity identification consistency
+[CLEANUP] Scheduler semantics and typing
+[CLEANUP] MessageLog performance
+[CLEANUP] Entity/actor ID consistency
 [CLEANUP] Level registry invariants
-[CLEANUP] Kill-path ID consistency
-[CLEANUP] Overmap thread safety
-[CLEANUP] Centralize tuning constants
+[CLEANUP] Kill-path and LOS consistency
 [CLEANUP] Inventory/entity lookup optimizations
-[CLEANUP] Actor/entity position indexes
 [CLEANUP] Normalize content-file resolution
-[CLEANUP] Remove leftover debug scaffolding
+[CLEANUP] Remove debug scaffolding
 [CLEANUP] Explicit initialization pipeline
-[CLEANUP] Tighten scheduler typing
-[CLEANUP] Unify ignite/regrow effect logic
-[CLEANUP] Distinguish movement vs LOS blocking
+[CLEANUP] Centralize tuning constants
 
-Guiding principles:
-Keep the geometry weird.
-Keep responsibilities clean.
-Refactor early, but surgically.
+===============================================================================
+GUIDING PRINCIPLES
+
+• Prefer architecture over cleverness
+• Preserve functional parity before aesthetics
+• Let systems compose instead of special-casing
+• Keep the geometry weird
