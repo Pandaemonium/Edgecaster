@@ -30,6 +30,16 @@ Core invariants (things we want to keep true)
    - It does NOT currently change walkability or destroy POI structures.
    - If corruption should affect walkability later, that is Phase 2.
 
+Performance invariants (phase 1 goals)
+--------------------------------------
+1) The game should start without blocking on world-map rendering.
+   - Overmap rendering is allowed to "pop in" when the player opens the world map.
+
+2) Fast paths must not drift from canonical rules.
+   - Numpy acceleration is encouraged, but it must route distortion math through
+     the same corruption rules (distortion_np vs distortion_dz) so visuals remain
+     deterministic and consistent.
+
 
 Coordinate systems
 ------------------
@@ -76,6 +86,10 @@ Global map render:
 - edgecaster/scenes/world_map_scene.py
   - WorldMapScene._render_overmap() draws the world map surface.
   - Holding ALT displays a "corruption field view" instead of the main map.
+- edgecaster/overmap_accel.py
+  - render_overmap_buffers_numpy() is the default/primary renderer for the overmap.
+  - It vectorizes the Julia iteration across the whole low-res overmap grid.
+  - It calls edgecaster.corruption.distortion_np so corruption rules are unified.
 
 Local overworld generation:
 - edgecaster/mapgen.py
@@ -83,6 +97,8 @@ Local overworld generation:
   - refresh_fractal_overworld_visuals() updates an existing overworld zone's
     glyph/tint without touching structures (used when corruption changes).
   - apply_pois() applies POI IDs onto a world (world.poi_ids).
+  - _julia_height_env_grid_numpy() computes a full (height, env) grid for a zone
+    with numpy, instead of per-tile Python calls.
 
 Overmap params, caching, and threading:
 - edgecaster/game.py
@@ -91,12 +107,17 @@ Overmap params, caching, and threading:
   - Game.world_map_cache holds rendered surfaces (main + ALT corruption view).
   - Game.set_corruption_level() and Game.add_corruption_hotspot() trigger
     refresh of existing zones and a world-map rerender.
+  - IMPORTANT startup behavior:
+    - The game does NOT render the world map during Game.__init__ anymore.
+    - The world map is rendered lazily when the player opens it (pop-in is acceptable).
 
 Corruption field (d(z)):
 - edgecaster/corruption.py
   - CorruptionParams: tuning knobs (freq/amp/right_start/etc).
   - distortion_dz(): fast lookup for d(z) using precomputed LUTs.
   - julia_height_norm_corrupted(): escape-time sampling using z^2 + c + d(z).
+  - distortion_np(): numpy analogue of distortion_dz(), used by overmap_accel.py
+    and local-zone numpy generation so the rules cannot drift.
 
 
 World map generation (WorldMapScene._render_overmap)
@@ -117,28 +138,43 @@ High-level pipeline:
    - Uses game.overmap_params when present; otherwise picks a curated entry.
    - These extents are the authoritative basis for tile_julia_grid.
 
-3) For each pixel in the low-res map:
-   a) Map pixel -> global world tile index:
-        wx = round((px / (px_w-1)) * (total_w-1))
-        wy = round((py / (px_h-1)) * (total_h-1))
-   b) Map global world tile -> Julia coord:
-        jx = xgrid[wx] (if tile_julia_grid exists, otherwise interpolate)
-        jy = ygrid[wy]
-   c) Compute escape-time height with corruption:
-        (height, corr_strength) = mapgen._julia_height_norm_with_corruption(...)
-   d) Classify tile into a biome bucket (glyph) using height/moisture:
-        glyph = mapgen._classify_tile(fields, noise)
-   e) Convert glyph -> base color using WorldMapScene._biome_color_by_index().
+3) Compute low-res overmap buffers (main map + ALT corruption view)
+   - Default path (fast): edgecaster/overmap_accel.py:render_overmap_buffers_numpy()
+     a) Map pixel -> global world tile index:
+          wx_map[px] in [0..total_w-1]
+          wy_map[py] in [0..total_h-1]
+     b) Map global world tile -> Julia coord:
+          jx = tile_julia_grid["x"][wx]
+          jy = tile_julia_grid["y"][wy]
+        (if the grid is missing, it falls back to interpolation from view extents)
+     c) Vectorized Julia iteration across the whole pixel grid:
+          z_{n+1} = z_n^2 + c + d(z_n)
+        where d(z) is computed by corruption.distortion_np().
+     d) Produce:
+        - rgb_main: the final overmap color buffer (uint8 RGB)
+          (currently: smooth palette from height + simple hillshading for relief)
+        - rgb_corr: the ALT corruption field view (uint8 RGB)
+        - peak_env: the envelope strength (float32) used for debugging/ALT view
+   - Fallback path (slow, should be rare): WorldMapScene._render_overmap() can still
+     do per-pixel Python sampling if numpy is unavailable:
+       - classify tile -> biome index via mapgen._classify_tile()
+       - map index -> color via WorldMapScene._biome_color_by_index()
 
 4) Important: the main map does NOT directly visualize corruption by tinting
    - Corruption is visible because it changes the Julia escape-time height.
    - Corruption field visualization is available only via ALT view.
 
 5) ALT corruption view (WorldMapScene)
-   - For each pixel, we sample distortion_dz(jx, jy) and encode it as color:
+   - The ALT view visualizes the *distortion field at z0* (the Julia coordinate of
+     that world tile), not the full escape-time height.
+   - Encoding:
      - R channel roughly encodes dx (real distortion direction).
      - B channel roughly encodes dy (imag distortion direction).
      - G channel encodes the local envelope strength.
+   - Fast path: overmap_accel computes this by vectorizing corruption.distortion_np()
+     over the entire z0 grid and returning rgb_corr.
+   - Fallback path: world_map_scene computes this by calling corruption.distortion_dz()
+     per pixel when ALT is held.
 
 6) Scale low-res surfaces up to the final map size:
    - pygame.transform.smoothscale() to (target_w, target_h)
@@ -150,11 +186,14 @@ High-level pipeline:
        view params and cache key
 
 8) Threading:
-   - Initial render happens on a background thread from Game._start_world_map_thread().
+   - The overmap render happens on a background thread from Game._start_world_map_thread().
    - A version counter (Game.world_map_version) ensures stale renders are discarded.
    - While rendering, WorldMapScene shows:
        - "Generating world map..." (initial render)
        - "Corruption reverberating..." (rerender due to corruption changes)
+   - Startup optimization:
+     - Game.__init__ no longer starts the world-map thread.
+     - WorldMapScene starts the thread lazily when the player opens the world map.
 
 Temporary tuning UI:
 - The world map currently has a temporary slider (top-left) that sets
@@ -183,6 +222,15 @@ When generating an overworld zone (depth 0):
    - (Currently) apply a subtle corruption tint for local-zone tiles using corr.
    - Set tile fields:
        tile.glyph, tile.walkable, tile.tint
+
+Performance note (local zone generation):
+- The implementation now prefers a numpy grid fast-path:
+    mapgen._julia_height_env_grid_numpy(...)
+  which computes the full (height, corruption_env) arrays for the zone in one
+  vectorized iteration loop.
+- This keeps exact local/world correspondence because it operates on the exact
+  per-tile Julia coordinates in jx_slice/jy_slice (from tile_julia_grid).
+- The scalar per-tile path remains as a fallback if numpy errors or is missing.
 
 Note on walkability:
 - The overworld is intentionally open right now:
@@ -220,11 +268,17 @@ Key pieces:
 2) distortion_dz() performance strategy
    - During iteration, we only evaluate d(z) while |z| <= 2, so we precompute LUTs
      over z in [-2, 2] x [-2, 2].
-   - _noise_lut() builds:
+   - _noise_lut() builds (and caches, lru_cache):
        - a mountain-like heightfield H via fBm + ridges
        - its gradient (nx_tex, ny_tex) as a coherent vector field
        - a spots_tex for scattered peaks (later gated by the right-side cloud)
+   - _anchor_lut() builds (and caches) a multiplicative suppression mask for rune anchors.
    - distortion_dz() does nearest-neighbor sampling of these textures for speed.
+   - Recent performance work:
+     - _noise_lut and _anchor_lut now use a numpy vectorized implementation when numpy
+       is available, and fall back to the pure-Python implementation otherwise.
+     - This change is critical for fast startup because local-zone generation and the
+       overmap both need the LUTs.
 
 3) "Mountains of corruption"
    - These are peaks/ridges in the distortion FIELD (d(z)), not a literal height boost.
@@ -253,7 +307,19 @@ Corruption field shape (code-level tuning):
     CorruptionParams.amp
     CorruptionParams.right_start / right_sharpness / right_weight
     CorruptionParams.spot_* (scattered peaks)
+    CorruptionParams.base_res / detail_res / ridge_strength (landscape builder look)
+    CorruptionParams.mount_mag_floor / mount_mag_ceil (valleys vs mountains shaping)
     _LUT_RES (texture resolution for d(z) lookup)
+
+Performance/fast-path notes:
+- The codebase uses numpy opportunistically for performance:
+  - world map: edgecaster/overmap_accel.py
+  - local zones: edgecaster/mapgen.py (_julia_height_env_grid_numpy)
+  - LUT construction: edgecaster/corruption.py (_noise_lut / _anchor_lut)
+- If numpy is not installed, the game should still run, but:
+  - world map rendering becomes much slower
+  - local zone generation can stall startup
+  - corruption LUT construction becomes expensive
 
 Temporary UI (for experimentation):
 - edgecaster/scenes/world_map_scene.py:

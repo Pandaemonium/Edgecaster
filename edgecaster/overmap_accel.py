@@ -21,7 +21,9 @@ def render_overmap_buffers_numpy(
     iters: int,
     corruption_level: float,
     corruption_seed: int,
+    spline_weight: float = 0.0,
     hotspots: Optional[Iterable[tuple[float, float, float, float]]] = None,
+    anchors: Optional[Iterable[tuple[float, float, float, float]]] = None,
 ) -> tuple["object", "object", "object"]:
     """
     Fast numpy-based overmap renderer.
@@ -60,8 +62,14 @@ def render_overmap_buffers_numpy(
     corr_level = float(corruption_level or 0.0)
     corr_seed = int(corruption_seed)
     hot_list = list(hotspots or [])
+    anchor_list = list(anchors or [])
 
-    corr_params = corr.CorruptionParams(seed=corr_seed, hotspots=hot_list)
+    corr_params = corr.CorruptionParams(
+        seed=corr_seed,
+        hotspots=hot_list,
+        anchors=anchor_list,
+        spline_weight=float(spline_weight or 0.0),
+    )
 
     # -------------------------------------------------------------------------
     # Pixel -> world tile -> Julia coord mapping (preserves overmap/local tie).
@@ -130,6 +138,29 @@ def render_overmap_buffers_numpy(
         hot_gx_tex = None
         hot_gy_tex = None
 
+    if anchor_list:
+        anchor_arr = corr._anchor_lut(  # type: ignore[attr-defined]
+            corr._anchors_cache_key(anchor_list),  # type: ignore[attr-defined]
+            int(lut_res),
+        )
+        anchor_tex = np.frombuffer(anchor_arr, dtype=np.float32)
+    else:
+        anchor_tex = None
+
+    if float(getattr(corr_params, "spline_weight", 0.0) or 0.0) > 1e-9:
+        sx_arr, sy_arr = corr._spline_lut(  # type: ignore[attr-defined]
+            int(corr_params.seed),
+            int(getattr(corr_params, "spline_points", 40) or 40),
+            float(getattr(corr_params, "spline_strength", 0.35) or 0.35),
+            int(getattr(corr_params, "spline_iters", 120) or 120),
+            int(lut_res),
+        )
+        spline_x_tex = np.frombuffer(sx_arr, dtype=np.float32)
+        spline_y_tex = np.frombuffer(sy_arr, dtype=np.float32)
+    else:
+        spline_x_tex = None
+        spline_y_tex = None
+
     def distortion_np(zx_a: "np.ndarray", zy_a: "np.ndarray") -> tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
         # Delegate to the canonical implementation so we never drift from
         # the scalar corruption rules (used by local mapgen and the python renderer fallback).
@@ -143,6 +174,9 @@ def render_overmap_buffers_numpy(
             nx_tex=nx_tex,
             ny_tex=ny_tex,
             spots_tex=spots_tex,
+            spline_x_tex=spline_x_tex,
+            spline_y_tex=spline_y_tex,
+            anchor_tex=anchor_tex,
             hot_tex=hot_tex,
             hot_gx_tex=hot_gx_tex,
             hot_gy_tex=hot_gy_tex,

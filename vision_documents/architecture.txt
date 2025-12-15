@@ -236,3 +236,45 @@ Immediate next improvements:
 - Two-pane inventory (list + details)
 - Keybinds/options unification using widgets
 - Reduce ad-hoc coordinate math; keep all transforms via VisualProfile/VisualEffects
+
+===============================================================================
+SECTION 8 - MAP GENERATION + CORRUPTION (WORLD/LOCAL COHERENCE)
+
+Core invariant:
+- The world map (overmap) and local overworld zones must remain "intimately tied".
+  A global world tile (gx, gy) must always map to exactly one Julia-plane coord
+  (jx, jy), and both overmap rendering and local zone generation must use that
+  same mapping.
+
+Where this lives:
+- edgecaster/game.py
+  - game.overmap_params holds the authoritative Julia view extents + chosen c.
+  - game.tile_julia_grid precomputes the mapping arrays:
+      jx = tile_julia_grid["x"][gx]
+      jy = tile_julia_grid["y"][gy]
+  - Startup policy: the world map is rendered lazily when opened (pop-in is ok);
+    avoid doing heavy overmap rendering work during Game.__init__.
+
+- edgecaster/scenes/world_map_scene.py + edgecaster/overmap_accel.py
+  - The overmap is rendered at low resolution and scaled up for display.
+  - The default path uses numpy acceleration (`overmap_accel.render_overmap_buffers_numpy`)
+    and routes all corruption math through `edgecaster.corruption.distortion_np` so
+    the fast path cannot drift from the scalar rules.
+
+- edgecaster/mapgen.py
+  - Overworld zones (depth 0) are generated using Julia sampling at per-tile
+    coords from tile_julia_grid slices (`jx_slice`/`jy_slice`).
+  - A numpy grid fast-path exists for generating full (height, env) arrays for a
+    zone without per-tile Python loops.
+
+- edgecaster/corruption.py
+  - Corruption modifies the Julia iterator:
+      z_{n+1} = z_n^2 + c + d(z_n)
+  - d(z) is evaluated via LUT sampling while |z| <= 2; LUTs are cached and
+    built with numpy when available (with a pure-Python fallback).
+  - Rune anchors are part of the corruption system and suppress corruption
+    multiplicatively in the Julia z-plane.
+
+Docs:
+- vision_documents/map_generation_strategy.txt is the detailed reference for
+  how map generation/corruption are implemented and which invariants to preserve.

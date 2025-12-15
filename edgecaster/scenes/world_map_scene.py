@@ -71,6 +71,11 @@ class WorldMapScene(Scene):
                     if event.key == pygame.K_F11:
                         renderer.toggle_fullscreen()
                         continue
+                    if event.key == pygame.K_s:
+                        cur = float(getattr(self.game, "corruption_spline_weight", 0.0) or 0.0)
+                        # Toggle between off and a sensible-on default for quick testing.
+                        self.game.set_corruption_spline_weight(0.0 if cur > 1e-6 else 1.0)
+                        continue
                     if event.key == pygame.K_0:
                         zoom = 1.0
                         view_min_wx = 0.0
@@ -248,8 +253,16 @@ class WorldMapScene(Scene):
                     wy = pz_y * self.game.cfg.world_height + self.game.cfg.world_height // 2
                     poi_marker = world_to_view(wx, wy)
                     if poi_marker is not None:
-                        color = (120, 210, 240) if pid == "academy" else (180, 180, 200)
-                        pygame.draw.circle(surf, color, (ox + poi_marker[0], oy + poi_marker[1]), 3)
+                        sx = ox + poi_marker[0]
+                        sy = oy + poi_marker[1]
+                        if str(pid).startswith("rune_anchor_"):
+                            # Rune anchors: tiny cross marker.
+                            color = (235, 235, 190)
+                            pygame.draw.line(surf, color, (sx - 1, sy), (sx + 1, sy), 1)
+                            pygame.draw.line(surf, color, (sx, sy - 1), (sx, sy + 1), 1)
+                        else:
+                            color = (120, 210, 240) if pid == "academy" else (180, 180, 200)
+                            pygame.draw.circle(surf, color, (sx, sy), 3)
 
             # If corruption changed and we're regenerating the overmap, surface a distinct message.
             if getattr(self.game, "world_map_rendering", False) and getattr(self.game, "world_map_render_reason", "") == "corruption":
@@ -310,7 +323,15 @@ class WorldMapScene(Scene):
                 if show_corruption and cached.get("surface_corr") is not None:
                     return cached["surface_corr"]
                 return cached["surface"]
-        # If background render is running, show placeholder
+
+        # Start rendering lazily so opening the world map doesn't block the game loop.
+        if not getattr(self.game, "world_map_ready", False) and not getattr(self.game, "world_map_rendering", False):
+            try:
+                self.game._start_world_map_thread(reason="loading")
+            except Exception:
+                pass
+
+        # If background render is running, show placeholder.
         if getattr(self.game, "world_map_rendering", False):
             surf = pygame.Surface((min(640, renderer.width - 32), min(480, renderer.height - 32)))
             surf.fill((10, 10, 20))
@@ -322,7 +343,8 @@ class WorldMapScene(Scene):
             msg = renderer.big_label(text)
             surf.blit(msg, ((surf.get_width() - msg.get_width()) // 2, (surf.get_height() - msg.get_height()) // 2))
             return surf
-        # Otherwise, render synchronously and cache
+
+        # Fallback: render synchronously and cache (should be rare; kept for robustness).
         surf, view, surf_corr = self._render_overmap(renderer)
         self.game.world_map_cache = {"surface": surf, "surface_corr": surf_corr, "view": view, "key": size_key}
         self.game.world_map_ready = True
@@ -375,8 +397,15 @@ class WorldMapScene(Scene):
         span_jy = j_max_y - j_min_y
         corr_level = float(getattr(self.game, "corruption_level", 0.0) or 0.0)
         corr_seed = int(getattr(self.game, "corruption_seed", 1337) or 1337)
+        corr_spline_weight = float(getattr(self.game, "corruption_spline_weight", 0.0) or 0.0)
         hotspots = list(getattr(self.game, "corruption_hotspots", []) or [])
-        corr_params = CorruptionParams(seed=corr_seed, hotspots=hotspots)
+        anchors = list(getattr(self.game, "corruption_anchors", []) or [])
+        corr_params = CorruptionParams(
+            seed=corr_seed,
+            hotspots=hotspots,
+            anchors=anchors,
+            spline_weight=corr_spline_weight,
+        )
         # Map render pixels -> world tile indices -> Julia coords for consistent sampling.
         wx_map = [int(round((i / max(1, px_w - 1)) * max(0, total_w - 1))) for i in range(px_w)]
         wy_map = [int(round((i / max(1, px_h - 1)) * max(0, total_h - 1))) for i in range(px_h)]
@@ -403,7 +432,7 @@ class WorldMapScene(Scene):
                 f"reason={getattr(self.game, 'world_map_render_reason', 'loading')!s} "
                 f"target={target_w}x{target_h} render={px_w}x{px_h} "
                 f"world_tiles={total_w}x{total_h} iters=64 "
-                f"corr_level={corr_level:.3f} hotspots={len(hotspots)}"
+                f"corr_level={corr_level:.3f} hotspots={len(hotspots)} anchors={len(anchors)}"
             )
         t0 = time.perf_counter()
 
@@ -433,7 +462,9 @@ class WorldMapScene(Scene):
                 iters=64,
                 corruption_level=corr_level,
                 corruption_seed=corr_seed,
+                spline_weight=corr_spline_weight,
                 hotspots=hotspots,
+                anchors=anchors,
             )
 
             # pygame.surfarray expects (w, h, 3), while our buffer is (h, w, 3).
@@ -472,9 +503,11 @@ class WorldMapScene(Scene):
                         iters=64,
                         corruption_level=corr_level,
                         corruption_seed=corr_seed,
+                        spline_weight=corr_spline_weight,
                         j_min_x=j_min_x,
                         j_max_x=j_max_x,
                         hotspots=hotspots,
+                        anchors=anchors,
                     )
                     fields = {"height": h_val, "moisture": h_val, "pattern": 0.0, "corruption": corr}
                     glyph, _walk = classify_tile(fields, 0.5)

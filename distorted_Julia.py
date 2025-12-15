@@ -299,13 +299,24 @@ def compute_orbit_distorted(z0: complex, c: complex, max_steps: int, escape_radi
 # SplineField (same as yours)
 # ----------------------------
 class SplineField:
-    """A lightweight 2D 'spline-like' scalar field via harmonic relaxation."""
+    """A lightweight 2D 'spline-like' scalar field via harmonic relaxation.
+
+    Also supports "rune anchors": Gaussian suppressors that locally reduce the
+    distortion magnitude without changing the underlying solved field.
+    """
 
     def __init__(self, grid_w: int, grid_h: int) -> None:
         self.grid_w = int(grid_w)
         self.grid_h = int(grid_h)
         self.control: dict[tuple[float, float], float] = {}
         self.grid = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+
+        # Rune anchors (in complex-plane coords) and their suppression mask on the coarse grid.
+        # Mask is 0 at anchor center, 1 far away (multiplicative across anchors).
+        self.anchors: list[tuple[float, float, float]] = []  # (x, y, sigma)
+        self.anchor_mask = np.ones((self.grid_h, self.grid_w), dtype=np.float32)
+        self._last_anchor_sig: tuple[float, float, float, float] | None = None
+
         self._dirty = True
         self._last_sig: tuple[float, float, float, float, int] | None = None
 
@@ -314,14 +325,64 @@ class SplineField:
         self.control[key] = float(self.control.get(key, 0.0) + float(delta))
         self._dirty = True
 
-    def clear(self) -> None:
+    def add_anchor(self, z: complex, sigma: float, vp: Viewport) -> None:
+        sigma = float(clamp(float(sigma), 0.01, 10.0))
+        self.anchors.append((float(z.real), float(z.imag), sigma))
+        self._rebuild_anchor_mask(vp)
+
+    def _rebuild_anchor_mask(self, vp: Viewport) -> None:
+        """Rebuild the per-cell suppression mask from all anchors."""
+        h, w = self.grid_h, self.grid_w
+        if h <= 0 or w <= 0:
+            return
+
+        if not self.anchors:
+            self.anchor_mask = np.ones((h, w), dtype=np.float32)
+            self._last_anchor_sig = (vp.x_min, vp.x_max, vp.y_min, vp.y_max)
+            return
+
+        xs = np.linspace(vp.x_min, vp.x_max, w, dtype=np.float32)
+        ys = np.linspace(vp.y_max, vp.y_min, h, dtype=np.float32)
+        X, Y = np.meshgrid(xs, ys)
+
+        mask = np.ones((h, w), dtype=np.float32)
+        for ax, ay, sigma in self.anchors:
+            s = float(max(1e-6, sigma))
+            dx = X - float(ax)
+            dy = Y - float(ay)
+            dist_sq = dx * dx + dy * dy
+            gaussian = np.exp(-dist_sq / (2.0 * s * s)).astype(np.float32, copy=False)
+            mask *= (1.0 - gaussian).astype(np.float32, copy=False)
+
+        self.anchor_mask = mask
+        self._last_anchor_sig = (vp.x_min, vp.x_max, vp.y_min, vp.y_max)
+
+    def clear_controls(self) -> None:
+        """Clear corruption sources but keep rune anchors."""
         self.control.clear()
         self.grid.fill(0.0)
         self._dirty = True
+        self._last_sig = None
+
+    def clear(self) -> None:
+        """Clear everything (corruption sources + anchors)."""
+        self.control.clear()
+        self.anchors.clear()
+        self.anchor_mask = np.ones((self.grid_h, self.grid_w), dtype=np.float32)
+        self._last_anchor_sig = None
+        self.grid.fill(0.0)
+        self._dirty = True
+        self._last_sig = None
 
     def solve(self, vp: Viewport, iters: int) -> np.ndarray:
         iters = int(clamp(iters, 1, 2000))
         sig = (vp.x_min, vp.x_max, vp.y_min, vp.y_max, iters)
+
+        # Keep the anchor mask in sync with this viewport (vp_field is usually fixed).
+        anchor_sig = (vp.x_min, vp.x_max, vp.y_min, vp.y_max)
+        if self._last_anchor_sig != anchor_sig:
+            self._rebuild_anchor_mask(vp)
+
         if not self._dirty and self._last_sig == sig:
             return self.grid
 
@@ -613,6 +674,34 @@ def init_zero(field_re: "SplineField", field_im: "SplineField") -> None:
     field_im.clear()
 
 
+def init_random_corruption(
+    field_re: "SplineField",
+    field_im: "SplineField",
+    vp: Viewport,
+    strength: float = 0.5,
+    n_points: int = 40,
+    seed: int | None = None,
+) -> None:
+    """Initialize corruption field with random control points (keeps rune anchors)."""
+    rng = np.random.default_rng(seed)
+    field_re.clear_controls()
+    field_im.clear_controls()
+
+    strength = float(strength)
+    if strength <= 0.0:
+        return
+
+    n_points = int(max(0, n_points))
+    for _ in range(n_points):
+        x = float(rng.uniform(vp.x_min, vp.x_max))
+        y = float(rng.uniform(vp.y_min, vp.y_max))
+        val_re = float(rng.uniform(-strength, strength))
+        val_im = float(rng.uniform(-strength, strength))
+        pos = complex(x, y)
+        field_re.add_delta(pos, val_re)
+        field_im.add_delta(pos, val_im)
+
+
 def init_pylons(
     field_re: "SplineField",
     field_im: "SplineField",
@@ -626,8 +715,8 @@ def init_pylons(
     your harmonic relaxation makes a smooth "hill".
     """
     rng = np.random.default_rng(seed)
-    field_re.clear()
-    field_im.clear()
+    field_re.clear_controls()
+    field_im.clear_controls()
 
     if strength <= 0.0:
         return
@@ -667,8 +756,8 @@ def init_wavefronts(
     Band-y tides / fronts. We sample the function at random points and use those as control points.
     """
     rng = np.random.default_rng(seed)
-    field_re.clear()
-    field_im.clear()
+    field_re.clear_controls()
+    field_im.clear_controls()
 
     if strength <= 0.0:
         return
@@ -743,8 +832,8 @@ def init_spectral(
     Sets the *coarse* grids directly (no control points needed), keeping your downstream
     upsample pipeline intact.
     """
-    field_re.clear()
-    field_im.clear()
+    field_re.clear_controls()
+    field_im.clear_controls()
 
     if strength <= 0.0:
         return
@@ -884,8 +973,8 @@ def init_landscape(
       dist_im = k * dH/dy
     (This tends to feel like "flow along slopes".)
     """
-    field_re.clear()
-    field_im.clear()
+    field_re.clear_controls()
+    field_im.clear_controls()
     strength = float(strength)
     if strength <= 0.0:
         return
@@ -974,6 +1063,7 @@ def main() -> None:
         "stiff_re": 120,
         "stiff_im": 120,
         "z_step": 0.05,
+        "anchor_sigma": 0.30,
         "highlight_steps": [1],
                 # Landscape params
         "land_mstart": 0.55,
@@ -1008,6 +1098,14 @@ def main() -> None:
         nonlocal tex_re, tex_im
         re_grid = z_field_re.solve(vp_field, int(params["stiff_re"]))
         im_grid = z_field_im.solve(vp_field, int(params["stiff_im"]))
+
+        # Apply rune-anchor suppression *after* solving so anchors don't alter the base field.
+        re_mask = getattr(z_field_re, "anchor_mask", None)
+        if re_mask is not None and getattr(re_mask, "shape", None) == getattr(re_grid, "shape", None):
+            re_grid = (re_grid * re_mask).astype(np.float32, copy=False)
+        im_mask = getattr(z_field_im, "anchor_mask", None)
+        if im_mask is not None and getattr(im_mask, "shape", None) == getattr(im_grid, "shape", None):
+            im_grid = (im_grid * im_mask).astype(np.float32, copy=False)
         tex_re = upsample_bilinear(re_grid, FIELD_TEX_H, FIELD_TEX_W)
         tex_im = upsample_bilinear(im_grid, FIELD_TEX_H, FIELD_TEX_W)
 
@@ -1036,6 +1134,7 @@ def main() -> None:
     # Selection state for editor
     selected_axis: str | None = None
     selected_z: complex | None = None
+    anchor_mode = False  # press 'A' to toggle; click top panels to place anchors when on
 
     # Debounced full renders after wheel settles
     last_zoom_ts_ms = 0
@@ -1080,9 +1179,10 @@ def main() -> None:
     btn_waves    = Button("Waves",    pygame.Rect(ui_rect.x + 870, ui_rect.y + 24, 80, 28))
     btn_spectral = Button("Spectral", pygame.Rect(ui_rect.x + 960, ui_rect.y + 24, 90, 28))
     btn_landscape = Button("Landscape", pygame.Rect(ui_rect.x + 1060, ui_rect.y + 24, 110, 28))
+    btn_random   = Button("Random",   pygame.Rect(ui_rect.x + 1180, ui_rect.y + 24, 90, 28))
 
 
-    init_buttons = [btn_zero, btn_pylons, btn_waves, btn_spectral, btn_landscape]
+    init_buttons = [btn_zero, btn_pylons, btn_waves, btn_spectral, btn_landscape, btn_random]
 
 
     # Bottom param boxes
@@ -1102,6 +1202,7 @@ def main() -> None:
         ParamBox("Stiff(Re)",    "stiff_re", pygame.Rect(x0 + 0 * (box_w + gap_x), y0 + 1 * (box_h + gap_y), box_w, box_h), "int", str(params["stiff_re"])),
         ParamBox("Stiff(Im)",    "stiff_im", pygame.Rect(x0 + 1 * (box_w + gap_x), y0 + 1 * (box_h + gap_y), box_w, box_h), "int", str(params["stiff_im"])),
         ParamBox("ZStep",        "z_step", pygame.Rect(x0 + 2 * (box_w + gap_x), y0 + 1 * (box_h + gap_y), box_w, box_h), "float", f"{params['z_step']:.3f}"),
+        ParamBox("AnchorSigma",  "anchor_sigma", pygame.Rect(x0 + 3 * (box_w + gap_x), y0 + 1 * (box_h + gap_y), box_w, box_h), "float", f"{params['anchor_sigma']:.3f}"),
     ]
         # After creating the first row boxes (up through MaxOpacity)...
     # Add extra boxes to the right of MaxOpacity:
@@ -1149,7 +1250,7 @@ def main() -> None:
             v = try_parse(b.kind, b.text)
         except Exception:
             # revert
-            if b.key in ("max_op", "z_step"):
+            if b.key in ("max_op", "z_step", "anchor_sigma"):
                 b.text = f"{float(params[b.key]):.3f}"
             else:
                 b.text = str(params[b.key])
@@ -1201,6 +1302,13 @@ def main() -> None:
             v = float(v)
             v = clamp(v, 0.0001, 5.0)
             params["z_step"] = v
+            b.text = f"{v:.3f}"
+            return
+
+        if b.key == "anchor_sigma":
+            v = float(v)
+            v = clamp(v, 0.01, 10.0)
+            params["anchor_sigma"] = v
             b.text = f"{v:.3f}"
             return
         
@@ -1270,11 +1378,11 @@ def main() -> None:
     set_rng_from_seed_text()
 
     def randomize_fields(scale: float) -> None:
-        """Clear both fields; if scale>0 add random control points; rebuild textures; rerender."""
+        """Randomize corruption sources (keeps rune anchors)."""
         nonlocal julia_surf
         scale = float(scale)
-        z_field_re.clear()
-        z_field_im.clear()
+        z_field_re.clear_controls()
+        z_field_im.clear_controls()
 
         if scale > 0.0:
             for _ in range(RAND_POINTS):
@@ -1322,6 +1430,11 @@ def main() -> None:
                     rebuild_field_textures()
                     # note: field textures unchanged; just resample + rerender julia
                     julia_surf = render_julia_full()
+
+                elif event.key == pygame.K_a:
+                    # Only toggle if you're not currently typing in a box.
+                    if not (any(b.focused for b in boxes) or seed_box.focused):
+                        anchor_mode = not anchor_mode
 
                 # keystrokes to focused box
                 if seed_box.focused:
@@ -1429,6 +1542,16 @@ def main() -> None:
                                     seed=dist_seed,
                                 )
 
+                            elif bbtn is btn_random:
+                                init_random_corruption(
+                                    z_field_re,
+                                    z_field_im,
+                                    vp_field,
+                                    strength=strength,
+                                    n_points=40,
+                                    seed=dist_seed,
+                                )
+
 
                             dist_seed += 1
 
@@ -1446,15 +1569,31 @@ def main() -> None:
                 if rect_zr.collidepoint(mx, my) and event.button == 1:
                     local_x = mx - rect_zr.x
                     local_y = my - rect_zr.y
-                    selected_axis = "re"
-                    selected_z = vp_top_view().pixel_to_complex(local_x, local_y)
+                    click_z = vp_top_view().pixel_to_complex(local_x, local_y)
+                    if anchor_mode:
+                        sigma = float(params.get("anchor_sigma", 0.30))
+                        z_field_re.add_anchor(click_z, sigma, vp_field)
+                        z_field_im.add_anchor(click_z, sigma, vp_field)
+                        rebuild_field_textures()
+                        julia_surf = render_julia_full()
+                    else:
+                        selected_axis = "re"
+                        selected_z = click_z
                     continue
 
                 if rect_zi.collidepoint(mx, my) and event.button == 1:
                     local_x = mx - rect_zi.x
                     local_y = my - rect_zi.y
-                    selected_axis = "im"
-                    selected_z = vp_top_view().pixel_to_complex(local_x, local_y)
+                    click_z = vp_top_view().pixel_to_complex(local_x, local_y)
+                    if anchor_mode:
+                        sigma = float(params.get("anchor_sigma", 0.30))
+                        z_field_re.add_anchor(click_z, sigma, vp_field)
+                        z_field_im.add_anchor(click_z, sigma, vp_field)
+                        rebuild_field_textures()
+                        julia_surf = render_julia_full()
+                    else:
+                        selected_axis = "im"
+                        selected_z = click_z
                     continue
 
                 # z-field adjust buttons
@@ -1573,6 +1712,24 @@ def main() -> None:
             pygame.draw.circle(screen, (255, 255, 255), (px, py), 6, 2)
             pygame.draw.circle(screen, (0, 0, 0), (px, py), 7, 1)
 
+        # Rune-anchor markers (drawn on both top panels).
+        anchors = getattr(z_field_re, "anchors", None) or []
+        if anchors:
+            tvp = vp_top_view()
+            span_x = max(1e-6, float(tvp.x_max - tvp.x_min))
+            px_per_unit = float(tvp.width - 1) / span_x
+            col = (255, 200, 100) if anchor_mode else (200, 180, 90)
+            for ax, ay, sigma in anchors:
+                sx, sy = tvp.complex_to_pixel(complex(float(ax), float(ay)))
+                if not (0 <= sx < tvp.width and 0 <= sy < tvp.height):
+                    continue
+                rad = int(max(3, min(200, float(sigma) * px_per_unit)))
+                for rect in (rect_zr, rect_zi):
+                    cx = rect.x + sx
+                    cy = rect.y + sy
+                    pygame.draw.circle(screen, col, (cx, cy), rad, 1)
+                    pygame.draw.circle(screen, col, (cx, cy), 3, 0)
+
         # ---- Linked crosshairs + orbit hover ----
         mx, my = pygame.mouse.get_pos()
         hover_z: complex | None = None
@@ -1669,7 +1826,13 @@ def main() -> None:
         # ---- Bottom UI ----
         pygame.draw.rect(screen, (14, 14, 20), ui_rect)
         pygame.draw.rect(screen, (60, 60, 90), ui_rect, 2)
-        draw_text(screen, font, "Click top fields to select a point; use ---/--/-/+ buttons to edit. Enter applies boxes. R resets view.", ui_rect.x + 10, ui_rect.y + 8)
+        draw_text(
+            screen,
+            font,
+            "Click top fields to select a point (A toggles rune-anchor placement). Use ---/--/-/+ to edit. Enter applies boxes. R resets view.",
+            ui_rect.x + 10,
+            ui_rect.y + 8,
+        )
 
         for btn in adjust_buttons:
             pygame.draw.rect(screen, (22, 22, 30), btn.rect)
@@ -1682,6 +1845,15 @@ def main() -> None:
             axis_name = "Real" if selected_axis == "re" else "Imag"
             status = f"Editing: {axis_name} @ z={selected_z.real:+.3f}{selected_z.imag:+.3f}i"
         draw_text(screen, font, status, ui_rect.x + 10 + 6 * (btn_w + btn_gap) + 20, btn_y0 + 4)
+
+        if anchor_mode:
+            draw_text(
+                screen,
+                font,
+                f"ANCHOR MODE ON (A toggles)  sigma={float(params.get('anchor_sigma', 0.30)):.3f}",
+                ui_rect.x + 10,
+                btn_y0 + 30,
+            )
 
         for b in boxes:
             b.draw(screen, font)

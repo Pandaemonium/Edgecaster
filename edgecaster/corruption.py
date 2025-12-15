@@ -55,6 +55,35 @@ class CorruptionParams:
     # This is for later content-driven placement; not required for phase 1.
     hotspots: list[tuple[float, float, float, float]] = field(default_factory=list)
 
+    # Rune anchors (x, y, sigma, strength) in the Julia z-plane.
+    #
+    # Each anchor suppresses corruption locally via:
+    #   suppress(z) = 1 - strength * exp(-||z-a||^2 / (2*sigma^2))
+    # Combined multiplicatively across anchors.
+    #
+    # Parameter notes:
+    # - (x, y): anchor center in Julia-plane coordinates (same space as zx/zy in the iterator).
+    # - sigma: Gaussian falloff radius in Julia-plane units.
+    #     * Larger sigma => wider "safe zone" around the anchor.
+    #     * sigma is NOT in tiles; to convert to tiles, divide by the mean world->Julia
+    #       step size (tile_julia_grid["step_x"/"step_y"]) used by the overmap.
+    # - strength: suppression strength in [0..1].
+    #     * 1.0 means corruption is driven to ~0 exactly at the anchor center.
+    #     * 0.5 means corruption is halved at the anchor center.
+    #
+    # Anchors are intended to be generated as POIs (so they can be visited) but
+    # their effect is global and applies to both world-map rendering and local
+    # zone generation.
+    anchors: list[tuple[float, float, float, float]] = field(default_factory=list)
+
+    # Optional "random points + spline" distortion field (prototype parity).
+    # This is intentionally disabled by default (weight=0) so the current landscape
+    # field remains the canonical baseline until tuning is complete.
+    spline_weight: float = 0.0
+    spline_points: int = 40
+    spline_strength: float = 0.35
+    spline_iters: int = 120
+
 
 # --- Distortion lookup tables -------------------------------------------------
 #
@@ -75,11 +104,138 @@ def _hotspots_cache_key(
     hotspots: Iterable[tuple[float, float, float, float]],
     *,
     ndigits: int = 6,
-) -> tuple[tuple[float, float, float, float], ...]:
+    ) -> tuple[tuple[float, float, float, float], ...]:
     return tuple(
         (round(float(x), ndigits), round(float(y), ndigits), round(float(s), ndigits), round(float(sig), ndigits))
         for (x, y, s, sig) in hotspots
     )
+
+
+def _anchors_cache_key(
+    anchors: Iterable[tuple[float, float, float, float]],
+    *,
+    ndigits: int = 6,
+) -> tuple[tuple[float, float, float, float], ...]:
+    return tuple(
+        (round(float(x), ndigits), round(float(y), ndigits), round(float(sig), ndigits), round(float(w), ndigits))
+        for (x, y, sig, w) in anchors
+    )
+
+
+@lru_cache(maxsize=4)
+def _spline_lut(
+    seed: int,
+    points: int,
+    strength: float,
+    iters: int,
+    res: int,
+) -> tuple["array[float]", "array[float]"]:
+    """Return (sx_tex, sy_tex) over the bounded z-plane domain.
+
+    This is a lightweight analogue of the prototype "random points + spline" field:
+    - random control points are pinned to values (dx, dy)
+    - boundaries are pinned to 0
+    - the interior is solved via harmonic relaxation (Jacobi iterations)
+
+    The result is a smooth vector field that can be used as an alternative to the
+    landscape/gradient-based field for corruption distortion.
+    """
+    seed = int(seed)
+    points = max(0, min(int(points), 400))
+    strength = float(strength)
+    iters = max(1, min(int(iters), 2000))
+    res = int(res)
+    if res <= 2:
+        res = 2
+
+    n = res * res
+    pinned = bytearray(n)  # 0/1 flags
+    pin_re = array("f", [0.0]) * n
+    pin_im = array("f", [0.0]) * n
+
+    # Pin boundaries to 0.
+    for ix in range(res):
+        pinned[ix] = 1
+        pinned[(res - 1) * res + ix] = 1
+    for iy in range(res):
+        pinned[iy * res] = 1
+        pinned[iy * res + (res - 1)] = 1
+
+    # Deterministic random control points (biased to the right side of the z-domain).
+    import random
+
+    rng = random.Random(seed + 31337)
+    for _ in range(points):
+        # Bias x towards the right edge (more corruption "sources" on the right).
+        u = rng.random()
+        x_norm = math.sqrt(u)  # PDF ~ 2x; more mass near 1
+        y_norm = rng.random()
+        zx = _LUT_MIN_Z + x_norm * _LUT_SPAN_Z
+        zy = _LUT_MIN_Z + y_norm * _LUT_SPAN_Z
+
+        ix = int(((zx - _LUT_MIN_Z) * _LUT_INV_SPAN_Z) * (res - 1) + 0.5)
+        iy = int(((zy - _LUT_MIN_Z) * _LUT_INV_SPAN_Z) * (res - 1) + 0.5)
+        if ix < 0:
+            ix = 0
+        elif ix >= res:
+            ix = res - 1
+        if iy < 0:
+            iy = 0
+        elif iy >= res:
+            iy = res - 1
+
+        idx = iy * res + ix
+        pinned[idx] = 1
+        pin_re[idx] += float((rng.random() * 2.0 - 1.0) * strength)
+        pin_im[idx] += float((rng.random() * 2.0 - 1.0) * strength)
+
+    # Two-buffer Jacobi relaxation, solved for both components together.
+    arr_re = array("f", [0.0]) * n
+    arr_im = array("f", [0.0]) * n
+    buf_re = array("f", [0.0]) * n
+    buf_im = array("f", [0.0]) * n
+
+    # Initialize pinned values.
+    for i in range(n):
+        if pinned[i]:
+            arr_re[i] = pin_re[i]
+            arr_im[i] = pin_im[i]
+            buf_re[i] = pin_re[i]
+            buf_im[i] = pin_im[i]
+
+    for _ in range(iters):
+        for iy in range(1, res - 1):
+            row = iy * res
+            up = row - res
+            down = row + res
+            for ix in range(1, res - 1):
+                idx = row + ix
+                if pinned[idx]:
+                    buf_re[idx] = pin_re[idx]
+                    buf_im[idx] = pin_im[idx]
+                else:
+                    buf_re[idx] = float(
+                        0.25
+                        * (
+                            float(arr_re[idx - 1])
+                            + float(arr_re[idx + 1])
+                            + float(arr_re[up + ix])
+                            + float(arr_re[down + ix])
+                        )
+                    )
+                    buf_im[idx] = float(
+                        0.25
+                        * (
+                            float(arr_im[idx - 1])
+                            + float(arr_im[idx + 1])
+                            + float(arr_im[up + ix])
+                            + float(arr_im[down + ix])
+                        )
+                    )
+        arr_re, buf_re = buf_re, arr_re
+        arr_im, buf_im = buf_im, arr_im
+
+    return arr_re, arr_im
 
 
 def _sample_tex_nn(tex: "array[float]", res: int, zx: float, zy: float) -> float:
@@ -158,125 +314,264 @@ def _noise_lut(
     if res <= 2:
         res = 2
 
-    nx_tex = array("f", [0.0]) * (res * res)
-    ny_tex = array("f", [0.0]) * (res * res)
-    spots_tex = array("f", [0.0]) * (res * res)
+    # Numpy-accelerated LUT build: this is on the critical startup path because
+    # local-zone generation and the world-map renderer both need the LUTs.
+    #
+    # The prior pure-Python implementation did ~700k value-noise calls per LUT
+    # build, which is too slow. Vectorizing the same math with numpy keeps the
+    # visuals deterministic while cutting build time dramatically.
+    try:
+        import numpy as np
+    except Exception:
+        np = None  # type: ignore[assignment]
 
+    if np is None:
+        # --- Fallback: pure-Python LUT build (kept for environments without numpy) ---
+        nx_tex = array("f", [0.0]) * (res * res)
+        ny_tex = array("f", [0.0]) * (res * res)
+        spots_tex = array("f", [0.0]) * (res * res)
+
+        step = _LUT_SPAN_Z / (res - 1)
+
+        # Build a "landscape" heightfield H (normalized) first, based on the
+        # prototype `init_landscape()` in distorted_Julia.py.
+        h_tex = array("f", [0.0]) * (res * res)
+        persistence = 0.55
+        lacunarity = 2.0
+
+        mountain_start = clamp(float(right_start), 0.0, 0.98)
+        sharpness = max(0.25, float(right_sharpness))
+        right_weight = float(right_weight)
+        base_res = max(0.01, float(base_res))
+        detail_res = max(0.01, float(detail_res))
+        ridge_strength = float(ridge_strength)
+
+        span = float(j_max_x) - float(j_min_x)
+        if abs(span) < 1e-9:
+            span = 1.0
+
+        # Precompute left->right mountain mask per column (saves work in the inner loop).
+        m_by_ix: list[float] = [0.0] * res
+        for ix in range(res):
+            zx = _LUT_MIN_Z + ix * step
+            x_norm = (float(zx) - float(j_min_x)) / span
+            m = smoothstep(mountain_start, 1.0, x_norm)
+            m_by_ix[ix] = (m ** sharpness) * right_weight
+
+        for iy in range(res):
+            zy = _LUT_MIN_Z + iy * step
+            for ix in range(res):
+                zx = _LUT_MIN_Z + ix * step
+                idx = iy * res + ix
+
+                m = m_by_ix[ix]
+
+                # Two fBm layers: big hills + detail.
+                base = _fbm_value_noise_2d(
+                    zx * float(freq) * base_res,
+                    zy * float(freq) * base_res,
+                    seed + 11,
+                    octaves=3,
+                    persistence=persistence,
+                    lacunarity=lacunarity,
+                )
+                detail = _fbm_value_noise_2d(
+                    zx * float(freq) * detail_res,
+                    zy * float(freq) * detail_res,
+                    seed + 101,
+                    octaves=5,
+                    persistence=persistence,
+                    lacunarity=lacunarity,
+                )
+                ridge = (1.0 - abs(detail)) ** 2.0
+
+                # Heightfield: gentle base + mountains on the right.
+                # Note: we gate the *gradient* by m later so the far-left is exactly uncorrupted.
+                h_tex[idx] = float(0.35 * base + m * (0.70 * detail + ridge_strength * ridge))
+
+                # Scattered peaks derived from a separate low-frequency noise.
+                sx = zx * float(spot_freq)
+                sy = zy * float(spot_freq)
+                s = abs(_fbm_value_noise_2d(sx, sy, seed + 9001, octaves=3, persistence=0.6, lacunarity=2.0))
+                spots_tex[idx] = float(smoothstep(float(spot_threshold), 1.0, s) * float(spot_weight))
+
+        # Normalize H to ~[-1,1] like the prototype: subtract mean, divide by max-abs.
+        mean_h = float(sum(h_tex) / max(1, len(h_tex)))
+        for i in range(len(h_tex)):
+            h_tex[i] = float(h_tex[i] - mean_h)
+        max_abs = max((abs(float(v)) for v in h_tex), default=1.0)
+        if max_abs < 1e-9:
+            max_abs = 1.0
+        for i in range(len(h_tex)):
+            h_tex[i] = float(h_tex[i] / max_abs)
+
+        # Compute gradient of H into nx/ny, and gate the vector field by the same
+        # left->right mask so d(z)=0 on the far-left.
+        inv_step = 1.0 / step if abs(step) > 1e-12 else 1.0
+        max_g2 = 1e-18
+        for iy in range(res):
+            for ix in range(res):
+                idx = iy * res + ix
+                ix_l = 0 if ix <= 0 else ix - 1
+                ix_r = res - 1 if ix >= res - 1 else ix + 1
+                iy_d = 0 if iy <= 0 else iy - 1
+                iy_u = res - 1 if iy >= res - 1 else iy + 1
+                h_l = float(h_tex[iy * res + ix_l])
+                h_r = float(h_tex[iy * res + ix_r])
+                h_d = float(h_tex[iy_d * res + ix])
+                h_u = float(h_tex[iy_u * res + ix])
+                # Central differences (clamped at edges).
+                gx = (h_r - h_l) * 0.5 * inv_step
+                gy = (h_u - h_d) * 0.5 * inv_step
+                m = float(m_by_ix[ix])
+                gx *= m
+                gy *= m
+                nx_tex[idx] = float(gx)
+                ny_tex[idx] = float(gy)
+                max_g2 = max(max_g2, gx * gx + gy * gy)
+
+        max_g = math.sqrt(max_g2) if max_g2 > 1e-18 else 1.0
+        if max_g < 1e-9:
+            max_g = 1.0
+
+        # Normalization note:
+        # Avoid a large boost + hard clamp here. That combination compresses the
+        # dynamic range between the quiet left side and the loud right side (because
+        # peaks clamp but the "floor" doesn't), which makes the left side look
+        # unnaturally noisy once env(z) is nonzero (e.g. due to spots/hotspots).
+        #
+        # Instead, normalize by the max gradient magnitude to preserve relative
+        # quietness, and apply only a small global scale factor.
+        final_scale = (1.2 / max_g)  # small boost; keep max magnitude ~1.2
+        for i in range(len(nx_tex)):
+            nx_tex[i] = float(nx_tex[i]) * final_scale
+            ny_tex[i] = float(ny_tex[i]) * final_scale
+
+        return nx_tex, ny_tex, spots_tex
+
+    # --- Vectorized LUT build (numpy) ---
     step = _LUT_SPAN_Z / (res - 1)
-
-    # Build a "landscape" heightfield H (normalized) first, based on the
-    # prototype `init_landscape()` in distorted_Julia.py.
-    h_tex = array("f", [0.0]) * (res * res)
     persistence = 0.55
     lacunarity = 2.0
 
     mountain_start = clamp(float(right_start), 0.0, 0.98)
     sharpness = max(0.25, float(right_sharpness))
-    right_weight = float(right_weight)
-    base_res = max(0.01, float(base_res))
-    detail_res = max(0.01, float(detail_res))
-    ridge_strength = float(ridge_strength)
+    right_weight_f = float(right_weight)
+    base_res_f = max(0.01, float(base_res))
+    detail_res_f = max(0.01, float(detail_res))
+    ridge_strength_f = float(ridge_strength)
+    freq_f = float(freq)
 
     span = float(j_max_x) - float(j_min_x)
     if abs(span) < 1e-9:
         span = 1.0
 
-    # Precompute left->right mountain mask per column (saves work in the inner loop).
-    m_by_ix: list[float] = [0.0] * res
-    for ix in range(res):
-        zx = _LUT_MIN_Z + ix * step
-        x_norm = (float(zx) - float(j_min_x)) / span
-        m = smoothstep(mountain_start, 1.0, x_norm)
-        m_by_ix[ix] = (m ** sharpness) * right_weight
+    # 1D coordinate lines over the bounded z-plane domain.
+    zx_line = (_LUT_MIN_Z + step * np.arange(res, dtype=np.float64))
+    zy_line = (_LUT_MIN_Z + step * np.arange(res, dtype=np.float64))
+    zx_grid = np.tile(zx_line, (res, 1))
+    zy_grid = np.tile(zy_line.reshape(-1, 1), (1, res))
 
-    for iy in range(res):
-        zy = _LUT_MIN_Z + iy * step
-        for ix in range(res):
-            zx = _LUT_MIN_Z + ix * step
-            idx = iy * res + ix
+    # Precompute mountain mask per column (same math as the scalar path).
+    x_norm = (zx_line - float(j_min_x)) / span
+    # Smoothstep for arrays (inline for speed).
+    t = (x_norm - float(mountain_start)) / (1.0 - float(mountain_start) if abs(1.0 - float(mountain_start)) > 1e-12 else 1.0)
+    t = np.clip(t, 0.0, 1.0)
+    right = t * t * (3.0 - 2.0 * t)
+    m_by_ix = (right ** float(sharpness)) * right_weight_f
 
-            m = m_by_ix[ix]
+    # Vectorized value-noise + fBm helpers.
+    u32 = np.uint32
 
-            # Two fBm layers: big hills + detail.
-            base = _fbm_value_noise_2d(
-                zx * float(freq) * base_res,
-                zy * float(freq) * base_res,
-                seed + 11,
-                octaves=3,
-                persistence=persistence,
-                lacunarity=lacunarity,
-            )
-            detail = _fbm_value_noise_2d(
-                zx * float(freq) * detail_res,
-                zy * float(freq) * detail_res,
-                seed + 101,
-                octaves=5,
-                persistence=persistence,
-                lacunarity=lacunarity,
-            )
-            ridge = (1.0 - abs(detail)) ** 2.0
+    def hash01_grid(ix: "np.ndarray", iy: "np.ndarray", seed_i: int) -> "np.ndarray":
+        n = (ix.astype(np.int64) * 374761393 + iy.astype(np.int64) * 668265263 + np.int64(seed_i) * 1442695041).astype(u32)
+        n ^= (n >> u32(16))
+        n *= u32(0x7FEB352D)
+        n ^= (n >> u32(15))
+        n *= u32(0x846CA68B)
+        n ^= (n >> u32(16))
+        return (n & u32(0xFFFFFF)).astype(np.float64) / float(0x1000000)
 
-            # Heightfield: gentle base + mountains on the right.
-            # Note: we gate the *gradient* by m later so the far-left is exactly uncorrupted.
-            h_tex[idx] = float(0.35 * base + m * (0.70 * detail + ridge_strength * ridge))
+    def value_noise_grid(x: "np.ndarray", y: "np.ndarray", seed_i: int) -> "np.ndarray":
+        x0 = np.floor(x).astype(np.int64)
+        y0 = np.floor(y).astype(np.int64)
+        x1 = x0 + 1
+        y1 = y0 + 1
+        xf = x - x0
+        yf = y - y0
 
-            # Scattered peaks derived from a separate low-frequency noise.
-            sx = zx * float(spot_freq)
-            sy = zy * float(spot_freq)
-            s = abs(_fbm_value_noise_2d(sx, sy, seed + 9001, octaves=3, persistence=0.6, lacunarity=2.0))
-            spots_tex[idx] = float(smoothstep(float(spot_threshold), 1.0, s) * float(spot_weight))
+        # Fade curve (Perlin-style).
+        u = xf * xf * xf * (xf * (xf * 6.0 - 15.0) + 10.0)
+        v = yf * yf * yf * (yf * (yf * 6.0 - 15.0) + 10.0)
 
-    # Normalize H to ~[-1,1] like the prototype: subtract mean, divide by max-abs.
-    mean_h = float(sum(h_tex) / max(1, len(h_tex)))
-    for i in range(len(h_tex)):
-        h_tex[i] = float(h_tex[i] - mean_h)
-    max_abs = max((abs(float(v)) for v in h_tex), default=1.0)
+        v00 = hash01_grid(x0, y0, seed_i)
+        v10 = hash01_grid(x1, y0, seed_i)
+        v01 = hash01_grid(x0, y1, seed_i)
+        v11 = hash01_grid(x1, y1, seed_i)
+
+        nx0 = v00 + u * (v10 - v00)
+        nx1 = v01 + u * (v11 - v01)
+        n = nx0 + v * (nx1 - nx0)
+        return np.clip(n * 2.0 - 1.0, -1.0, 1.0)
+
+    def fbm_grid(x: "np.ndarray", y: "np.ndarray", seed_i: int, *, octaves: int, persistence_f: float, lacunarity_f: float) -> "np.ndarray":
+        total = np.zeros_like(x, dtype=np.float64)
+        amp = 1.0
+        amp_sum = 0.0
+        f = 1.0
+        for i in range(int(octaves)):
+            total += amp * value_noise_grid(x * f, y * f, int(seed_i) + i * 1013)
+            amp_sum += amp
+            amp *= float(persistence_f)
+            f *= float(lacunarity_f)
+        if amp_sum <= 1e-9:
+            return total
+        return total / float(amp_sum)
+
+    # Build heightfield + spots.
+    base = fbm_grid(zx_grid * freq_f * base_res_f, zy_grid * freq_f * base_res_f, seed + 11, octaves=3, persistence_f=persistence, lacunarity_f=lacunarity)
+    detail = fbm_grid(zx_grid * freq_f * detail_res_f, zy_grid * freq_f * detail_res_f, seed + 101, octaves=5, persistence_f=persistence, lacunarity_f=lacunarity)
+    ridge = (1.0 - np.abs(detail)) ** 2.0
+
+    h = 0.35 * base + (m_by_ix.reshape(1, -1) * (0.70 * detail + ridge_strength_f * ridge))
+
+    s = np.abs(fbm_grid(zx_grid * float(spot_freq), zy_grid * float(spot_freq), seed + 9001, octaves=3, persistence_f=0.6, lacunarity_f=2.0))
+    tt = (s - float(spot_threshold)) / (1.0 - float(spot_threshold) if abs(1.0 - float(spot_threshold)) > 1e-12 else 1.0)
+    tt = np.clip(tt, 0.0, 1.0)
+    spots = (tt * tt * (3.0 - 2.0 * tt)) * float(spot_weight)
+
+    # Normalize H to ~[-1,1] like the scalar path.
+    h = h - float(h.mean())
+    max_abs = float(np.max(np.abs(h))) if h.size else 1.0
     if max_abs < 1e-9:
         max_abs = 1.0
-    for i in range(len(h_tex)):
-        h_tex[i] = float(h_tex[i] / max_abs)
+    h = h / max_abs
 
-    # Compute gradient of H into nx/ny, and gate the vector field by the same
-    # left->right mask so d(z)=0 on the far-left.
+    # Gradient with edge clamping.
     inv_step = 1.0 / step if abs(step) > 1e-12 else 1.0
-    max_g2 = 1e-18
-    for iy in range(res):
-        for ix in range(res):
-            idx = iy * res + ix
-            ix_l = 0 if ix <= 0 else ix - 1
-            ix_r = res - 1 if ix >= res - 1 else ix + 1
-            iy_d = 0 if iy <= 0 else iy - 1
-            iy_u = res - 1 if iy >= res - 1 else iy + 1
-            h_l = float(h_tex[iy * res + ix_l])
-            h_r = float(h_tex[iy * res + ix_r])
-            h_d = float(h_tex[iy_d * res + ix])
-            h_u = float(h_tex[iy_u * res + ix])
-            # Central differences (clamped at edges).
-            gx = (h_r - h_l) * 0.5 * inv_step
-            gy = (h_u - h_d) * 0.5 * inv_step
-            m = float(m_by_ix[ix])
-            gx *= m
-            gy *= m
-            nx_tex[idx] = float(gx)
-            ny_tex[idx] = float(gy)
-            max_g2 = max(max_g2, gx * gx + gy * gy)
+    h_xpad = np.pad(h, ((0, 0), (1, 1)), mode="edge")
+    h_ypad = np.pad(h, ((1, 1), (0, 0)), mode="edge")
+    gx = (h_xpad[:, 2:] - h_xpad[:, :-2]) * 0.5 * inv_step
+    gy = (h_ypad[2:, :] - h_ypad[:-2, :]) * 0.5 * inv_step
 
+    gx *= m_by_ix.reshape(1, -1)
+    gy *= m_by_ix.reshape(1, -1)
+
+    max_g2 = float(np.max(gx * gx + gy * gy)) if gx.size else 1.0
     max_g = math.sqrt(max_g2) if max_g2 > 1e-18 else 1.0
     if max_g < 1e-9:
         max_g = 1.0
+    final_scale = 1.2 / max_g
+    gx *= final_scale
+    gy *= final_scale
 
-    # Normalization note:
-    # Avoid a large boost + hard clamp here. That combination compresses the
-    # dynamic range between the quiet left side and the loud right side (because
-    # peaks clamp but the "floor" doesn't), which makes the left side look
-    # unnaturally noisy once env(z) is nonzero (e.g. due to spots/hotspots).
-    #
-    # Instead, normalize by the max gradient magnitude to preserve relative
-    # quietness, and apply only a small global scale factor.
-    final_scale = (1.2 / max_g)  # small boost; keep max magnitude ~1.2
-    for i in range(len(nx_tex)):
-        nx_tex[i] = float(nx_tex[i]) * final_scale
-        ny_tex[i] = float(ny_tex[i]) * final_scale
+    # Convert to compact array('f') buffers for both scalar and numpy callers.
+    nx_tex = array("f")
+    ny_tex = array("f")
+    spots_tex = array("f")
+    nx_tex.frombytes(gx.astype(np.float32, copy=False).ravel(order="C").tobytes())
+    ny_tex.frombytes(gy.astype(np.float32, copy=False).ravel(order="C").tobytes())
+    spots_tex.frombytes(spots.astype(np.float32, copy=False).ravel(order="C").tobytes())
 
     return nx_tex, ny_tex, spots_tex
 
@@ -330,6 +625,72 @@ def _hot_lut(
             hot_gy_tex[idx] = float((h_u - h_d) * 0.5 * inv_step)
 
     return hot_tex, hot_gx_tex, hot_gy_tex
+
+
+@lru_cache(maxsize=8)
+def _anchor_lut(
+    anchors_key: tuple[tuple[float, float, float, float], ...],
+    res: int,
+) -> "array[float]":
+    """Return a multiplicative suppression mask over the bounded z-plane domain."""
+    res = int(res)
+    if res <= 2:
+        res = 2
+
+    mask_tex = array("f", [1.0]) * (res * res)
+    if not anchors_key:
+        return mask_tex
+
+    # Prefer numpy here as well: the per-anchor Gaussian evaluation is a hot
+    # path for startup (we seed many anchors), and vectorization is a major win.
+    try:
+        import numpy as np
+    except Exception:
+        np = None  # type: ignore[assignment]
+
+    if np is None:
+        step = _LUT_SPAN_Z / (res - 1)
+        for iy in range(res):
+            zy = _LUT_MIN_Z + iy * step
+            for ix in range(res):
+                zx = _LUT_MIN_Z + ix * step
+                idx = iy * res + ix
+                m = 1.0
+                for ax, ay, sigma, strength in anchors_key:
+                    dx = zx - float(ax)
+                    dy = zy - float(ay)
+                    s2 = max(1e-9, float(sigma) * float(sigma))
+                    g = math.exp(-(dx * dx + dy * dy) / (2.0 * s2))
+                    sup = 1.0 - float(strength) * g
+                    if sup < 0.0:
+                        sup = 0.0
+                    m *= sup
+                    if m <= 0.0:
+                        m = 0.0
+                        break
+                mask_tex[idx] = float(clamp(m, 0.0, 1.0))
+        return mask_tex
+
+    step = _LUT_SPAN_Z / (res - 1)
+    zx_line = (_LUT_MIN_Z + step * np.arange(res, dtype=np.float64))
+    zy_line = (_LUT_MIN_Z + step * np.arange(res, dtype=np.float64))
+    zx_grid = np.tile(zx_line, (res, 1))
+    zy_grid = np.tile(zy_line.reshape(-1, 1), (1, res))
+
+    mask = np.ones((res, res), dtype=np.float64)
+    for ax, ay, sigma, strength in anchors_key:
+        dx = zx_grid - float(ax)
+        dy = zy_grid - float(ay)
+        s2 = float(max(1e-9, float(sigma) * float(sigma)))
+        g = np.exp(-(dx * dx + dy * dy) / (2.0 * s2))
+        sup = 1.0 - float(strength) * g
+        sup = np.clip(sup, 0.0, 1.0)
+        mask *= sup
+
+    mask = np.clip(mask, 0.0, 1.0).astype(np.float32, copy=False)
+    out = array("f")
+    out.frombytes(mask.ravel(order="C").tobytes())
+    return out
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
@@ -477,6 +838,32 @@ def distortion_dz(
     if corruption_level <= 0.0:
         return 0.0, 0.0, 0.0
 
+    # Rune anchors: suppress corruption locally regardless of source (mountains/spots/hotspots).
+    if params.anchors:
+        anchor_factor = 1.0
+        try:
+            a_tex = _anchor_lut(_anchors_cache_key(params.anchors), int(_LUT_RES))
+            anchor_factor = _sample_tex_nn(a_tex, _LUT_RES, zx, zy)
+        except Exception:
+            # Fallback: direct (non-LUT) evaluation.
+            anchor_factor = 1.0
+            for ax, ay, sigma, strength in params.anchors:
+                dx0 = float(zx) - float(ax)
+                dy0 = float(zy) - float(ay)
+                s2 = max(1e-9, float(sigma) * float(sigma))
+                g = math.exp(-(dx0 * dx0 + dy0 * dy0) / (2.0 * s2))
+                sup = 1.0 - float(strength) * g
+                if sup < 0.0:
+                    sup = 0.0
+                anchor_factor *= sup
+                if anchor_factor <= 0.0:
+                    anchor_factor = 0.0
+                    break
+
+        corruption_level *= clamp(float(anchor_factor), 0.0, 1.0)
+        if corruption_level <= 0.0:
+            return 0.0, 0.0, 0.0
+
     try:
         nx_tex, ny_tex, spots_tex = _noise_lut(
             int(params.seed),
@@ -495,8 +882,22 @@ def distortion_dz(
             int(_LUT_RES),
         )
 
-        nx = _sample_tex_nn(nx_tex, _LUT_RES, zx, zy)
-        ny = _sample_tex_nn(ny_tex, _LUT_RES, zx, zy)
+        # Optional prototype parity: replace the landscape field with a random spline field.
+        use_spline = float(getattr(params, "spline_weight", 0.0) or 0.0) > 1e-9
+        if use_spline:
+            spline_x_tex, spline_y_tex = _spline_lut(
+                int(params.seed),
+                int(getattr(params, "spline_points", 40) or 40),
+                float(getattr(params, "spline_strength", 0.35) or 0.35),
+                int(getattr(params, "spline_iters", 120) or 120),
+                int(_LUT_RES),
+            )
+            w = float(getattr(params, "spline_weight", 0.0) or 0.0)
+            nx = _sample_tex_nn(spline_x_tex, _LUT_RES, zx, zy) * w
+            ny = _sample_tex_nn(spline_y_tex, _LUT_RES, zx, zy) * w
+        else:
+            nx = _sample_tex_nn(nx_tex, _LUT_RES, zx, zy)
+            ny = _sample_tex_nn(ny_tex, _LUT_RES, zx, zy)
         spots = _sample_tex_nn(spots_tex, _LUT_RES, zx, zy)
 
         hot = 0.0
@@ -527,9 +928,8 @@ def distortion_dz(
         right01 = clamp(float(right), 0.0, 1.0)
         spot_mask = smoothstep(0.0, 0.5, right01)
 
-        # The LUT vector field already includes the left->right mountain mask.
-        # We additionally threshold the *magnitude* so the right side contains
-        # quiet valleys (near-zero corruption) and distinct "mountains".
+        # We threshold the *magnitude* so the right side contains quiet valleys
+        # (near-zero corruption) and distinct "mountains" rather than a uniform fog.
         spot_boost = 1.0 + float(spots) * spot_mask
         field_x = spot_boost * float(nx) + float(hot) * hot_dir_x
         field_y = spot_boost * float(ny) + float(hot) * hot_dir_y
@@ -575,6 +975,9 @@ def distortion_np(
     nx_tex,
     ny_tex,
     spots_tex,
+    spline_x_tex=None,
+    spline_y_tex=None,
+    anchor_tex=None,
     hot_tex=None,
     hot_gx_tex=None,
     hot_gy_tex=None,
@@ -616,10 +1019,42 @@ def distortion_np(
         iy = np.clip(iy, 0, lut_res - 1)
         return tex[iy * lut_res + ix]
 
+    # Rune anchors: multiplicatively suppress the effective corruption level.
+    if params.anchors:
+        if anchor_tex is not None:
+            anchor = sample_nn_flat(anchor_tex, zx_a, zy_a).astype(np.float64, copy=False)
+        else:
+            anchor = np.ones_like(zx_a, dtype=np.float64)
+            for ax, ay, sigma, strength in params.anchors:
+                dx0 = zx_a - float(ax)
+                dy0 = zy_a - float(ay)
+                s2 = float(max(1e-9, float(sigma) * float(sigma)))
+                g = np.exp(-(dx0 * dx0 + dy0 * dy0) / (2.0 * s2))
+                sup = 1.0 - float(strength) * g
+                sup = np.clip(sup, 0.0, 1.0)
+                anchor *= sup
+        corr_level_eff = corr_level * np.clip(anchor, 0.0, 1.0)
+    else:
+        corr_level_eff = corr_level
+
     # Sample LUT textures at the current z.
-    nx = sample_nn_flat(nx_tex, zx_a, zy_a).astype(np.float64, copy=False)
-    ny = sample_nn_flat(ny_tex, zx_a, zy_a).astype(np.float64, copy=False)
     spots = sample_nn_flat(spots_tex, zx_a, zy_a).astype(np.float64, copy=False)
+
+    # Choose the underlying vector field:
+    # - landscape (gradient) by default
+    # - optional spline-based random field when params.spline_weight > 0
+    use_spline = (
+        float(getattr(params, "spline_weight", 0.0) or 0.0) > 1e-9
+        and spline_x_tex is not None
+        and spline_y_tex is not None
+    )
+    if use_spline:
+        w = float(getattr(params, "spline_weight", 0.0) or 0.0)
+        nx = sample_nn_flat(spline_x_tex, zx_a, zy_a).astype(np.float64, copy=False) * w
+        ny = sample_nn_flat(spline_y_tex, zx_a, zy_a).astype(np.float64, copy=False) * w
+    else:
+        nx = sample_nn_flat(nx_tex, zx_a, zy_a).astype(np.float64, copy=False)
+        ny = sample_nn_flat(ny_tex, zx_a, zy_a).astype(np.float64, copy=False)
 
     # Hotspots: scalar envelope + direction from its gradient.
     hot = np.zeros_like(nx, dtype=np.float64)
@@ -650,9 +1085,8 @@ def distortion_np(
     right01 = np.clip(right, 0.0, 1.0)
     spot_mask = smoothstep_np(0.0, 0.5, right01)
 
-    # The LUT vector field already includes the left->right mountain mask.
-    # We additionally threshold the *magnitude* so the right side contains
-    # quiet valleys (near-zero corruption) and distinct "mountains".
+    # We threshold the *magnitude* so the right side contains quiet valleys
+    # (near-zero corruption) and distinct "mountains" rather than a uniform fog.
     spot_boost = 1.0 + spots * spot_mask
     field_x = spot_boost * nx + hot * hot_dir_x
     field_y = spot_boost * ny + hot * hot_dir_y
@@ -660,9 +1094,9 @@ def distortion_np(
     mag = np.sqrt(field_x * field_x + field_y * field_y)
     mount = smoothstep_np(float(params.mount_mag_floor), float(params.mount_mag_ceil), mag)
 
-    dx = float(params.amp) * corr_level * field_x * mount
-    dy = float(params.amp) * corr_level * field_y * mount
-    env_total = mount * corr_level
+    dx = float(params.amp) * corr_level_eff * field_x * mount
+    dy = float(params.amp) * corr_level_eff * field_y * mount
+    env_total = mount * corr_level_eff
     return dx, dy, env_total
 
 

@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import heapq
 import traceback
 import time
+import random
 import threading
 from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
@@ -192,6 +193,12 @@ class Game:
         self.corruption_seed: int = int(self.fractal_seed) + 9001
         self.corruption_version: int = 0
         self.corruption_hotspots: List[Tuple[float, float, float, float]] = []
+        # Rune anchors suppress corruption locally in the Julia z-plane.
+        # Stored as (jx, jy, sigma, strength) in Julia-plane coords.
+        self.corruption_anchors: List[Tuple[float, float, float, float]] = []
+        # Optional prototype parity: random spline-based distortion field.
+        # Keep disabled by default so the landscape field remains canonical until tuned.
+        self.corruption_spline_weight: float = 0.0
         # world map render cache (surface + view window)
         self.world_map_cache = None
         self.world_map_c: complex | None = None
@@ -334,6 +341,7 @@ class Game:
             actions.append("regrow")
             actions.append("push_pattern")
             actions.append("corruption_cone")
+            actions.append("place_rune_anchor")
 
         # For now, all other classes keep only move/wait (empty ability bar).
         player.actions = tuple(actions)
@@ -521,6 +529,12 @@ class Game:
             "corruption_cone": {
                 "height": {"values": [0.5, 1.0, 1.5, 2.0], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Height"},
                 "slope": {"values": [0.25, 0.18, 0.12, 0.08], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Slope"},
+            },
+            "place_rune_anchor": {
+                # Range is expressed in tiles for ergonomics, then converted to Julia-plane sigma
+                # using tile_julia_grid step size at runtime.
+                "range": {"values": [25.0, 60.0, 140.0, 260.0], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Range (tiles)"},
+                "strength": {"values": [0.5, 0.75, 1.0], "thresholds": [0, 4, 8], "stat": "res", "label": "Strength"},
             },
         }
 
@@ -873,6 +887,8 @@ class Game:
             "corruption_level": float(getattr(self, "corruption_level", 0.0) or 0.0),
             "corruption_seed": int(getattr(self, "corruption_seed", 1337) or 1337),
             "corruption_hotspots": list(getattr(self, "corruption_hotspots", []) or []),
+            "corruption_anchors": list(getattr(self, "corruption_anchors", []) or []),
+            "corruption_spline_weight": float(getattr(self, "corruption_spline_weight", 0.0) or 0.0),
             "surface_size": (0, 0),
             "surface": None,
             "orig_min_wx": min_wx,
@@ -892,15 +908,110 @@ class Game:
         }
         # build grid immediately so locals can generate
         self.build_tile_julia_grid()
-        # kick off background render
-        self._start_world_map_thread(reason="loading")
+        # Seed rune anchors now that we have a Julia grid.
+        self._init_rune_anchors()
+        # Do NOT render the world map during startup.
+        #
+        # Overmap rendering is CPU-heavy (and can contend with the main thread via the GIL),
+        # so we start it lazily when the player opens the world map (or when corruption
+        # forces a rerender).
+
+    def _init_rune_anchors(self) -> None:
+        """Seed rune-anchor POIs and corresponding corruption suppressors."""
+        if getattr(self, "corruption_anchors", None) and len(self.corruption_anchors) > 0:
+            return
+        grid = getattr(self, "tile_julia_grid", None)
+        if not isinstance(grid, dict):
+            return
+
+        screens = int(getattr(self.cfg, "world_map_screens", 0) or 0)
+        if screens <= 0:
+            return
+        zone_w = int(getattr(self.cfg, "world_width", 0) or 0)
+        zone_h = int(getattr(self.cfg, "world_height", 0) or 0)
+        if zone_w <= 0 or zone_h <= 0:
+            return
+
+        total_x = screens * zone_w
+        total_y = screens * zone_h
+        xgrid = grid.get("x") or []
+        ygrid = grid.get("y") or []
+        if len(xgrid) < total_x or len(ygrid) < total_y:
+            return
+
+        # Clear any previous dynamic anchors (e.g. if re-initialized in the same process).
+        try:
+            for pid in list(poi_content.POIS.keys()):
+                if str(pid).startswith("rune_anchor_"):
+                    del poi_content.POIS[pid]
+        except Exception:
+            pass
+
+        # Target count scales gently with map width to avoid thousands of markers.
+        target_count = max(12, int(round(screens * 0.6)))
+
+        # Use an isolated RNG so anchor placement doesn't perturb gameplay RNG.
+        rng = random.Random(int(self.corruption_seed) + 424242)
+
+        try:
+            occupied: set[tuple[int, int, int]] = {tuple(poi.coord) for poi in poi_content.POIS.values()}
+        except Exception:
+            occupied = set()
+
+        anchors: List[Tuple[float, float, float, float]] = []
+        tries = 0
+        max_tries = target_count * 50
+        while len(anchors) < target_count and tries < max_tries:
+            tries += 1
+            # Bias X to the left side: u^2 concentrates near 0.
+            zx = int((rng.random() ** 2.0) * screens)
+            zy = int(rng.random() * screens)
+            coord = (zx, zy, 0)
+            if coord in occupied:
+                continue
+            occupied.add(coord)
+
+            gx = zx * zone_w + (zone_w // 2)
+            gy = zy * zone_h + (zone_h // 2)
+            if gx < 0 or gy < 0 or gx >= len(xgrid) or gy >= len(ygrid):
+                continue
+            jx = float(xgrid[gx])
+            jy = float(ygrid[gy])
+
+            # Anchor "range": sigma is the Gaussian falloff radius in Julia-plane units.
+            # If you want anchors to affect a wider (or tighter) region of the map,
+            # adjust this sigma range. (To reason in tiles, convert via tile_julia_grid step_x/step_y.)
+            sigma = float(rng.uniform(0.05, 0.2))
+            strength = 1.0
+            anchors.append((jx, jy, sigma, strength))
+
+            pid = f"rune_anchor_{len(anchors) - 1:03d}"
+            try:
+                poi_content.POIS[pid] = poi_content.POI(
+                    id=pid,
+                    coord=coord,
+                    npcs=[],
+                    structures=[{"kind": "rune_anchor"}],
+                )
+            except Exception:
+                pass
+
+        self.corruption_anchors = anchors
+        if getattr(self, "overmap_params", None):
+            try:
+                self.overmap_params["corruption_anchors"] = list(self.corruption_anchors)
+            except Exception:
+                pass
 
     def _start_world_map_thread(self, *, reason: str = "loading") -> None:
+        reason = str(reason or "loading")
+        if getattr(self, "world_map_rendering", False) and getattr(self, "world_map_render_reason", "") == reason:
+            return
         self.world_map_thread_started = True
         # Allow restarting renders (e.g. when corruption changes). Older results are discarded.
         self.world_map_version += 1
         version = self.world_map_version
-        self.world_map_render_reason = str(reason or "loading")
+        self.world_map_render_reason = reason
         self.world_map_rendering = True
         try:
             self._debug(f"[world_map] thread start version={version} reason={self.world_map_render_reason}")
@@ -943,28 +1054,15 @@ class Game:
                 self.world_map_render_reason = "ready"
 
     def _ensure_overmap_ready(self) -> None:
-        """Ensure overmap params/grid exist; kick off background render if needed."""
+        """Ensure overmap params/grid exist.
+
+        Overmap *rendering* is started lazily by WorldMapScene (or by corruption changes),
+        so this should stay inexpensive and safe to call during startup.
+        """
         if getattr(self, "overmap_params", None) and getattr(self, "tile_julia_grid", None):
             return
         # initialize params/grid
         self._init_overmap_params_and_grid()
-        # If no render in progress/ready, fall back to synchronous render to avoid missing data
-        if not self.world_map_ready and not self.world_map_rendering:
-            try:
-                from edgecaster.scenes.world_map_scene import WorldMapScene
-                wm = WorldMapScene(self, span=16)
-                class Stub:
-                    def __init__(self, w, h) -> None:
-                        self.width = w
-                        self.height = h
-                stub = Stub(self.cfg.view_width, self.cfg.view_height)
-                surf, view, surf_corr = wm._render_overmap(stub)
-                # This synchronous render is the newest by definition.
-                self.world_map_version += 1
-                self.world_map_cache = {"surface": surf, "surface_corr": surf_corr, "view": view, "key": (stub.width, stub.height, wm.span)}
-                self.world_map_ready = True
-            finally:
-                self.world_map_rendering = False
 
     def _jx_jy_slices_for_zone(self, coord: Tuple[int, int, int]) -> tuple[Optional[List[float]], Optional[List[float]]]:
         """Return (jx_slice, jy_slice) for this zone coord using the global tile_julia_grid."""
@@ -994,11 +1092,104 @@ class Game:
         self.corruption_version += 1
         self._refresh_corruption_visuals()
 
+    def set_corruption_spline_weight(self, weight: float) -> None:
+        """Set weight for the optional spline-based distortion field (0 disables)."""
+        weight = max(0.0, float(weight))
+        if abs(weight - getattr(self, "corruption_spline_weight", 0.0)) < 1e-9:
+            return
+        self.corruption_spline_weight = weight
+        self.corruption_version += 1
+        self._refresh_corruption_visuals()
+
     def add_corruption_hotspot(self, jx: float, jy: float, strength: float, sigma: float) -> None:
         """Add a localized corruption 'cone' (Gaussian bump) in Julia-plane coordinates."""
         self.corruption_hotspots.append((float(jx), float(jy), float(strength), float(sigma)))
         self.corruption_version += 1
         self._refresh_corruption_visuals()
+
+    def _alloc_rune_anchor_poi_id(self) -> str:
+        """Return a unique POI id for a newly-created rune anchor."""
+        i = 0
+        while True:
+            pid = f"rune_anchor_{i:03d}"
+            if pid not in poi_content.POIS:
+                return pid
+            i += 1
+
+    def add_corruption_anchor(
+        self,
+        jx: float,
+        jy: float,
+        *,
+        sigma: float,
+        strength: float = 1.0,
+        coord: Optional[Tuple[int, int, int]] = None,
+        spawn_pos: Optional[Tuple[int, int]] = None,
+    ) -> Optional[str]:
+        """Add a rune anchor (corruption suppressor) and optionally create a POI marker.
+
+        Args:
+            jx, jy: Julia-plane coordinates of the anchor center (z-plane units).
+            sigma: Gaussian falloff radius in Julia-plane units (controls range).
+            strength: suppression strength in [0..1].
+            coord: if provided, inject a POI at this zone coord so the anchor is discoverable on the world map.
+            spawn_pos: optional tile position to spawn the visible anchor entity (if the zone already exists).
+        """
+        sigma = max(1e-6, float(sigma))
+        strength = max(0.0, min(1.0, float(strength)))
+        if strength <= 0.0:
+            return None
+
+        self.corruption_anchors.append((float(jx), float(jy), float(sigma), float(strength)))
+        self.corruption_version += 1
+
+        pid: Optional[str] = None
+        if coord is not None:
+            pid = self._alloc_rune_anchor_poi_id()
+            try:
+                poi_content.POIS[pid] = poi_content.POI(
+                    id=pid,
+                    coord=tuple(coord),
+                    npcs=[],
+                    structures=[{"kind": "rune_anchor"}],
+                )
+            except Exception:
+                pid = None
+
+            # Keep the world-map marker list in sync with dynamic POIs.
+            if pid is not None:
+                try:
+                    if getattr(self, "poi_locations", None) is None:
+                        self.poi_locations = {}
+                    self.poi_locations[pid] = tuple(coord)
+                except Exception:
+                    pass
+
+            # If the zone already exists, ensure it knows about the POI and spawn the visible entity.
+            try:
+                lvl = self.levels.get(tuple(coord)) if hasattr(self, "levels") else None
+            except Exception:
+                lvl = None
+            if lvl is not None:
+                try:
+                    poi_ids = getattr(lvl.world, "poi_ids", None)
+                    if poi_ids is None:
+                        setattr(lvl.world, "poi_ids", [pid] if pid else [])
+                    elif pid and isinstance(poi_ids, list) and pid not in poi_ids:
+                        poi_ids.append(pid)
+                except Exception:
+                    pass
+
+                if spawn_pos is not None:
+                    try:
+                        ent = self._spawn_entity_from_template("rune_anchor", spawn_pos)
+                        lvl.entities[ent.id] = ent
+                    except Exception:
+                        pass
+
+        # Apply immediately to visited zones + overmap.
+        self._refresh_corruption_visuals()
+        return pid
 
     def _refresh_corruption_visuals(self) -> None:
         """Refresh already-instantiated overworld visuals and kick off overmap rerender."""
@@ -1006,6 +1197,8 @@ class Game:
             self.overmap_params["corruption_level"] = float(self.corruption_level)
             self.overmap_params["corruption_seed"] = int(self.corruption_seed)
             self.overmap_params["corruption_hotspots"] = list(getattr(self, "corruption_hotspots", []) or [])
+            self.overmap_params["corruption_anchors"] = list(getattr(self, "corruption_anchors", []) or [])
+            self.overmap_params["corruption_spline_weight"] = float(getattr(self, "corruption_spline_weight", 0.0) or 0.0)
 
         for coord, lvl in list(getattr(self, "levels", {}).items()):
             if coord[2] != 0:
@@ -1466,6 +1659,18 @@ class Game:
                             level.entities[ent.id] = ent
                         except Exception:
                             continue
+                elif struct.get("kind") == "rune_anchor":
+                    # A simple local representation of the rune anchor.
+                    # The *corruption suppression* is global and handled by the
+                    # corruption system; this entity is just a visible POI.
+                    center = (level.world.width // 2, level.world.height // 2)
+                    spot = nearest_walkable(center)
+                    if spot and not self._entity_at(level, spot):
+                        try:
+                            ent = self._spawn_entity_from_template("rune_anchor", spot)
+                            level.entities[ent.id] = ent
+                        except Exception:
+                            pass
             # Extra: drop some starting bismuth piles in the starting zone.
             if pid == "starting_zone":
                 world = level.world
@@ -3948,7 +4153,7 @@ class Game:
 
                 game2.log.add("You twist the land into a cone of corruption.")
                 game2.log.add(
-                    f"(Slope uses sigma in Julia-plane units; here sigma≈{sigma:.3f} (~{approx_tiles:.0f} tiles).)"
+                    f"(Slope uses sigma in Julia-plane units; here sigma={sigma:.3f} (~{approx_tiles:.0f} tiles).)"
                 )
 
             slope_body = (
@@ -3975,6 +4180,77 @@ class Game:
             choices=[t for t, _v in strength_choices],
             on_choice_effect=after_strength,
         )
+
+    def act_place_rune_anchor(self, actor_id: str) -> None:
+        """Place a rune anchor at the actor's current overworld position.
+
+        Rune anchors suppress *all* corruption contributions locally (mountains/spots/hotspots),
+        because they scale the effective corruption_level at z before any distortion math runs.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+
+        # Ensure we have a stable world->Julia mapping.
+        try:
+            self._ensure_overmap_ready()
+        except Exception:
+            pass
+        if getattr(self, "tile_julia_grid", None) is None:
+            try:
+                self.build_tile_julia_grid()
+            except Exception:
+                return
+        if getattr(self, "tile_julia_grid", None) is None:
+            return
+
+        zx, zy, depth = self.zone_coord
+        if depth != 0:
+            if actor_id == self.player_id:
+                self.log.add("Your anchor finds no purchase beneath the surface.")
+            return
+
+        wx = zx * self.cfg.world_width + int(actor.pos[0])
+        wy = zy * self.cfg.world_height + int(actor.pos[1])
+
+        try:
+            jx = float(self.tile_julia_grid["x"][wx])  # type: ignore[index]
+            jy = float(self.tile_julia_grid["y"][wy])  # type: ignore[index]
+        except Exception:
+            return
+
+        mean_step = None
+        try:
+            step_x = float(self.tile_julia_grid.get("step_x", 0.0))  # type: ignore[union-attr]
+            step_y = float(self.tile_julia_grid.get("step_y", 0.0))  # type: ignore[union-attr]
+            if abs(step_x) > 1e-12 and abs(step_y) > 1e-12:
+                mean_step = 0.5 * (abs(step_x) + abs(step_y))
+        except Exception:
+            mean_step = None
+
+        range_tiles = float(self.get_param_value("place_rune_anchor", "range"))
+        strength = float(self.get_param_value("place_rune_anchor", "strength"))
+        step = mean_step or 0.01
+        sigma = max(0.01, range_tiles * step)
+
+        pid = self.add_corruption_anchor(
+            jx,
+            jy,
+            sigma=sigma,
+            strength=strength,
+            coord=(zx, zy, 0),
+            spawn_pos=tuple(actor.pos),
+        )
+
+        if actor_id == self.player_id:
+            approx_tiles = range_tiles
+            if mean_step and mean_step > 1e-9:
+                approx_tiles = sigma / mean_step
+            self.log.add("You drive a rune anchor into the land.")
+            self.log.add(f"(sigma={sigma:.3f} ~ {approx_tiles:.0f} tiles; strength={strength:.2f})")
+            if pid:
+                self.log.add(f"Anchor marked on the world map as {pid}.")
 
     def act_fractal(self, actor_id: str, kind: str) -> None:
         """Generic action entry point: apply a fractal generator to the current pattern."""
