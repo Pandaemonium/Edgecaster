@@ -256,6 +256,8 @@ class WorldMapScene(Scene):
             renderer, show_corruption=show_corr, view_token=view_token
         )
         viewport.width, viewport.height = map_surface.get_size()
+        last_drawn_surface: pygame.Surface = map_surface
+        last_drawn_view: tuple[float, float, float, float] = viewport.view
 
         render_start_time: Optional[float] = None
         if getattr(self.game, "world_map_rendering", False):
@@ -265,23 +267,6 @@ class WorldMapScene(Scene):
             # Slider layout (kept in the top margin area).
             slider_rect = pygame.Rect(24, 24, 280, 16)
 
-            # Debounced view rerender (after wheel stops briefly).
-            if rerender_deadline is not None and time.perf_counter() >= rerender_deadline:
-                rerender_deadline = None
-                self.game.world_map_view = viewport.view
-                self.game.world_map_view_token = int(view_token)
-                try:
-                    render_start_time = time.perf_counter()
-                    self.game._start_world_map_thread(
-                        reason="view",
-                        width=int(renderer.width),
-                        height=int(renderer.height),
-                        span=int(self.span),
-                        view=self.game.world_map_view,
-                        view_token=int(view_token),
-                    )
-                except Exception:
-                    render_start_time = None
 
 
             for event in pygame.event.get():
@@ -332,18 +317,37 @@ class WorldMapScene(Scene):
                     if not (0 <= rel_x < map_w and 0 <= rel_y < map_h):
                         continue
                     
-                    current_view_for_preview = viewport.view
+                    current_view_for_preview = last_drawn_view
                     viewport.width, viewport.height = map_w, map_h
                     if zoom_viewport(viewport, (rel_x, rel_y), event.y):
                         viewport.clamp(world_max_wx, world_max_wy)
                         view_token += 1
+
+                        dbg = getattr(self.game, "_debug", None)
+                        if callable(dbg):
+                            dbg(f"[world_map_scene] Zoom detected. New view_token: {view_token}")
+                            dbg(f"[world_map_scene] New viewport: {viewport.view}")
+                        
+                        # Immediately start the re-render thread on zoom.
                         self.game.world_map_view = viewport.view
                         self.game.world_map_view_token = int(view_token)
-                        rerender_deadline = time.perf_counter() + 0.25
-                        render_start_time = time.perf_counter()
+                        if callable(dbg):
+                            dbg(f"[world_map_scene] Calling _start_world_map_thread with view_token={view_token}")
+                        try:
+                            self.game._start_world_map_thread(
+                                reason="view",
+                                width=int(renderer.width),
+                                height=int(renderer.height),
+                                span=int(self.span),
+                                view=self.game.world_map_view,
+                                view_token=int(view_token),
+                            )
+                            render_start_time = time.perf_counter()
+                        except Exception:
+                            render_start_time = None
 
                         show_corr_evt = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
-                        prev = build_preview(map_surface, current_view_for_preview, viewport.view)
+                        prev = build_preview(last_drawn_surface, current_view_for_preview, viewport.view)
                         if prev:
                             preview_surface = prev
                             preview_token = int(view_token)
@@ -402,24 +406,32 @@ class WorldMapScene(Scene):
             cache_dict = self.game.world_map_cache_dict
             cached_data = cache_dict.get(desired_key)
 
-            draw_surface: Optional[pygame.Surface] = None
+            surface_to_draw: Optional[pygame.Surface] = None
             if cached_data:
-                draw_surface = cached_data.get("surface_corr") if show_corr else cached_data.get("surface")
+                surface_to_draw = cached_data.get("surface_corr") if show_corr else cached_data.get("surface")
+                if surface_to_draw:
+                    map_surface = surface_to_draw
                 preview_surface = None
             elif preview_surface is not None and preview_token == int(view_token) and preview_show_corr == show_corr:
-                draw_surface = preview_surface
+                surface_to_draw = preview_surface
             else:
-                 draw_surface = self._build_cached_surface(
+                 surface_to_draw = self._build_cached_surface(
                     renderer, show_corruption=show_corr, view_token=view_token
                 )
-            
-            map_surface = draw_surface
-            map_w, map_h = map_surface.get_size()
+
+            if surface_to_draw is None:
+                surface_to_draw = map_surface
+
+            map_w, map_h = surface_to_draw.get_size()
             viewport.width, viewport.height = map_w, map_h
             
             ox = (renderer.width - map_w) // 2
             oy = (renderer.height - map_h) // 2
-            surf.blit(map_surface, (ox, oy))
+
+            last_drawn_surface = surface_to_draw
+            last_drawn_view = viewport.view
+
+            surf.blit(surface_to_draw, (ox, oy))
 
             # ... (marker drawing remains the same) ...
 
@@ -430,7 +442,7 @@ class WorldMapScene(Scene):
                 True,
                 renderer.fg,
             )
-            surf.blit(hint, (ox, oy + map_surface.get_height() + 8))
+            surf.blit(hint, (ox, oy + surface_to_draw.get_height() + 8))
 
             # ... (slider drawing remains the same) ...
             
@@ -881,6 +893,7 @@ class WorldMapScene(Scene):
             "corruption_hotspots": list(getattr(self.game, "corruption_hotspots", []) or []),
             "surface_size": (surf.get_width(), surf.get_height()),
             "surface": surf.copy(),
+            "surface_corr": surf_corr.copy(),
             "orig_min_wx": min_wx,
             "orig_min_wy": min_wy,
             "orig_max_wx": max_wx,

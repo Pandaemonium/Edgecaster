@@ -127,15 +127,9 @@ class Game:
     def __init__(self, cfg: config.GameConfig, rng, character: Character | None = None) -> None:
         self.cfg = cfg
         self.rng = rng
+        self._init_debug_log()
         self.log = MessageLog()
         self.place_range = cfg.place_range
-        # debug log file
-        self.debug_log_path = Path(__file__).resolve().parent.parent / "debug.log"
-        # clear debug log each run
-        try:
-            self.debug_log_path.write_text("", encoding="utf-8")
-        except Exception:
-            pass
         # ensure enemy templates are loaded once up-front
         try:
             enemy_templates.load_enemy_templates(logger=self._debug)
@@ -700,6 +694,37 @@ class Game:
         aid = f"act{self._next_id}"
         self._next_id += 1
         return aid
+
+    def _init_debug_log(self):
+        import logging
+        import sys
+        import time
+        self.debug_log_path = "C:\\Games\\Edgecaster\\debug.log"
+        try:
+            with open(self.debug_log_path, "w", encoding="utf-8") as f:
+                f.write(f"--- Log started at {time.asctime()} ---\n")
+        except Exception as e:
+            print(f"Error initializing debug log: {e}", file=sys.stderr)
+
+        logger = logging.getLogger("edgecaster_debug")
+        logger.setLevel(logging.DEBUG)
+        if not logger.handlers:
+            try:
+                handler = logging.FileHandler(self.debug_log_path, encoding="utf-8")
+                formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+                handler.setFormatter(formatter)
+                logger.addHandler(handler)
+            except Exception as e:
+                print(f"Error adding handler to debug log: {e}", file=sys.stderr)
+        self._logger = logger
+        self._debug("Debug logging initialized.")
+
+    def _debug(self, msg: str):
+        if hasattr(self, '_logger') and self._logger:
+            self._logger.debug(str(msg))
+        else:
+            import sys
+            print(f"DEBUG: {msg}", file=sys.stderr)
         
     def set_urgent(
         self,
@@ -1031,13 +1056,9 @@ class Game:
         span: Optional[int] = None,
         view: Optional[Tuple[float, float, float, float]] = None,
         view_token: Optional[int] = None,
+        corruption_version: Optional[int] = None,
     ) -> None:
-        """Kick off an async overmap render.
-
-        The world map scene may update the view window frequently (infinite zoom).
-        To avoid spawning many threads, if a render is already in progress we store
-        only the *latest* request and run it after the current render completes.
-        """
+        self._debug(f"[_start_world_map_thread] called with reason={reason} view_token={view_token}")
         reason = str(reason or "loading")
 
         if width is not None:
@@ -1047,14 +1068,14 @@ class Game:
         if span is not None:
             self.world_map_render_span = int(span)
         if view is not None:
-            self.world_map_view = (
-                float(view[0]),
-                float(view[1]),
-                float(view[2]),
-                float(view[3]),
-            )
+            self.world_map_view = (float(view[0]), float(view[1]), float(view[2]), float(view[3]))
         if view_token is not None:
             self.world_map_view_token = int(view_token)
+
+        if corruption_version is not None:
+            corr_ver = corruption_version
+        else:
+            corr_ver = int(getattr(self, "corruption_version", 0) or 0)
 
         req = {
             "reason": reason,
@@ -1063,28 +1084,26 @@ class Game:
             "span": int(self.world_map_render_span),
             "view": self.world_map_view,
             "view_token": int(self.world_map_view_token),
-            "corruption_version": int(getattr(self, "corruption_version", 0) or 0),
+            "corruption_version": corr_ver,
         }
+        self._debug(f"[_start_world_map_thread] Request dictionary: {req}")
+
+        # Ensure dict cache exists (the scene reads this)
+        if not hasattr(self, "world_map_cache_dict"):
+            self.world_map_cache_dict = {}
+
+        key = (req["width"], req["height"], req["span"], req["view_token"], req["corruption_version"])
 
         # If we already have the exact requested render, do nothing.
         try:
-            cached = getattr(self, "world_map_cache", None) or {}
-            if (
-                not getattr(self, "world_map_rendering", False)
-                and cached.get("key")
-                == (
-                    req["width"],
-                    req["height"],
-                    req["span"],
-                    req["view_token"],
-                    req["corruption_version"],
-                )
-            ):
+            if not getattr(self, "world_map_rendering", False) and key in self.world_map_cache_dict:
+                self._debug(f"[_start_world_map_thread] Render cache hit for key={key}. Skipping render.")
                 return
         except Exception:
             pass
 
         if getattr(self, "world_map_rendering", False):
+            self._debug(f"[_start_world_map_thread] World map is already rendering. Queueing request for view_token={req['view_token']}.")
             # Queue only the most recent request; older ones are irrelevant.
             self._world_map_pending_request = {
                 "reason": req["reason"],
@@ -1093,9 +1112,11 @@ class Game:
                 "span": req["span"],
                 "view": req["view"],
                 "view_token": req["view_token"],
+                "corruption_version": req["corruption_version"],  # <-- ADD
             }
             return
 
+        self._debug(f"[_start_world_map_thread] No render in progress. Starting new render for view_token={req['view_token']}.")
         self._world_map_pending_request = None
         self.world_map_thread_started = True
         self.world_map_version += 1
@@ -1117,18 +1138,41 @@ class Game:
         t.start()
 
     def _background_render_map(self, version: int, req: dict) -> None:
-        """Render overmap in a background thread using the requested view window."""
+        """Render overmap in a background thread using the requested view window.
+
+        Drop-in replacement that stores results into self.world_map_cache_dict[key]
+        (the dict cache that WorldMapScene.run() now queries), while keeping the
+        legacy self.world_map_cache populated for backwards compatibility.
+        """
+        self._debug(f"[_background_render_map] Thread started for version: {version}. Request: {req}")
         t0 = time.perf_counter()
         try:
             from edgecaster.scenes.world_map_scene import WorldMapScene
-            wm = WorldMapScene(self, span=int(req.get("span", 16) or 16))
+
+            # Ensure dict cache exists (scene reads this)
+            if not hasattr(self, "world_map_cache_dict"):
+                self.world_map_cache_dict = {}
+
+            span = int(req.get("span", 16) or 16)
+            w = int(req.get("width", 0) or 0)
+            h = int(req.get("height", 0) or 0)
+            view = req.get("view")
+            view_token = int(req.get("view_token", 0) or 0)
+            corr_ver = int(req.get("corruption_version", 0) or 0)
+
+            wm = WorldMapScene(self, span=span)
+
             class Stub:
-                def __init__(self, w: int, h: int) -> None:
-                    self.width = w
-                    self.height = h
-            stub = Stub(int(req.get("width", 0) or 0), int(req.get("height", 0) or 0))
+                def __init__(self, ww: int, hh: int) -> None:
+                    self.width = ww
+                    self.height = hh
+
+            stub = Stub(w, h)
+
             try:
-                surf, view, surf_corr = wm._render_overmap(stub, view=req.get("view"))
+                self._debug(f"[_background_render_map] Starting overmap render for version={version}, view_token={view_token}.")
+                surf, out_view, surf_corr = wm._render_overmap(stub, view=view)
+                self._debug(f"[_background_render_map] Finished overmap render for version={version}, view_token={view_token}.")
             except Exception as e:
                 try:
                     self._debug(f"[world_map] thread error version={version}: {e!r}")
@@ -1136,33 +1180,83 @@ class Game:
                 except Exception:
                     pass
                 return
-            if version == self.world_map_version:
-                key = (
-                    int(req.get("width", 0) or 0),
-                    int(req.get("height", 0) or 0),
-                    int(req.get("span", 16) or 16),
-                    int(req.get("view_token", 0) or 0),
-                    int(req.get("corruption_version", 0) or 0),
+
+            self._debug(f"[_background_render_map] Checking for staleness. Render version={version}, game version={getattr(self, 'world_map_version', version)}. Render token={view_token}, game token={getattr(self, 'world_map_view_token', view_token)}")
+            # Only publish if this render is still current.
+            # (If a newer request started, discard to avoid overwriting current view.)
+            if version != getattr(self, "world_map_version", version):
+                self._debug(f"[_background_render_map] Stale render (version {version}), a newer one ({getattr(self, 'world_map_version', version)}) was started. Discarding.")
+                return
+
+            # Extra safety: if the game's current token has moved on, discard.
+            # This prevents publishing an older zoom render after another zoom happened.
+            try:
+                cur_token = int(getattr(self, "world_map_view_token", view_token) or view_token)
+                if cur_token != view_token:
+                    self._debug(f"[_background_render_map] Stale render (view_token {view_token}), a newer one ({cur_token}) was requested. Discarding.")
+                    return
+            except Exception as e:
+                self._debug(f"[_background_render_map] Error checking view_token: {e}")
+                pass
+
+            self._debug(f"[_background_render_map] Render is not stale. Publishing result for view_token={view_token}.")
+            key = (w, h, span, view_token, corr_ver)
+
+            payload = {
+                "surface": surf,
+                "surface_corr": surf_corr,
+                "view": out_view,
+                "key": key,
+            }
+
+            # New dict cache (what the scene uses)
+            self.world_map_cache_dict[key] = payload
+
+            # Legacy single-slot cache (keep for any older code paths)
+            self.world_map_cache = payload
+
+            self.world_map_ready = True
+
+            try:
+                dt = time.perf_counter() - t0
+                self._debug(
+                    f"[world_map] thread done version={version} dt={dt:.2f}s "
+                    f"key={key} view={out_view!r}"
                 )
-                self.world_map_cache = {"surface": surf, "surface_corr": surf_corr, "view": view, "key": key}
-                self.world_map_ready = True
-                try:
-                    dt = time.perf_counter() - t0
-                    self._debug(f"[world_map] thread done version={version} dt={dt:.2f}s")
-                except Exception:
-                    pass
+            except Exception:
+                pass
+
         finally:
-            if version == self.world_map_version:
+            # Only the latest thread should flip the rendering flag.
+            if version == getattr(self, "world_map_version", version):
                 self.world_map_rendering = False
                 self.world_map_render_reason = "ready"
+                self._debug(f"[_background_render_map] Render version {version} finished. world_map_rendering is now False.")
+
                 pending = getattr(self, "_world_map_pending_request", None)
                 if isinstance(pending, dict) and pending:
+                    self._debug(f"[_background_render_map] Found pending request. Starting new render thread for view_token={pending.get('view_token')}.")
                     # Clear first so a failure doesn't loop forever.
                     self._world_map_pending_request = None
+
+                    # Make sure queued requests carry corruption_version (older callers might not).
+                    if "corruption_version" not in pending:
+                        try:
+                            pending["corruption_version"] = int(getattr(self, "corruption_version", 0) or 0)
+                        except Exception:
+                            pending["corruption_version"] = 0
+
                     try:
                         self._start_world_map_thread(**pending)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._debug(f"[_background_render_map] Error starting new render thread: {e!r}")
+                        try:
+                            self._debug(traceback.format_exc())
+                        except Exception:
+                            pass
+                else:
+                    self._debug(f"[_background_render_map] No pending requests.")
+
 
     def _ensure_overmap_ready(self) -> None:
         """Ensure overmap params/grid exist.
