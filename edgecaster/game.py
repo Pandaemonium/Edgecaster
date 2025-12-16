@@ -209,6 +209,18 @@ class Game:
         # What is currently driving a (re)render of the world map.
         # "loading" = initial generation; "corruption" = corruption forcing rerender.
         self.world_map_render_reason: str = "loading"
+        # Infinite-zoom view window for the overmap render:
+        # (min_wx, min_wy, span_wx, span_wy) in continuous world-tile coords.
+        # None means "full world".
+        self.world_map_view: Optional[Tuple[float, float, float, float]] = None
+        self.world_map_view_token: int = 0
+        # Last requested render size (used by background threads + cache keys).
+        self.world_map_render_width: int = int(getattr(self.cfg, "view_width", 0) or 0)
+        self.world_map_render_height: int = int(getattr(self.cfg, "view_height", 0) or 0)
+        self.world_map_render_span: int = 16
+        # If a new view is requested while rendering, queue the latest request and
+        # render it immediately after the current thread completes.
+        self._world_map_pending_request: Optional[dict] = None
         # per-tile julia grid (x coords, y coords) derived from overmap view
         self.tile_julia_grid: dict[str, list[float]] | None = None
         # flags
@@ -1010,36 +1022,113 @@ class Game:
             except Exception:
                 pass
 
-    def _start_world_map_thread(self, *, reason: str = "loading") -> None:
+    def _start_world_map_thread(
+        self,
+        *,
+        reason: str = "loading",
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        span: Optional[int] = None,
+        view: Optional[Tuple[float, float, float, float]] = None,
+        view_token: Optional[int] = None,
+    ) -> None:
+        """Kick off an async overmap render.
+
+        The world map scene may update the view window frequently (infinite zoom).
+        To avoid spawning many threads, if a render is already in progress we store
+        only the *latest* request and run it after the current render completes.
+        """
         reason = str(reason or "loading")
-        if getattr(self, "world_map_rendering", False) and getattr(self, "world_map_render_reason", "") == reason:
+
+        if width is not None:
+            self.world_map_render_width = int(width)
+        if height is not None:
+            self.world_map_render_height = int(height)
+        if span is not None:
+            self.world_map_render_span = int(span)
+        if view is not None:
+            self.world_map_view = (
+                float(view[0]),
+                float(view[1]),
+                float(view[2]),
+                float(view[3]),
+            )
+        if view_token is not None:
+            self.world_map_view_token = int(view_token)
+
+        req = {
+            "reason": reason,
+            "width": int(self.world_map_render_width),
+            "height": int(self.world_map_render_height),
+            "span": int(self.world_map_render_span),
+            "view": self.world_map_view,
+            "view_token": int(self.world_map_view_token),
+            "corruption_version": int(getattr(self, "corruption_version", 0) or 0),
+        }
+
+        # If we already have the exact requested render, do nothing.
+        try:
+            cached = getattr(self, "world_map_cache", None) or {}
+            if (
+                not getattr(self, "world_map_rendering", False)
+                and cached.get("key")
+                == (
+                    req["width"],
+                    req["height"],
+                    req["span"],
+                    req["view_token"],
+                    req["corruption_version"],
+                )
+            ):
+                return
+        except Exception:
+            pass
+
+        if getattr(self, "world_map_rendering", False):
+            # Queue only the most recent request; older ones are irrelevant.
+            self._world_map_pending_request = {
+                "reason": req["reason"],
+                "width": req["width"],
+                "height": req["height"],
+                "span": req["span"],
+                "view": req["view"],
+                "view_token": req["view_token"],
+            }
             return
+
+        self._world_map_pending_request = None
         self.world_map_thread_started = True
-        # Allow restarting renders (e.g. when corruption changes). Older results are discarded.
         self.world_map_version += 1
         version = self.world_map_version
         self.world_map_render_reason = reason
         self.world_map_rendering = True
         try:
-            self._debug(f"[world_map] thread start version={version} reason={self.world_map_render_reason}")
+            v = req.get("view")
+            self._debug(
+                "[world_map] thread start "
+                f"version={version} reason={self.world_map_render_reason} "
+                f"size={req['width']}x{req['height']} span={req['span']} "
+                f"view_token={req['view_token']} corr_ver={req['corruption_version']} "
+                f"view={v!r}"
+            )
         except Exception:
             pass
-        t = threading.Thread(target=self._background_render_map, args=(version,), daemon=True)
+        t = threading.Thread(target=self._background_render_map, args=(version, req), daemon=True)
         t.start()
 
-    def _background_render_map(self, version: int) -> None:
-        """Render overmap in a background thread using fixed params."""
+    def _background_render_map(self, version: int, req: dict) -> None:
+        """Render overmap in a background thread using the requested view window."""
         t0 = time.perf_counter()
         try:
             from edgecaster.scenes.world_map_scene import WorldMapScene
-            wm = WorldMapScene(self, span=16)
+            wm = WorldMapScene(self, span=int(req.get("span", 16) or 16))
             class Stub:
                 def __init__(self, w: int, h: int) -> None:
                     self.width = w
                     self.height = h
-            stub = Stub(self.cfg.view_width, self.cfg.view_height)
+            stub = Stub(int(req.get("width", 0) or 0), int(req.get("height", 0) or 0))
             try:
-                surf, view, surf_corr = wm._render_overmap(stub)
+                surf, view, surf_corr = wm._render_overmap(stub, view=req.get("view"))
             except Exception as e:
                 try:
                     self._debug(f"[world_map] thread error version={version}: {e!r}")
@@ -1048,7 +1137,14 @@ class Game:
                     pass
                 return
             if version == self.world_map_version:
-                self.world_map_cache = {"surface": surf, "surface_corr": surf_corr, "view": view, "key": (stub.width, stub.height, wm.span)}
+                key = (
+                    int(req.get("width", 0) or 0),
+                    int(req.get("height", 0) or 0),
+                    int(req.get("span", 16) or 16),
+                    int(req.get("view_token", 0) or 0),
+                    int(req.get("corruption_version", 0) or 0),
+                )
+                self.world_map_cache = {"surface": surf, "surface_corr": surf_corr, "view": view, "key": key}
                 self.world_map_ready = True
                 try:
                     dt = time.perf_counter() - t0
@@ -1059,6 +1155,14 @@ class Game:
             if version == self.world_map_version:
                 self.world_map_rendering = False
                 self.world_map_render_reason = "ready"
+                pending = getattr(self, "_world_map_pending_request", None)
+                if isinstance(pending, dict) and pending:
+                    # Clear first so a failure doesn't loop forever.
+                    self._world_map_pending_request = None
+                    try:
+                        self._start_world_map_thread(**pending)
+                    except Exception:
+                        pass
 
     def _ensure_overmap_ready(self) -> None:
         """Ensure overmap params/grid exist.

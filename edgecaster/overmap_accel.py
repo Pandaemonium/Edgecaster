@@ -7,16 +7,16 @@ def render_overmap_buffers_numpy(
     *,
     px_w: int,
     px_h: int,
-    wx_map: list[int],
-    wy_map: list[int],
-    xgrid: Optional[list[float]],
-    ygrid: Optional[list[float]],
     total_w: int,
     total_h: int,
     j_min_x: float,
     j_max_x: float,
     j_min_y: float,
     j_max_y: float,
+    view_min_wx: float = 0.0,
+    view_min_wy: float = 0.0,
+    view_span_wx: Optional[float] = None,
+    view_span_wy: Optional[float] = None,
     visual_c: complex,
     iters: int,
     corruption_level: float,
@@ -55,6 +55,10 @@ def render_overmap_buffers_numpy(
     if total_w <= 1 or total_h <= 1:
         raise ValueError("total_w/total_h must be > 1")
 
+    # World coordinate domain is tile-index space [0 .. total_w-1] / [0 .. total_h-1].
+    world_max_wx = float(max(1, total_w - 1))
+    world_max_wy = float(max(1, total_h - 1))
+
     iters = int(iters)
     if iters <= 0:
         iters = 1
@@ -72,21 +76,31 @@ def render_overmap_buffers_numpy(
     )
 
     # -------------------------------------------------------------------------
-    # Pixel -> world tile -> Julia coord mapping (preserves overmap/local tie).
+    # Pixel -> world coord -> Julia coord mapping (preserves overmap/local tie).
+    #
+    # This uses continuous world coordinates, so zooming can reveal sub-tile
+    # fractal detail instead of just scaling up pre-rendered pixels.
     # -------------------------------------------------------------------------
-    if xgrid is not None:
-        jx_line = np.asarray([float(xgrid[int(wx)]) for wx in wx_map], dtype=np.float64)
-    else:
-        span_jx = float(j_max_x) - float(j_min_x)
-        denom = float(max(1, total_w - 1))
-        jx_line = np.asarray([float(j_min_x) + (float(wx) / denom) * span_jx for wx in wx_map], dtype=np.float64)
+    view_min_wx = float(view_min_wx)
+    view_min_wy = float(view_min_wy)
+    span_wx = float(view_span_wx) if view_span_wx is not None else float(world_max_wx)
+    span_wy = float(view_span_wy) if view_span_wy is not None else float(world_max_wy)
+    if span_wx <= 0.0 or span_wy <= 0.0:
+        raise ValueError("view_span_wx/view_span_wy must be > 0")
 
-    if ygrid is not None:
-        jy_line = np.asarray([float(ygrid[int(wy)]) for wy in wy_map], dtype=np.float64)
-    else:
-        span_jy = float(j_max_y) - float(j_min_y)
-        denom = float(max(1, total_h - 1))
-        jy_line = np.asarray([float(j_min_y) + (float(wy) / denom) * span_jy for wy in wy_map], dtype=np.float64)
+    span_jx = float(j_max_x) - float(j_min_x)
+    span_jy = float(j_max_y) - float(j_min_y)
+    step_x = span_jx / world_max_wx
+    step_y = span_jy / world_max_wy
+
+    # Use inclusive linspace so the edges are stable at any zoom.
+    wx_line = view_min_wx + np.linspace(0.0, span_wx, px_w, dtype=np.float64)
+    wy_line = view_min_wy + np.linspace(0.0, span_wy, px_h, dtype=np.float64)
+    wx_line = np.clip(wx_line, 0.0, world_max_wx)
+    wy_line = np.clip(wy_line, 0.0, world_max_wy)
+
+    jx_line = float(j_min_x) + wx_line * step_x
+    jy_line = float(j_min_y) + wy_line * step_y
 
     # Broadcast into 2D grids.
     zx0 = np.tile(jx_line, (px_h, 1))
