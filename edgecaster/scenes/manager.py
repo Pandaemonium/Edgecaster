@@ -184,15 +184,37 @@ class SceneManager:
         """For non-windowed scenes, or when you handle window_rect manually."""
         self.scene_stack.append(scene)
 
-    def pop_scene(self) -> None:
+    def pop_scene(self, *, force: bool = False) -> None:
+        """Pop the top scene off the stack.
+
+        If the top scene supports a graceful pop animation, it may intercept
+        the pop request by implementing begin_pop(manager) -> bool and returning True.
+        In that case, the scene remains on the stack until it later calls
+        manager.pop_scene(force=True).
+        """
         if not self.scene_stack:
             return
+
+        top = self.scene_stack[-1]
+        if not force:
+            begin = getattr(top, "begin_pop", None)
+            if callable(begin):
+                try:
+                    if bool(begin(self)):
+                        return
+                except Exception:
+                    # If the animation hook misbehaves, fall back to an immediate pop.
+                    pass
+
         scene = self.scene_stack.pop()
 
         # If this scene was windowed, pop matching rect too
         if hasattr(scene, "window_rect") and self.window_stack:
             self.window_stack.pop()
 
+    def _force_pop_scene(self) -> None:
+        """Internal helper: pop without allowing interception."""
+        self.pop_scene(force=True)
     def set_scene(self, scene: Optional[Scene]) -> None:
         if scene is None:
             self.scene_stack.clear()
@@ -276,4 +298,3 @@ class SceneManager:
             if getattr(renderer, "quit_requested", False):
                 renderer.quit_requested = False
                 return
-

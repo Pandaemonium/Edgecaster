@@ -189,7 +189,44 @@ Immediate next improvements:
 - Keybinds/options unification using widgets
 - Reduce ad-hoc coordinate math; keep all transforms via VisualProfile/VisualEffects
 
-SECTION 8 - MAP GENERATION + CORRUPTION (WORLD/LOCAL COHERENCE)
+===============================================================================
+SECTION 8 — ENTITY / INVENTORY / MAP ONTOLOGY
+
+Core conceptual model (important for future work):
+
+• Entities are the fundamental unit of the game world.
+• An inventory is not a special container type, but a general expression of
+  containment or composition between entities.
+• Opening an inventory means inspecting an entity’s internal structure.
+
+This applies uniformly across scales:
+
+• A creature’s inventory may contain items or body parts.
+• An equipped item is an inventory item with an attachment relationship
+  (rendered visually, not treated as a separate system).
+• A dungeon or map is an entity whose inventory is rendered spatially and
+  permits movement, time flow, and combat.
+• The “main dungeon scene” is simply the currently inhabited spatial inventory.
+
+UI implication:
+
+• Inventory screens, inspection (“look”), and map views are all specializations
+  of the same underlying operation: opening an entity.
+• PanelScene is the common foundation for these views; differences are expressed
+  via permissions, layout, and rendering mode, not separate scene types.
+
+Simulation implication:
+
+• Internal detail may be generated on demand when an entity is opened and
+  summarized or discarded when it is closed.
+• Fidelity is governed by proximity, narrative importance, and player interaction,
+  not by a requirement to simulate all entities continuously.
+
+This ontology is intentional and should be preserved when introducing new UI,
+inventory, or world-scale features.
+
+===============================================================================
+SECTION 9 — MAP GENERATION + CORRUPTION (WORLD / LOCAL COHERENCE)
 
 Core invariant:
 - The world map (overmap) and local overworld zones must remain "intimately tied".
@@ -197,39 +234,10 @@ Core invariant:
   (jx, jy), and both overmap rendering and local zone generation must use that
   same mapping.
 
-Where this lives:
-- edgecaster/game.py
-  - game.overmap_params holds the authoritative Julia view extents + chosen c.
-  - game.tile_julia_grid precomputes the mapping arrays:
-      jx = tile_julia_grid["x"][gx]
-      jy = tile_julia_grid["y"][gy]
-  - Startup policy: the world map is rendered lazily when opened (pop-in is ok);
-    avoid doing heavy overmap rendering work during Game.__init__.
+[section unchanged — see existing reference material]
 
-- edgecaster/scenes/world_map_scene.py + edgecaster/overmap_accel.py
-  - The overmap is rendered at low resolution and scaled up for display.
-  - The default path uses numpy acceleration (`overmap_accel.render_overmap_buffers_numpy`)
-    and routes all corruption math through `edgecaster.corruption.distortion_np` so
-    the fast path cannot drift from the scalar rules.
-
-- edgecaster/mapgen.py
-  - Overworld zones (depth 0) are generated using Julia sampling at per-tile
-    coords from tile_julia_grid slices (`jx_slice`/`jy_slice`).
-  - A numpy grid fast-path exists for generating full (height, env) arrays for a
-    zone without per-tile Python loops.
-
-- edgecaster/corruption.py
-  - Corruption modifies the Julia iterator:
-      z_{n+1} = z_n^2 + c + d(z_n)
-  - d(z) is evaluated via LUT sampling while |z| <= 2; LUTs are cached and
-    built with numpy when available (with a pure-Python fallback).
-  - Rune anchors are part of the corruption system and suppress corruption
-    multiplicatively in the Julia z-plane.
-
-Docs:
-- vision_documents/map_generation_strategy.txt is the detailed reference for
-  how map generation/corruption are implemented and which invariants to preserve.
-SECTION 8 — CURRENT STATUS & DIRECTION
+===============================================================================
+SECTION 10 — CURRENT STATUS & DIRECTION
 
 Completed:
 • Widget system online
