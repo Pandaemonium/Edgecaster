@@ -102,12 +102,245 @@ def _render_entity_glyph_canvas(
     return canvas
 
 
+def _render_entity_glyph_canvas_with_anchor(
+    renderer,
+    ent: Any,
+    *,
+    font: pygame.font.Font,
+    base_px: int,
+    scene_effects: list[str] | None = None,
+) -> tuple[pygame.Surface, tuple[float, float]]:
+    """
+    Like _render_entity_glyph_canvas(), but also returns the pixel coordinate of the
+    *glyph cell center* inside the returned surface.
+
+    Why: effect overlays can expand the union rect asymmetrically (and rotations can
+    further change the bounding box). Using surface.center as the zoom source causes
+    drift that compounds badly under nested/rotated panels.
+    """
+    glyph = str(getattr(ent, "glyph", "@"))[:1]
+
+    base_color = getattr(renderer, "fg", (240, 240, 255))
+    if hasattr(renderer, "_entity_visual"):
+        try:
+            _, base_color = renderer._entity_visual(ent)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
+    color = apply_entity_color_effects(ent, base_color, eff)
+
+    base_rect = pygame.Rect(0, 0, base_px, base_px)
+    union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+
+    canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+    ox, oy = -union_rect.left, -union_rect.top
+
+    # The *logical* anchor: center of the base glyph cell.
+    anchor0 = (float(ox) + float(base_px) * 0.5, float(oy) + float(base_px) * 0.5)
+
+    gsurf = font.render(glyph, True, color)
+    gx = ox + (base_px - gsurf.get_width()) // 2
+    gy = oy + (base_px - gsurf.get_height()) // 2
+    canvas.blit(gsurf, (gx, gy))
+
+    if eff:
+        shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+        apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+    # Some effects include geometry transforms; apply them to the glyph canvas only.
+    if eff:
+        try:
+            visual = build_visual_profile(VisualProfile(), eff)
+            out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+            apply_visual_panel(out, canvas, out.get_rect(), visual)
+
+            # Project anchor0 through the same VisualProfile used by apply_visual_panel.
+            # This mirrors the math in visuals.unproject_mouse() / our panel projection helpers.
+            rect = out.get_rect()
+            cx, cy = float(rect.w) * 0.5, float(rect.h) * 0.5
+            dx, dy = float(anchor0[0]) - cx, float(anchor0[1]) - cy
+
+            dx *= float(getattr(visual, "scale_x", 1.0))
+            dy *= float(getattr(visual, "scale_y", 1.0))
+
+            if getattr(visual, "flip_x", False):
+                dx = -dx
+            if getattr(visual, "flip_y", False):
+                dy = -dy
+
+            ang = float(getattr(visual, "angle", 0.0))
+            if ang:
+                rad = math.radians(ang)
+                c = math.cos(rad)
+                s = math.sin(rad)
+                dx, dy = (dx * c + dy * s, -dx * s + dy * c)
+
+            ax = float(rect.centerx) + float(getattr(visual, "offset_x", 0.0)) + dx
+            ay = float(rect.centery) + float(getattr(visual, "offset_y", 0.0)) + dy
+            return out, (ax, ay)
+        except Exception:
+            return canvas, anchor0
+
+    return canvas, anchor0
+
 # ---------------------------------------------------------------------------
 # Widgets
 # ---------------------------------------------------------------------------
 
 class InventoryListWidget(ListWidget):
-    """ListWidget that draws entity glyphs with per-entity color/effects."""
+    """ListWidget that draws entity glyphs with per-entity color/effects.
+
+    Extended: supports click/hold-to-drag rows into container inventories.
+    - Quick click/release: activates as usual.
+    - Click + hold (or small drag threshold): begins a drag, shows a ghost label, and
+      supports dropping onto container rows (tags['container']).
+    """
+
+    # Drag gesture tuning (panel-local coords)
+    DRAG_HOLD_MS: int = 220
+    DRAG_MIN_PX: int = 6
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._press_idx: int | None = None
+        self._press_pos: tuple[int, int] | None = None
+        self._press_ms: int = 0
+        self._dragging: bool = False
+
+    def pick_index_at(self, pos: tuple[int, int] | None) -> int | None:
+        """Return the item index under pos (panel-local), or None."""
+        if pos is None:
+            return None
+        if not self.rect.collidepoint(pos):
+            return None
+        _x, y = pos
+        y0 = self.rect.y + self.padding
+        rel_y = y - y0
+        if rel_y < 0:
+            return None
+        idx_in_view = int(rel_y // max(1, int(self._line_height)))
+        idx = int(self.scroll_offset) + idx_in_view
+        if 0 <= idx < len(self.items):
+            return idx
+        return None
+
+    def _begin_drag_if_ready(self, ctx: WidgetContext, pos: tuple[int, int]) -> bool:
+        if self._press_idx is None or self._dragging:
+            return False
+
+        now = pygame.time.get_ticks()
+        held = (now - int(self._press_ms)) >= int(self.DRAG_HOLD_MS)
+
+        moved = False
+        if self._press_pos is not None:
+            dx = int(pos[0]) - int(self._press_pos[0])
+            dy = int(pos[1]) - int(self._press_pos[1])
+            moved = (dx * dx + dy * dy) >= int(self.DRAG_MIN_PX * self.DRAG_MIN_PX)
+
+        if not (held or moved):
+            return False
+
+        row = self.items[self._press_idx]
+        ent = getattr(row, "ent", None)
+        if ent is None:
+            return False
+
+        scene = getattr(ctx, "scene", None)
+        if scene is None:
+            return False
+
+        cb = getattr(scene, "_inv_drag_begin", None)
+        if callable(cb):
+            try:
+                if bool(cb(row=row, pos=pos)):
+                    self._dragging = True
+                    return True
+            except Exception:
+                return False
+
+        return False
+
+    def _cancel_press(self) -> None:
+        self._press_idx = None
+        self._press_pos = None
+        self._press_ms = 0
+        self._dragging = False
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        # If we're currently dragging, eat mouse events and forward to scene.
+        if event.type == pygame.MOUSEMOTION and hasattr(event, "pos"):
+            pos = event.pos
+            if self._press_idx is not None:
+                # allow drag start on motion (if held enough / moved enough)
+                if self._begin_drag_if_ready(ctx, pos):
+                    cb = getattr(getattr(ctx, "scene", None), "_inv_drag_update", None)
+                    if callable(cb):
+                        try:
+                            cb(pos=pos)
+                        except Exception:
+                            pass
+                    return True
+
+                if self._dragging:
+                    cb = getattr(getattr(ctx, "scene", None), "_inv_drag_update", None)
+                    if callable(cb):
+                        try:
+                            cb(pos=pos)
+                        except Exception:
+                            pass
+                    return True
+
+            # Normal hover updates (let base class update selection + hover)
+            return super().handle_event(event, ctx)
+
+        if event.type == pygame.MOUSEBUTTONDOWN and getattr(event, "button", None) == 1:
+            idx = self.pick_index_at(getattr(event, "pos", None))
+            if idx is None:
+                return super().handle_event(event, ctx)
+
+            # Select immediately, but delay activation until mouse-up (unless drag)
+            self.selected_index = idx
+            self.ensure_visible(self.selected_index)
+            self._press_idx = idx
+            self._press_pos = getattr(event, "pos", None)
+            self._press_ms = pygame.time.get_ticks()
+            self._dragging = False
+            return True
+
+        if event.type == pygame.MOUSEBUTTONUP and getattr(event, "button", None) == 1:
+            if self._press_idx is None:
+                return super().handle_event(event, ctx)
+
+            scene = getattr(ctx, "scene", None)
+
+            if self._dragging:
+                cb = getattr(scene, "_inv_drag_end", None) if scene is not None else None
+                if callable(cb):
+                    try:
+                        cb(pos=getattr(event, "pos", None))
+                    except Exception:
+                        pass
+                self._cancel_press()
+                return True
+
+            # Not dragging: treat as a click-activate *if* we release on the same row.
+            release_idx = self.pick_index_at(getattr(event, "pos", None))
+            press_idx = self._press_idx
+            self._cancel_press()
+
+            if release_idx is not None and release_idx == press_idx and 0 <= release_idx < len(self.items):
+                try:
+                    if callable(getattr(self, "on_activate", None)):
+                        self.on_activate(release_idx, self.items[release_idx])
+                        return True
+                except Exception:
+                    return True
+
+            return True
+
+        # Keyboard / mousewheel etc: fall back to base behavior
+        return super().handle_event(event, ctx)
 
     def draw(self, ctx: WidgetContext) -> None:
         if not self.visible:
@@ -146,7 +379,7 @@ class InventoryListWidget(ListWidget):
             x = x0 + prefix_surf.get_width()
 
             if ent is not None:
-                glyph_canvas = _render_entity_glyph_canvas(
+                glyph_canvas, _glyph_anchor = _render_entity_glyph_canvas_with_anchor(
                     ctx.renderer,
                     ent,
                     font=font,
@@ -251,6 +484,85 @@ class EntityPreviewWidget(Widget):
             card.blit(gcanvas, (gx, gy))
 
         surf.blit(card, r.topleft)
+
+
+class DragOverlayWidget(Widget):
+    """Draws the active inventory drag ghost + drop hint on top of the UI."""
+
+    def draw(self, ctx: WidgetContext) -> None:
+        scene = getattr(ctx, "scene", None)
+        if scene is None or not getattr(scene, "_drag_active", False):
+            return
+
+        pos = getattr(scene, "_drag_pos", None)
+        if pos is None:
+            return
+
+        mx, my = int(pos[0]), int(pos[1])
+
+        r = ctx.renderer
+        font = getattr(r, "menu_font", getattr(r, "small_font", getattr(r, "font", None)))
+        if font is None:
+            return
+
+        fg = getattr(r, "fg", (220, 230, 240))
+        sel = getattr(r, "sel", (255, 255, 0))
+
+        label = str(getattr(scene, "_drag_label", "") or "")
+        hint = str(getattr(scene, "_drag_hint", "") or "")
+
+        if not label and not hint:
+            return
+
+        # Build text surfaces
+        label_surf = font.render(label, True, fg) if label else None
+        hint_surf = font.render(hint, True, sel) if hint else None
+
+        pad = 6
+        gap = 4
+        w = 0
+        h = 0
+        if label_surf:
+            w = max(w, label_surf.get_width())
+            h += label_surf.get_height()
+        if hint_surf:
+            if h:
+                h += gap
+            w = max(w, hint_surf.get_width())
+            h += hint_surf.get_height()
+
+        box = pygame.Surface((w + 2 * pad, h + 2 * pad), pygame.SRCALPHA)
+        # Translucent background + border
+        box.fill((10, 10, 20, 160))
+        pygame.draw.rect(box, (220, 220, 240, 180), box.get_rect(), 1)
+
+        y = pad
+        if label_surf:
+            tmp = label_surf.convert_alpha()
+            tmp.set_alpha(180)  # ghost
+            box.blit(tmp, (pad, y))
+            y += label_surf.get_height()
+        if hint_surf:
+            if label_surf:
+                y += gap
+            tmp = hint_surf.convert_alpha()
+            tmp.set_alpha(220)
+            box.blit(tmp, (pad, y))
+
+        # Slight offset from cursor; clamp into panel
+        x = mx + 12
+        y = my + 12
+        panel_rect = ctx.surface.get_rect()
+        if x + box.get_width() > panel_rect.right:
+            x = mx - 12 - box.get_width()
+        if y + box.get_height() > panel_rect.bottom:
+            y = my - 12 - box.get_height()
+
+        ctx.surface.blit(box, (x, y))
+        super().draw(ctx)
+
+
+
 
 
 class TwoPaneInventoryRoot(Widget):
@@ -459,6 +771,18 @@ class InventoryScene(PopupMenuScene):
         self._list: Optional[ListWidget] = None
         self._preview: Optional[EntityPreviewWidget] = None
 
+        # ---- drag & drop state (inventory UI prototype) -----------------
+        self._drag_active: bool = False
+        self._drag_row: Any | None = None
+        self._drag_ent: Any | None = None
+        self._drag_src_owner_id: str | None = None
+        self._drag_pos: tuple[int, int] | None = None  # panel-local cursor pos
+        self._drag_label: str = ""
+        self._drag_target_owner_id: str | None = None
+        self._drag_hint: str = ""
+
+        
+
         super().__init__(window_rect=window_rect, dim_background=True,
                          scale=0.78)
         self.overlay_layers = {"hud"}
@@ -507,6 +831,134 @@ class InventoryScene(PopupMenuScene):
                 candidates.append((str(ent_id), str(name)))
 
         return candidates
+
+# ------------------------------------------------------------------
+    # Drag & drop hooks (called by InventoryListWidget)
+    # ------------------------------------------------------------------
+
+    def _inv_drag_begin(self, *, row: Any, pos: tuple[int, int]) -> bool:
+        """Begin dragging an inventory row. Return True if drag started."""
+        ent = getattr(row, "ent", None)
+        if ent is None:
+            return False
+
+        # Only items in the current inventory space can be dragged for now.
+        self._drag_active = True
+        self._drag_row = row
+        self._drag_ent = ent
+        self._drag_src_owner_id = self._owner_id()
+        self._drag_pos = (int(pos[0]), int(pos[1]))
+
+        glyph = str(getattr(ent, "glyph", "?"))[:1]
+        name = getattr(ent, "name", None) or getattr(row, "label", "Item")
+        self._drag_label = f"{glyph} {name}"
+
+        self._drag_target_owner_id = None
+        self._drag_hint = ""
+        return True
+
+    def _inv_drag_update(self, *, pos: tuple[int, int]) -> None:
+        if not self._drag_active:
+            return
+        self._drag_pos = (int(pos[0]), int(pos[1]))
+        self._update_drag_target()
+
+    def _inv_drag_end(self, *, pos: tuple[int, int] | None) -> None:
+        if not self._drag_active:
+            return
+        if pos is not None:
+            self._drag_pos = (int(pos[0]), int(pos[1]))
+
+        # Commit drop if we have a valid target; else cancel.
+        if self._drag_target_owner_id and self._drag_ent is not None and self._drag_src_owner_id is not None:
+            dest_owner_id = self._drag_target_owner_id
+            src_owner_id = self._drag_src_owner_id
+
+            try:
+                src_inv = self.game.get_inventory(src_owner_id) if hasattr(self.game, "get_inventory") else None
+            except Exception:
+                src_inv = None
+
+            src_index = None
+            if src_inv:
+                try:
+                    src_index = src_inv.index(self._drag_ent)
+                except Exception:
+                    src_index = None
+
+            if src_index is not None and hasattr(self.game, "move_item_between_inventories"):
+                try:
+                    self.game.move_item_between_inventories(src_owner_id, src_index, dest_owner_id)
+                except Exception:
+                    pass
+
+            # Refresh immediately so the list reflects the move.
+            try:
+                self._refresh_rows()
+                if self._list is not None:
+                    self._list.items = self._rows
+            except Exception:
+                pass
+
+        # Clear state
+        self._drag_active = False
+        self._drag_row = None
+        self._drag_ent = None
+        self._drag_src_owner_id = None
+        self._drag_pos = None
+        self._drag_label = ""
+        self._drag_target_owner_id = None
+        self._drag_hint = ""
+
+    def _update_drag_target(self) -> None:
+        """Recompute which container (if any) is currently under the drag ghost."""
+        self._drag_target_owner_id = None
+        self._drag_hint = ""
+
+        if not self._drag_active or self._drag_pos is None or self._list is None:
+            return
+
+        # Only drop onto container rows in the visible list.
+        try:
+            idx = self._list.pick_index_at(self._drag_pos) if hasattr(self._list, "pick_index_at") else None
+        except Exception:
+            idx = None
+
+        if idx is None:
+            return
+        if not (0 <= idx < len(self._rows)):
+            return
+
+        row = self._rows[idx]
+        ent = getattr(row, "ent", None)
+        if ent is None:
+            return
+
+        tags = getattr(ent, "tags", {}) or {}
+        if not tags.get("container"):
+            return
+
+        ent_id = getattr(ent, "id", None)
+        dragged_id = getattr(self._drag_ent, "id", None) if self._drag_ent is not None else None
+        if ent_id is None or (dragged_id is not None and ent_id == dragged_id):
+            return
+
+        # Validate that this is a legal container in the same space.
+        try:
+            ok = any(cid == str(ent_id) for cid, _ in self._find_container_targets(exclude_id=str(dragged_id) if dragged_id else None))
+        except Exception:
+            ok = True
+
+        if not ok:
+            return
+
+        self._drag_target_owner_id = str(ent_id)
+        dn = getattr(ent, "name", None) or "Container"
+        sn = getattr(self._drag_ent, "name", None) or "Item"
+        self._drag_hint = f"Put {sn} into {dn}"
+
+
+    
 
     @staticmethod
     def _is_berry_from_tags(tags: dict) -> bool:
@@ -909,6 +1361,9 @@ class InventoryScene(PopupMenuScene):
         )
         self.root.rect = pygame.Rect(0, 0, 0, 0)
 
+        # Draw drag ghost + drop hint above everything else.
+        self.root.add_child(DragOverlayWidget())
+
     # ---------------------------------------------------------------------
     # Animation
     # ---------------------------------------------------------------------
@@ -939,14 +1394,20 @@ class InventoryScene(PopupMenuScene):
             rad = math.radians(ang)
             c = math.cos(rad)
             s = math.sin(rad)
-            dx, dy = (dx * c - dy * s, dx * s + dy * c)
+            dx, dy = (dx * c + dy * s, -dx * s + dy * c)
         # translate
         ox = float(self.window_rect.centerx) + float(getattr(visual, "offset_x", 0.0))
         oy = float(self.window_rect.centery) + float(getattr(visual, "offset_y", 0.0))
         return (int(round(ox + dx)), int(round(oy + dy)))
 
     def _row_glyph_screen_info(self, row_index: int, manager: "SceneManager") -> tuple[tuple[int, int] | None, int | None]:
-        """Return (screen_px, approx_screen_size_px) for the glyph in the given row."""
+        """Return (screen_px, approx_screen_size_px) for the glyph in the given row.
+
+        Important: the list glyph is not always a base_px-by-base_px square:
+        some visual effects (notably clockwise/counter-clockwise) change the glyph
+        canvas size. We must match the *actual* draw placement used by InventoryListWidget
+        or nested zooms will drift (and compound badly).
+        """
         try:
             renderer = manager.renderer
         except Exception:
@@ -992,19 +1453,46 @@ class InventoryScene(PopupMenuScene):
         pad = int(getattr(lst, "padding", 0))
         x0 = float(lst.rect.x + pad)
         y0 = float(lst.rect.y + pad)
-        y = y0 + float((vis_i - start) * line_h)
+        row_y = y0 + float((vis_i - start) * line_h)
 
-        # Prefix width ("▶ " or "  ")
-        prefix_w = 0
+        # Prefix width ("▶ " or "  ") – match ListWidget draw().
         try:
-            prefix_w = int(font.size("▶ ")[0])
+            prefix_w = float(font.size("▶ ")[0])
         except Exception:
-            prefix_w = 0
+            prefix_w = 0.0
 
+        # Compute the *actual* glyph canvas for this row, so we can match its placement.
+        ent = None
+        try:
+            if 0 <= vis_i < len(self._rows):
+                ent = getattr(self._rows[vis_i], "ent", None)
+        except Exception:
+            ent = None
+
+        if ent is None:
+            return (None, None)
+
+        scene_effects = list(getattr(self, "visual_effects", []) or [])
         base_px = max(14, int(font.get_height() * 1.15))
-        # Glyph center in PANEL coords.
-        gx = x0 + float(prefix_w) + float(base_px) * 0.5
-        gy = y + float(font.get_height()) * 0.5
+        glyph_canvas, glyph_anchor = _render_entity_glyph_canvas_with_anchor(
+            renderer,
+            ent,
+            font=font,
+            base_px=base_px,
+            scene_effects=scene_effects,
+        )
+
+        # In InventoryListWidget.draw():
+        #   x = x0 + prefix_w
+        #   blit_y = row_y - (glyph_h - font_h)//2
+        glyph_x = x0 + prefix_w
+        font_h = int(font.get_height())
+        blit_y = float(row_y - int((glyph_canvas.get_height() - font_h) // 2))
+
+        # Glyph *cell* center in PANEL coords (logical panel surface).
+        # (Not the canvas center — overlays/rotation can expand asymmetrically.)
+        gx = float(glyph_x) + float(glyph_anchor[0])
+        gy = float(blit_y) + float(glyph_anchor[1])
 
         # Convert PANEL coords -> WINDOW coords (if logical panel != window size).
         pw, ph = panel.get_size()
@@ -1012,22 +1500,23 @@ class InventoryScene(PopupMenuScene):
         sy = float(self.window_rect.h) / float(max(1, ph))
         win_pt = (gx * sx, gy * sy)
 
-        # With the menu fully open, use the current VisualProfile at p=1.0.
-        visual = self._current_visual_profile(logical_to_window_scale=min(sx, sy))
-
+        # With the menu fully open, use the current VisualProfile at current progress.
+        visual = self._current_visual_profile(logical_to_window_scale_x=sx, logical_to_window_scale_y=sy)
         screen_px = self._project_point_window_to_screen(win_pt, visual)
 
-        # Approximate glyph size on screen: base glyph px (panel coords) -> window coords -> visual scale.
+        # Approximate on-screen size of the glyph (use *base glyph cell* size,
+        # not the expanded/rotated canvas which may include asymmetric overlays).
         try:
-            ltw = float(min(sx, sy))
-            scale = float(abs(getattr(visual, "scale_x", 1.0)))
-            size_px = int(round(float(base_px) * ltw * scale))
-            size_px = max(4, min(512, size_px))
+            cell_w_win = float(base_px) * sx
+            cell_h_win = float(base_px) * sy
+            sw = cell_w_win * float(abs(getattr(visual, "scale_x", 1.0)))
+            sh = cell_h_win * float(abs(getattr(visual, "scale_y", 1.0)))
+            size_px = int(round(max(sw, sh)))
+            size_px = max(4, min(1024, size_px))
         except Exception:
             size_px = None
 
         return (screen_px, size_px)
-
 
     def _row_glyph_screen_px(self, row_index: int, manager: "SceneManager") -> tuple[int, int] | None:
         """Backwards-compatible: return only the glyph screen pixel."""
@@ -1098,7 +1587,12 @@ class InventoryScene(PopupMenuScene):
     # Diagrammatic zoom transform
     # ---------------------------------------------------------------------
 
-    def _current_visual_profile(self, *, logical_to_window_scale: float = 1.0) -> VisualProfile:
+    def _current_visual_profile(
+        self,
+        *,
+        logical_to_window_scale_x: float = 1.0,
+        logical_to_window_scale_y: float = 1.0,
+    ) -> VisualProfile:
         """Compute the *current* VisualProfile for the panel.
 
         Goals:
@@ -1129,9 +1623,28 @@ class InventoryScene(PopupMenuScene):
             if getattr(base, "flip_y", False):
                 base.flip_y = bool(p >= flip_gate)
 
-        # --- Proportional scale ----------------------------------------------
+        
+        # If we're being called from mouse unprojection early in the frame, we may be handed
+        # default (1,1) logical->window scales even when this popup uses a different logical
+        # panel size. If we already have a logical panel, infer the real scales so we don't
+        # accidentally cache a bogus zoom start scale (which makes the next zoom start full-size).
+        try:
+            if (
+                abs(float(logical_to_window_scale_x) - 1.0) < 1e-6
+                and abs(float(logical_to_window_scale_y) - 1.0) < 1e-6
+                and getattr(self, "_panel", None) is not None
+                and getattr(self, "window_rect", None) is not None
+            ):
+                pw, ph = self._panel.get_size()  # type: ignore[union-attr]
+                if (pw, ph) != (self.window_rect.w, self.window_rect.h):  # type: ignore[union-attr]
+                    logical_to_window_scale_x = float(self.window_rect.w) / float(max(1, pw))  # type: ignore[union-attr]
+                    logical_to_window_scale_y = float(self.window_rect.h) / float(max(1, ph))  # type: ignore[union-attr]
+        except Exception:
+            pass
+
+# --- Proportional scale ----------------------------------------------
         # We want: (panel scale) * (final glyph px) ~= (map tile px) at p=0.
-        glyph_full_px = max(1.0, float(self._zoom_glyph_base_px) * float(max(0.01, logical_to_window_scale)))
+        glyph_full_px = max(1.0, float(self._zoom_glyph_base_px) * float(max(0.01, min(logical_to_window_scale_x, logical_to_window_scale_y))))
         want_px = float(max(1, int(self._zoom_map_tile_px)))
         if self._source_from_parent_panel:
             # When the zoom source is a glyph inside a *parent* inventory panel,
@@ -1145,14 +1658,40 @@ class InventoryScene(PopupMenuScene):
                 want_px *= parent_scale
                 want_px = max(6.0, want_px)
 
+        # Guardrail: after certain UI interactions (e.g., drag/drop), the list font can temporarily
+        # balloon, making the "source glyph size" comparable to the final preview glyph.
+        # If we trust that raw size, the next zoom starts at full scale (no small→big lerp).
+        # Clamp want_px so the start scale remains < 1.0 for parent-panel sourced zooms.
+        if self._source_from_parent_panel:
+            try:
+                want_px = min(float(want_px), float(glyph_full_px) * 0.92)
+            except Exception:
+                pass
+
 
         if self._zoom_start_scale is None:
             s0 = want_px / glyph_full_px
             # Clamp so the whole menu doesn't become astronomically tiny on extreme zoom-out.
             s0 = max(0.04, min(1.0, float(s0)))
-            self._zoom_start_scale = float(s0)
 
-        start_scale = float(self._zoom_start_scale)
+            # IMPORTANT: during mouse input unprojection, PanelScene may call this before a logical
+            # panel surface exists, passing default (1,1) scales. If we cache s0 from that call,
+            # we can lock in a bogus start scale (often 1.0) and the next zoom won't scale up.
+            # So only cache once we have enough context to trust it.
+            try:
+                untrusted = (
+                    abs(float(logical_to_window_scale_x) - 1.0) < 1e-6
+                    and abs(float(logical_to_window_scale_y) - 1.0) < 1e-6
+                    and getattr(self, "_panel", None) is None
+                )
+            except Exception:
+                untrusted = False
+
+            if not untrusted:
+                self._zoom_start_scale = float(s0)
+
+
+        start_scale = float(self._zoom_start_scale if self._zoom_start_scale is not None else s0)
         panel_scale = _lerp(start_scale, 1.0, p)
 
         # Apply recursion depth scaling at all times (scales text, glyphs, spacing).
@@ -1172,7 +1711,12 @@ class InventoryScene(PopupMenuScene):
         # Solve for (delta_offset_x, delta_offset_y) so that the panel-local anchor
         # lands on the desired screen point, *after* scale/flip/rotate.
         if self.window_rect is not None:
-            ax, ay = (self._zoom_anchor_panel or (self.window_rect.width * 0.5, self.window_rect.height * 0.5))
+            if self._zoom_anchor_panel is not None:
+                # _zoom_anchor_panel is stored in logical panel coords; convert to window_rect-local.
+                ax = float(self._zoom_anchor_panel[0]) * float(logical_to_window_scale_x)
+                ay = float(self._zoom_anchor_panel[1]) * float(logical_to_window_scale_y)
+            else:
+                ax, ay = (self.window_rect.width * 0.5, self.window_rect.height * 0.5)
             cx, cy = (self.window_rect.width * 0.5, self.window_rect.height * 0.5)
 
             # Vector from panel center to anchor, in panel-local coords.
@@ -1194,8 +1738,8 @@ class InventoryScene(PopupMenuScene):
                 th = math.radians(ang)
                 cth = math.cos(th)
                 sth = math.sin(th)
-                rdx = dx * cth - dy * sth
-                rdy = dx * sth + dy * cth
+                rdx = dx * cth + dy * sth
+                rdy = -dx * sth + dy * cth
             else:
                 rdx, rdy = dx, dy
 
@@ -1270,7 +1814,8 @@ class InventoryScene(PopupMenuScene):
                 logical_to_window = 1.0
 
         # Apply the diagrammatic zoom transform (fading + proportional scaling + anchor glue).
-        visual = self._current_visual_profile(logical_to_window_scale=float(logical_to_window))
+        visual = self._current_visual_profile(logical_to_window_scale_x=float(self.window_rect.w) / float(max(1, panel.get_width())),
+            logical_to_window_scale_y=float(self.window_rect.h) / float(max(1, panel.get_height())))
         apply_visual_panel(renderer.surface, panel_to_blit, self.window_rect, visual)
 
         # Redraw the glyph as an opaque overlay at the anchor point using the SAME transform.
@@ -1280,12 +1825,17 @@ class InventoryScene(PopupMenuScene):
                 glyph_layer = pygame.Surface(self.window_rect.size, pygame.SRCALPHA)
 
                 # Anchor location in the pre-transform panel space.
-                ax, ay = self._zoom_anchor_panel
+                ax = float(self._zoom_anchor_panel[0]) * float(self.window_rect.w) / float(max(1, panel.get_width()))
+                ay = float(self._zoom_anchor_panel[1]) * float(self.window_rect.h) / float(max(1, panel.get_height()))
 
                 # If we scaled the logical surface to window size, the anchor point lives in
                 # window_rect coords already (because we blit a window-sized panel_to_blit).
                 # So we do NOT rescale ax/ay here: they're panel_to_blit coords.
-                base_px = max(8, int(self._zoom_glyph_base_px * float(max(0.25, logical_to_window))))
+                ltw_min = float(min(
+                    float(self.window_rect.w) / float(max(1, panel.get_width())),
+                    float(self.window_rect.h) / float(max(1, panel.get_height())),
+                ))
+                base_px = max(8, int(self._zoom_glyph_base_px * float(max(0.25, ltw_min))))
                 font = pygame.font.SysFont("consolas", max(10, int(base_px)), bold=True)
 
                 gcanvas = _render_entity_glyph_canvas(
