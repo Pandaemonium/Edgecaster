@@ -738,29 +738,40 @@ class DungeonScene(Scene):
             ]
 
             if entities_here:
-                # For now just inspect the first visible entity on this tile.
+                # First pass: open a read-only inspect popup (InventoryScene in look mode)
                 primary = entities_here[0]
                 info = describe_entity_for_look(primary)
 
+                try:
+                    from .inventory_scene import LookScene
+                except Exception:
+                    LookScene = None  # type: ignore[assignment]
+
+                ent_id = getattr(primary, "id", None)
+                if LookScene is not None and ent_id is not None:
+                    manager.push_scene(
+                        LookScene(
+                            game,
+                            owner_id=str(ent_id),
+                            title=info.get("name", "You inspect...") or "You inspect...",
+                        )
+                    )
+                    return
+
+                # Fallback if LookScene can't be imported / entity has no id
                 title = info.get("name", title) or title
                 glyph = info.get("glyph", "?")
                 desc = info.get("description", "") or "You see nothing remarkable about it."
 
-                # Layout:
-                #  [glyph]
-                #  (blank line)
-                #  [description]
                 lines: list[str] = []
                 if glyph:
-                    # Later we could teach UrgentMessageScene to draw this big & colored,
-                    # using info["color"]; for now it's just a plain line.
                     lines.append(str(glyph))
                     lines.append("")
                 lines.append(str(desc))
                 hp_txt = info.get("hp_text")
                 if hp_txt:
                     lines.append("")
-                    lines.append(hp_txt)
+                    lines.append(str(hp_txt))
                 body = "\n".join(lines)
             else:
                 # No entities here: fall back to a tile description if available.
@@ -768,6 +779,7 @@ class DungeonScene(Scene):
                     body = game.describe_tile_at((tx, ty))
                 else:
                     body = f"You look at the tile at {tx}, {ty}."
+
         else:
             body = f"You look at the tile at {tx}, {ty}."
 

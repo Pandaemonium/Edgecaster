@@ -9,6 +9,8 @@ import math
 from .base import PopupMenuScene
 from .urgent_message_scene import UrgentMessageScene
 
+from edgecaster.systems.actions import describe_entity_for_look
+
 from edgecaster.visuals import VisualProfile, apply_visual_panel
 from edgecaster.visual_effects import (
     effect_names_from_obj,
@@ -768,6 +770,7 @@ class InventoryScene(PopupMenuScene):
         game,
         *,
         owner_id: Optional[str] = None,
+        mode: str = "inventory",
         window_rect: Optional[pygame.Rect] = None,
         parent_owner_id: Optional[str] = None,
         title: Optional[str] = None,
@@ -781,6 +784,12 @@ class InventoryScene(PopupMenuScene):
         self.owner_id = owner_id
         self.parent_owner_id = parent_owner_id
         self.explicit_title = title
+
+        # Inspect mode: 'inventory' (full control) or 'look' (read-only inspect)
+        self.inspect_mode = str(mode or "inventory")
+        self.allow_open_containers = (self.inspect_mode == "inventory")
+        self.allow_drag_drop = (self.inspect_mode == "inventory")
+        self.allow_item_actions = (self.inspect_mode == "inventory")
 
         self.visual_effects: list[str] = list(base_effects or [])
 
@@ -931,6 +940,8 @@ class InventoryScene(PopupMenuScene):
 
     def _inv_drag_begin(self, *, row: Any, pos: tuple[int, int]) -> bool:
         """Begin dragging an inventory row. Return True if drag started."""
+        if not bool(getattr(self, "allow_drag_drop", True)):
+            return False
         ent = getattr(row, "ent", None)
         if ent is None:
             return False
@@ -1231,7 +1242,8 @@ class InventoryScene(PopupMenuScene):
             except Exception:
                 pass
             try:
-                self._open_container_from_index(int(idx), manager)
+                if bool(getattr(self, "allow_open_containers", True)):
+                    self._open_container_from_index(int(idx), manager)
             except Exception:
                 pass
         return
@@ -1263,6 +1275,35 @@ class InventoryScene(PopupMenuScene):
 
         ent = row.ent
         tags = getattr(ent, "tags", {}) or {}
+
+
+        # LOOK/INSPECT mode: read-only info popup (no inventory actions).
+        if not bool(getattr(self, "allow_item_actions", True)):
+            info = describe_entity_for_look(ent)
+            title = info.get("name", "You inspect...") or "You inspect..."
+            glyph = info.get("glyph", "?")
+            desc = info.get("description", "") or "You see nothing remarkable about it."
+
+            lines: list[str] = []
+            if glyph:
+                lines.append(str(glyph))
+                lines.append("")
+            lines.append(str(desc))
+
+            hp_txt = info.get("hp_text")
+            if hp_txt:
+                lines.append("")
+                lines.append(str(hp_txt))
+
+            manager.push_scene(
+                UrgentMessageScene(
+                    self.game,
+"\n".join(lines),
+                    title=title,
+                    choices=["OK"],
+                )
+            )
+            return True
 
         is_container = bool(tags.get("container"))
         is_berry = self._is_berry_from_tags(tags)
@@ -2073,3 +2114,40 @@ class InventoryScene(PopupMenuScene):
             renderer.present()
         else:
             pygame.display.flip()
+
+
+class LookScene(InventoryScene):
+    """Read-only inspect scene (first pass).
+
+    This reuses InventoryScene's two-pane UI + zoom, but disables:
+      - drag/drop
+      - item action menu (Take/Drop/Eat/Put)
+      - opening containers via double-click
+
+    Later we can specialize the row-building for imperfect information.
+    """
+
+    def __init__(
+        self,
+        game,
+        *,
+        owner_id: Optional[str] = None,
+        window_rect: Optional[pygame.Rect] = None,
+        title: Optional[str] = None,
+        base_effects: Optional[list[str]] = None,
+        source_px: tuple[int, int] | None = None,
+        source_glyph_px: int | None = None,
+    ) -> None:
+        super().__init__(
+            game,
+            owner_id=owner_id,
+            window_rect=window_rect,
+            parent_owner_id=None,
+            title=title,
+            base_effects=base_effects,
+            source_px=source_px,
+            source_glyph_px=source_glyph_px,
+            stack_depth=0,
+            animate_affine=False,
+            mode="look",
+        )
