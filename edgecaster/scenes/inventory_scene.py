@@ -387,6 +387,7 @@ class InventoryScene(PopupMenuScene):
         title: Optional[str] = None,
         base_effects: Optional[list[str]] = None,
         source_px: tuple[int, int] | None = None,
+        source_glyph_px: int | None = None,
         stack_depth: int = 0,
         animate_affine: bool = False,
         ) -> None:
@@ -417,6 +418,9 @@ class InventoryScene(PopupMenuScene):
         self._source_from_parent_panel: bool = False
 
         self._zoom_source_px: tuple[int, int] | None = None
+
+        # Approximate on-screen pixel size of the source glyph (used for nested inventory zoom scaling).
+        self._zoom_source_glyph_px: int | None = None
         self._zoom_owner_world: tuple[int, int] | None = None
 
         # Optional override: when opening a nested inventory, the source glyph
@@ -427,6 +431,13 @@ class InventoryScene(PopupMenuScene):
                 self._zoom_source_px = (int(source_px[0]), int(source_px[1]))
             except Exception:
                 self._zoom_source_px = None
+
+
+        if source_glyph_px is not None:
+            try:
+                self._zoom_source_glyph_px = int(source_glyph_px)
+            except Exception:
+                self._zoom_source_glyph_px = None
 
         # Cached map tile pixel size (respects mousewheel zoom).
         self._zoom_map_tile_px: int = 32
@@ -732,7 +743,7 @@ class InventoryScene(PopupMenuScene):
 
                 # When opening a nested inventory, we want the new panel to "emerge"
                 # from the glyph that represents this item in the *current* list.
-                src_px = self._row_glyph_screen_px(index, mgr)
+                src_px, src_sz = self._row_glyph_screen_info(index, mgr)
 
                 mgr.push_scene(
                     InventoryScene(
@@ -742,6 +753,7 @@ class InventoryScene(PopupMenuScene):
                         title=getattr(cur_ent, "name", None) or "Container",
                         base_effects=list(self.visual_effects),
                         source_px=src_px,
+                        source_glyph_px=src_sz,
                         stack_depth=self.stack_depth + 1,
                     )
                 )
@@ -933,17 +945,17 @@ class InventoryScene(PopupMenuScene):
         oy = float(self.window_rect.centery) + float(getattr(visual, "offset_y", 0.0))
         return (int(round(ox + dx)), int(round(oy + dy)))
 
-    def _row_glyph_screen_px(self, row_index: int, manager: "SceneManager") -> tuple[int, int] | None:
-        """Return the screen pixel where the given inventory row's glyph is drawn (approx)."""
+    def _row_glyph_screen_info(self, row_index: int, manager: "SceneManager") -> tuple[tuple[int, int] | None, int | None]:
+        """Return (screen_px, approx_screen_size_px) for the glyph in the given row."""
         try:
             renderer = manager.renderer
         except Exception:
-            return None
+            return (None, None)
 
         # Ensure we have a window rect and a freshly-laid-out widget tree.
         self._ensure_window_rect(manager)
         if self.window_rect is None or self._list is None:
-            return None
+            return (None, None)
 
         panel = self._get_panel(manager)
         # Layout widgets into the panel surface (no present).
@@ -960,7 +972,7 @@ class InventoryScene(PopupMenuScene):
         except Exception:
             font = getattr(renderer, "menu_font", getattr(renderer, "font", None))
             if font is None:
-                return None
+                return (None, None)
             line_h = font.get_height()
 
         cap = 0
@@ -1002,7 +1014,25 @@ class InventoryScene(PopupMenuScene):
 
         # With the menu fully open, use the current VisualProfile at p=1.0.
         visual = self._current_visual_profile(logical_to_window_scale=min(sx, sy))
-        return self._project_point_window_to_screen(win_pt, visual)
+
+        screen_px = self._project_point_window_to_screen(win_pt, visual)
+
+        # Approximate glyph size on screen: base glyph px (panel coords) -> window coords -> visual scale.
+        try:
+            ltw = float(min(sx, sy))
+            scale = float(abs(getattr(visual, "scale_x", 1.0)))
+            size_px = int(round(float(base_px) * ltw * scale))
+            size_px = max(4, min(512, size_px))
+        except Exception:
+            size_px = None
+
+        return (screen_px, size_px)
+
+
+    def _row_glyph_screen_px(self, row_index: int, manager: "SceneManager") -> tuple[int, int] | None:
+        """Backwards-compatible: return only the glyph screen pixel."""
+        px, _sz = self._row_glyph_screen_info(row_index, manager)
+        return px
 
     def update(self, dt_ms: int, manager: "SceneManager") -> None:
         self._refresh_rows()
@@ -1049,6 +1079,20 @@ class InventoryScene(PopupMenuScene):
                 self._zoom_source_px = None
 
         super().update(dt_ms, manager)
+    # ---------------------------------------------------------------------
+    # Background dim fade (smooth with zoom)
+    # ---------------------------------------------------------------------
+
+    def get_dim_alpha(self, renderer=None, manager=None) -> int:
+        """Fade background dim in/out continuously during push/pop zoom."""
+        if not getattr(self, "dim_background", True):
+            return 0
+        try:
+            p = _smoothstep(_clamp01(float(self._zoom_progress)))
+        except Exception:
+            p = 1.0
+        return int(140 * float(p))
+
 
     # ---------------------------------------------------------------------
     # Diagrammatic zoom transform
@@ -1091,10 +1135,15 @@ class InventoryScene(PopupMenuScene):
         want_px = float(max(1, int(self._zoom_map_tile_px)))
         if self._source_from_parent_panel:
             # When the zoom source is a glyph inside a *parent* inventory panel,
-            # that glyph is already scaled down by the parent’s recursion factor.
-            parent_scale = float(self._depth_visual_scale) / float(max(0.0001, self.DEPTH_SCALE))
-            want_px *= parent_scale
-            want_px = max(6.0, want_px)
+            # prefer the measured on-screen size of that glyph (so the new menu truly
+            # starts at the same tiny scale as the list icon).
+            if self._zoom_source_glyph_px is not None:
+                want_px = float(max(4, self._zoom_source_glyph_px))
+            else:
+                # Fallback: estimate based on map tile size and recursion scale.
+                parent_scale = float(self._depth_visual_scale) / float(max(0.0001, self.DEPTH_SCALE))
+                want_px *= parent_scale
+                want_px = max(6.0, want_px)
 
 
         if self._zoom_start_scale is None:
