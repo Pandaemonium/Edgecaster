@@ -208,6 +208,11 @@ class InventoryListWidget(ListWidget):
         self._press_ms: int = 0
         self._dragging: bool = False
 
+        # Double-click tracking (for folder-like 'Open' behavior)
+        self._last_click_ms: int = 0
+        self._last_click_idx: int | None = None
+        self.DOUBLE_CLICK_MS: int = 330
+
     def pick_index_at(self, pos: tuple[int, int] | None) -> int | None:
         """Return the item index under pos (panel-local), or None."""
         if pos is None:
@@ -330,6 +335,51 @@ class InventoryListWidget(ListWidget):
             self._cancel_press()
 
             if release_idx is not None and release_idx == press_idx and 0 <= release_idx < len(self.items):
+                # Contextual double-click handling:
+                # - For most rows (Back / Empty / non-containers): activate immediately (snappy UX).
+                # - For containers only: delay the single-click activation briefly so a second click
+                #   can be interpreted as "Open" without flashing the action menu.
+                row0 = self.items[release_idx]
+                ent0 = getattr(row0, "ent", None)
+                tags0 = getattr(ent0, "tags", {}) or {} if ent0 is not None else {}
+                can_double_open = bool(ent0 is not None and tags0.get("container"))
+
+                if not can_double_open:
+                    try:
+                        if callable(getattr(self, "on_activate", None)):
+                            self.on_activate(release_idx, self.items[release_idx])
+                            return True
+                    except Exception:
+                        return True
+                    return True
+
+                # Container row: check for a double click.
+                now = pygame.time.get_ticks()
+                is_double = (
+                    self._last_click_idx == release_idx
+                    and (now - int(self._last_click_ms)) <= int(self.DOUBLE_CLICK_MS)
+                )
+                self._last_click_ms = int(now)
+                self._last_click_idx = int(release_idx)
+
+                scene2 = getattr(ctx, "scene", None)
+
+                if is_double:
+                    # Open directly (skip action menu), and cancel any pending delayed activation.
+                    if scene2 is not None:
+                        setattr(scene2, "_pending_click_activate_index", None)
+                        setattr(scene2, "_pending_click_activate_due_ms", 0)
+                        setattr(scene2, "_pending_double_open_index", int(release_idx))
+                    return True
+
+                # Single click on a container: schedule delayed activation (action menu) after the
+                # double-click window. If a second click arrives, the widget will cancel this.
+                if scene2 is not None:
+                    setattr(scene2, "_pending_click_activate_index", int(release_idx))
+                    setattr(scene2, "_pending_click_activate_due_ms", int(now) + int(self.DOUBLE_CLICK_MS))
+                    return True
+
+                # Fallback: behave like immediate activate.
                 try:
                     if callable(getattr(self, "on_activate", None)):
                         self.on_activate(release_idx, self.items[release_idx])
@@ -366,13 +416,37 @@ class InventoryListWidget(ListWidget):
 
         base_px = max(14, int(font.get_height() * 1.15))
 
+        # Drag highlight: during click-and-drag, softly highlight both the dragged
+        # source item and the current container target (if any).
+        drag_active = bool(getattr(scene, "_drag_active", False))
+        dragged_ent = getattr(scene, "_drag_ent", None) if drag_active else None
+        dragged_id = getattr(dragged_ent, "id", None) if dragged_ent is not None else None
+        target_owner_id = getattr(scene, "_drag_target_owner_id", None) if drag_active else None
+
+        def _half_mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float = 0.7) -> tuple[int, int, int]:
+            # t=0 → a (normal), t=1 → b (full yellow)
+            def ch(i: int) -> int:
+                v = int(a[i] + (b[i] - a[i]) * t)
+                return 0 if v < 0 else 255 if v > 255 else v
+            return (ch(0), ch(1), ch(2))
+
+
+        half_sel = _half_mix(tuple(fg[:3]), tuple(sel[:3]))
+
         for idx in range(start, end):
             row = self.items[idx]
             ent = getattr(row, "ent", None)
             selected = (idx == self.selected_index)
 
+            # During a drag, show a 'half-selected' highlight for the dragged
+            # item and the current drop target to make the pairing clearer.
+            ent_id = getattr(ent, "id", None) if ent is not None else None
+            is_drag_source = drag_active and (dragged_id is not None) and (ent_id == dragged_id)
+            is_drag_target = drag_active and (target_owner_id is not None) and (ent_id is not None) and (str(ent_id) == str(target_owner_id))
+            drag_mark = bool(is_drag_source or is_drag_target)
+
             prefix = "▶ " if selected else "  "
-            prefix_col = sel if selected else fg
+            prefix_col = half_sel if drag_mark else (sel if selected else fg)
             prefix_surf = font.render(prefix, True, prefix_col)
             ctx.surface.blit(prefix_surf, (x0, y))
 
@@ -393,12 +467,12 @@ class InventoryListWidget(ListWidget):
                 x += glyph_canvas.get_width() + int(font.size("  ")[0] * 0.5)
 
                 name = getattr(ent, "name", None) or "(unnamed item)"
-                name_col = sel if selected else fg
+                name_col = half_sel if drag_mark else (sel if selected else fg)
                 name_surf = font.render(str(name), True, name_col)
                 ctx.surface.blit(name_surf, (x, y))
             else:
                 label = getattr(row, "label", str(row))
-                label_col = sel if selected else fg
+                label_col = half_sel if drag_mark else (sel if selected else fg)
                 surf = font.render(label, True, label_col)
                 ctx.surface.blit(surf, (x, y))
 
@@ -781,6 +855,12 @@ class InventoryScene(PopupMenuScene):
         self._drag_target_owner_id: str | None = None
         self._drag_hint: str = ""
 
+        # Pending action requested by widgets (handled in Scene.handle_event where we have a manager)
+        self._pending_double_open_index: int | None = None
+        # Pending delayed single-click activation (for contextual double-click handling)
+        self._pending_click_activate_index: int | None = None
+        self._pending_click_activate_due_ms: int = 0
+
         
 
         super().__init__(window_rect=window_rect, dim_background=True,
@@ -801,6 +881,19 @@ class InventoryScene(PopupMenuScene):
         self._refresh_rows()
         if self._list:
             self._list.set_items(self._rows)
+
+
+        # Execute delayed single-click activation (containers only) once the double-click window expires.
+        if self._pending_click_activate_index is not None and not self._closing and not bool(getattr(self, "_drag_active", False)):
+            try:
+                now = int(pygame.time.get_ticks())
+                if now >= int(self._pending_click_activate_due_ms):
+                    self._pending_mouse_activate = int(self._pending_click_activate_index)  # type: ignore[attr-defined]
+                    self._pending_click_activate_index = None
+                    self._pending_click_activate_due_ms = 0
+            except Exception:
+                self._pending_click_activate_index = None
+                self._pending_click_activate_due_ms = 0
 
     # ---------------------------------------------------------------------
     # Effects inheritance (names only)
@@ -874,6 +967,12 @@ class InventoryScene(PopupMenuScene):
             dest_owner_id = self._drag_target_owner_id
             src_owner_id = self._drag_src_owner_id
 
+            # Special target: hovering over "Back" means pop outward ("Take").
+            # If we're at the root (player inventory), this becomes "Drop" (to ground),
+            # approximated via Game.drop_inventory_item for now.
+            if dest_owner_id == "__BACK__":
+                dest_owner_id = "__BACK__"  # sentinel; handled below
+
             try:
                 src_inv = self.game.get_inventory(src_owner_id) if hasattr(self.game, "get_inventory") else None
             except Exception:
@@ -886,11 +985,29 @@ class InventoryScene(PopupMenuScene):
                 except Exception:
                     src_index = None
 
-            if src_index is not None and hasattr(self.game, "move_item_between_inventories"):
-                try:
-                    self.game.move_item_between_inventories(src_owner_id, src_index, dest_owner_id)
-                except Exception:
-                    pass
+            if src_index is not None:
+                if dest_owner_id == "__BACK__":
+                    # Pop outward from current inventory
+                    if src_owner_id == str(getattr(self.game, "player_id", "")) and self.parent_owner_id is None:
+                        # Root: treat as drop-to-ground (via existing drop API)
+                        if hasattr(self.game, "drop_inventory_item"):
+                            try:
+                                self.game.drop_inventory_item(int(src_index))
+                            except Exception:
+                                pass
+                    else:
+                        out_owner = self.parent_owner_id or str(getattr(self.game, "player_id", ""))
+                        if hasattr(self.game, "move_item_between_inventories"):
+                            try:
+                                self.game.move_item_between_inventories(src_owner_id, int(src_index), out_owner)
+                            except Exception:
+                                pass
+                else:
+                    if hasattr(self.game, "move_item_between_inventories"):
+                        try:
+                            self.game.move_item_between_inventories(src_owner_id, int(src_index), dest_owner_id)
+                        except Exception:
+                            pass
 
             # Refresh immediately so the list reflects the move.
             try:
@@ -931,7 +1048,18 @@ class InventoryScene(PopupMenuScene):
 
         row = self._rows[idx]
         ent = getattr(row, "ent", None)
+
+        # Hovering over the Back row while dragging means "Take" (pop outward).
+        # If we're at the root (player inventory), this becomes "Drop" (onto ground),
+        # which we approximate via Game.drop_inventory_item for now.
         if ent is None:
+            self._drag_target_owner_id = "__BACK__"
+            sn = getattr(self._drag_ent, "name", None) or "Item"
+            # Root inventory: dropping outward means dropping to ground.
+            if self._drag_src_owner_id == str(getattr(self.game, "player_id", "")) and self.parent_owner_id is None:
+                self._drag_hint = f"Drop {sn}"
+            else:
+                self._drag_hint = f"Take {sn}"
             return
 
         tags = getattr(ent, "tags", {}) or {}
@@ -959,6 +1087,46 @@ class InventoryScene(PopupMenuScene):
 
 
     
+
+    
+    def _open_container_from_index(self, index: int, manager: "SceneManager") -> None:
+        """Open the container at the given list index directly (folder-style)."""
+        try:
+            rows = list(self._rows or [])
+        except Exception:
+            rows = []
+        if index < 0 or index >= len(rows):
+            return
+        row = rows[index]
+        ent = getattr(row, "ent", None)
+        if ent is None:
+            return
+        tags = getattr(ent, "tags", {}) or {}
+        if not tags.get("container"):
+            return
+
+        nested_owner_id = getattr(ent, "id", None)
+        if nested_owner_id is None:
+            return
+
+        # When opening a nested inventory, make the new panel "emerge" from the glyph
+        # that represents this item in the current list.
+        src_px, src_sz = self._row_glyph_screen_info(index, manager)
+
+        manager.push_scene(
+            InventoryScene(
+                self.game,
+                owner_id=str(nested_owner_id),
+                parent_owner_id=self._owner_id(),
+                title=getattr(ent, "name", None) or "Container",
+                base_effects=list(self.visual_effects),
+                source_px=src_px,
+                source_glyph_px=src_sz,
+                stack_depth=self.stack_depth + 1,
+                animate_affine=self.animate_affine,
+            )
+        )
+
 
     @staticmethod
     def _is_berry_from_tags(tags: dict) -> bool:
@@ -1046,7 +1214,27 @@ class InventoryScene(PopupMenuScene):
         # While closing, swallow inputs so the selection doesn't jitter mid-collapse.
         if self._closing:
             return
-        return super().handle_event(event, manager)
+
+        # Any keyboard/mouse interaction should cancel a pending delayed click activation.
+        if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+            self._pending_click_activate_index = None
+            self._pending_click_activate_due_ms = 0
+
+        super().handle_event(event, manager)
+
+        # Widget-triggered double-click open: handled here because we need the manager
+        # to push the nested InventoryScene.
+        idx = getattr(self, "_pending_double_open_index", None)
+        if idx is not None:
+            try:
+                self._pending_double_open_index = None
+            except Exception:
+                pass
+            try:
+                self._open_container_from_index(int(idx), manager)
+            except Exception:
+                pass
+        return
 
 
     def on_back(self, manager: "SceneManager") -> None:
@@ -1527,6 +1715,19 @@ class InventoryScene(PopupMenuScene):
         self._refresh_rows()
         if self._list:
             self._list.set_items(self._rows)
+
+
+        # Execute delayed single-click activation (containers only) once the double-click window expires.
+        if self._pending_click_activate_index is not None and not self._closing and not bool(getattr(self, "_drag_active", False)):
+            try:
+                now = int(pygame.time.get_ticks())
+                if now >= int(self._pending_click_activate_due_ms):
+                    self._pending_mouse_activate = int(self._pending_click_activate_index)  # type: ignore[attr-defined]
+                    self._pending_click_activate_index = None
+                    self._pending_click_activate_due_ms = 0
+            except Exception:
+                self._pending_click_activate_index = None
+                self._pending_click_activate_due_ms = 0
 
         # Opening (zoom-in) vs closing (zoom-out) animation.
         if not self._closing:
