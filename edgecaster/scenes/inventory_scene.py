@@ -374,6 +374,9 @@ class InventoryScene(PopupMenuScene):
     PANEL_ALPHA_START: float = 0.00
     PANEL_ALPHA_END: float = 1.00
 
+
+    # Each nested inventory is multiplied by this factor (recursion CRT effect).
+    DEPTH_SCALE: float = 0.90
     def __init__(
         self,
         game,
@@ -384,13 +387,24 @@ class InventoryScene(PopupMenuScene):
         title: Optional[str] = None,
         base_effects: Optional[list[str]] = None,
         source_px: tuple[int, int] | None = None,
-    ) -> None:
+        stack_depth: int = 0,
+        animate_affine: bool = False,
+        ) -> None:
         self.game = game
         self.owner_id = owner_id
         self.parent_owner_id = parent_owner_id
         self.explicit_title = title
 
         self.visual_effects: list[str] = list(base_effects or [])
+
+        self.stack_depth = int(stack_depth)
+
+        # If True, we *animate* rotation/flips during the zoom.
+        # Default is False: the panel starts already transformed (less distracting).
+        self.animate_affine = bool(animate_affine)
+
+        # Depth-based “CRT recursion” scaling that actually scales rendered text.
+        self._depth_visual_scale = float(self.DEPTH_SCALE ** max(0, self.stack_depth))
 
         self._zoom_elapsed = 0
         self._zoom_progress = 0.0
@@ -400,12 +414,15 @@ class InventoryScene(PopupMenuScene):
         self._close_elapsed: int = 0
 
         # Source in renderer.surface coords.
+        self._source_from_parent_panel: bool = False
+
         self._zoom_source_px: tuple[int, int] | None = None
         self._zoom_owner_world: tuple[int, int] | None = None
 
         # Optional override: when opening a nested inventory, the source glyph
         # is often a glyph in the *parent* inventory list (not a world tile).
         if source_px is not None:
+            self._source_from_parent_panel = True
             try:
                 self._zoom_source_px = (int(source_px[0]), int(source_px[1]))
             except Exception:
@@ -431,7 +448,8 @@ class InventoryScene(PopupMenuScene):
         self._list: Optional[ListWidget] = None
         self._preview: Optional[EntityPreviewWidget] = None
 
-        super().__init__(window_rect=window_rect, dim_background=True, scale=0.78)
+        super().__init__(window_rect=window_rect, dim_background=True,
+                         scale=0.78)
         self.overlay_layers = {"hud"}
 
         self._inherit_owner_visual_effects()
@@ -455,6 +473,37 @@ class InventoryScene(PopupMenuScene):
 
     def _owner_id(self) -> str:
         return self.owner_id or self.game.player_id
+
+
+    def _find_container_targets(self, exclude_id: Optional[str] = None) -> list[tuple[str, str]]:
+        """
+        Return a list of (owner_id, label) container inventories in the *same
+        inventory space* as the currently viewed items.
+        """
+        space_owner_id = self._owner_id()
+        inv = self.game.get_inventory(space_owner_id)
+        candidates: list[tuple[str, str]] = []
+
+        for ent in inv:
+            tags = getattr(ent, "tags", {}) or {}
+            if not tags.get("container"):
+                continue
+            ent_id = getattr(ent, "id", None)
+            if exclude_id is not None and ent_id == exclude_id:
+                continue
+            name = getattr(ent, "name", None) or "Container"
+            if ent_id is not None:
+                candidates.append((str(ent_id), str(name)))
+
+        return candidates
+
+    @staticmethod
+    def _is_berry_from_tags(tags: dict) -> bool:
+        return bool(tags.get("test_berry")) or tags.get("item_type") in {
+            "blueberry",
+            "raspberry",
+            "strawberry",
+        }
 
     def _find_owner_entity(self):
         owner_id = self._owner_id()
@@ -544,35 +593,141 @@ class InventoryScene(PopupMenuScene):
             manager.set_scene(None)
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:
+        """
+        Selecting an item opens a context submenu:
+          - Player inventory: Drop / Eat / Put into...
+          - Other inventories: Take / Eat / Put into...
+          - If item is a container: Open
+        """
         self._refresh_rows()
         rows = self._rows
         if index < 0 or index >= len(rows):
             return False
 
         row = rows[index]
+
+        # 'Back' (or the '(Empty)' row) → close inventory
         if row.ent is None:
-            return True  # Back/Empty handled by base on_activate path
+            return self.on_back(manager)
 
         ent = row.ent
         tags = getattr(ent, "tags", {}) or {}
+
         is_container = bool(tags.get("container"))
+        is_berry = self._is_berry_from_tags(tags)
 
         choices: list[str] = []
+
+        owner_id = self._owner_id()
+        container_targets = self._find_container_targets(exclude_id=getattr(ent, "id", None))
+
+        if owner_id == self.game.player_id:
+            choices.append("Drop")
+            if is_berry or is_container:
+                choices.append("Eat")
+            if container_targets:
+                choices.append("Put into...")
+        else:
+            choices.append("Take")
+            if is_berry:
+                choices.append("Eat")
+            if container_targets:
+                choices.append("Put into...")
+
         if is_container:
             choices.append("Open")
-        choices += ["Take", "Drop", "Eat", "Cancel"]
 
-        def _on_choice(choice_idx: int, mgr: "SceneManager") -> None:
+        if not choices:
+            return False
+
+        def _handle_choice(choice_idx: int, mgr: "SceneManager") -> None:
             if choice_idx < 0 or choice_idx >= len(choices):
                 return
             choice = choices[choice_idx]
 
-            if choice in ("Cancel", "Back"):
+            # Re-fetch inventory in case it changed while popup was open.
+            current_owner_id = self._owner_id()
+            cur_inv = self.game.get_inventory(current_owner_id)
+            if not cur_inv:
                 return
 
-            if choice == "Open":
-                ent_id = getattr(ent, "id", None)
-                if ent_id is None:
+            # Re-find this entity by identity if possible (more robust than index when list changes).
+            try:
+                cur_index = cur_inv.index(ent)
+            except Exception:
+                # Fallback: trust the original index if it still maps to an entity.
+                cur_index = index
+
+            if cur_index < 0 or cur_index >= len(cur_inv):
+                return
+
+            cur_ent = cur_inv[cur_index]
+            cur_tags = getattr(cur_ent, "tags", {}) or {}
+            cur_is_container = bool(cur_tags.get("container"))
+
+            if choice == "Drop" and current_owner_id == self.game.player_id:
+                if hasattr(self.game, "drop_inventory_item"):
+                    self.game.drop_inventory_item(cur_index)
+                return
+
+            if choice == "Take" and current_owner_id != self.game.player_id:
+                dest_owner_id = self.parent_owner_id or self.game.player_id
+                if hasattr(self.game, "move_item_between_inventories"):
+                    self.game.move_item_between_inventories(
+                        current_owner_id,
+                        cur_index,
+                        dest_owner_id,
+                    )
+                return
+
+            if choice == "Put into...":
+                targets = self._find_container_targets(exclude_id=getattr(cur_ent, "id", None))
+                if not targets:
+                    return
+
+                target_labels = [label for (_oid, label) in targets]
+
+                def on_target_choice(target_idx: int, mgr2: "SceneManager") -> None:
+                    if target_idx < 0 or target_idx >= len(targets):
+                        return
+
+                    dest_owner_id, _dest_label = targets[target_idx]
+
+                    src_owner_id = self._owner_id()
+                    src_inv = self.game.get_inventory(src_owner_id)
+                    if not src_inv:
+                        return
+
+                    try:
+                        src_index = src_inv.index(cur_ent)
+                    except Exception:
+                        src_index = cur_index
+
+                    if not (0 <= src_index < len(src_inv)):
+                        return
+
+                    if hasattr(self.game, "move_item_between_inventories"):
+                        self.game.move_item_between_inventories(
+                            src_owner_id,
+                            src_index,
+                            dest_owner_id,
+                        )
+
+                mgr.push_scene(
+                    UrgentMessageScene(
+                        self.game,
+                        "",
+                        title="Put into which container?",
+                        choices=target_labels,
+                        on_choice=on_target_choice,
+                        back_confirms=False,
+                    )
+                )
+                return
+
+            if choice == "Open" and cur_is_container:
+                nested_owner_id = getattr(cur_ent, "id", None)
+                if nested_owner_id is None:
                     return
 
                 # When opening a nested inventory, we want the new panel to "emerge"
@@ -582,34 +737,117 @@ class InventoryScene(PopupMenuScene):
                 mgr.push_scene(
                     InventoryScene(
                         self.game,
-                        owner_id=ent_id,
+                        owner_id=str(nested_owner_id),
                         parent_owner_id=self._owner_id(),
-                        title=getattr(ent, "name", None) or "Container",
+                        title=getattr(cur_ent, "name", None) or "Container",
                         base_effects=list(self.visual_effects),
                         source_px=src_px,
+                        stack_depth=self.stack_depth + 1,
                     )
                 )
                 return
 
-            mgr.push_scene(
-                UrgentMessageScene(
-                    self.game,
-                    f"Action '{choice}' not wired yet in the new two-pane prototype.",
-                    title="(Prototype)",
-                    choices=["OK"],
-                )
-            )
+            if choice == "Eat":
+                # Recompute berry/container flags (inventory may have changed)
+                cur_is_berry = self._is_berry_from_tags(cur_tags)
+
+                if cur_is_container and not cur_is_berry:
+                    # --- Eat the inventory (container), recursively -----------------------
+
+                    # 1) Remove the container item itself from the current inventory
+                    eaten_ent = cur_inv.pop(cur_index)
+                    eaten_id = getattr(eaten_ent, "id", None)
+
+                    # 2) Walk the inventory tree, collecting effects from:
+                    #    - the container itself
+                    #    - every item inside it
+                    #    - every nested container and its contents, recursively
+                    all_effects: list[str] = []
+                    all_effects = concat_effect_names(all_effects, effect_names_from_obj(eaten_ent))
+
+                    def _consume_inventory_tree(owner_id2: str, visited: set[str]) -> None:
+                        if not owner_id2 or owner_id2 in visited:
+                            return
+                        visited.add(owner_id2)
+
+                        inv_map = getattr(self.game, "inventories", None)
+                        if not isinstance(inv_map, dict):
+                            return
+
+                        inv_list = inv_map.get(owner_id2)
+                        if not inv_list:
+                            inv_map.pop(owner_id2, None)
+                            return
+
+                        for child in list(inv_list):
+                            nonlocal all_effects
+                            all_effects = concat_effect_names(all_effects, effect_names_from_obj(child))
+
+                            child_id = getattr(child, "id", None)
+                            child_tags = getattr(child, "tags", {}) or {}
+                            child_is_container = bool(child_tags.get("container"))
+
+                            # If a berry is inside, try to "eat" it so HP/log happen.
+                            child_is_berry = self._is_berry_from_tags(child_tags)
+                            if child_is_berry:
+                                try:
+                                    if hasattr(self.game, "eat_item_from_inventory"):
+                                        idx2 = inv_list.index(child)
+                                        self.game.eat_item_from_inventory(owner_id2, idx2)
+                                    elif owner_id2 == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
+                                        idx2 = inv_list.index(child)
+                                        self.game.eat_inventory_item(idx2)
+                                except Exception:
+                                    pass
+
+                            if child_is_container and child_id and child_id in inv_map:
+                                _consume_inventory_tree(str(child_id), visited)
+
+                        inv_map.pop(owner_id2, None)
+
+                    if eaten_id and hasattr(self.game, "inventories"):
+                        _consume_inventory_tree(str(eaten_id), set())
+
+                    # 3) Apply ALL collected effects globally (stacking)
+                    if all_effects:
+                        try:
+                            existing = list(getattr(mgr.renderer.visual_fx, "global_effects", []) or [])
+                        except Exception:
+                            existing = []
+                        if hasattr(mgr, "set_global_visual_effects"):
+                            mgr.set_global_visual_effects(concat_effect_names(existing, all_effects))
+
+                    # 4) Log
+                    if hasattr(self.game, "log") and hasattr(self.game.log, "add"):
+                        self.game.log.add("You're not sure if you should have eaten that inventory...")
+                        seen: set[str] = set()
+                        for eff in all_effects:
+                            if eff in seen:
+                                continue
+                            seen.add(eff)
+                            self.game.log.add(f"You feel {eff}.")
+                    return
+
+                # Otherwise: eating a berry directly from this inventory menu
+                if cur_is_berry:
+                    if hasattr(self.game, "eat_item_from_inventory"):
+                        self.game.eat_item_from_inventory(current_owner_id, cur_index)
+                    elif current_owner_id == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
+                        self.game.eat_inventory_item(cur_index)
+                return
 
         manager.push_scene(
             UrgentMessageScene(
                 self.game,
-                "Choose an action:",
-                title=getattr(ent, "name", None) or "Item",
+                "",
+                title=getattr(ent, "name", None) or "",
                 choices=choices,
-                on_choice=_on_choice,
+                on_choice=_handle_choice,
+                back_confirms=False,
             )
         )
-        return False
+
+        return True
 
     # ---------------------------------------------------------------------
     # Widget tree
@@ -638,8 +876,8 @@ class InventoryScene(PopupMenuScene):
             line_spacing=6,
             padding=6,
             auto_font=True,
-            min_font_size=14,
-            max_font_size=34,
+            min_font_size=18,
+            max_font_size=48,
             target_visible_items=16,
         )
         left_col.add_child(self._list)
@@ -817,17 +1055,47 @@ class InventoryScene(PopupMenuScene):
     # ---------------------------------------------------------------------
 
     def _current_visual_profile(self, *, logical_to_window_scale: float = 1.0) -> VisualProfile:
-        # Start with inherited scene effects.
+        """Compute the *current* VisualProfile for the panel.
+
+        Goals:
+        - successive recursion scaling (handled via PopupMenuScene scale + extra profile scaling here)
+        - zoom-in/out that respects *all* affine bits from accumulated visual effects:
+          scale, rotation, flips, offsets (e.g. clockwise, mirror_x), plus time-varying effects.
+        - keep the preview glyph anchor glued to the source point during the transition.
+        """
+        # Start with inherited scene effects (time-based too).
         base = build_visual_profile(VisualProfile(), self.visual_effects)
 
         p = _smoothstep(_clamp01(float(self._zoom_progress)))
 
-        # --- Proportional scale ------------------------------------------------
+        # --- Affine animation (optional) -------------------------------------
+        # By default we *do not* animate rotation/flips during the zoom.
+        # The panel starts already transformed, matching the list glyph.
+        if self.animate_affine:
+            # Rotation ramps in.
+            try:
+                base.angle = _lerp(0.0, float(base.angle), p)
+            except Exception:
+                pass
+
+            # Flip can't be smoothly interpolated (boolean), but we can time it.
+            flip_gate = 0.35
+            if getattr(base, "flip_x", False):
+                base.flip_x = bool(p >= flip_gate)
+            if getattr(base, "flip_y", False):
+                base.flip_y = bool(p >= flip_gate)
+
+        # --- Proportional scale ----------------------------------------------
         # We want: (panel scale) * (final glyph px) ~= (map tile px) at p=0.
-        # final glyph px is approximated by _zoom_glyph_base_px (panel space),
-        # then multiplied by the logical->window scale.
         glyph_full_px = max(1.0, float(self._zoom_glyph_base_px) * float(max(0.01, logical_to_window_scale)))
         want_px = float(max(1, int(self._zoom_map_tile_px)))
+        if self._source_from_parent_panel:
+            # When the zoom source is a glyph inside a *parent* inventory panel,
+            # that glyph is already scaled down by the parent’s recursion factor.
+            parent_scale = float(self._depth_visual_scale) / float(max(0.0001, self.DEPTH_SCALE))
+            want_px *= parent_scale
+            want_px = max(6.0, want_px)
+
 
         if self._zoom_start_scale is None:
             s0 = want_px / glyph_full_px
@@ -838,37 +1106,69 @@ class InventoryScene(PopupMenuScene):
         start_scale = float(self._zoom_start_scale)
         panel_scale = _lerp(start_scale, 1.0, p)
 
-        # Optional extra artistic multiplier (defaults to 1.0 here).
+        # Apply recursion depth scaling at all times (scales text, glyphs, spacing).
+        panel_scale *= float(self._depth_visual_scale)
+
         panel_scale *= _lerp(self.PANEL_SCALE_START, self.PANEL_SCALE_END, p)
 
         # Fade the PANEL only.
         zoom_alpha = _lerp(self.PANEL_ALPHA_START, self.PANEL_ALPHA_END, p)
         base.alpha = float(base.alpha) * float(zoom_alpha)
 
-        # Apply zoom scale multiplicatively (preserve other effects).
+        # Apply zoom scale multiplicatively (preserve other effect scales).
         base.scale_x = float(base.scale_x) * float(panel_scale)
         base.scale_y = float(base.scale_y) * float(panel_scale)
 
-        # --- Anchor glue ------------------------------------------------------
-        # Keep the preview glyph center glued to the desired screen point as we scale.
+        # --- Anchor glue (full affine) ---------------------------------------
+        # Solve for (delta_offset_x, delta_offset_y) so that the panel-local anchor
+        # lands on the desired screen point, *after* scale/flip/rotate.
         if self.window_rect is not None:
             ax, ay = (self._zoom_anchor_panel or (self.window_rect.width * 0.5, self.window_rect.height * 0.5))
             cx, cy = (self.window_rect.width * 0.5, self.window_rect.height * 0.5)
 
-            final_anchor_screen = (self.window_rect.left + ax, self.window_rect.top + ay)
+            # Vector from panel center to anchor, in panel-local coords.
+            dx = float(ax) - float(cx)
+            dy = float(ay) - float(cy)
+
+            # Apply flip then scale.
+            if getattr(base, "flip_x", False):
+                dx = -dx
+            if getattr(base, "flip_y", False):
+                dy = -dy
+
+            dx *= float(base.scale_x)
+            dy *= float(base.scale_y)
+
+            # Rotate about the panel center.
+            ang = float(getattr(base, "angle", 0.0))
+            if ang:
+                th = math.radians(ang)
+                cth = math.cos(th)
+                sth = math.sin(th)
+                rdx = dx * cth - dy * sth
+                rdy = dx * sth + dy * cth
+            else:
+                rdx, rdy = dx, dy
+
+            # Where should the anchor end up when the zoom is finished?
+            # Use the *un-glued* base offsets so orbiting/jittery offsets remain part of the final position.
+            final_anchor_x = float(self.window_rect.centerx) + float(base.offset_x) + float(rdx)
+            final_anchor_y = float(self.window_rect.centery) + float(base.offset_y) + float(rdy)
 
             if self._zoom_source_px is not None:
                 sx, sy = self._zoom_source_px
-                desired_x = _lerp(float(sx), float(final_anchor_screen[0]), p)
-                desired_y = _lerp(float(sy), float(final_anchor_screen[1]), p)
+                desired_x = _lerp(float(sx), float(final_anchor_x), p)
+                desired_y = _lerp(float(sy), float(final_anchor_y), p)
             else:
-                desired_x, desired_y = float(final_anchor_screen[0]), float(final_anchor_screen[1])
+                desired_x, desired_y = float(final_anchor_x), float(final_anchor_y)
 
-            dx_anchor = float(ax) - float(cx)
-            dy_anchor = float(ay) - float(cy)
+            # Current anchor position without glue:
+            cur_anchor_x = float(self.window_rect.centerx) + float(base.offset_x) + float(rdx)
+            cur_anchor_y = float(self.window_rect.centery) + float(base.offset_y) + float(rdy)
 
-            base.offset_x = float(desired_x) - float(self.window_rect.centerx) - float(base.scale_x) * dx_anchor
-            base.offset_y = float(desired_y) - float(self.window_rect.centery) - float(base.scale_y) * dy_anchor
+            # Add just the delta needed to move anchor onto desired.
+            base.offset_x = float(base.offset_x) + (float(desired_x) - float(cur_anchor_x))
+            base.offset_y = float(base.offset_y) + (float(desired_y) - float(cur_anchor_y))
 
         return base
 
