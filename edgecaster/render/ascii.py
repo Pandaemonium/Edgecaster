@@ -232,14 +232,116 @@ class AsciiRenderer:
         map_origin_y = self.top_bar_height + 8 + int(self.tile * 4)
         return map_origin_x, map_origin_y
 
-    def draw_world(self, world: World) -> None:
+    def center_camera_on_player(self, game: Game, *, snap_zoom: bool = False) -> None:
+        """Center the camera on the player in the local map view.
+
+        This is a safety valve for when panning/zooming gets lost. If snap_zoom is
+        True, zoom is reset to 1.0 (and tile/font scale is rebuilt).
+        """
+        try:
+            player = game.actors[game.player_id]
+            px, py = player.pos
+        except Exception:
+            return
+
+        if snap_zoom:
+            self.zoom = 1.0
+            self.tile = max(8, int(round(self.base_tile * self.zoom)))
+            self.map_font = pygame.font.SysFont("consolas", self.tile)
+
+        map_origin_x, map_origin_y = self._map_origin_base()
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height - map_origin_y
+        # Center of drawable map area (excluding log/bars)
+        cx = map_origin_x + map_w // 2
+        cy = map_origin_y + map_h // 2
+
+        # origin_x = map_origin_x + pan_x; want px*tile + origin_x = cx
+        self.pan_x = float(cx - map_origin_x - px * self.tile)
+        self.pan_y = float(cy - map_origin_y - py * self.tile)
+
+    def reset_camera(self, game: Game) -> None:
+        """Hard-reset pan/zoom to sane defaults and center on player."""
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.zoom = 1.0
+        self.tile = max(8, int(round(self.base_tile * self.zoom)))
+        self.map_font = pygame.font.SysFont("consolas", self.tile)
+        self.center_camera_on_player(game, snap_zoom=False)
+
+
+    def draw_world(self, game: Game, world: World) -> None:
+        """Draw the local map view.
+
+        For now we render the current zone plus the 8 surrounding adjacent zones
+        (a 3x3 neighborhood). This is the minimum we expect to see when zooming
+        out before higher-level LOD kicks in.
+        """
+        self.draw_world_local(game)
+
+    def draw_overworld_zonegrid(self, game: Game, world: World) -> None:
+        """Coarse overworld rendering (placeholder).
+
+        Currently unused by the dungeon scene; kept for future LOD work.
+        """
         # clear main surface
         self.surface.fill(self.bg)
-        # compute map origin offset to account for top bar and right log
+
         map_origin_x, map_origin_y = self._map_origin_base()
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height
+
+        cx = map_origin_x + map_w // 2
+        cy = map_origin_y + map_h // 2
+
+        zx, zy, zz = game.zone_coord
+
+        cols = max(1, map_w // self.tile + 3)
+        rows = max(1, map_h // self.tile + 3)
+        half_c = cols // 2
+        half_r = rows // 2
+
+        grid = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        for dy in range(-half_r, half_r + 1):
+            for dx in range(-half_c, half_c + 1):
+                tzx = zx + dx
+                tzy = zy + dy
+                if tzx < 0 or tzy < 0 or tzx >= game.cfg.world_map_screens or tzy >= game.cfg.world_map_screens:
+                    continue
+
+                px = cx + dx * self.tile + int(self.pan_x)
+                py = cy + dy * self.tile + int(self.pan_y)
+
+                if px < map_origin_x - self.tile or py < map_origin_y - self.tile:
+                    continue
+                if px >= map_origin_x + map_w or py >= map_origin_y + map_h:
+                    continue
+
+                col = (230, 230, 230) if (dx == 0 and dy == 0) else (150, 150, 150)
+                text = self.map_font.render("X", True, col)
+                grid.blit(text, (px, py))
+
+        grid.set_alpha(255)
+        self.surface.blit(grid, (0, 0))
+
+    def draw_world_local(self, game: Game) -> None:
+        """Draw a 3x3 neighborhood of zones around the current zone.
+
+        Important: we keep the current-zone coordinates unshifted so that entity
+        rendering (which uses current-zone tile coords) stays correct.
+        """
+        self.surface.fill(self.bg)
+
+        map_origin_x, map_origin_y = self._map_origin_base()
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height - map_origin_y
+        map_rect = pygame.Rect(map_origin_x, map_origin_y, map_w, map_h)
+
         # apply pan offsets (set by zoom/pan)
         self.origin_x = map_origin_x + self.pan_x
         self.origin_y = map_origin_y + self.pan_y
+
         palette = {
             "~": (90, 130, 255),   # water
             ",": (190, 170, 120),  # shore
@@ -248,31 +350,175 @@ class AsciiRenderer:
             "^": (170, 140, 100),  # hills
             "#": (180, 180, 190),  # mountains/walls
         }
-        for y in range(world.height):
-            for x in range(world.width):
-                tile = world.tiles[y][x]
-                if not tile.explored and not tile.visible:
+
+        zx, zy, zz = getattr(game, "zone_coord", (0, 0, 0))
+
+        # Zone dimensions (assumed consistent across zones)
+        try:
+            zone_w = int(game.world.width)
+            zone_h = int(game.world.height)
+        except Exception:
+            zone_w = 0
+            zone_h = 0
+
+        debug_no_fog = bool(getattr(game, "debug_no_fog", False))
+
+        # Helper to fetch a zone without mutating current-level state.
+        get_zone_for_render = getattr(game, "get_zone_for_render", None)
+
+        for dz_y in (-1, 0, 1):
+            for dz_x in (-1, 0, 1):
+                tzx = zx + dz_x
+                tzy = zy + dz_y
+
+                # bounds check against world size
+                if tzx < 0 or tzy < 0 or tzx >= game.cfg.world_map_screens or tzy >= game.cfg.world_map_screens:
                     continue
-                base_col = tile.tint if getattr(tile, "tint", None) else palette.get(tile.glyph, self.fg)
-                # sanitize color: ensure length 3 and ints 0-255
-                if base_col is None:
-                    base_col = self.fg
-                if len(base_col) >= 3:
-                    base_col = tuple(max(0, min(255, int(base_col[i]))) for i in range(3))
-                else:
-                    base_col = self.fg
-                if tile.visible:
-                    color = base_col
-                else:
-                    # dim the color for explored but not visible
-                    color = tuple(max(0, int(c * 0.5)) for c in base_col)
-                ch = tile.glyph
-                text = self.map_font.render(ch, True, color)
-                px = x * self.tile + self.origin_x
-                py = y * self.tile + self.origin_y
-                if px >= self.width - self.log_panel_width or py >= self.height - self.ability_bar_height:
+
+                coord = (tzx, tzy, zz)
+
+                lvl = None
+                try:
+                    if callable(get_zone_for_render):
+                        lvl = get_zone_for_render(coord)
+                    else:
+                        lvl = game.levels.get(coord)
+                except Exception:
+                    lvl = game.levels.get(coord)
+
+                if lvl is None or not hasattr(lvl, "world"):
                     continue
-                self.surface.blit(text, (px, py))
+
+                w = lvl.world
+                off_x = dz_x * zone_w
+                off_y = dz_y * zone_h
+
+                for y in range(w.height):
+                    py = (y + off_y) * self.tile + self.origin_y
+                    # quick vertical reject
+                    if py < map_rect.top - self.tile or py >= map_rect.bottom + self.tile:
+                        continue
+
+                    row = w.tiles[y]
+                    for x in range(w.width):
+                        tile = row[x]
+
+                        if not debug_no_fog:
+                            if not tile.explored and not tile.visible:
+                                continue
+
+                        base_col = tile.tint if getattr(tile, "tint", None) else palette.get(tile.glyph, self.fg)
+                        if base_col is None:
+                            base_col = self.fg
+                        if len(base_col) >= 3:
+                            base_col = tuple(max(0, min(255, int(base_col[i]))) for i in range(3))
+                        else:
+                            base_col = self.fg
+
+                        if debug_no_fog or tile.visible:
+                            color = base_col
+                        else:
+                            color = tuple(max(0, int(c * 0.5)) for c in base_col)
+
+                        px = (x + off_x) * self.tile + self.origin_x
+                        if px < map_rect.left - self.tile or px >= map_rect.right + self.tile:
+                            continue
+
+                        text = self.map_font.render(tile.glyph, True, color)
+                        self.surface.blit(text, (px, py))
+
+
+    def draw_world_zoomed(self, game: Game) -> None:
+        """Render the world map for the current scene.
+
+        For now, this is strictly the *local* 60x40 zone view. We are deliberately
+        disabling the experimental zone-grid (giant 'X' cells) until the new
+        hierarchical LOD camera/view is implemented cleanly (Step 2).
+
+        This keeps rendering stable and prevents 'trail' artifacts while zooming.
+        """
+        world = game.world
+        self.draw_world(game, world)
+
+    def _render_zone_grid(self, game: Game) -> pygame.Surface:
+            """Render a coarse grid of 'zone tiles' as giant glyphs (currently all 'X')."""
+            # Map viewport: exclude top bar, log panel, ability bar.
+            map_origin_x, map_origin_y = self._map_origin_base()
+            map_w = self.width - self.log_panel_width
+            map_h = self.height - self.ability_bar_height - map_origin_y
+            map_rect = pygame.Rect(map_origin_x, map_origin_y, map_w, map_h)
+
+            surf = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+            # Center of the map viewport (camera focus)
+            cx = map_rect.centerx + int(self.pan_x)
+            cy = map_rect.centery + int(self.pan_y)
+
+            # How "big" a screen-tile is in pixels at this zoom.
+            # At ZONE_BLEND_END (0.70) we want approx 1 screen per tile; as we zoom out further,
+            # screens shrink so we can see more of them.
+            ZONE_BLEND_END = 0.70
+            scale = max(0.15, min(1.0, self.zoom / ZONE_BLEND_END))  # 1.0 at 0.70, smaller below
+            cell_w = max(24, int(map_rect.w * scale))
+            cell_h = max(24, int(map_rect.h * scale))
+
+            # How many cells fit (plus padding so we never get the "island in black")
+            cols = map_rect.w // cell_w + 3
+            rows = map_rect.h // cell_h + 3
+            half_c = cols // 2
+            half_r = rows // 2
+
+            # Current zone coordinate
+            zx, zy, zz = getattr(game, "zone_coord", (0, 0, 0))
+
+            # Cache fonts by size so we don't reallocate every frame.
+            # Glyph size based on cell size (not self.tile).
+            glyph_px = int(min(cell_w, cell_h) * 0.65)
+            glyph_px = max(12, min(256, glyph_px))
+            font = self._get_cached_font(glyph_px)
+
+            # Optional: faint grid borders
+            border_col = (70, 70, 90, 60)
+
+            for dy in range(-half_r, half_r + 1):
+                for dx in range(-half_c, half_c + 1):
+                    tzx = zx + dx
+                    tzy = zy + dy
+
+                    # Cell's top-left in pixels
+                    px = cx + dx * cell_w - cell_w // 2
+                    py = cy + dy * cell_h - cell_h // 2
+
+                    rect = pygame.Rect(px, py, cell_w, cell_h)
+                    if not rect.colliderect(map_rect.inflate(cell_w, cell_h)):
+                        continue
+
+                    # Border
+                    pygame.draw.rect(surf, border_col, rect, 1)
+
+                    # Placeholder glyph and tint
+                    if dx == 0 and dy == 0:
+                        col = (230, 230, 230)
+                    else:
+                        col = (150, 150, 150)
+
+                    ch = "X"
+                    glyph = font.render(ch, True, col)
+                    gx = rect.centerx - glyph.get_width() // 2
+                    gy = rect.centery - glyph.get_height() // 2
+                    surf.blit(glyph, (gx, gy))
+
+            return surf
+
+    def _get_cached_font(self, px: int) -> pygame.font.Font:
+        if not hasattr(self, "_font_cache"):
+            self._font_cache = {}
+        cache = self._font_cache
+        if px not in cache:
+            cache[px] = pygame.font.SysFont("consolas", px, bold=True)
+        return cache[px]
+
+
 
     def draw_lorenz_overlay(self, game: Game) -> None:
         """Draw Lorenz 'butterflies' with short, tapered afterimage trails."""
@@ -1132,6 +1378,9 @@ class AsciiRenderer:
         else:
             self.pause_requested = False
 
+        # Reset camera each time we enter the dungeon loop (new game / reload).
+        self.reset_camera(game)
+
         # Start target cursor at player position (scene/ui_state drives it)
         player = game.actors[game.player_id]
         if getattr(self, "ui_state", None) is not None:
@@ -1151,7 +1400,7 @@ class AsciiRenderer:
         """
         # refactor: renderer should consume scene-provided state; drop ability/hover logic here.
 
-        self.draw_world(game.world)
+        self.draw_world_zoomed(game)
         self.draw_lorenz_overlay(game)
 
         self.draw_pattern_overlay(game)
@@ -1223,28 +1472,42 @@ class AsciiRenderer:
     def _change_zoom(self, delta_steps: int, pos: Tuple[int, int]) -> None:
         # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
         mx, my = pos
-        # world position under cursor before zoom
-        wx = (mx - self.origin_x) / self.tile
-        wy = (my - self.origin_y) / self.tile
+
+        # NOTE: For "zoomed-out" modes we still keep glyphs legible (tile >= 8).
+        # A later pass can introduce true continuous zoom (sub-tile sampling / mipmaps).
+        #
+        # Here we mainly use zoom to decide *which* representation to draw:
+        # - zoom >= ~0.95: regular local zone rendering (tile-by-tile)
+        # - zoom <  ~0.95: chunked "zone grid" rendering (current zone collapses into a glyph)
+        #
+        # Keep the world point under the cursor stable while zooming, for the local mode.
+        wx = (mx - self.origin_x) / max(1, self.tile)
+        wy = (my - self.origin_y) / max(1, self.tile)
 
         new_zoom = self.zoom + delta_steps * 0.1
-        new_zoom = max(0.3, min(6.0, new_zoom))
+        new_zoom = max(0.15, min(6.0, new_zoom))
         if abs(new_zoom - self.zoom) < 1e-3:
             return
         self.zoom = new_zoom
+
+        # Tile size is clamped for readability.
         self.tile = max(8, int(self.base_tile * self.zoom))
-        # refresh surfaces (fonts stay constant size)
+
+        # refresh helper surfaces (fonts stay constant size)
         self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        # map font scales with zoom; UI fonts remain constant
+
+        # map font scales with tile size; UI fonts remain constant
         self.map_font = pygame.font.SysFont("consolas", max(8, int(self.tile)))
+
         # rescale currency icon for map tiles when zoom changes
         if getattr(self, "bismuth_icon", None) is not None:
             try:
                 self.bismuth_icon_map = pygame.transform.smoothscale(self.bismuth_icon, (self.tile, self.tile))
             except Exception:
                 self.bismuth_icon_map = None
-        # adjust origin so world point under cursor stays under cursor
+
+        # adjust origin so world point under cursor stays under cursor (local-mode friendly)
         base_x, base_y = self._map_origin_base()
         target_origin_x = mx - wx * self.tile
         target_origin_y = my - wy * self.tile

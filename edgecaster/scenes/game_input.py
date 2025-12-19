@@ -44,6 +44,7 @@ from copy import deepcopy
 DEFAULT_BINDINGS: Dict[str, List[int]] = {
     "escape": [encode_keybinding(pygame.K_ESCAPE)],
     "toggle_fullscreen": [encode_keybinding(pygame.K_F11)],
+    "center_camera": [encode_keybinding(pygame.K_HOME)],
     "toggle_door": [encode_keybinding(pygame.K_o)],
     "show_help": [],  # handled via unicode '?'
     "examine": [encode_keybinding(pygame.K_x)],
@@ -266,6 +267,7 @@ class GameInput:
             "talk",
             "quick_activate_all",
             "look_action",
+            "center_camera",
 
         ):
             if combined in self.bindings.get(kind, []):

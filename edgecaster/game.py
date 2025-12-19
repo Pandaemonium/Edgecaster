@@ -223,7 +223,10 @@ class Game:
         self.fractal_editor_state = None
 
 
-        # zones keyed by (x, y, depth)
+                # debug flags
+        self.debug_no_fog: bool = True
+
+# zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
         # start roughly at world center so Julia coords near (0,0)
         center_zx = self.cfg.world_map_screens // 2
@@ -2745,6 +2748,17 @@ class Game:
         player = self._player() if hasattr(self, "_player") else None
         if player:
             player.stats.coherence = player.stats.max_coherence
+        return self.levels[coord]
+
+    def get_zone_for_render(self, coord: Tuple[int, int, int]) -> LevelState:
+        """Get (and lazily create) a zone for *rendering* purposes.
+
+        Unlike _get_zone(), this does **not** reset pattern state, coherence, or
+        any other per-zone gameplay state. It's intended for 'peek' rendering of
+        adjacent zones while zooming out.
+        """
+        if coord not in self.levels:
+            self.levels[coord] = self._make_zone(coord, up_pos=None)
         return self.levels[coord]
 
     def all_actors_current(self) -> List[Actor]:

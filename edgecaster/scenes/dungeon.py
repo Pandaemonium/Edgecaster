@@ -1348,6 +1348,16 @@ class DungeonScene(Scene):
                         )
             return
 
+
+        if kind == "center_camera":
+            # Safety valve: recenter on the player if the camera gets lost.
+            try:
+                snap = bool(getattr(renderer, "zoom", 1.0) < 0.35)
+                renderer.center_camera_on_player(game, snap_zoom=snap)
+            except Exception:
+                pass
+            return
+
         if kind == "toggle_door":
             level = game._level()
             player = game.actors[game.player_id]
