@@ -1,6 +1,7 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
+import random
 from pathlib import Path
 from typing import Tuple, List, Dict
 
@@ -40,6 +41,13 @@ class AsciiRenderer:
         self.origin_y = 0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        # Global-zone glyph density tuning (for local->global zoom blend).
+        # More slots => less dead space inside each global zone-cell.
+        # You can tweak these live in a debug console if you expose them.
+        self.zone_grid_slots = (9, 6)  # was (3, 2)
+        self.zone_grid_fill = 1.05
+        self.zone_grid_fill_x = 0.95
+        self.zone_grid_fill_y = 1.50     # let glyphs run slightly "hot" to reduce gaps
         self.surface_flags = pygame.RESIZABLE
 
         self.visual_fx = VisualEffectManager()
@@ -428,87 +436,343 @@ class AsciiRenderer:
                         self.surface.blit(text, (px, py))
 
 
+    
+    def _smoothstep(self, a: float, b: float, x: float) -> float:
+        """Smoothly interpolate from 0..1 as x moves from a..b."""
+        if a == b:
+            return 1.0 if x >= b else 0.0
+        t = (x - a) / (b - a)
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+
     def draw_world_zoomed(self, game: Game) -> None:
-        """Render the world map for the current scene.
+        """Draw the map with a local→global LOD cross-fade.
 
-        For now, this is strictly the *local* 60x40 zone view. We are deliberately
-        disabling the experimental zone-grid (giant 'X' cells) until the new
-        hierarchical LOD camera/view is implemented cleanly (Step 2).
+        Local layer: tile-by-tile render of the 3x3 neighborhood of zones.
+        Global layer: one cell per zone, perfectly aligned to local zone boundaries.
 
-        This keeps rendering stable and prevents 'trail' artifacts while zooming.
+        The two layers cross-fade based on zoom:
+          - start fading at the zoom where one full zone fits in the viewport
+          - finish fading by the zoom where ~3x3 zones fit in the viewport
         """
         world = game.world
-        self.draw_world(game, world)
 
-    def _render_zone_grid(self, game: Game) -> pygame.Surface:
-            """Render a coarse grid of 'zone tiles' as giant glyphs (currently all 'X')."""
-            # Map viewport: exclude top bar, log panel, ability bar.
-            map_origin_x, map_origin_y = self._map_origin_base()
-            map_w = self.width - self.log_panel_width
-            map_h = self.height - self.ability_bar_height - map_origin_y
-            map_rect = pygame.Rect(map_origin_x, map_origin_y, map_w, map_h)
+        # Always clear first to avoid trails while blending.
+        self.surface.fill(self.bg)
 
-            surf = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # Compute map viewport (same as draw_world_local uses).
+        map_origin_x, map_origin_y = self._map_origin_base()
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height - map_origin_y
+        map_rect = pygame.Rect(map_origin_x, map_origin_y, map_w, map_h)
 
-            # Center of the map viewport (camera focus)
-            cx = map_rect.centerx + int(self.pan_x)
-            cy = map_rect.centery + int(self.pan_y)
+        # Keep origins consistent for BOTH layers so they stay locked together.
+        # (draw_world_local sets these; we mirror it here so the global grid doesn't drift.)
+        self.origin_x = map_origin_x + self.pan_x
+        self.origin_y = map_origin_y + self.pan_y
 
-            # How "big" a screen-tile is in pixels at this zoom.
-            # At ZONE_BLEND_END (0.70) we want approx 1 screen per tile; as we zoom out further,
-            # screens shrink so we can see more of them.
-            ZONE_BLEND_END = 0.70
-            scale = max(0.15, min(1.0, self.zoom / ZONE_BLEND_END))  # 1.0 at 0.70, smaller below
-            cell_w = max(24, int(map_rect.w * scale))
-            cell_h = max(24, int(map_rect.h * scale))
+        # Zone dimensions (assumed consistent across zones).
+        zone_w = max(1, int(getattr(world, "width", 60)))
+        zone_h = max(1, int(getattr(world, "height", 40)))
 
-            # How many cells fit (plus padding so we never get the "island in black")
-            cols = map_rect.w // cell_w + 3
-            rows = map_rect.h // cell_h + 3
-            half_c = cols // 2
-            half_r = rows // 2
+        # zoom_start: tile size (px) where one full zone fits in the viewport.
+        tile_fit_px = min(map_rect.w / float(zone_w), map_rect.h / float(zone_h))
+        zoom_start = float(tile_fit_px) / float(max(1, self.base_tile))
+        zoom_end = zoom_start / 3.0
 
-            # Current zone coordinate
-            zx, zy, zz = getattr(game, "zone_coord", (0, 0, 0))
+        # Blend amount: 0 => fully local, 1 => fully global.
+        blend = self._smoothstep(zoom_start, zoom_end, float(self.zoom))
 
-            # Cache fonts by size so we don't reallocate every frame.
-            # Glyph size based on cell size (not self.tile).
-            glyph_px = int(min(cell_w, cell_h) * 0.65)
-            glyph_px = max(12, min(256, glyph_px))
-            font = self._get_cached_font(glyph_px)
+        local_alpha = int(round(255 * (1.0 - blend)))
+        global_alpha = 255 - local_alpha
+        self._local_fade_alpha = local_alpha  # used by entity fading
 
-            # Optional: faint grid borders
-            border_col = (70, 70, 90, 60)
+        # --- 1) Local layer (tiles) ---
+        if local_alpha > 0:
+            local_surf = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
-            for dy in range(-half_r, half_r + 1):
-                for dx in range(-half_c, half_c + 1):
-                    tzx = zx + dx
-                    tzy = zy + dy
+            # Temporarily draw into local_surf using existing code paths.
+            # Make the local background transparent during cross-fade to avoid double-darkening.
+            prev_surface = self.surface
+            prev_bg = self.bg
+            self.surface = local_surf
+            self.bg = (0, 0, 0, 0)
+            try:
+                self.draw_world(game, world)  # calls draw_world_local()
+            finally:
+                self.surface = prev_surface
+                self.bg = prev_bg
 
-                    # Cell's top-left in pixels
-                    px = cx + dx * cell_w - cell_w // 2
-                    py = cy + dy * cell_h - cell_h // 2
+            local_surf.set_alpha(local_alpha)
+            self.surface.blit(local_surf, (0, 0))
 
-                    rect = pygame.Rect(px, py, cell_w, cell_h)
-                    if not rect.colliderect(map_rect.inflate(cell_w, cell_h)):
-                        continue
+        # --- 2) Global layer (zone grid) ---
+        if global_alpha > 0:
+            world_scale = float(self.base_tile) * float(self.zoom)
+            grid = self._render_zone_grid(game, map_rect=map_rect, zone_w=zone_w, zone_h=zone_h, world_scale=world_scale)
+            grid.set_alpha(global_alpha)
+            self.surface.blit(grid, (0, 0))
 
-                    # Border
-                    pygame.draw.rect(surf, border_col, rect, 1)
+    
+    def _render_zone_grid(
+        self,
+        game: Game,
+        *,
+        map_rect: pygame.Rect,
+        zone_w: int,
+        zone_h: int,
+        world_scale: float,
+    ) -> pygame.Surface:
+        """Render a coarse grid: one cell per zone, aligned to local zone boundaries.
 
-                    # Placeholder glyph and tint
-                    if dx == 0 and dy == 0:
-                        col = (230, 230, 230)
-                    else:
-                        col = (150, 150, 150)
+        Instead of placeholder 'X' tiles, we compute an approximate *average* glyph and
+        tint for each sub-slot using a small Monte Carlo sample over the underlying
+        zone's tiles. This is meant to be "good enough" and cheap.
+        """
+        # Zone cell size in *pixels*, derived from the current tile size.
+        # This is what locks the global grid to the local zone boundaries.
+        world_scale = float(world_scale)
+        # cell size in pixels (float) at the current zoom scale
+        cell_w = max(1e-6, zone_w * world_scale)
+        cell_h = max(1e-6, zone_h * world_scale)
 
-                    ch = "X"
-                    glyph = font.render(ch, True, col)
-                    gx = rect.centerx - glyph.get_width() // 2
-                    gy = rect.centery - glyph.get_height() // 2
-                    surf.blit(glyph, (gx, gy))
+        # How many zone-cells could be visible (+padding to avoid "island in black").
+        cols = max(1, int(map_rect.w / max(1e-6, cell_w)) + 3)
+        rows = max(1, int(map_rect.h / max(1e-6, cell_h)) + 3)
+        half_c = cols // 2
+        half_r = rows // 2
 
-            return surf
+        zx, zy, zz = getattr(game, "zone_coord", (0, 0, 0))
+
+        # Extremely subtle borders (optional). Keep faint so the map reads as continuous.
+        border_col = (70, 70, 90, 18)
+
+        # Glyph density inside each zone-cell (subslots).
+        slots_x, slots_y = getattr(self, "zone_grid_slots", (4, 3))
+        slots_x = max(1, int(slots_x))
+        slots_y = max(1, int(slots_y))
+        slot_w = cell_w / float(slots_x)
+        slot_h = cell_h / float(slots_y)
+
+        # Monte Carlo samples per subslot (tunable).
+        sample_n = int(getattr(self, "zone_grid_samples", 10) or 10)
+        sample_n = max(1, min(64, sample_n))
+
+        # How much of each slot the glyph should fill.
+        fill = float(getattr(self, "zone_grid_fill", 1.15))
+        fill = max(0.50, min(3.00, fill))
+
+        # Optional anisotropic fill: lets us pack rows tighter without over-bloating horizontally.
+        fill_x = float(getattr(self, "zone_grid_fill_x", fill))
+        fill_y = float(getattr(self, "zone_grid_fill_y", fill))
+        fill_x = max(0.50, min(3.00, fill_x))
+        fill_y = max(0.50, min(3.00, fill_y))
+
+        # Target glyph size within each slot (in pixels).
+        target_w = max(1, int(round(slot_w * fill_x)))
+        target_h = max(1, int(round(slot_h * fill_y)))
+
+        # If we're so zoomed-out that a slot is only a couple of pixels,
+        # rendering fonts is wasteful (and unreadable). In that case, we
+        # just draw a solid color block based on the sampled average tint.
+        tiny_mode = (target_w <= 2 or target_h <= 2)
+
+        # Render at roughly the larger target dimension for crispness, then scale.
+        base_px = int(max(8, min(512, max(target_w, target_h)))) if not tiny_mode else 8
+        font = self._get_cached_font(base_px)
+
+        # Cache scaled glyph surfaces locally for this call.
+        glyph_cache: dict[tuple[str, tuple[int, int, int]], pygame.Surface] = {}
+
+        def _scaled_glyph(ch: str, color: tuple[int, int, int]) -> pygame.Surface:
+            key = (ch, color)
+            got = glyph_cache.get(key)
+            if got is not None:
+                return got
+            g0 = font.render(ch, True, color)
+            if g0.get_width() <= 0 or g0.get_height() <= 0:
+                glyph_cache[key] = g0
+                return g0
+            g1 = pygame.transform.smoothscale(g0, (target_w, target_h))
+            glyph_cache[key] = g1
+            return g1
+
+        # Deterministic "average tile" sampler.
+        # We prefer sampling from already-instantiated zones via get_zone_for_render(),
+        # which keeps semantics identical to local generation and respects corruption.
+        get_zone_for_render = getattr(game, "get_zone_for_render", None)
+
+        # Persistent cache across frames to avoid re-sampling while panning/zooming.
+        # Keyed by (coord, slots_x, slots_y, sample_n, corruption_version).
+        if not hasattr(self, "_zone_grid_sample_cache"):
+            self._zone_grid_sample_cache = {}
+        sample_cache: dict = getattr(self, "_zone_grid_sample_cache")
+
+        corr_ver = int(getattr(game, "corruption_version", 0) or 0)
+
+        def _slot_bounds_in_tiles(i: int, j: int) -> tuple[int, int, int, int]:
+            """Return inclusive tile bounds [x0,x1), [y0,y1) for a slot within a zone."""
+            fx0 = (i / float(slots_x)) * zone_w
+            fx1 = ((i + 1) / float(slots_x)) * zone_w
+            fy0 = (j / float(slots_y)) * zone_h
+            fy1 = ((j + 1) / float(slots_y)) * zone_h
+            x0 = int(math.floor(fx0))
+            x1 = int(math.ceil(fx1))
+            y0 = int(math.floor(fy0))
+            y1 = int(math.ceil(fy1))
+            x0 = max(0, min(zone_w - 1, x0))
+            y0 = max(0, min(zone_h - 1, y0))
+            x1 = max(x0 + 1, min(zone_w, x1))
+            y1 = max(y0 + 1, min(zone_h, y1))
+            return x0, x1, y0, y1
+
+        def _avg_glyph_for_slot(coord: tuple[int, int, int], i: int, j: int) -> tuple[str, tuple[int, int, int]]:
+            key = (coord, slots_x, slots_y, sample_n, corr_ver)
+            cached = sample_cache.get(key)
+            if cached is None:
+                cached = [[("?", (120, 120, 120)) for _ in range(slots_x)] for __ in range(slots_y)]
+                sample_cache[key] = cached
+
+            got = cached[j][i]
+            if got[0] != "?":  # already computed
+                return got
+
+            lvl = None
+            try:
+                if callable(get_zone_for_render):
+                    lvl = get_zone_for_render(coord)
+                else:
+                    lvl = game.levels.get(coord)
+            except Exception:
+                lvl = game.levels.get(coord)
+
+            if lvl is None or not hasattr(lvl, "world") or lvl.world is None:
+                return got
+
+            w = lvl.world
+            # Safeguard: if zone dims are inconsistent, clamp to current values.
+            zw = int(getattr(w, "width", zone_w) or zone_w)
+            zh = int(getattr(w, "height", zone_h) or zone_h)
+            if zw <= 0 or zh <= 0:
+                return got
+
+            # Use the slot bounds computed against the *expected* zone_w/zone_h, then clamp.
+            x0, x1, y0, y1 = _slot_bounds_in_tiles(i, j)
+            x0 = max(0, min(zw - 1, x0))
+            x1 = max(x0 + 1, min(zw, x1))
+            y0 = max(0, min(zh - 1, y0))
+            y1 = max(y0 + 1, min(zh, y1))
+
+            # Deterministic RNG per slot so the "average" doesn't flicker frame-to-frame.
+            seed = (coord[0] * 73856093) ^ (coord[1] * 19349663) ^ (i * 83492791) ^ (j * 2654435761) ^ (corr_ver * 97531)
+            rng = random.Random(int(seed) & 0xFFFFFFFF)
+
+            # If the region is small, enumerate; else sample.
+            region_w = x1 - x0
+            region_h = y1 - y0
+            region_n = region_w * region_h
+
+            picks: list[tuple[int, int]] = []
+            if region_n <= sample_n:
+                for yy in range(y0, y1):
+                    for xx in range(x0, x1):
+                        picks.append((xx, yy))
+            else:
+                for _ in range(sample_n):
+                    xx = rng.randrange(x0, x1)
+                    yy = rng.randrange(y0, y1)
+                    picks.append((xx, yy))
+
+            counts: dict[str, int] = {}
+            r_sum = g_sum = b_sum = 0
+            n_col = 0
+
+            for (xx, yy) in picks:
+                try:
+                    tile = w.tiles[yy][xx]
+                except Exception:
+                    continue
+                ch = getattr(tile, "glyph", "?") or "?"
+                # Prefer tile.tint if present; else fall back to renderer fg.
+                col = getattr(tile, "tint", None)
+                if isinstance(col, (list, tuple)) and len(col) >= 3:
+                    col3 = (int(col[0]), int(col[1]), int(col[2]))
+                else:
+                    col3 = tuple(int(v) for v in self.fg[:3])
+                col3 = (max(0, min(255, col3[0])), max(0, min(255, col3[1])), max(0, min(255, col3[2])))
+
+                counts[ch] = counts.get(ch, 0) + 1
+                r_sum += col3[0]
+                g_sum += col3[1]
+                b_sum += col3[2]
+                n_col += 1
+
+            if not counts:
+                cached[j][i] = got
+                return got
+
+            best_ch = max(counts.items(), key=lambda kv: kv[1])[0]
+            if n_col <= 0:
+                avg_col = (150, 150, 150)
+            else:
+                avg_col = (int(r_sum / n_col), int(g_sum / n_col), int(b_sum / n_col))
+
+            cached[j][i] = (best_ch, avg_col)
+            return cached[j][i]
+
+        # Build the grid surface over the map area.
+        grid = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        for dz_y in range(-half_r, half_r + 1):
+            for dz_x in range(-half_c, half_c + 1):
+                tzx = zx + dz_x
+                tzy = zy + dz_y
+                if tzx < 0 or tzy < 0 or tzx >= game.cfg.world_map_screens or tzy >= game.cfg.world_map_screens:
+                    continue
+
+                coord = (tzx, tzy, zz)
+
+                x0p = int(round(self.origin_x + dz_x * cell_w))
+                y0p = int(round(self.origin_y + dz_y * cell_h))
+                rect = pygame.Rect(x0p, y0p, max(1, int(round(cell_w))), max(1, int(round(cell_h))))
+
+                # Quick reject against map_rect with a little slack.
+                if rect.right < map_rect.left - cell_w or rect.left > map_rect.right + cell_w:
+                    continue
+                if rect.bottom < map_rect.top - cell_h or rect.top > map_rect.bottom + cell_h:
+                    continue
+
+                pygame.draw.rect(grid, border_col, rect, 1)
+
+                for j in range(slots_y):
+                    slot_top = rect.top + int(j * slot_h)
+                    slot_bottom = rect.top + int((j + 1) * slot_h)
+                    slot_cy = (slot_top + slot_bottom) // 2
+
+                    for i in range(slots_x):
+                        slot_left = rect.left + int(i * slot_w)
+                        slot_right = rect.left + int((i + 1) * slot_w)
+                        slot_cx = (slot_left + slot_right) // 2
+
+                        ch, col = _avg_glyph_for_slot(coord, i, j)
+
+                        if tiny_mode:
+                            # A tiny colored pixel/rect representing the slot average.
+                            tw = max(1, int(round(slot_right - slot_left)))
+                            th = max(1, int(round(slot_bottom - slot_top)))
+                            pygame.draw.rect(grid, (*col, 255), pygame.Rect(slot_left, slot_top, tw, th))
+                        else:
+                            gsurf = _scaled_glyph(str(ch)[0], col)
+                            try:
+                                gx = slot_cx - gsurf.get_width() // 2
+                                gy = slot_cy - gsurf.get_height() // 2
+                            except Exception:
+                                gx, gy = slot_left, slot_top
+                            grid.blit(gsurf, (gx, gy))
+
+        return grid
+
 
     def _get_cached_font(self, px: int) -> pygame.font.Font:
         if not hasattr(self, "_font_cache"):
@@ -707,6 +971,32 @@ class AsciiRenderer:
 
 
     def draw_entities(self, world: World, entities) -> None:
+        """Draw all renderable entities (actors, items, features...) on the map.
+
+        This wrapper supports LOD fading: when the map is cross-fading to the
+        global grid, entities fade with the local layer.
+        """
+        alpha = int(getattr(self, "_local_fade_alpha", 255))
+        if alpha <= 0:
+            return
+        if alpha >= 255:
+            self._draw_entities_impl(world, entities)
+            return
+
+        # Draw entities onto a temporary surface, then alpha-blend onto the main surface.
+        temp = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        prev_surface = self.surface
+        self.surface = temp
+        try:
+            self._draw_entities_impl(world, entities)
+        finally:
+            self.surface = prev_surface
+
+        temp.set_alpha(alpha)
+        self.surface.blit(temp, (0, 0))
+
+
+    def _draw_entities_impl(self, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
 
         Ordering is controlled by an optional 'render_layer' attribute:
@@ -1473,25 +1763,37 @@ class AsciiRenderer:
         # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
         mx, my = pos
 
-        # NOTE: For "zoomed-out" modes we still keep glyphs legible (tile >= 8).
-        # A later pass can introduce true continuous zoom (sub-tile sampling / mipmaps).
+        # We treat zoom as a continuous *world-scale* factor (pixels per world-tile).
+        # Local rendering still clamps to a minimum readable font size, but the global
+        # zone-grid renderer uses the full float scale so we can zoom out to the
+        # full world map extent.
         #
-        # Here we mainly use zoom to decide *which* representation to draw:
-        # - zoom >= ~0.95: regular local zone rendering (tile-by-tile)
-        # - zoom <  ~0.95: chunked "zone grid" rendering (current zone collapses into a glyph)
-        #
-        # Keep the world point under the cursor stable while zooming, for the local mode.
-        wx = (mx - self.origin_x) / max(1, self.tile)
-        wy = (my - self.origin_y) / max(1, self.tile)
+        # Keep the world point under the cursor stable while zooming.
+        base_x, base_y = self._map_origin_base()
+        self.origin_x = base_x + self.pan_x
+        self.origin_y = base_y + self.pan_y
 
-        new_zoom = self.zoom + delta_steps * 0.1
-        new_zoom = max(0.15, min(6.0, new_zoom))
-        if abs(new_zoom - self.zoom) < 1e-3:
+        cur_scale = float(self.base_tile) * float(self.zoom)
+        cur_scale = max(1e-6, cur_scale)
+
+        wx = (mx - self.origin_x) / cur_scale
+        wy = (my - self.origin_y) / cur_scale
+
+        new_zoom = float(self.zoom) + float(delta_steps) * 0.1
+
+        # Allow *very* deep zoom-out so the whole overworld can fit on screen.
+        # (Local layer will fade away long before this becomes illegible.)
+        new_zoom = max(0.002, min(6.0, new_zoom))
+        if abs(new_zoom - float(self.zoom)) < 1e-6:
             return
-        self.zoom = new_zoom
 
-        # Tile size is clamped for readability.
-        self.tile = max(8, int(self.base_tile * self.zoom))
+        new_scale = float(self.base_tile) * float(new_zoom)
+        new_scale = max(1e-6, new_scale)
+
+        self.zoom = float(new_zoom)
+
+        # Local-map glyph tile size: clamp for readability.
+        self.tile = max(8, int(round(new_scale)))
 
         # refresh helper surfaces (fonts stay constant size)
         self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
@@ -1507,12 +1809,12 @@ class AsciiRenderer:
             except Exception:
                 self.bismuth_icon_map = None
 
-        # adjust origin so world point under cursor stays under cursor (local-mode friendly)
-        base_x, base_y = self._map_origin_base()
-        target_origin_x = mx - wx * self.tile
-        target_origin_y = my - wy * self.tile
-        self.pan_x = target_origin_x - base_x
-        self.pan_y = target_origin_y - base_y
+        # adjust pan so world point under cursor stays under cursor
+        target_origin_x = mx - wx * new_scale
+        target_origin_y = my - wy * new_scale
+        self.pan_x = float(target_origin_x - base_x)
+        self.pan_y = float(target_origin_y - base_y)
+
 
     def _get_glow_sprite(self, radius: int, color: Tuple[int, int, int]) -> pygame.Surface:
         key = (radius, color)
@@ -1796,4 +2098,3 @@ class AsciiRenderer:
         
     def apply_shake(self, amplitude: float = 12.0, duration_ms: int = 250):
         self.visual_fx.trigger_shake(amplitude_px=float(amplitude), duration_ms=int(duration_ms))
-
