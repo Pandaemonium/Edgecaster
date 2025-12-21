@@ -139,6 +139,31 @@ class WorldMapScene(Scene):
         self.span = span
         self._cached: dict[tuple[int | None], pygame.Surface] = {}
 
+
+    def _quantized_view_key(self, viewport: "Viewport") -> tuple[int, int, int, int, int]:
+        """Return a stable cache key for the current viewport.
+
+        We quantize the view window so minor float jitter and small mouse-wheel deltas
+        don't create an unbounded number of near-duplicate cache entries.
+        """
+        x_min = float(viewport.x_min)
+        x_max = float(viewport.x_max)
+        y_min = float(viewport.y_min)
+        y_max = float(viewport.y_max)
+
+        vw = max(1.0, x_max - x_min)
+        vh = max(1.0, y_max - y_min)
+
+        # Quantization step in world units: roughly 1/512 of the larger span, clamped.
+        q = max(1.0, min(64.0, max(vw, vh) / 512.0))
+        q_inv = 1.0 / q
+
+        qx = int(round(x_min * q_inv))
+        qy = int(round(y_min * q_inv))
+        qw = int(round(vw * q_inv))
+        qh = int(round(vh * q_inv))
+        qk = int(round(q * 1000.0))  # include step size to avoid collisions across scales
+        return (qx, qy, qw, qh, qk)
     def run(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         renderer = manager.renderer
         clock = pygame.time.Clock()
@@ -397,8 +422,13 @@ class WorldMapScene(Scene):
 
             # --- Surface selection logic ---
             desired_key = (
-                int(renderer.width), int(renderer.height), int(self.span),
-                int(view_token), int(getattr(self.game, "corruption_version", 0) or 0)
+                int(renderer.width),
+                int(renderer.height),
+                int(self.span),
+                # Cache by (quantized) viewport window rather than a monotonically increasing token.
+                # This allows reuse when the view comes back to a previous window.
+                *self._quantized_view_key(viewport),
+                int(getattr(self.game, "corruption_version", 0) or 0),
             )
             
             if not hasattr(self.game, "world_map_cache_dict"):

@@ -143,6 +143,9 @@ class DungeonScene(Scene):
         self.input = GameInput()
         self._started = False
         self._old_urgent_cb = None
+        # Right-mouse drag camera panning state
+        self._rmb_dragging: bool = False
+        self._rmb_last_pos: tuple[int, int] | None = None
 
 
 ##debug widget
@@ -185,11 +188,40 @@ class DungeonScene(Scene):
 
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
+            # Right mouse: click-and-drag pan (camera)
+            if getattr(event, "button", None) == 3:
+                self._rmb_dragging = True
+                self._rmb_last_pos = getattr(event, "pos", None)
+                return
+
             cmds = self.input.handle_mousebutton(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)
 
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if getattr(event, "button", None) == 3:
+                self._rmb_dragging = False
+                self._rmb_last_pos = None
+                return
+
         elif event.type == pygame.MOUSEMOTION:
+            # While right-dragging, pan camera and swallow hover/aim updates.
+            if self._rmb_dragging:
+                # Convert display-space rel -> logical surface rel
+                scale = float(getattr(renderer, "lb_scale", 1.0) or 1.0)
+                rx, ry = getattr(event, "rel", (0, 0))
+                dx = float(rx) / scale
+                dy = float(ry) / scale
+                try:
+                    renderer.pan_by_px(dx, dy)
+                except Exception:
+                    # Fallback: direct pan fields if present
+                    if hasattr(renderer, "pan_x"):
+                        renderer.pan_x += dx
+                    if hasattr(renderer, "pan_y"):
+                        renderer.pan_y += dy
+                return
+
             cmds = self.input.handle_mousemotion(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)

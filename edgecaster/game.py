@@ -1203,7 +1203,43 @@ class Game:
                 pass
 
             self._debug(f"[_background_render_map] Render is not stale. Publishing result for view_token={view_token}.")
-            key = (w, h, span, view_token, corr_ver)
+            # Cache by (quantized) view window rather than a monotonically increasing token.
+            # `out_view` may be either a dict-like rect (x_min/x_max/...) or a tuple
+            # (x_min, y_min, span_x, span_y) depending on the caller.
+            try:
+                if isinstance(out_view, dict):
+                    x_min = float(out_view.get('x_min', 0.0))
+                    x_max = float(out_view.get('x_max', x_min + 1.0))
+                    y_min = float(out_view.get('y_min', 0.0))
+                    y_max = float(out_view.get('y_max', y_min + 1.0))
+                    vw = max(1.0, x_max - x_min)
+                    vh = max(1.0, y_max - y_min)
+                elif isinstance(out_view, (tuple, list)) and len(out_view) >= 4:
+                    x_min = float(out_view[0])
+                    y_min = float(out_view[1])
+                    vw = max(1.0, float(out_view[2]))
+                    vh = max(1.0, float(out_view[3]))
+                    x_max = x_min + vw
+                    y_max = y_min + vh
+                else:
+                    x_min = y_min = 0.0
+                    vw = vh = 1.0
+                    x_max = x_min + vw
+                    y_max = y_min + vh
+            except Exception:
+                x_min = y_min = 0.0
+                vw = vh = 1.0
+                x_max = x_min + vw
+                y_max = y_min + vh
+
+            q = max(1.0, min(64.0, max(vw, vh) / 512.0))
+            q_inv = 1.0 / q
+            qx = int(round(x_min * q_inv))
+            qy = int(round(y_min * q_inv))
+            qw = int(round(vw * q_inv))
+            qh = int(round(vh * q_inv))
+            qk = int(round(q * 1000.0))
+            key = (w, h, span, qx, qy, qw, qh, qk, corr_ver)
 
             payload = {
                 "surface": surf,
@@ -1214,6 +1250,21 @@ class Game:
 
             # New dict cache (what the scene uses)
             self.world_map_cache_dict[key] = payload
+            # Also cache by the request's size_key (what WorldMapScene uses),
+            # so scene lookups succeed even though we internally de-duplicate by quantized view.
+            try:
+                size_key = (w, h, span, view_token, corr_ver)
+                self.world_map_cache_dict[size_key] = payload
+            except Exception:
+                pass
+            # Simple bound on cache size to avoid unbounded growth during rapid zoom/pan.
+            max_cache = int(getattr(self.cfg, 'world_map_cache_max', 32) or 32)
+            max_cache = max(8, min(256, max_cache))
+            while len(self.world_map_cache_dict) > max_cache:
+                try:
+                    self.world_map_cache_dict.pop(next(iter(self.world_map_cache_dict)))
+                except Exception:
+                    break
 
             # Legacy single-slot cache (keep for any older code paths)
             self.world_map_cache = payload

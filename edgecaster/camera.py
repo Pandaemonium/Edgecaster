@@ -35,9 +35,9 @@ class TileCamera:
     pan_y: float = 0.0
 
     # Guardrails (kept conservative for legibility).
-    min_zoom: float = 0.15
+    min_zoom: float = 0.01
     max_zoom: float = 6.0
-    min_tile_px: int = 8
+    min_tile_px: int = 1
 
     @property
     def tile_px(self) -> int:
