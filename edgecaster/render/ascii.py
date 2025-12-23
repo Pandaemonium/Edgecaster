@@ -471,106 +471,113 @@ class AsciiRenderer:
 
 
     def draw_world_zoomed(self, game: Game) -> None:
-        """Draw the map with a rigid local→regional LOD cross-fade.
+        """Draw geography using an arbitrary power-of-two LOD stack.
 
-        Goals:
-          * Two clear layers with a smooth fade:
-              - Local: normal tile rendering (what you walk on).
-              - Regional: rigid coarse grid aligned to a fixed block size in world tiles.
-          * All coarse sampling uses Schwab's numpy fast-path (overmap_accel).
-          * Coarse cells are cached per (lod_level, cell_x, cell_y) so terrain doesn't
-            "jiggle" as you pan/zoom.
+        Philosophical rule: LoD 0 is *not special*.
+        Every LOD renders the same way: a rigid grid aligned to world-tile coordinates,
+        sampled via the fast numpy overmap renderer and cached per cell.
+
+        At any moment we render at most two adjacent LOD layers and cross-fade between them.
+        Entities are drawn separately (and can later pick their own native LOD).
         """
-        world = game.world
+        import math
 
         # Always clear first to avoid trails while blending.
         self.surface.fill(self.bg)
 
-        # Compute map viewport (same as draw_world_local uses).
-        margin_x = 32
-        margin_y_top = 80
-        margin_y_bottom = 80
-        map_rect = pygame.Rect(
-            margin_x,
-            margin_y_top,
-            max(1, self.width - margin_x * 2),
-            max(1, self.height - margin_y_top - margin_y_bottom),
-        )
+        # Use the SAME map rect / origin logic as draw_world_local so the camera/pan math
+        # stays consistent at every LOD.
+        map_origin_x, map_origin_y = self._map_origin_base()
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height - map_origin_y
+        map_rect = pygame.Rect(map_origin_x, map_origin_y, max(1, map_w), max(1, map_h))
 
-        zone_w = int(getattr(game.cfg, "world_width", 60))
-        zone_h = int(getattr(game.cfg, "world_height", 40))
+        # Apply pan offsets (set by zoom/pan). This makes _render_lod_grid's inference stable.
+        self.origin_x = map_origin_x + self.pan_x
+        self.origin_y = map_origin_y + self.pan_y
 
-        # Fade range:
-        #   zoom_start: when one zone fits inside the viewport
-        #   zoom_end:   when ~3x3 zones fit (so the regional layer is clearly dominant)
-        # Fade range tuning:
-        #   raw_zoom_start: when one zone fits inside the viewport (derived from viewport size)
-        #   zoom_start:     when the global/regional layer starts to appear (we clamp so it isn't visible at default zoom)
-        #   zoom_end:       when the regional layer becomes dominant; larger span => slower, gentler cross-fade.
-        tile_fit_px = min(map_rect.w / float(zone_w), map_rect.h / float(zone_h))
-        raw_zoom_start = float(tile_fit_px) / float(max(1, self.base_tile))
+        # World-tile -> screen pixels for a single world tile.
+        world_scale = float(self.base_tile) * float(self.zoom)
 
-        # These are intentionally tweakable knobs (handy for live-debugging).
-        # Smaller cap => global starts later (more zoomed-out).
-        zoom_start_cap = float(getattr(self, "lod_fade_zoom_start_cap", 0.9) or 0.9)
-        # Larger span => slower fade (wider transition band).
-        zoom_span = float(getattr(self, "lod_fade_zoom_span", 6.0) or 6.0)
+        # ---------------------------------------------------------------------
+        # Choose the two adjacent LODs to render.
+        #
+        # Each LOD is a cell size in world tiles: 1, 2, 4, 8, ...
+        # We want cell_px ~= target_glyph_px, so cell_tiles ~= target / world_scale.
+        # ---------------------------------------------------------------------
+        target_glyph_px = float(getattr(self, "lod_target_glyph_px", self.base_tile) or self.base_tile)
+        raw = target_glyph_px / max(1e-6, world_scale)  # desired cell size in tiles
+        raw = max(1.0, raw)
 
-        zoom_start = min(raw_zoom_start, zoom_start_cap)
-        zoom_end = max(1e-6, zoom_start / max(1e-6, zoom_span))
+        LOD_RADIX = getattr(self, "lod_radix", 2)
+        lod_f = math.log(raw, LOD_RADIX)
 
-        # Blend amount: 0 => fully local, 1 => fully regional.
-        blend = self._smoothstep(zoom_start, zoom_end, float(self.zoom))
+        lod0 = int(math.floor(lod_f))
+        lod1 = lod0 + 1
+        frac = float(lod_f - lod0)  # 0..1
 
-        local_alpha = int(round(255 * (1.0 - blend)))
-        regional_alpha = int(round(255 * blend))
+        # Clamp LOD range for now (we can go negative later for "micro" LODs).
+        lod0 = max(0, min(lod0, 12))
+        lod1 = max(0, min(lod1, 12))
+        if lod1 == lod0:
+            frac = 0.0
 
-        # Entity fading still uses local alpha, so tiny entities disappear as you zoom out.
-        self._local_fade_alpha = local_alpha
+        cell0 = int(LOD_RADIX ** lod0)
+        cell1 = int(LOD_RADIX ** lod1)
 
-        # --- 1) Local layer (tiles) ---
-        if local_alpha > 0:
-            local_surf = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # Smooth the blend so it's not too "linear" around the midpoint.
+        blend = self._smoothstep(0.0, 1.0, frac)
 
-            # Temporarily redirect drawing into local_surf without rewriting draw_world().
-            prev_surface = self.surface
-            prev_bg = self.bg
-            try:
-                self.surface = local_surf
-                self.bg = (0, 0, 0)  # local_surf starts transparent; keep clears cheap.
-                self.draw_world(game, world)  # calls draw_world_local()
-            finally:
-                self.surface = prev_surface
-                self.bg = prev_bg
+        # Small deadband: when we're effectively at one LOD, don't spend time on the other.
+        eps = 0.06
+        if blend <= eps:
+            a0, a1 = 1.0, 0.0
+        elif blend >= 1.0 - eps:
+            a0, a1 = 0.0, 1.0
+        else:
+            a0, a1 = 1.0 - blend, blend
 
-            local_surf.set_alpha(local_alpha)
-            self.surface.blit(local_surf, (0, 0))
+        # Entity fading (for now): tie to LoD 0's opacity when LoD 0 is one of the two layers.
+        if cell0 == 1:
+            self._local_fade_alpha = int(round(255 * a0))
+        elif cell1 == 1:
+            self._local_fade_alpha = int(round(255 * a1))
+        else:
+            self._local_fade_alpha = 0
 
-        # --- 2) Regional layer (rigid blocks) ---
-        if regional_alpha > 0:
-            world_scale = float(self.base_tile) * float(self.zoom)
+        zone_w = int(getattr(game.cfg, "world_width", getattr(game.world, "width", 60) or 60))
+        zone_h = int(getattr(game.cfg, "world_height", getattr(game.world, "height", 40) or 40))
 
-            # Default regional grid: split each zone into 3x1 "mega-tiles".
-            # (So with 60x40 zones, regional cells are 20x40 world tiles.)
-            div_x = int(getattr(self, "lod_regional_div_x", 3) or 3)
-            div_y = int(getattr(self, "lod_regional_div_y", 2) or 2)
-            div_x = max(1, div_x)
-            div_y = max(1, div_y)
-            cell_w_tiles = max(1, int(zone_w // div_x))
-            cell_h_tiles = max(1, int(zone_h // div_y))
-
-            grid = self._render_lod_grid(
+        # ---------------------------------------------------------------------
+        # Render up to two layers. (Terrain only.)
+        # ---------------------------------------------------------------------
+        if a0 > 0.0:
+            grid0 = self._render_lod_grid(
                 game,
                 map_rect=map_rect,
                 zone_w=zone_w,
                 zone_h=zone_h,
                 world_scale=world_scale,
-                cell_w_tiles=cell_w_tiles,
-                cell_h_tiles=cell_h_tiles,
-                lod_id="regional",
+                cell_w_tiles=cell0,
+                cell_h_tiles=cell0,
+                lod_id=lod0,
             )
-            grid.set_alpha(regional_alpha)
-            self.surface.blit(grid, (0, 0))
+            grid0.set_alpha(int(round(255 * a0)))
+            self.surface.blit(grid0, (0, 0))
+
+        if a1 > 0.0 and cell1 != cell0:
+            grid1 = self._render_lod_grid(
+                game,
+                map_rect=map_rect,
+                zone_w=zone_w,
+                zone_h=zone_h,
+                world_scale=world_scale,
+                cell_w_tiles=cell1,
+                cell_h_tiles=cell1,
+                lod_id=lod1,
+            )
+            grid1.set_alpha(int(round(255 * a1)))
+            self.surface.blit(grid1, (0, 0))
 
     def _infer_world_center_from_renderer(self, game, map_rect, world_scale, zone_w, zone_h):
         """
@@ -715,7 +722,7 @@ class AsciiRenderer:
         base_cy = int(math.floor(snap_min_wy / float(cell_h_tiles)))
 
         # Quick check: if the top-left cell isn't cached, we need to sample.
-        k0 = (lod_id, base_cx, base_cy, sig)
+        k0 = (lod_id, cell_w_tiles, cell_h_tiles, base_cx, base_cy, sig)
         need_sample = k0 not in cache
 
         if need_sample:
@@ -753,18 +760,9 @@ class AsciiRenderer:
                     anchors=p.get("corruption_anchors", None),
                 )
 
-                anchors_rgb = np.asarray(
-                    [
-                        (50, 90, 170),     # water
-                        (110, 160, 190),   # shore
-                        (150, 200, 140),   # plains
-                        (90, 170, 110),    # forest
-                        (170, 150, 110),   # hills
-                        (215, 215, 220),   # mountains
-                    ],
-                    dtype=np.int16,
-                )
-                glyph_lut = np.asarray([ord("."), ord(","), ord("."), ord("T"), ord("^"), ord("#")], dtype=np.int16)
+                from edgecaster.biome import ANCHORS_RGB, BIOME_GLYPHS_NP
+                anchors_rgb = np.asarray(ANCHORS_RGB, dtype=np.int16)
+                glyph_lut = BIOME_GLYPHS_NP.astype(np.int16, copy=False)
                 rgb16 = rgb_main.astype(np.int16)
                 dif = rgb16[:, :, None, :] - anchors_rgb[None, None, :, :]
                 dist2 = (dif * dif).sum(axis=3)
@@ -778,7 +776,7 @@ class AsciiRenderer:
                     cy = base_cy + rr
                     for cc in range(cols):
                         cx = base_cx + cc
-                        k = (lod_id, cx, cy, sig)
+                        k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
                         if k in cache:
                             continue
                         g = int(glyph_codes[rr, cc])
@@ -817,7 +815,7 @@ class AsciiRenderer:
                 px = int(px_f)
                 py = int(py_f)
 
-                k = (lod_id, cx, cy, sig)
+                k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
                 val = cache.get(k)
                 if not val:
                     continue
@@ -1012,18 +1010,9 @@ class AsciiRenderer:
         if accel_ok and rgb_main is not None:
             import numpy as np
 
-            anchors_rgb = np.asarray(
-                [
-                    (50, 90, 170),     # water
-                    (110, 160, 190),   # shore
-                    (150, 200, 140),   # plains
-                    (90, 170, 110),    # forest
-                    (170, 150, 110),   # hills
-                    (215, 215, 220),   # mountains
-                ],
-                dtype=np.int16,
-            )
-            glyph_lut = np.asarray([ord("."), ord(","), ord("."), ord("T"), ord("^"), ord("#")], dtype=np.int16)
+            from edgecaster.biome import ANCHORS_RGB, BIOME_GLYPHS_NP
+            anchors_rgb = np.asarray(ANCHORS_RGB, dtype=np.int16)
+            glyph_lut = BIOME_GLYPHS_NP.astype(np.int16, copy=False)
             rgb16 = rgb_main.astype(np.int16)
             dif = rgb16[:, :, None, :] - anchors_rgb[None, None, :, :]
             dist2 = (dif * dif).sum(axis=3)
