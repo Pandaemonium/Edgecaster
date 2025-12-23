@@ -525,6 +525,8 @@ class AsciiRenderer:
         cell0 = int(LOD_RADIX ** lod0)
         cell1 = int(LOD_RADIX ** lod1)
 
+        snap_base = max(cell0, cell1)  # anchor both blended layers to the same snapped origin
+
         # Smooth the blend so it's not too "linear" around the midpoint.
         blend = self._smoothstep(0.0, 1.0, frac)
 
@@ -561,6 +563,7 @@ class AsciiRenderer:
                 cell_w_tiles=cell0,
                 cell_h_tiles=cell0,
                 lod_id=lod0,
+                snap_base_tiles=snap_base,
             )
             grid0.set_alpha(int(round(255 * a0)))
             self.surface.blit(grid0, (0, 0))
@@ -575,6 +578,7 @@ class AsciiRenderer:
                 cell_w_tiles=cell1,
                 cell_h_tiles=cell1,
                 lod_id=lod1,
+                snap_base_tiles=snap_base,
             )
             grid1.set_alpha(int(round(255 * a1)))
             self.surface.blit(grid1, (0, 0))
@@ -643,6 +647,7 @@ class AsciiRenderer:
         cell_w_tiles: int,
         cell_h_tiles: int,
         lod_id: str,
+        snap_base_tiles: int | None = None,
     ) -> "pygame.Surface":
         """Render a rigid LOD grid aligned to fixed world-tile blocks.
 
@@ -680,8 +685,14 @@ class AsciiRenderer:
         cell_h_tiles = max(1, int(cell_h_tiles))
 
         # Snap view_min to cell boundaries so the grid is rigid/stable.
-        snap_min_wx = math.floor(view_min_wx / float(cell_w_tiles)) * float(cell_w_tiles)
-        snap_min_wy = math.floor(view_min_wy / float(cell_h_tiles)) * float(cell_h_tiles)
+        #
+        # IMPORTANT: when we cross-fade between two adjacent LODs (e.g. 4-tiles and 8-tiles),
+        # we must *anchor* both layers to the same snapped origin, otherwise their grids can
+        # appear to drift relative to each other while blending.
+        snap_w = float(max(1, int(snap_base_tiles or cell_w_tiles)))
+        snap_h = float(max(1, int(snap_base_tiles or cell_h_tiles)))
+        snap_min_wx = math.floor(view_min_wx / snap_w) * snap_w
+        snap_min_wy = math.floor(view_min_wy / snap_h) * snap_h
 
         # Fractional scroll within the snapped cell grid (in pixels).
         # This makes panning/zooming move the grid smoothly while keeping it rigidly aligned
@@ -694,8 +705,11 @@ class AsciiRenderer:
         rows = max(1, int(math.ceil(view_span_wy / float(cell_h_tiles))) + 3)
 
         # Cell size in pixels.
-        cell_px_w = max(1, int(round(float(cell_w_tiles) * world_scale)))
-        cell_px_h = max(1, int(round(float(cell_h_tiles) * world_scale)))
+        cell_px_w_f = max(1e-6, float(cell_w_tiles) * world_scale)
+        cell_px_h_f = max(1e-6, float(cell_h_tiles) * world_scale)
+        # For font sizing and some bounds checks we still use integer pixels.
+        cell_px_w = max(1, int(round(cell_px_w_f)))
+        cell_px_h = max(1, int(round(cell_px_h_f)))
 
         # Determine total world size (in tiles) for overmap_accel.
         cfg = getattr(game, "cfg", None)
@@ -801,19 +815,19 @@ class AsciiRenderer:
 
         for rr in range(rows):
             cy = base_cy + rr
-            py_f = float(rect_y) + float(rr * cell_px_h) - float(offset_px_y)
+            py_f = float(rect_y) + float(rr) * float(cell_h_tiles) * float(world_scale) - float(offset_px_y)
             # Skip rows wholly above/below the viewport (with 1-cell padding).
-            if py_f + float(cell_px_h) < float(rect_y - cell_px_h) or py_f > float(rect_y + rect_h + cell_px_h):
+            if py_f + float(cell_px_h_f) < float(rect_y - cell_px_h) or py_f > float(rect_y + rect_h + cell_px_h):
                 continue
 
             for cc in range(cols):
                 cx = base_cx + cc
-                px_f = float(rect_x) + float(cc * cell_px_w) - float(offset_px_x)
-                if px_f + float(cell_px_w) < float(rect_x - cell_px_w) or px_f > float(rect_x + rect_w + cell_px_w):
+                px_f = float(rect_x) + float(cc) * float(cell_w_tiles) * float(world_scale) - float(offset_px_x)
+                if px_f + float(cell_px_w_f) < float(rect_x - cell_px_w) or px_f > float(rect_x + rect_w + cell_px_w):
                     continue
 
-                px = int(px_f)
-                py = int(py_f)
+                px = int(round(px_f))
+                py = int(round(py_f))
 
                 k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
                 val = cache.get(k)
