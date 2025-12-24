@@ -1980,31 +1980,49 @@ class InventoryScene(PopupMenuScene):
                 want_px = min(float(want_px), float(glyph_full_px) * 0.92)
             except Exception:
                 pass
+        # Compute instantaneous candidate start scale from current geometry.
+        s0 = want_px / glyph_full_px
+        # Clamp so the whole menu doesn't become astronomically tiny on extreme zoom-out.
+        s0 = max(0.04, min(8.0, float(s0)))  # allow >1.0 so the zoom can also *shrink* when starting very zoomed-in
 
+        # IMPORTANT: PanelScene / input hit-testing can call _current_visual_profile() early,
+        # before the panel has a trustworthy logical surface / scale. If we cache from that
+        # call, we can lock in a bogus start scale (often 1.0), and the next zoom won't
+        # scale up. So we only "lock" once context looks trustworthy, and we also allow
+        # a later trusted call to correct an earlier accidental ~1.0 lock.
+        try:
+            panel_ready = getattr(self, "_panel", None) is not None
+            trusted_scales = not (
+                abs(float(logical_to_window_scale_x) - 1.0) < 1e-6
+                and abs(float(logical_to_window_scale_y) - 1.0) < 1e-6
+            )
+            trusted = (self.window_rect is not None) and (panel_ready or trusted_scales)
+        except Exception:
+            trusted = False
 
-        if self._zoom_start_scale is None:
-            s0 = want_px / glyph_full_px
-            # Clamp so the whole menu doesn't become astronomically tiny on extreme zoom-out.
-            s0 = max(0.04, min(1.0, float(s0)))
-
-            # IMPORTANT: during mouse input unprojection, PanelScene may call this before a logical
-            # panel surface exists, passing default (1,1) scales. If we cache s0 from that call,
-            # we can lock in a bogus start scale (often 1.0) and the next zoom won't scale up.
-            # So only cache once we have enough context to trust it.
-            try:
-                untrusted = (
-                    abs(float(logical_to_window_scale_x) - 1.0) < 1e-6
-                    and abs(float(logical_to_window_scale_y) - 1.0) < 1e-6
-                    and getattr(self, "_panel", None) is None
-                )
-            except Exception:
-                untrusted = False
-
-            if not untrusted:
+        if trusted:
+            if self._zoom_start_scale is None:
                 self._zoom_start_scale = float(s0)
+            else:
+                # We want the start scale to match the *actual on-screen* size at the moment the
+                # popup appears. However, _current_visual_profile() can be called multiple times:
+                # - very early (hit-testing / unprojection) with bogus (1,1) scales
+                # - later in the frame with correct panel/logical scales
+                # If we "lock" too early, the zoom can start at 1.0 (no scaling).
+                #
+                # Policy:
+                #   - allow correction while the animation is still near the beginning
+                #   - always treat an exact-ish 1.0 lock as provisional if we later compute != 1.0
+                try:
+                    if float(self._zoom_start_scale) >= 0.999 and abs(float(s0) - 1.0) > 1e-3:
+                        self._zoom_start_scale = float(s0)
+                    elif p < 0.08:
+                        # Early in the animation: keep it faithful to the most recent trusted geometry.
+                        self._zoom_start_scale = float(s0)
+                except Exception:
+                    pass
 
-
-        start_scale = float(self._zoom_start_scale if self._zoom_start_scale is not None else s0)
+        start_scale = float(self._zoom_start_scale) if self._zoom_start_scale is not None else float(s0)
         panel_scale = _lerp(start_scale, 1.0, p)
 
         # Apply recursion depth scaling at all times (scales text, glyphs, spacing).
