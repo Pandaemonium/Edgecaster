@@ -28,6 +28,7 @@ from edgecaster.ui.widgets import (
     LabelWidget,
     ScaledLabelWidget,
     ListWidget,
+    _wrap_text_px
 )
 
 if TYPE_CHECKING:
@@ -535,9 +536,11 @@ class EntityPreviewWidget(Widget):
         renderer = ctx.renderer
         surf = ctx.surface
 
-        owner = getattr(scene, "_find_owner_entity", lambda: None)()
-        name = getattr(owner, "name", None) or getattr(scene, "explicit_title", None) or "Entity"
-        glyph = str(getattr(owner, "glyph", "@"))[:1]
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        info = describe_entity_for_look(owner) if owner is not None else {}
+        name = info.get("name") or getattr(owner, "name", None) or getattr(scene, "explicit_title", None) or "Entity"
+        glyph = str(info.get("glyph") or getattr(owner, "glyph", "@"))[:1]
 
         r = self.rect
         card = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
@@ -578,6 +581,27 @@ class EntityPreviewWidget(Widget):
             gx = int(cx - gcanvas.get_width() // 2)
             gy = int(cy - gcanvas.get_height() // 2)
             card.blit(gcanvas, (gx, gy))
+
+        desc = info.get("description") or getattr(owner, "description", None)
+        if desc:
+            dfont = pygame.font.SysFont("consolas", 14, italic=True)
+            dcolor = (
+                int(fg[0] * 0.7),
+                int(fg[1] * 0.7),
+                int(fg[2] * 0.7),
+            )
+
+            # Simple word wrap (later replace with a real widget if desired)
+            max_w = r.w - 28
+            y = r.h - 14
+            lines = _wrap_text_px(dfont, desc, max_w)
+
+            for line in reversed(lines):
+                line_surf = dfont.render(line, True, dcolor)
+                y -= line_surf.get_height()
+                card.blit(line_surf, (14, y))
+
+
 
         surf.blit(card, r.topleft)
 
@@ -1186,6 +1210,33 @@ class InventoryScene(PopupMenuScene):
                     return cand
 
         return None
+
+
+    def _preview_entity(self):
+        """Entity currently highlighted in the left list (if any).
+
+        For InventoryScene/LookScene we want the right-pane preview (and description)
+        to reflect the *selected row*, not necessarily the inventory owner.
+        Falls back to the owner entity if nothing is selected.
+        """
+        # Prefer the live widget selection (it updates with mouse/keys).
+        try:
+            if self._list is not None and getattr(self._list, "selected_index", None) is not None:
+                sel = int(self._list.selected_index)
+            else:
+                sel = int(getattr(self, "selected_idx", 0))
+        except Exception:
+            sel = 0
+
+        try:
+            if 0 <= sel < len(self._rows):
+                ent = getattr(self._rows[sel], "ent", None)
+                if ent is not None:
+                    return ent
+        except Exception:
+            pass
+
+        return self._find_owner_entity()
 
     def _inherit_owner_visual_effects(self) -> None:
         ent = self._find_owner_entity()
@@ -2038,10 +2089,42 @@ class InventoryScene(PopupMenuScene):
         super().draw_panel(panel, renderer, manager)
 
         # Cache anchor + glyph size from preview pane after layout.
+        #
+        # IMPORTANT: many visual effects expand the glyph canvas asymmetrically
+        # (e.g. smoke/flames rising above the base cell). If we anchor the
+        # diagrammatic zoom on preview.rect.center, the zoom will appear to
+        # originate "from below" for those effects. Instead, we compute the
+        # *logical glyph cell center* inside the rendered canvas and store the
+        # panel-space coordinate of that logical center.
         try:
             if self._preview is not None:
-                self._zoom_anchor_panel = (float(self._preview.rect.centerx), float(self._preview.rect.centery))
+                # Base size of the final glyph cell in logical panel coords.
                 self._zoom_glyph_base_px = max(12, int(min(self._preview.rect.w, self._preview.rect.h) * 0.50))
+
+                owner = self._find_owner_entity()
+                if owner is not None:
+                    # Match the overlay render parameters as closely as possible.
+                    base_px = int(self._zoom_glyph_base_px)
+                    font = pygame.font.SysFont("consolas", max(10, int(base_px)), bold=True)
+
+                    gcanvas, ganchor = _render_entity_glyph_canvas_with_anchor(
+                        renderer,
+                        owner,
+                        font=font,
+                        base_px=base_px,
+                        scene_effects=list(getattr(self, "visual_effects", []) or []),
+                    )
+
+                    # The preview pane "drawn position" is centered.
+                    cx = float(self._preview.rect.centerx)
+                    cy = float(self._preview.rect.centery)
+                    gx = cx - float(gcanvas.get_width()) * 0.5
+                    gy = cy - float(gcanvas.get_height()) * 0.5
+
+                    # Store anchor as the *glyph cell center* in panel coords.
+                    self._zoom_anchor_panel = (gx + float(ganchor[0]), gy + float(ganchor[1]))
+                else:
+                    self._zoom_anchor_panel = (float(self._preview.rect.centerx), float(self._preview.rect.centery))
         except Exception:
             pass
 
@@ -2100,7 +2183,7 @@ class InventoryScene(PopupMenuScene):
                 base_px = max(8, int(self._zoom_glyph_base_px * float(max(0.25, ltw_min))))
                 font = pygame.font.SysFont("consolas", max(10, int(base_px)), bold=True)
 
-                gcanvas = _render_entity_glyph_canvas(
+                gcanvas, ganchor = _render_entity_glyph_canvas_with_anchor(
                     renderer,
                     owner,
                     font=font,
@@ -2108,8 +2191,10 @@ class InventoryScene(PopupMenuScene):
                     scene_effects=list(getattr(self, "visual_effects", []) or []),
                 )
 
-                gx = int(ax - gcanvas.get_width() // 2)
-                gy = int(ay - gcanvas.get_height() // 2)
+                # Place the canvas so that the *glyph cell center* lands on (ax, ay),
+                # not the canvas bounding-box center (which can be offset by effects).
+                gx = int(round(float(ax) - float(ganchor[0])))
+                gy = int(round(float(ay) - float(ganchor[1])))
                 glyph_layer.blit(gcanvas, (gx, gy))
 
                 # Apply the exact same transform but force alpha to 1.0.
@@ -2146,6 +2231,10 @@ class LookScene(InventoryScene):
 
     Later we can specialize the row-building for imperfect information.
     """
+
+    def _preview_entity(self):
+        """In Look mode, always preview the looked-at entity (owner), not the selected row."""
+        return self._find_owner_entity()
 
     def __init__(
         self,
