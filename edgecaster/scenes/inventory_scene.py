@@ -64,6 +64,13 @@ def _render_entity_glyph_canvas(
       - entity base color (player stays yellow, etc.)
       - scene + entity visual effects (fiery, syrupy, etc.) as much as possible
     """
+    # Prefer renderer-provided icon/sprite rendering if available.
+    if hasattr(renderer, "get_entity_icon_surface"):
+        try:
+            return renderer.get_entity_icon_surface(ent, size_px=int(base_px), scene_effects=scene_effects or [])
+        except Exception:
+            pass
+
     glyph = str(getattr(ent, "glyph", "@"))[:1]
 
     base_color = getattr(renderer, "fg", (240, 240, 255))
@@ -120,6 +127,19 @@ def _render_entity_glyph_canvas_with_anchor(
     further change the bounding box). Using surface.center as the zoom source causes
     drift that compounds badly under nested/rotated panels.
     """
+    # Prefer renderer-provided icon/sprite rendering if available.
+    if hasattr(renderer, "get_entity_icon_surface"):
+        try:
+            surf = renderer.get_entity_icon_surface(ent, size_px=int(base_px), scene_effects=scene_effects or [])
+            eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
+            base_rect = pygame.Rect(0, 0, int(base_px), int(base_px))
+            union_rect, _rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+            ox, oy = -union_rect.left, -union_rect.top
+            anchor = (ox + float(base_px) * 0.5, oy + float(base_px) * 0.5)
+            return surf, anchor
+        except Exception:
+            pass
+
     glyph = str(getattr(ent, "glyph", "@"))[:1]
 
     base_color = getattr(renderer, "fg", (240, 240, 255))

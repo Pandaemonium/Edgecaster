@@ -1433,6 +1433,162 @@ class AsciiRenderer:
 
 
 
+    # ------------------------------------------------------------------
+    # Entity icon / sprite rendering (renderer-agnostic hook)
+    # ------------------------------------------------------------------
+    def get_entity_icon_surface(
+        self,
+        ent,
+        *,
+        size_px: int,
+        scene_effects: list[str] | None = None,
+        prefer_sprite: bool = True,
+    ) -> pygame.Surface:
+        """Return an RGBA surface representing an entity at a given pixel size.
+
+        This is the *general* hook UI code should use for magnified previews,
+        diagrammatic zoom, tooltips, etc. It supports:
+          - sprite/icon images (if resolvable)
+          - glyph fallback (ASCII)
+          - scene + entity visual effects (overlays, transforms, tints where applicable)
+
+        Conventions for sprite resolution (in priority order):
+          1) ent.sprite_path / ent.sprite / ent.icon_path (string path)
+          2) ent.tags['icon_path'] or ent.tags['icon'] (string path)
+          3) ent.tags['currency'] -> assets/icons/<currency>.png
+        """
+        size_px = max(1, int(size_px))
+        eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
+
+        # Lazily allocate caches
+        if not hasattr(self, "_entity_icon_cache_scaled"):
+            self._entity_icon_cache_scaled = {}  # (path, size_px) -> Surface
+        if not hasattr(self, "_entity_icon_cache_raw"):
+            self._entity_icon_cache_raw = {}  # path -> Surface
+
+        path = None
+        if prefer_sprite:
+            for attr in ("sprite_path", "sprite", "icon_path"):
+                v = getattr(ent, attr, None)
+                if isinstance(v, str) and v.strip():
+                    path = v.strip()
+                    break
+            if path is None:
+                tags = getattr(ent, "tags", {}) or {}
+                v = tags.get("icon_path") or tags.get("icon")
+                if isinstance(v, str) and v.strip():
+                    path = v.strip()
+            if path is None:
+                tags = getattr(ent, "tags", {}) or {}
+                cur = tags.get("currency")
+                if isinstance(cur, str) and cur.strip():
+                    # Convention: currencies live in assets/icons/<currency>.png
+                    path = f"assets/icons/{cur.strip()}.png"
+
+        # Try sprite path if available
+        if path:
+            surf = self._load_and_scale_icon(path, size_px=size_px)
+            if surf is not None:
+                # Apply overlays/transforms on top of the icon.
+                return self._apply_entity_effects_to_icon(ent, surf, size_px=size_px, eff=eff)
+
+        # Fallback: render a glyph (ASCII)
+        return self._render_entity_glyph_icon(ent, size_px=size_px, eff=eff)
+
+    def _load_and_scale_icon(self, path: str, *, size_px: int) -> pygame.Surface | None:
+        """Load an icon (cached) and return a smoothly scaled copy."""
+        try:
+            key = (path, int(size_px))
+            cached = self._entity_icon_cache_scaled.get(key)
+            if cached is not None:
+                return cached
+
+            raw = self._entity_icon_cache_raw.get(path)
+            if raw is None:
+                # Resolve relative paths against the project root.
+                p = Path(path)
+                if not p.is_absolute():
+                    p = (self._project_root / p).resolve()
+                raw = pygame.image.load(str(p)).convert_alpha()
+                self._entity_icon_cache_raw[path] = raw
+
+            scaled = pygame.transform.smoothscale(raw, (int(size_px), int(size_px)))
+            self._entity_icon_cache_scaled[key] = scaled
+            return scaled
+        except Exception:
+            return None
+
+    def _render_entity_glyph_icon(self, ent, *, size_px: int, eff: str) -> pygame.Surface:
+        """Glyph fallback for get_entity_icon_surface()."""
+        glyph = str(getattr(ent, "glyph", "@"))[:1]
+
+        # Pick base color using the same logic as map entity rendering.
+        base_color = getattr(self, "fg", (240, 240, 255))
+        try:
+            _, base_color = self._entity_visual(ent)
+        except Exception:
+            pass
+        color = apply_entity_color_effects(ent, base_color, eff)
+
+        # Choose a font size that tends to fill the requested square.
+        font_px = max(10, int(round(size_px * 0.90)))
+        font = pygame.font.SysFont("consolas", font_px, bold=True)
+
+        base_rect = pygame.Rect(0, 0, size_px, size_px)
+        union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+
+        canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+        ox, oy = -union_rect.left, -union_rect.top
+
+        gsurf = font.render(glyph, True, color)
+        gx = ox + (size_px - gsurf.get_width()) // 2
+        gy = oy + (size_px - gsurf.get_height()) // 2
+        canvas.blit(gsurf, (gx, gy))
+
+        if eff:
+            shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+            apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+        if eff:
+            try:
+                visual = build_visual_profile(VisualProfile(), eff)
+                out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+                apply_visual_panel(out, canvas, out.get_rect(), visual)
+                return out
+            except Exception:
+                pass
+
+        return canvas
+
+    def _apply_entity_effects_to_icon(self, ent, icon: pygame.Surface, *, size_px: int, eff: str) -> pygame.Surface:
+        """Apply overlay + geometric effects to a sprite/icon surface."""
+        base_rect = pygame.Rect(0, 0, size_px, size_px)
+        union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+
+        # Canvas with extra room for overlay bounds.
+        canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+        ox, oy = -union_rect.left, -union_rect.top
+
+        # Center the icon in the base rect region.
+        ix = ox + (size_px - icon.get_width()) // 2
+        iy = oy + (size_px - icon.get_height()) // 2
+        canvas.blit(icon, (ix, iy))
+
+        if eff:
+            shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+            apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+        # Apply geometry transforms (rotate/flip/scale) if any.
+        if eff:
+            try:
+                visual = build_visual_profile(VisualProfile(), eff)
+                out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+                apply_visual_panel(out, canvas, out.get_rect(), visual)
+                return out
+            except Exception:
+                pass
+        return canvas
+
 
     def draw_entities(self, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
