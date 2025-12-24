@@ -5,6 +5,7 @@ This document describes how the game currently generates:
 * The global overworld “world map” (Julia-based visualization, with zoomable view window).
 * Each local overworld zone (a tile map the player walks around in).
 * Phase 1 “corruption”: a deterministic distortion field that perturbs the Julia iterator.
+* Multi-scale (local → global) map views via level-of-detail (LoD) aggregation.   [NEW]
 
 This is intended as a shared reference for collaborators. If you touch map
 generation, try to preserve these invariants unless you are deliberately
@@ -21,61 +22,85 @@ changing the design.
 
 2. Corruption is a modification of the Julia iterator (not a separate post-pass):
 
-   ```
-   z_{n+1} = z_n^2 + c + d(z_n)
-   ```
 
-   where d(z_n) is a deterministic distortion vector field in the complex plane.
+   z_{n+1} = z_n^2 + c + d(z_n)
+
+
+
+where d(z_n) is a deterministic distortion vector field in the complex plane.
 
 3. Phase 1 corruption is “visual-only” for the overworld:
 
-   * It changes the glyph/tint produced by Julia sampling.
-   * It does NOT currently change walkability or destroy POI structures.
-   * If corruption should affect walkability later, that is Phase 2.
+* It changes the glyph/tint produced by Julia sampling.
+* It does NOT currently change walkability or destroy POI structures.
+* If corruption should affect walkability later, that is Phase 2.
 
 ## Performance invariants (phase 1 goals)
 
 1. The game should not block on world-map rendering.
 
-   * World-map rendering is allowed to “pop in” when the player opens the world map.
+* World-map rendering is allowed to “pop in” when the player opens the world map.
 
 2. Fast paths must not drift from canonical rules.
 
-   * Numpy acceleration is encouraged, but it must implement the same math
-     (same iterator, same distortion rules) so visuals remain deterministic and consistent.
+* Numpy acceleration is encouraged, but it must implement the same math
+  (same iterator, same distortion rules) so visuals remain deterministic and consistent.
+
+## NEW INVARIANT — MULTI-SCALE VIEW CONSISTENCY   [NEW]
+
+* The dungeon view, overworld zones, and world map all represent the SAME underlying
+world tile grid.
+* Zooming changes sampling density and aggregation, not simulation or world state.
+* Global / LoD tiles are summaries of local tiles, not a separate terrain dataset.
+* Camera pan and zoom apply uniformly at all scales.
 
 ## Coordinate systems
 
 World grid (tiles)
 
 * The overworld is a grid of zones (“screens”) of size:
-  cfg.world_width x cfg.world_height
+cfg.world_width x cfg.world_height
 * The overworld has:
-  cfg.world_map_screens x cfg.world_map_screens zones
+cfg.world_map_screens x cfg.world_map_screens zones
 * Global overworld tile coordinates:
-  gx in [0, total_w-1], gy in [0, total_h-1]
-  where:
-  total_w = cfg.world_map_screens * cfg.world_width
-  total_h = cfg.world_map_screens * cfg.world_height
+gx in [0, total_w-1], gy in [0, total_h-1]
+where:
+total_w = cfg.world_map_screens * cfg.world_width
+total_h = cfg.world_map_screens * cfg.world_height
 
 Zone coordinates (screens)
 
 * A zone coordinate is:
-  (zx, zy, depth)
-  For the overworld, depth == 0.
+(zx, zy, depth)
+For the overworld, depth == 0.
 
 Julia plane (complex)
 
 * Every world coordinate (expressed in world tile-space, potentially continuous) maps
-  to a Julia-plane coordinate (jx, jy).
+to a Julia-plane coordinate (jx, jy).
 * The mapping is driven by the current chosen Julia constant and extents:
 
-  * visual_c
-  * (j_min_x..j_max_x, j_min_y..j_max_y)
+* visual_c
+* (j_min_x..j_max_x, j_min_y..j_max_y)
+
 * The world map “viewport” is expressed in WORLD tile coordinates as:
-  (view_min_wx, view_min_wy, view_span_wx, view_span_wy)
-  This is what changes during zoom/pan, and it controls what portion of the world
-  is sampled and displayed.
+(view_min_wx, view_min_wy, view_span_wx, view_span_wy)
+This is what changes during zoom/pan, and it controls what portion of the world
+is sampled and displayed.
+
+## NEW — CAMERA MODEL (SHARED ACROSS SCALES)   [NEW]
+
+* The camera operates in continuous world tile-space.
+* Camera state consists of:
+- world_x, world_y (center, in world tile coordinates)
+- zoom level
+* Zoom controls how many world tiles correspond to one rendered cell.
+* There is a single canonical camera for:
+- dungeon rendering
+- local overworld zones
+- global / LoD terrain views
+
+The camera is renderer-agnostic and lives outside map generation logic.
 
 ## Where things live (code map)
 
@@ -83,58 +108,76 @@ World map scene + zoom/preview logic:
 
 * edgecaster/scenes/world_map_scene.py
 
-  * WorldMapScene.run(): input handling, zooming, preview while rerastering, and
-    selecting which surface to draw (cached / preview / placeholder).
-  * WorldMapScene._render_overmap(): synchronous fallback renderer (rare; mostly
-    used only if the thread is not running and a forced render occurs).
-  * Holding ALT shows the “corruption field view” instead of the main map.
-  * Press 0 resets to the full-world viewport and uses the “full map” cache key.
+* WorldMapScene.run(): input handling, zooming, preview while rerastering, and
+ selecting which surface to draw (cached / preview / placeholder).
+* WorldMapScene._render_overmap(): synchronous fallback renderer (rare; mostly
+ used only if the thread is not running and a forced render occurs).
+* Holding ALT shows the “corruption field view” instead of the main map.
+* Press 0 resets to the full-world viewport and uses the “full map” cache key.
 
 Overmap numpy renderer:
 
 * edgecaster/overmap_accel.py
 
-  * render_overmap_buffers_numpy(): vectorized renderer that produces:
+* render_overmap_buffers_numpy(): vectorized renderer that produces:
 
-    * rgb_main (the world map)
-    * rgb_corr (ALT corruption-field view)
-    * optional debug buffers
-  * Must implement the same iterator rule and distortion rules as the scalar path.
+ * rgb_main (the world map)
+ * rgb_corr (ALT corruption-field view)
+ * optional debug buffers
+* Must implement the same iterator rule and distortion rules as the scalar path.
+
+NEW — Zoomed-out LoD aggregation:
+
+* edgecaster/render/overmap_lod.py   [NEW]
+
+* Responsible for aggregating many local tiles into a single rendered LoD cell.
+* Operates in world tile-space using snapped, world-aligned cell boundaries.
+* Chooses representative glyph and color via sampling / biome weighting.
+* Owns caching keyed by region and zoom level.
+* Optional acceleration via numpy paths.
 
 Local overworld generation:
 
 * edgecaster/mapgen.py
 
-  * generate_fractal_overworld(): creates an overworld zone at depth 0.
-  * refresh_fractal_overworld_visuals(): updates glyph/tint without touching structures
-    (used when corruption changes).
-  * apply_pois(): applies POI IDs onto a world.
-  * _julia_height_env_grid_numpy(): computes zone grids using numpy (fast-path).
+* generate_fractal_overworld(): creates an overworld zone at depth 0.
+* refresh_fractal_overworld_visuals(): updates glyph/tint without touching structures
+ (used when corruption changes).
+* apply_pois(): applies POI IDs onto a world.
+* _julia_height_env_grid_numpy(): computes zone grids using numpy (fast-path).
+
+Biome classification:
+
+* edgecaster/biome.py   [NEW]
+
+* Central definition of biome indices.
+* Maps sampled Julia fields → biome, glyph, and base tint.
+* Shared by local zone generation and LoD aggregation.
 
 Corruption field (d(z)):
 
 * edgecaster/corruption.py
 
-  * CorruptionParams: tuning knobs.
-  * distortion_dz(): fast scalar lookup for d(z) (typically via LUT sampling).
-  * distortion_np(): numpy analogue used by vectorized renderers / generators.
-  * distortion_dz and distortion_np must remain semantically aligned.
+* CorruptionParams: tuning knobs.
+* distortion_dz(): fast scalar lookup for d(z) (typically via LUT sampling).
+* distortion_np(): numpy analogue used by vectorized renderers / generators.
+* distortion_dz and distortion_np must remain semantically aligned.
 
 Threading + caching contract (owned by Game):
 
 * edgecaster/game.py (implementation details referenced by the scene)
 
-  * Game._start_world_map_thread(...): spawns a background render for the current
-    view and settings.
-  * The renderer thread is expected to populate:
-    game.world_map_cache_dict[cache_key] = {
-    "surface": pygame.Surface,
-    "surface_corr": pygame.Surface,
-    "view": (view_min_wx, view_min_wy, view_span_wx, view_span_wy),
-    "key": cache_key,
-    }
-  * The scene reads from world_map_cache_dict every frame and swaps surfaces
-    when the requested key becomes available.
+* Game._start_world_map_thread(...): spawns a background render for the current
+ view and settings.
+* The renderer thread is expected to populate:
+ game.world_map_cache_dict[cache_key] = {
+ "surface": pygame.Surface,
+ "surface_corr": pygame.Surface,
+ "view": (view_min_wx, view_min_wy, view_span_wx, view_span_wy),
+ "key": cache_key,
+ }
+* The scene reads from world_map_cache_dict every frame and swaps surfaces
+ when the requested key becomes available.
 
 ## World map rendering and zoom behavior (WorldMapScene.run)
 
@@ -142,63 +185,63 @@ High-level goals:
 
 * Opening the scene should show something immediately (prefer cached full map).
 * Zooming should feel continuous (stretch/preview every scroll tick), while a
-  high-res re-render happens in the background.
+high-res re-render happens in the background.
 * When the re-render finishes, the scene should swap to the new surface without
-  “jumping”.
+“jumping”.
 
 Key runtime state:
 
 * Viewport (world coords): Viewport(x_min..x_max, y_min..y_max) tracks the visible
-  portion of the world in world-tile coordinates. Zoom modifies the span and keeps
-  the point under the cursor fixed.
+portion of the world in world-tile coordinates. Zoom modifies the span and keeps
+the point under the cursor fixed.
 * view_token: monotonically increments whenever the viewport changes due to zoom.
-  It is also used as part of the cache key.
+It is also used as part of the cache key.
 
-  * Special case: view_token == 0 is the full-world view.
-  * Pressing 0 resets the viewport and sets view_token = 0.
+* Special case: view_token == 0 is the full-world view.
+* Pressing 0 resets the viewport and sets view_token = 0.
 
 Cache keys:
 
 * The scene currently uses a cache key that includes:
-  (renderer.width, renderer.height, span, view_token, corruption_version)
-  This means different zoom states produce distinct cached entries.
+(renderer.width, renderer.height, span, view_token, corruption_version)
+This means different zoom states produce distinct cached entries.
 
 Surface selection order each frame:
 
 1. If the exact cache key exists in game.world_map_cache_dict:
 
-   * draw that surface (main or ALT corruption variant).
-   * clear preview_surface (preview no longer needed).
+* draw that surface (main or ALT corruption variant).
+* clear preview_surface (preview no longer needed).
 2. Else if a preview_surface exists for the current view_token and ALT mode:
 
-   * draw the preview_surface (cheap stretched approximation).
+* draw the preview_surface (cheap stretched approximation).
 3. Else:
 
-   * call _build_cached_surface(), which:
+* call _build_cached_surface(), which:
 
-     * ensures the thread is started if needed,
-     * returns a placeholder if rendering is in progress,
-     * and only synchronously renders in a rare fallback path.
+  * ensures the thread is started if needed,
+  * returns a placeholder if rendering is in progress,
+  * and only synchronously renders in a rare fallback path.
 
 Continuous zoom preview (the “stretch while rerastering” part):
 
 * On mouse wheel inside the map bounds:
 
-  1. Record the view currently being displayed (“base view”).
-  2. Update the viewport by zooming around the cursor.
-  3. Increment view_token and immediately call Game._start_world_map_thread(...)
-     to generate the new high-res surface for this view.
-  4. Build a preview_surface by cropping/rescaling the *last drawn* surface from
-     the *last drawn* view into the new desired view.
-  5. Render loop keeps updating the preview surface every scroll tick, while
-     the background render runs.
+1. Record the view currently being displayed (“base view”).
+2. Update the viewport by zooming around the cursor.
+3. Increment view_token and immediately call Game._start_world_map_thread(...)
+  to generate the new high-res surface for this view.
+4. Build a preview_surface by cropping/rescaling the *last drawn* surface from
+  the *last drawn* view into the new desired view.
+5. Render loop keeps updating the preview surface every scroll tick, while
+  the background render runs.
 
 Important implementation detail:
 
 * The preview must be built from the actual surface/view pair that was last shown.
-  If you build a preview from a surface that does not correspond to the view you
-  claim it represents, the crop/rescale math becomes wrong (symptoms: preview
-  updates once, then appears to “freeze”, or the image “jumps” when swapping).
+If you build a preview from a surface that does not correspond to the view you
+claim it represents, the crop/rescale math becomes wrong (symptoms: preview
+updates once, then appears to “freeze”, or the image “jumps” when swapping).
 
 ## World map generation (WorldMapScene._render_overmap)
 
@@ -207,55 +250,55 @@ resolution (not 1:1 with tiles) based on the current viewport.
 
 1. Determine render size (display-facing)
 
-   * The world map surface is sized to the current window with margins:
-     target_w = max(640, renderer.width - 64)
-     target_h = max(480, renderer.height - 180)
-   * Current implementation uses render_scale = 1.0:
-     px_w = max(320, int(target_w * render_scale))  # typically == target_w
-     px_h = max(240, int(target_h * render_scale))  # typically == target_h
-   * Two surfaces are built:
-     hi_surf      (main map)
-     hi_surf_corr (ALT corruption-field view)
+* The world map surface is sized to the current window with margins:
+  target_w = max(640, renderer.width - 64)
+  target_h = max(480, renderer.height - 180)
+* Current implementation uses render_scale = 1.0:
+  px_w = max(320, int(target_w * render_scale))  # typically == target_w
+  px_h = max(240, int(target_h * render_scale))  # typically == target_h
+* Two surfaces are built:
+  hi_surf      (main map)
+  hi_surf_corr (ALT corruption-field view)
 
 2. Establish the world viewport in world-tile coordinates
 
-   * If no view is provided: render the full world.
-   * If a view is provided: clamp it to world extents and use it to map pixels
-     to world coordinates.
+* If no view is provided: render the full world.
+* If a view is provided: clamp it to world extents and use it to map pixels
+  to world coordinates.
 
 3. Choose Julia parameters (c and Julia-plane extents)
 
-   * Uses game.overmap_params when present and populated.
-   * Otherwise picks a curated entry from tools/c_path.csv (seeded deterministically).
-   * The chosen values are stored back into game.overmap_params.
+* Uses game.overmap_params when present and populated.
+* Otherwise picks a curated entry from tools/c_path.csv (seeded deterministically).
+* The chosen values are stored back into game.overmap_params.
 
 4. Choose iteration count based on zoom
 
-   * zoom_factor = world_max_wx / view_span_wx
-   * iters = 64 + int(32 * log(zoom_factor)), capped at 1024
-   * This increases detail when zoomed in, while bounding worst-case render time.
+* zoom_factor = world_max_wx / view_span_wx
+* iters = 64 + int(32 * log(zoom_factor)), capped at 1024
+* This increases detail when zoomed in, while bounding worst-case render time.
 
 5. Render buffers (fast path preferred)
 
-   * Preferred: edgecaster.overmap_accel.render_overmap_buffers_numpy(...)
-     returns rgb_main and rgb_corr for the chosen view.
-   * Fallback: per-pixel scalar sampling in _render_overmap()
-     (classify tile → biome index → color; and optionally compute ALT field per pixel).
+* Preferred: edgecaster.overmap_accel.render_overmap_buffers_numpy(...)
+  returns rgb_main and rgb_corr for the chosen view.
+* Fallback: per-pixel scalar sampling in _render_overmap()
+  (classify tile → biome index → color; and optionally compute ALT field per pixel).
 
 6. ALT corruption view semantics
 
-   * The ALT view visualizes the distortion field at z0 (the Julia coordinate
-     corresponding to that world position), not the full escape-time “height”.
-   * Encoding (scalar fallback matches this intent):
+* The ALT view visualizes the distortion field at z0 (the Julia coordinate
+  corresponding to that world position), not the full escape-time “height”.
+* Encoding (scalar fallback matches this intent):
 
-     * R channel ~ dx direction (real component)
-     * B channel ~ dy direction (imag component)
-     * G channel ~ envelope strength
+  * R channel ~ dx direction (real component)
+  * B channel ~ dy direction (imag component)
+  * G channel ~ envelope strength
 
 7. Final surfaces
 
-   * The render produces surfaces at (target_w, target_h) via smoothscale.
-   * The result surfaces (main + ALT) are what get cached and displayed.
+* The render produces surfaces at (target_w, target_h) via smoothscale.
+* The result surfaces (main + ALT) are what get cached and displayed.
 
 ## Local overworld zone generation (mapgen.generate_fractal_overworld)
 
@@ -263,42 +306,42 @@ When generating an overworld zone (depth 0), the generator conceptually does:
 
 1. Determine this zone’s global tile extents
 
-   * gx0 = zx * cfg.world_width
-   * gy0 = zy * cfg.world_height
-   * gx1 = gx0 + cfg.world_width
-   * gy1 = gy0 + cfg.world_height
+* gx0 = zx * cfg.world_width
+* gy0 = zy * cfg.world_height
+* gx1 = gx0 + cfg.world_width
+* gy1 = gy0 + cfg.world_height
 
 2. Map each local tile to a Julia-plane coordinate
 
-   * The canonical requirement is that this mapping uses the same run parameters
-     as the overmap (same visual_c and Julia-plane extents), so that local tiles
-     correspond to what the player saw on the world map.
+* The canonical requirement is that this mapping uses the same run parameters
+  as the overmap (same visual_c and Julia-plane extents), so that local tiles
+  correspond to what the player saw on the world map.
 
 3. Sample Julia escape-time height using the corrupted iterator
 
-   * Uses the shared core routine (scalar or numpy-grid path) that applies:
-     z_{n+1} = z_n^2 + c + d(z_n)
+* Uses the shared core routine (scalar or numpy-grid path) that applies:
+  z_{n+1} = z_n^2 + c + d(z_n)
 
 4. Convert the sampled fields into terrain representation
 
-   * classify tile → glyph and base tint.
-   * Phase 1 corruption may affect visuals (glyph/tint) but not structures.
+* classify tile → glyph and base tint.
+* Phase 1 corruption may affect visuals (glyph/tint) but not structures.
 
 Performance note:
 
 * Local generation prefers numpy grid fast paths when available. The scalar path
-  remains as fallback.
+remains as fallback.
 
 Walkability note (current design):
 
 * The overworld is intentionally open right now; water/roughness may be visually
-  represented but traversal is generally permissive.
+represented but traversal is generally permissive.
 * POIs and explicit placed structures can introduce blockers.
 
 ## Refreshing existing overworld zones when corruption changes
 
 * When corruption settings change, the game triggers a “visual refresh” of already
-  instantiated depth-0 zones via mapgen.refresh_fractal_overworld_visuals().
+instantiated depth-0 zones via mapgen.refresh_fractal_overworld_visuals().
 * This recomputes glyph/tint but preserves protected tiles/structures.
 
 ## Corruption (Phase 1) details
@@ -318,28 +361,28 @@ Key pieces:
 
 1. CorruptionParams (edgecaster/corruption.py)
 
-   * freq: base frequency of the underlying noise field
-   * amp: distortion amplitude (before envelope scaling)
-   * right_start/right_sharpness/right_weight: concentrates distortion on the right side
-   * spot_*: scattered peaks (often gated by the right-side mask)
-   * hotspots: explicit Gaussian bumps (jx, jy, strength, sigma)
-   * anchors: suppression regions (used to protect/shape the field)
+* freq: base frequency of the underlying noise field
+* amp: distortion amplitude (before envelope scaling)
+* right_start/right_sharpness/right_weight: concentrates distortion on the right side
+* spot_*: scattered peaks (often gated by the right-side mask)
+* hotspots: explicit Gaussian bumps (jx, jy, strength, sigma)
+* anchors: suppression regions (used to protect/shape the field)
 
 2. distortion_dz() performance strategy
 
-   * Uses LUT sampling over z in [-2,2] x [-2,2] for speed during iteration.
-   * LUT construction may use numpy if available; scalar fallback exists.
-   * distortion_np() must remain aligned with distortion_dz() so fast paths do not drift.
+* Uses LUT sampling over z in [-2,2] x [-2,2] for speed during iteration.
+* LUT construction may use numpy if available; scalar fallback exists.
+* distortion_np() must remain aligned with distortion_dz() so fast paths do not drift.
 
 3. “Mountains of corruption”
 
-   * These are peaks/ridges in the distortion field (d(z)), not a literal height boost.
-   * Right-side masking ensures the left is quiet and intensity grows to the right.
+* These are peaks/ridges in the distortion field (d(z)), not a literal height boost.
+* Right-side masking ensures the left is quiet and intensity grows to the right.
 
 4. Hotspots (“corruption cones”)
 
-   * Stored as explicit bumps; they add to env(z) and can also add a directed component
-     (via gradients) so they distort even where the base field is near zero.
+* Stored as explicit bumps; they add to env(z) and can also add a directed component
+  (via gradients) so they distort even where the base field is near zero.
 
 ## Key tuning knobs (where to edit)
 
@@ -356,16 +399,16 @@ Performance / fast-path notes:
 
 * Numpy acceleration is used opportunistically in:
 
-  * edgecaster/overmap_accel.py (world map)
-  * edgecaster/mapgen.py (local zones)
-  * edgecaster/corruption.py (LUT construction / numpy distortion)
+* edgecaster/overmap_accel.py (world map)
+* edgecaster/mapgen.py (local zones)
+* edgecaster/corruption.py (LUT construction / numpy distortion)
 * Without numpy, world map rendering and local generation can become slow, and
-  the UI may stutter if heavy work happens on the main thread.
+the UI may stutter if heavy work happens on the main thread.
 
 Temporary UI (for experimentation):
 
 * world_map_scene.py currently includes a top-left slider to set corruption level
-  and trigger rerenders on mouse-up.
+and trigger rerenders on mouse-up.
 
 ## Future (Phase 2) notes
 
@@ -373,9 +416,9 @@ If corruption should change walkability / structures:
 
 * We will need to either:
 
-  * regenerate zones (or parts of them) when corruption changes, OR
-  * introduce an overlay system whose walkability depends on corruption while
-    preserving POIs/structures carefully.
+* regenerate zones (or parts of them) when corruption changes, OR
+* introduce an overlay system whose walkability depends on corruption while
+ preserving POIs/structures carefully.
 
 Phase 1 already provides:
 

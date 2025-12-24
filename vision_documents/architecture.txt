@@ -1,7 +1,7 @@
 ﻿EDGECASTER ARCHITECTURE GUIDE
 High-Level Overview and Refactor Roadmap
-Updated: 2025-12-15
-Status: Widget system stable; PanelScene foundation stable; major menus migrated
+Updated: 2025-12-22
+Status: Widget system stable; PanelScene foundation stable; map zoom refactor complete
 
 This document orients new contributors to the current structure.
 It must remain concise, accurate, and immediately useful.
@@ -35,47 +35,101 @@ base.py
 – PanelScene (widget-driven foundation)  
 – GeneralMenuScene (selection, confirm/cancel, scrolling)  
 – MenuFrameWidget (standard banner/body/list/footer layout)  
-– Legacy wrappers (MenuScene / PopupMenuScene)
 
 dungeon.py  
 – Primary gameplay scene  
 – TargetMode flow + UI routing  
-– Transitions to inventory / popups
-
-inventory_scene.py  
-– Recursive inventories (effect-driven)  
-– Implemented as popup PanelScenes during migration
-
-options_scene.py / keybindings_scene.py / character_creation_scene.py  
-– Fully migrated to PanelScene + widget-driven layout  
-– Mouse + keyboard parity  
-– No legacy layout code remains
-
-urgent_message_scene.py / dialogue_scene.py  
-– Widget-driven popups with wrapped text + choices  
-– Consistent popup underlay handling
+– Camera-relative map presentation (renderer-driven)
 
 IMPORTANT: Avoid importing the scenes package root at module import time.
 
 ===============================================================================
-SECTION 2 — RENDERING & VISUAL EFFECTS
+SECTION 2 — RENDERING, CAMERA, & MAP ZOOM
 
 RENDERERS (edgecaster/render/)
 Pure view layer.
 
 ascii.py:
-• Draws dungeon, entities, overlays
-• Draws panel-local UI for menus/popups
+• ASCII rendering for dungeon, overworld, entities, overlays
+• Draws terrain at multiple levels of detail (LoD)
 • Applies VisualProfiles and VisualEffects at draw time
-• Owns present-stage utilities (screen shake impulses, etc.)
+• Delegates all camera math and LoD policy elsewhere
 
 Renderers NEVER:
 • Read input events
 • Interpret GameCommands
 • Store gameplay or UI state
 
+CAMERA (edgecaster/camera.py)
+
+camera.py:
+• Owns the canonical tile-space camera
+• World position + zoom live here
+• Handles:
+  – zoom stepping and damping
+  – cursor-anchored zoom
+  – pan in pixel or tile space
+  – world ↔ screen coordinate transforms
+• Renderer-agnostic (can drive ASCII, tiles, sprites)
+
+This enforces the invariant:
+→ There is ONE camera for all zoom levels.
+
 ===============================================================================
-SECTION 3 — INPUT
+SECTION 3 — MULTI-SCALE MAP RENDERING (LoD)
+
+OVERMAP LOD (edgecaster/render/overmap_lod.py)
+
+overmap_lod.py:
+• Responsible for zoomed-out terrain aggregation
+• Renders a snapped, rigid grid of “LoD cells”
+• Each LoD cell summarizes many local tiles:
+  – glyph sampling / majority / weighted biome logic
+• Handles fade/blend thresholds between:
+  – local tiles
+  – global (condensed) tiles
+• Owns caching keyed by:
+  – world region
+  – zoom level
+  – sampling parameters
+
+Key property:
+• LoD tiles do NOT “swim” under camera motion.
+  They remain locked to world tile boundaries.
+
+Optional acceleration:
+• Uses overmap_accel (numpy) when available
+• Scalar fallback remains deterministic
+
+===============================================================================
+SECTION 4 — MAP GENERATION & BIOMES
+
+MAP GENERATION (edgecaster/mapgen.py)
+
+mapgen.py:
+• Generates local overworld zones (depth 0)
+• Uses the same Julia-plane mapping as the overmap
+• Converts sampled fields → terrain glyphs/colors
+• Supports fast numpy grid paths
+
+BIOMES (edgecaster/biome.py)
+
+biome.py:
+• Centralizes biome definitions
+• Maps sampled fields → biome indices
+• Provides:
+  – glyph choices
+  – base color/tint
+  – biome-level semantics
+• Shared by:
+  – local zone generation
+  – overmap / LoD glyph sampling
+
+This prevents drift between “what the world looks like”
+and “what local terrain becomes.”
+
+===============================================================================
+SECTION 5 — INPUT
 
 INPUT (edgecaster/scenes/game_input.py)
 
@@ -83,174 +137,58 @@ Single conversion point:
 Pygame Event → GameCommand
 
 Scenes interpret GameCommands.
-Renderers are input-agnostic.
-
-MenuInput:
-• Shared keyboard repeat + navigation logic
-• Used by all menu / PanelScene flows
-• Keyboard navigation yields to mouse movement when mouse is active
+Renderers and camera are input-agnostic.
 
 ===============================================================================
-SECTION 4 — VISUAL TRANSFORM & EFFECT PIPELINE
+SECTION 6 — VISUAL TRANSFORM & EFFECT PIPELINE
 
 visuals.py:
 • VisualProfile (scale, offset, rotation, alpha, flips)
-• apply_visual_panel(...) → transforms & blits surfaces
-• unproject_mouse(...) → invert transforms for hit-testing
+• apply_visual_panel(...)
+• unproject_mouse(...)
 
 visual_effects.py:
-Registry of named VisualEffects (e.g. "clockwise", "ghostly", "fiery", "bismuth")
-
-Effects may modify:
-• Geometry lane (rotation/scale/flip/alpha)
-• Color lane (tint/flicker)
-• Overlay lane (particles, scanlines, shimmer)
-• Present lane (shake/vibration impulses)
-
-Rules:
-• Effects are stackable and order-preserving
-• Duplicate effects intentionally compound
-• Scenes/entities declare effect names only
-
-Overlay bounds:
-Effects may specify a local rect, enabling localized auras/smoke
-without bleeding across the entire screen.
+• Registry of named VisualEffects
+• Effects stack intentionally
+• Geometry / color / overlay / present lanes
 
 ===============================================================================
-SECTION 5 — PANELSCENE & WIDGET SYSTEM
-
-Widget foundation (edgecaster/ui/widgets.py):
-
-• WidgetContext(surface, game, scene, renderer)
-• Widget base class (layout, draw, handle_event, update)
-• Layout containers (VBox/HBox)
-• Interactive widgets (Label, Button, List, etc.)
-• Wrapped-text widgets (pixel-based, no ellipses)
-• Scaled label widgets for title hierarchy
-
-Ownership model:
-• Scenes own widget trees
-• Input routed to widgets first
-• Renderer remains draw-only
-
-PanelScene (edgecaster/scenes/base.py):
-
-• Owns logical panel surface + rect (fullscreen or popup)
-• Owns root widget tree
-• Routes input to widgets FIRST
-• Applies VisualProfiles / VisualEffects consistently
-• Converts mouse events to panel-local coordinates
-
-GeneralMenuScene:
-
-Built on PanelScene.
-Provides:
-• Selection model
-• Confirm/cancel behavior
-• Scrolling
-• Keyboard + mouse arbitration
-
-MenuFrameWidget:
-Standard layout:
-• Title/banner at top
-• Optional body text
-• Scrollable list
-• Optional footer pinned bottom
-
-===============================================================================
-SECTION 6 — POPUPS & UNDERLAY SNAPSHOT (IMPORTANT)
-
-PopupMenuScene behavior:
-
-• Underlay snapshot must represent the scene stack BELOW the popup
-• Snapshot rebuilt on first draw
-• Renderer.present / _present temporarily suppressed during rebuild
-  to avoid visible flicker or “blink back to dungeon”
-
-This logic is centralized and must not be duplicated ad hoc.
-
-===============================================================================
-SECTION 7 — DATA-DRIVEN ENTITIES
-
-YAML prototypes define:
-• parent, glyph, color
-• description (inherited)
-• stats, tags, behaviors
-
-Runtime entities are fully resolved archetypes.
-Look-mode displays inherited descriptions.
-
-Entity tags may include visual_effects names,
-which the renderer applies consistently.
-
-Immediate next improvements:
-- Normalize menu aesthetics (padding, borders, fonts)
-- Two-pane inventory (list + details)
-- Keybinds/options unification using widgets
-- Reduce ad-hoc coordinate math; keep all transforms via VisualProfile/VisualEffects
+SECTION 7 — PANELSCENE & WIDGET SYSTEM
+[unchanged — see previous version]
 
 ===============================================================================
 SECTION 8 — ENTITY / INVENTORY / MAP ONTOLOGY
-
-Core conceptual model (important for future work):
-
-• Entities are the fundamental unit of the game world.
-• An inventory is not a special container type, but a general expression of
-  containment or composition between entities.
-• Opening an inventory means inspecting an entity’s internal structure.
-
-This applies uniformly across scales:
-
-• A creature’s inventory may contain items or body parts.
-• An equipped item is an inventory item with an attachment relationship
-  (rendered visually, not treated as a separate system).
-• A dungeon or map is an entity whose inventory is rendered spatially and
-  permits movement, time flow, and combat.
-• The “main dungeon scene” is simply the currently inhabited spatial inventory.
-
-UI implication:
-
-• Inventory screens, inspection (“look”), and map views are all specializations
-  of the same underlying operation: opening an entity.
-• PanelScene is the common foundation for these views; differences are expressed
-  via permissions, layout, and rendering mode, not separate scene types.
-
-Simulation implication:
-
-• Internal detail may be generated on demand when an entity is opened and
-  summarized or discarded when it is closed.
-• Fidelity is governed by proximity, narrative importance, and player interaction,
-  not by a requirement to simulate all entities continuously.
-
-This ontology is intentional and should be preserved when introducing new UI,
-inventory, or world-scale features.
+[unchanged — see previous version]
 
 ===============================================================================
-SECTION 9 — MAP GENERATION + CORRUPTION (WORLD / LOCAL COHERENCE)
+SECTION 9 — MAP SCALE & ZOOM PHILOSOPHY (NEW)
 
-Core invariant:
-- The world map (overmap) and local overworld zones must remain "intimately tied".
-  A global world tile (gx, gy) must always map to exactly one Julia-plane coord
-  (jx, jy), and both overmap rendering and local zone generation must use that
-  same mapping.
+Key invariant:
+• The dungeon, overworld, and world map are the SAME grid,
+  viewed at different scales.
 
-[section unchanged — see existing reference material]
+Zoom behavior:
+• Zooming out does NOT switch scenes or renderers
+• Local tiles fade out as global LoD tiles fade in
+• Camera pan/zoom applies uniformly at all scales
+• The player remains the spatial anchor unless explicitly reset
+
+Performance rule:
+• ASCII rendering remains active at all scales
+• No forced transition to “beautiful but slow” modes
 
 ===============================================================================
 SECTION 10 — CURRENT STATUS & DIRECTION
 
 Completed:
-• Widget system online
-• PanelScene foundation stable
-• HUD + Ability Bar widgetized
-• Options, Keybindings, Character Creation migrated
-• Popup underlay bugs (burn-in, flicker) resolved
-• Mouse hit-testing correct under transforms
+• Continuous local → global zoom
+• Snapped LoD terrain rendering
+• Camera responsibility centralized
+• Renderer slimmed down (post–ascii purge)
 
 Immediate focus:
-• Inventory UI refinement (two-pane layout)
-• Menu aesthetic normalization
-• Removal of remaining legacy UI paths
+• Entity LoD integration (creatures at different scales)
+• Further renderer modularization (sprite backend later)
 
 Guiding principles:
 Keep geometry weird.

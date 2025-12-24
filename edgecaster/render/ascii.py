@@ -4,6 +4,8 @@ import math
 import random
 from pathlib import Path
 from typing import Tuple, List, Dict
+from edgecaster.render.overmap_lod import OvermapLodRenderer, choose_lod_blend
+from edgecaster.camera import TileCamera
 
 
 from edgecaster.game import Game
@@ -169,6 +171,19 @@ class AsciiRenderer:
 
 
 
+
+        # Zoomed-out overmap LOD renderer (terrain only).
+        # This keeps heavy sampling/caching logic out of ascii.py.
+        try:
+            sx, sy = self.zone_grid_slots
+        except Exception:
+            sx, sy = (3, 2)
+        self.overmap_lod = OvermapLodRenderer(
+            get_font=self._get_cached_map_font,
+            slots_x=int(sx),
+            slots_y=int(sy),
+        )
+
     # UI state access (scene-owned view-model preferred)                 #
     # ------------------------------------------------------------------ #
 
@@ -241,10 +256,18 @@ class AsciiRenderer:
 
 
     def _map_origin_base(self) -> Tuple[int, int]:
-        # Base origin before pan
+        # Base origin before pan.
+        # IMPORTANT: this must NOT depend on self.tile (zoom), or the map will "slide"
+        # down/up as you zoom, creating huge black bars at high zoom.
         map_origin_x = 8
-        map_origin_y = self.top_bar_height + 8 + int(self.tile * 4)
+
+        # Keep any extra padding based on the *base* tile size (or make it a constant),
+        # so it stays stable across zoom levels.
+        stable_pad = int(self.base_tile * 4)   # was int(self.tile * 4)
+
+        map_origin_y = self.top_bar_height + 8 + stable_pad
         return map_origin_x, map_origin_y
+
 
 
     def pan_by_px(self, dx: float, dy: float) -> None:
@@ -292,6 +315,31 @@ class AsciiRenderer:
         self.tile = max(8, int(round(self.base_tile * self.zoom)))
         self.map_font = pygame.font.SysFont("consolas", self.tile)
         self.center_camera_on_player(game, snap_zoom=False)
+    def _sync_zoom_dependent_resources(self) -> None:
+        """Update any cached resources that depend on current camera zoom.
+
+        Kept as a single call-site so camera refactors don't require chasing
+        down tile/font/icon updates throughout the renderer.
+        """
+        # Keep legacy `self.tile` in lockstep with the camera tile size.
+        self.tile = int(self.camera.tile_px)
+
+        # Map glyph font scales with zoom; keep style consistent (NOT bold).
+        try:
+            self.map_font = pygame.font.SysFont("consolas", int(self.tile), bold=False)
+        except Exception:
+            self.map_font = pygame.font.SysFont("consolas", max(1, int(self.tile)))
+
+        # Rescale map-sized icons when zoom changes.
+        if getattr(self, "bismuth_icon", None) is not None:
+            try:
+                self.bismuth_icon_map = pygame.transform.smoothscale(
+                    self.bismuth_icon, (int(self.tile), int(self.tile))
+                )
+            except Exception:
+                self.bismuth_icon_map = None
+
+
 
 
     def draw_world(self, game: Game, world: World) -> None:
@@ -681,6 +729,30 @@ class AsciiRenderer:
         view_min_wx = abs_wx - view_span_wx * 0.5
         view_min_wy = abs_wy - view_span_wy * 0.5
 
+
+        # Absolute world size in tiles (global coordinates). Used for clamping at edges to avoid
+        # sampling out-of-bounds (persistent black bars at max pan / max zoom).
+        cfg = getattr(game, "cfg", None)
+        total_w = total_h = 0
+        if cfg is not None:
+            try:
+                total_w = int(cfg.world_map_screens * cfg.world_width)
+                total_h = int(cfg.world_map_screens * cfg.world_height)
+            except Exception:
+                total_w = total_h = 0
+
+        # Clamp the visible window to world bounds.
+        if total_w > 0:
+            if view_span_wx >= float(total_w):
+                view_min_wx = 0.0
+            else:
+                view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
+        if total_h > 0:
+            if view_span_wy >= float(total_h):
+                view_min_wy = 0.0
+            else:
+                view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
+
         cell_w_tiles = max(1, int(cell_w_tiles))
         cell_h_tiles = max(1, int(cell_h_tiles))
 
@@ -693,6 +765,16 @@ class AsciiRenderer:
         snap_h = float(max(1, int(snap_base_tiles or cell_h_tiles)))
         snap_min_wx = math.floor(view_min_wx / snap_w) * snap_w
         snap_min_wy = math.floor(view_min_wy / snap_h) * snap_h
+
+
+        # Clamp snap_min as well: floor-snapping can push the sampled window out of bounds at
+        # the far edge even when view_min is clamped. This is the classic "bars at max X/Y" case.
+        if total_w > 0:
+            max_snap_min_wx = max(0.0, float(total_w) - view_span_wx)
+            snap_min_wx = max(0.0, min(snap_min_wx, max_snap_min_wx))
+        if total_h > 0:
+            max_snap_min_wy = max(0.0, float(total_h) - view_span_wy)
+            snap_min_wy = max(0.0, min(snap_min_wy, max_snap_min_wy))
 
         # Fractional scroll within the snapped cell grid (in pixels).
         # This makes panning/zooming move the grid smoothly while keeping it rigidly aligned
@@ -711,16 +793,6 @@ class AsciiRenderer:
         cell_px_w = max(1, int(round(cell_px_w_f)))
         cell_px_h = max(1, int(round(cell_px_h_f)))
 
-        # Determine total world size (in tiles) for overmap_accel.
-        cfg = getattr(game, "cfg", None)
-        total_w = total_h = 0
-        if cfg is not None:
-            try:
-                total_w = int(cfg.world_map_screens * cfg.world_width)
-                total_h = int(cfg.world_map_screens * cfg.world_height)
-            except Exception:
-                total_w = total_h = 0
-
         p = getattr(game, "overmap_params", None)
         if not p or total_w <= 1 or total_h <= 1:
             return out
@@ -735,9 +807,34 @@ class AsciiRenderer:
         base_cx = int(math.floor(snap_min_wx / float(cell_w_tiles)))
         base_cy = int(math.floor(snap_min_wy / float(cell_h_tiles)))
 
-        # Quick check: if the top-left cell isn't cached, we need to sample.
-        k0 = (lod_id, cell_w_tiles, cell_h_tiles, base_cx, base_cy, sig)
-        need_sample = k0 not in cache
+        # Decide whether we must sample this viewport into the per-cell cache.
+        #
+        # IMPORTANT: we must not only check the top-left cell. When panning slightly,
+        # base_cx/base_cy can stay the same while new columns/rows enter on the far edge.
+        # If we only sample when (base_cx,base_cy) is missing, we'll get "black bars"
+        # until the camera moves far enough to change base_cx/base_cy.
+        need_sample = False
+        if cache:
+            # Check the perimeter (O(cols+rows)) which is cheap and catches new edge cells.
+            last_c = cols - 1
+            last_r = rows - 1
+            for cc in range(cols):
+                if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + cc, base_cy + 0, sig) not in cache:
+                    need_sample = True
+                    break
+                if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + cc, base_cy + last_r, sig) not in cache:
+                    need_sample = True
+                    break
+            if not need_sample:
+                for rr in range(rows):
+                    if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + 0, base_cy + rr, sig) not in cache:
+                        need_sample = True
+                        break
+                    if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + last_c, base_cy + rr, sig) not in cache:
+                        need_sample = True
+                        break
+        else:
+            need_sample = True
 
         if need_sample:
             try:
@@ -944,6 +1041,30 @@ class AsciiRenderer:
         view_span_wy = float(rect_h) / float(world_scale)
         view_min_wx = abs_wx - view_span_wx * 0.5
         view_min_wy = abs_wy - view_span_wy * 0.5
+
+
+        # Absolute world size in tiles (global coordinates). Used for clamping at edges to avoid
+        # sampling out-of-bounds (persistent black bars at max pan / max zoom).
+        cfg = getattr(game, "cfg", None)
+        total_w = total_h = 0
+        if cfg is not None:
+            try:
+                total_w = int(cfg.world_map_screens * cfg.world_width)
+                total_h = int(cfg.world_map_screens * cfg.world_height)
+            except Exception:
+                total_w = total_h = 0
+
+        # Clamp the visible window to world bounds.
+        if total_w > 0:
+            if view_span_wx >= float(total_w):
+                view_min_wx = 0.0
+            else:
+                view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
+        if total_h > 0:
+            if view_span_wy >= float(total_h):
+                view_min_wy = 0.0
+            else:
+                view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
 
         # ---------------------------------------------------------------------
         # Accel path: render tiny rgb buffer for the visible window and quantize
