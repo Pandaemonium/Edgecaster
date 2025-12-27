@@ -1,8 +1,11 @@
 """Pygame-based ASCII-style renderer with ability bar and targeting."""
 import pygame
 import math
+import random
 from pathlib import Path
 from typing import Tuple, List, Dict
+from edgecaster.render.overmap_lod import OvermapLodRenderer, choose_lod_blend
+from edgecaster.camera import TileCamera
 
 
 from edgecaster.game import Game
@@ -36,10 +39,21 @@ class AsciiRenderer:
         self.base_tile = tile
         self.zoom = 1.0
         self.tile = tile
+        # Continuous world scale (pixels per world-tile). This may be very large when zooming into micro-realms.
+        self.tile_px = float(tile)
+        # Clamped glyph/icon size used for fonts/icons (keeps rendering sane at extreme zoom).
+        self.glyph_px = int(tile)
         self.origin_x = 0
         self.origin_y = 0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        # Global-zone glyph density tuning (for local->global zoom blend).
+        # More slots => less dead space inside each global zone-cell.
+        # You can tweak these live in a debug console if you expose them.
+        self.zone_grid_slots = (9, 6)  # was (3, 2)
+        self.zone_grid_fill = 1.05
+        self.zone_grid_fill_x = 0.95
+        self.zone_grid_fill_y = 1.50     # let glyphs run slightly "hot" to reduce gaps
         self.surface_flags = pygame.RESIZABLE
 
         self.visual_fx = VisualEffectManager()
@@ -151,9 +165,28 @@ class AsciiRenderer:
         # but for now it's a thin wrapper around existing draw_* methods.
         self.hud_widget = HUDWidget()
 
+        # Cache for dynamic *map* fonts used by LOD/global layers.
+        # IMPORTANT: this cache must match the styling of `self.map_font`.
+        # Previously, the LOD layers used bold fonts which made the global glyphs
+        # look like a different tileset.
+        self._map_font_cache: Dict[int, pygame.font.Font] = {}
 
 
 
+
+
+
+        # Zoomed-out overmap LOD renderer (terrain only).
+        # This keeps heavy sampling/caching logic out of ascii.py.
+        try:
+            sx, sy = self.zone_grid_slots
+        except Exception:
+            sx, sy = (3, 2)
+        self.overmap_lod = OvermapLodRenderer(
+            get_font=self._get_cached_map_font,
+            slots_x=int(sx),
+            slots_y=int(sy),
+        )
 
     # UI state access (scene-owned view-model preferred)                 #
     # ------------------------------------------------------------------ #
@@ -227,52 +260,948 @@ class AsciiRenderer:
 
 
     def _map_origin_base(self) -> Tuple[int, int]:
-        # Base origin before pan
+        # Base origin before pan.
+        # IMPORTANT: this must NOT depend on self.tile (zoom), or the map will "slide"
+        # down/up as you zoom, creating huge black bars at high zoom.
         map_origin_x = 8
-        map_origin_y = self.top_bar_height + 8 + int(self.tile * 4)
+
+        # Keep any extra padding based on the *base* tile size (or make it a constant),
+        # so it stays stable across zoom levels.
+        stable_pad = int(self.base_tile * 4)   # was int(self.tile * 4)
+
+        map_origin_y = self.top_bar_height + 8 + stable_pad
         return map_origin_x, map_origin_y
 
-    def draw_world(self, world: World) -> None:
-        # clear main surface
-        self.surface.fill(self.bg)
-        # compute map origin offset to account for top bar and right log
+
+
+    def pan_by_px(self, dx: float, dy: float) -> None:
+        """Pan the camera by a pixel delta (logical surface pixels).
+
+        Used for right-mouse drag panning. Positive dx/dy shifts the map origin
+        right/down (i.e., the world appears to move with the mouse).
+        """
+        self.pan_x += float(dx)
+        self.pan_y += float(dy)
+
+    def center_camera_on_player(self, game: Game, *, snap_zoom: bool = True) -> None:
+        """Center the camera on the player.
+
+        IMPORTANT:
+        - World positioning must use the *true* world scale (tile_px / camera.tile_px),
+          not the clamped glyph/font size. Otherwise at extreme zoom (micro realms),
+          recenter + targeting overlays drift toward the upper-left.
+
+        glyph_px stays clamped strictly for font/icon legibility.
+        """
+        try:
+            player = game.actors[game.player_id]
+            px, py = player.pos
+        except Exception:
+            return
+
+        cam = getattr(self, "camera", None)
+
+        if snap_zoom:
+            # Snap to LoD 0 zoom immediately.
+            self.zoom = 1.0
+            if cam is not None:
+                try:
+                    cam.zoom = 1.0
+                except Exception:
+                    pass
+
+            new_scale = float(self.base_tile) * float(self.zoom)
+
+            # True world scale
+            self.tile_px = float(new_scale)
+
+            # Glyph/font scale (clamped)
+            self.glyph_px = int(max(8, min(96, round(new_scale))))
+
+            # CRITICAL: self.tile is used broadly for positioning; keep it world-scale.
+            self.tile = float(self.tile_px)
+
+            self.map_font = pygame.font.SysFont("consolas", int(self.glyph_px), bold=False)
+
+            if getattr(self, "bismuth_icon", None) is not None:
+                try:
+                    self.bismuth_icon_map = pygame.transform.smoothscale(
+                        self.bismuth_icon, (int(self.glyph_px), int(self.glyph_px))
+                    )
+                except Exception:
+                    self.bismuth_icon_map = None
+
         map_origin_x, map_origin_y = self._map_origin_base()
-        # apply pan offsets (set by zoom/pan)
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height - map_origin_y
+
+        cx = map_origin_x + map_w // 2
+        cy = map_origin_y + map_h // 2
+
+        world_scale = float(getattr(self, "tile_px", getattr(cam, "tile_px", self.base_tile)))
+        world_scale = max(1.0, world_scale)
+
+        self.pan_x = float(cx - map_origin_x - float(px) * world_scale)
+        self.pan_y = float(cy - map_origin_y - float(py) * world_scale)
+
+        # Keep TileCamera in sync if you’re using it elsewhere.
+        if cam is not None:
+            try:
+                cam.pan_x = float(self.pan_x)
+                cam.pan_y = float(self.pan_y)
+            except Exception:
+                pass
+
+
+    def reset_camera(self, game: Game) -> None:
+        """Hard-reset pan/zoom to sane defaults and center on player."""
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+
+        cam = getattr(self, "camera", None)
+        if cam is not None:
+            try:
+                cam.pan_x = 0.0
+                cam.pan_y = 0.0
+            except Exception:
+                pass
+
+        self.zoom = 1.0
+        if cam is not None:
+            try:
+                cam.zoom = 1.0
+            except Exception:
+                pass
+
+        new_scale = float(self.base_tile) * float(self.zoom)
+
+        # True world scale
+        self.tile_px = float(new_scale)
+
+        # Glyph/font scale (clamped)
+        self.glyph_px = int(max(8, min(96, round(new_scale))))
+
+        # CRITICAL: positioning uses world-scale
+        self.tile = float(self.tile_px)
+
+        self.map_font = pygame.font.SysFont("consolas", int(self.glyph_px), bold=False)
+
+        if getattr(self, "bismuth_icon", None) is not None:
+            try:
+                self.bismuth_icon_map = pygame.transform.smoothscale(
+                    self.bismuth_icon, (int(self.glyph_px), int(self.glyph_px))
+                )
+            except Exception:
+                self.bismuth_icon_map = None
+
+        self.center_camera_on_player(game, snap_zoom=False)
+
+        
+    def _sync_zoom_dependent_resources(self) -> None:
+        """Update any cached resources that depend on current camera zoom.
+
+        Kept as a single call-site so camera refactors don't require chasing
+        down tile/font/icon updates throughout the renderer.
+        """
+        # World-tile -> screen pixels (true world scale).
+        try:
+            tpx = float(getattr(self.camera, "tile_px", self.base_tile))
+        except Exception:
+            tpx = float(self.base_tile)
+
+        self.tile_px = float(tpx)
+        self.tile = float(tpx)  # keep legacy alias world-scale
+
+        # Clamp glyph/font size for legibility (NOT used for world placement).
+        glyph_px = int(round(self.tile_px))
+        glyph_px = max(8, min(96, glyph_px))
+        self.glyph_px = glyph_px
+
+        # Map glyph font scales with zoom; keep style consistent (NOT bold).
+        try:
+            self.map_font = pygame.font.SysFont("consolas", int(glyph_px), bold=False)
+        except Exception:
+            self.map_font = pygame.font.SysFont("consolas", max(1, int(glyph_px)))
+
+        # Rescale map-sized icons when zoom changes (use clamped glyph size).
+        if getattr(self, "bismuth_icon", None) is not None:
+            try:
+                self.bismuth_icon_map = pygame.transform.smoothscale(
+                    self.bismuth_icon, (int(glyph_px), int(glyph_px))
+                )
+            except Exception:
+                self.bismuth_icon_map = None
+
+
+
+
+
+    
+    def _smoothstep(self, a: float, b: float, x: float) -> float:
+        """Smoothly interpolate from 0..1 as x moves from a..b."""
+        if a == b:
+            return 1.0 if x >= b else 0.0
+        t = (x - a) / (b - a)
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+
+
+    def draw_world_zoomed(self, game: Game) -> None:
+        """Draw geography using an arbitrary power-of-two LOD stack.
+
+        Philosophical rule: LoD 0 is *not special*.
+        Every LOD renders the same way: a rigid grid aligned to world-tile coordinates,
+        sampled via the fast numpy overmap renderer and cached per cell.
+
+        At any moment we render at most two adjacent LOD layers and cross-fade between them.
+        Entities are drawn separately (and can later pick their own native LOD).
+        """
+        import math
+
+        # Always clear first to avoid trails while blending.
+        self.surface.fill(self.bg)
+
+        # Use the SAME map rect / origin logic as draw_world_local so the camera/pan math
+        # stays consistent at every LOD.
+        map_origin_x, map_origin_y = self._map_origin_base()
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height - map_origin_y
+        map_rect = pygame.Rect(map_origin_x, map_origin_y, max(1, map_w), max(1, map_h))
+
+        # Apply pan offsets (set by zoom/pan). This makes _render_lod_grid's inference stable.
         self.origin_x = map_origin_x + self.pan_x
         self.origin_y = map_origin_y + self.pan_y
-        palette = {
-            "~": (90, 130, 255),   # water
-            ",": (190, 170, 120),  # shore
-            ".": (140, 200, 140),  # grass
-            "T": (60, 140, 80),    # trees
-            "^": (170, 140, 100),  # hills
-            "#": (180, 180, 190),  # mountains/walls
-        }
-        for y in range(world.height):
-            for x in range(world.width):
-                tile = world.tiles[y][x]
-                if not tile.explored and not tile.visible:
+
+        # TRUE world-tile -> screen pixels scale.
+        world_scale = float(getattr(self, "tile_px", float(self.base_tile) * float(self.zoom)))
+        world_scale = max(1e-6, world_scale)
+
+        # ---------------------------------------------------------------------
+        # Choose the two adjacent LODs to render.
+        #
+        # Each LOD is a cell size in world tiles: ..., 1/4, 1/2, 1, 2, 4, 8, ...
+        # We want cell_px ~= target_glyph_px, so cell_tiles ~= target / world_scale.
+        # ---------------------------------------------------------------------
+        target_glyph_px = float(getattr(self, "lod_target_glyph_px", self.base_tile) or self.base_tile)
+        raw = target_glyph_px / world_scale  # desired cell size in tiles (can be < 1 for micro LODs)
+
+        LOD_RADIX = getattr(self, "lod_radix", 2)
+        lod_f = math.log(max(1e-12, raw), LOD_RADIX)
+
+        lod0 = int(math.floor(lod_f))
+        lod1 = lod0 + 1
+        frac = float(lod_f - lod0)  # 0..1
+
+        # Allow negative LODs (micro realms) and positive LODs (macro realms).
+        lod0 = max(-12, min(lod0, 12))
+        lod1 = max(-12, min(lod1, 12))
+        if lod1 == lod0:
+            frac = 0.0
+
+        cell0 = float(LOD_RADIX ** lod0)
+        cell1 = float(LOD_RADIX ** lod1)
+
+        # Anchor both blended layers to the same snapped origin to prevent drift.
+        snap_base = float(max(cell0, cell1))
+
+        # Smooth the blend so it's not too "linear" around the midpoint.
+        blend = self._smoothstep(0.0, 1.0, frac)
+
+        # Small deadband: when we're effectively at one LOD, don't spend time on the other.
+        eps = 0.06
+        if blend <= eps:
+            a0, a1 = 1.0, 0.0
+        elif blend >= 1.0 - eps:
+            a0, a1 = 0.0, 1.0
+        else:
+            a0, a1 = 1.0 - blend, blend
+
+        # -----------------------------------------------------------------
+        # Entity visibility / fading
+        #
+        # Goal:
+        # - When zooming OUT (macro LODs), entities should fade with the 1-tile
+        #   layer so they disappear as the terrain becomes "global".
+        # - When zooming IN (micro LODs / negative LoD), entities should NOT
+        #   immediately disappear just because the 1-tile layer stopped participating
+        #   in the terrain blend. Instead, keep them visible until a single tile
+        #   becomes *huge* on screen, then fade out gracefully.
+        # -----------------------------------------------------------------
+        raw = target_glyph_px / world_scale  # desired cell size in tiles
+
+        if raw > 1.0:
+            # Zoomed out: fade entities with contribution of the 1-tile terrain layer.
+            if abs(cell0 - 1.0) < 1e-9:
+                ent_a = float(a0)
+            elif abs(cell1 - 1.0) < 1e-9:
+                ent_a = float(a1)
+            else:
+                ent_a = 0.0
+        else:
+            # Zoomed in: only fade out when a single tile starts to fill most of the map viewport.
+            min_dim = float(min(map_rect.w, map_rect.h))
+            # ratio ~= 1 when one tile ~= entire map height/width.
+            ratio = float(world_scale) / max(1.0, min_dim)
+            start = float(getattr(self, "entity_micro_fade_start", 0.55))
+            end = float(getattr(self, "entity_micro_fade_end", 0.90))
+            ent_a = 1.0 - self._smoothstep(start, end, ratio)
+
+        ent_a = max(0.0, min(1.0, ent_a))
+        self._local_fade_alpha = int(round(255 * ent_a))
+
+        zone_w = int(getattr(game.cfg, "world_width", getattr(game.world, "width", 60) or 60))
+        zone_h = int(getattr(game.cfg, "world_height", getattr(game.world, "height", 40) or 40))
+
+        # ---------------------------------------------------------------------
+        # Render up to two layers. (Terrain only.)
+        # ---------------------------------------------------------------------
+        if a0 > 0.0:
+            grid0 = self._render_lod_grid(
+                game,
+                map_rect=map_rect,
+                zone_w=zone_w,
+                zone_h=zone_h,
+                world_scale=world_scale,
+                cell_w_tiles=cell0,
+                cell_h_tiles=cell0,
+                lod_id=lod0,
+                snap_base_tiles=snap_base,
+            )
+            grid0.set_alpha(int(round(255 * a0)))
+            self.surface.blit(grid0, (0, 0))
+
+        if a1 > 0.0 and abs(cell1 - cell0) > 1e-12:
+            grid1 = self._render_lod_grid(
+                game,
+                map_rect=map_rect,
+                zone_w=zone_w,
+                zone_h=zone_h,
+                world_scale=world_scale,
+                cell_w_tiles=cell1,
+                cell_h_tiles=cell1,
+                lod_id=lod1,
+                snap_base_tiles=snap_base,
+            )
+            grid1.set_alpha(int(round(255 * a1)))
+            self.surface.blit(grid1, (0, 0))
+
+    def _infer_world_center_from_renderer(self, game, map_rect, world_scale, zone_w, zone_h):
+        """
+        Infer ABSOLUTE world tile coordinates (global) from renderer pan/origin,
+        even when no game.camera exists.
+
+        We convert screen center -> local-tile coords, then add zone offset.
+        """
+        cx_px = map_rect.centerx
+        cy_px = map_rect.centery
+
+        dx_px = cx_px - self.origin_x
+        dy_px = cy_px - self.origin_y
+
+        local_wx = dx_px / max(1e-6, world_scale)
+        local_wy = dy_px / max(1e-6, world_scale)
+
+        zx, zy, _zz = getattr(game, "zone_coord", (0, 0, 0))
+        abs_wx = zx * zone_w + local_wx
+        abs_wy = zy * zone_h + local_wy
+        return float(abs_wx), float(abs_wy)
+
+    def _overmap_signature(self, game) -> tuple:
+        """Hashable signature for overmap sampling parameters (for cache keys)."""
+        p = getattr(game, "overmap_params", None) or {}
+
+        # Keep it simple + stable: only include knobs that affect the sampled appearance.
+        # (If you add more knobs later, include them here and the cache will self-invalidate.)
+        def _round_f(x, q=1e-5):
+            try:
+                return float(round(float(x) / q) * q)
+            except Exception:
+                return 0.0
+
+        hot = p.get("corruption_hotspots", None) or []
+        anc = p.get("corruption_anchors", None) or []
+
+        # Convert to tuples with rounding so the signature is hashable + stable.
+        hot_t = tuple(tuple(_round_f(v) for v in h) for h in hot)
+        anc_t = tuple(tuple(_round_f(v) for v in a) for a in anc)
+
+        return (
+            _round_f(p.get("view_min_jx", -2.0)),
+            _round_f(p.get("view_max_jx", 2.0)),
+            _round_f(p.get("view_min_jy", -2.0)),
+            _round_f(p.get("view_max_jy", 2.0)),
+            complex(p.get("visual_c", -0.8 + 0.156j)),
+            _round_f(p.get("corruption_level", 0.0)),
+            int(p.get("corruption_seed", 1337) or 1337),
+            _round_f(p.get("corruption_spline_weight", 0.0)),
+            hot_t,
+            anc_t,
+        )
+
+    def _render_lod_grid(
+        self,
+        game,
+        *,
+        map_rect: "pygame.Rect",
+        zone_w: int,
+        zone_h: int,
+        world_scale: float,
+        cell_w_tiles: float,
+        cell_h_tiles: float,
+        lod_id,
+        snap_base_tiles: float | None = None,
+    ) -> "pygame.Surface":
+        """Render a rigid LOD grid aligned to fixed world-tile blocks.
+
+        This is the "best of both worlds" path:
+          * rigid blocks (no swimming)
+          * all sampling uses overmap_accel (fast)
+          * results cached per cell coordinate (stable + cheap when panning)
+        """
+        import math
+
+        rect_x, rect_y, rect_w, rect_h = int(map_rect.x), int(map_rect.y), int(map_rect.w), int(map_rect.h)
+
+        out = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        if rect_w <= 0 or rect_h <= 0:
+            return out
+
+        # Determine world center in absolute world-tile coordinates.
+        cam = getattr(game, "camera", None)
+        if cam is not None:
+            abs_wx = float(getattr(cam, "world_x", 0.0))
+            abs_wy = float(getattr(cam, "world_y", 0.0))
+        else:
+            abs_wx, abs_wy = self._infer_world_center_from_renderer(
+                game, map_rect=map_rect, world_scale=world_scale, zone_w=zone_w, zone_h=zone_h
+            )
+
+        # Visible span in world tiles covered by on-screen map rect.
+        world_scale = max(1e-6, float(world_scale))
+        view_span_wx = float(rect_w) / world_scale
+        view_span_wy = float(rect_h) / world_scale
+        view_min_wx = abs_wx - view_span_wx * 0.5
+        view_min_wy = abs_wy - view_span_wy * 0.5
+
+
+        # Absolute world size in tiles (global coordinates). Used for clamping at edges to avoid
+        # sampling out-of-bounds (persistent black bars at max pan / max zoom).
+        cfg = getattr(game, "cfg", None)
+        total_w = total_h = 0
+        if cfg is not None:
+            try:
+                total_w = int(cfg.world_map_screens * cfg.world_width)
+                total_h = int(cfg.world_map_screens * cfg.world_height)
+            except Exception:
+                total_w = total_h = 0
+
+        # Clamp the visible window to world bounds.
+        if total_w > 0:
+            if view_span_wx >= float(total_w):
+                view_min_wx = 0.0
+            else:
+                view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
+        if total_h > 0:
+            if view_span_wy >= float(total_h):
+                view_min_wy = 0.0
+            else:
+                view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
+
+                cell_w_tiles = max(1e-6, float(cell_w_tiles))
+        cell_h_tiles = max(1e-6, float(cell_h_tiles))
+
+        # Snap view_min to cell boundaries so the grid is rigid/stable.
+        #
+        # IMPORTANT: when we cross-fade between two adjacent LODs (e.g. 4-tiles and 8-tiles),
+        # we must *anchor* both layers to the same snapped origin, otherwise their grids can
+        # appear to drift relative to each other while blending.
+        snap_w = max(1e-6, float(snap_base_tiles if snap_base_tiles is not None else cell_w_tiles))
+        snap_h = max(1e-6, float(snap_base_tiles if snap_base_tiles is not None else cell_h_tiles))
+        snap_min_wx = math.floor(view_min_wx / snap_w) * snap_w
+        snap_min_wy = math.floor(view_min_wy / snap_h) * snap_h
+
+
+        # Clamp snap_min as well: floor-snapping can push the sampled window out of bounds at
+        # the far edge even when view_min is clamped. This is the classic "bars at max X/Y" case.
+        if total_w > 0:
+            max_snap_min_wx = max(0.0, float(total_w) - view_span_wx)
+            snap_min_wx = max(0.0, min(snap_min_wx, max_snap_min_wx))
+        if total_h > 0:
+            max_snap_min_wy = max(0.0, float(total_h) - view_span_wy)
+            snap_min_wy = max(0.0, min(snap_min_wy, max_snap_min_wy))
+
+        # Fractional scroll within the snapped cell grid (in pixels).
+        # This makes panning/zooming move the grid smoothly while keeping it rigidly aligned
+        # to world-tile cell boundaries (no 'stuck' grid / glyph swimming).
+        offset_px_x = (view_min_wx - snap_min_wx) * world_scale
+        offset_px_y = (view_min_wy - snap_min_wy) * world_scale
+
+        # How many cells cover the viewport (+padding to avoid "island in black").
+        cols = max(1, int(math.ceil(view_span_wx / float(cell_w_tiles))) + 3)
+        rows = max(1, int(math.ceil(view_span_wy / float(cell_h_tiles))) + 3)
+
+        # Cell size in pixels.
+        cell_px_w_f = max(1e-6, float(cell_w_tiles) * world_scale)
+        cell_px_h_f = max(1e-6, float(cell_h_tiles) * world_scale)
+        # For font sizing and some bounds checks we still use integer pixels.
+        cell_px_w = max(1, int(round(cell_px_w_f)))
+        cell_px_h = max(1, int(round(cell_px_h_f)))
+
+        p = getattr(game, "overmap_params", None)
+        if not p or total_w <= 1 or total_h <= 1:
+            return out
+
+        # Per-cell cache: (lod_id, cx, cy, overmap_sig) -> (ch, (r,g,b))
+        sig = self._overmap_signature(game)
+        cache = getattr(self, "_lod_cell_cache", None)
+        if cache is None:
+            cache = {}
+            self._lod_cell_cache = cache
+
+        base_cx = int(math.floor(snap_min_wx / float(cell_w_tiles)))
+        base_cy = int(math.floor(snap_min_wy / float(cell_h_tiles)))
+
+        # Decide whether we must sample this viewport into the per-cell cache.
+        #
+        # IMPORTANT: we must not only check the top-left cell. When panning slightly,
+        # base_cx/base_cy can stay the same while new columns/rows enter on the far edge.
+        # If we only sample when (base_cx,base_cy) is missing, we'll get "black bars"
+        # until the camera moves far enough to change base_cx/base_cy.
+        need_sample = False
+        if cache:
+            # Check the perimeter (O(cols+rows)) which is cheap and catches new edge cells.
+            last_c = cols - 1
+            last_r = rows - 1
+            for cc in range(cols):
+                if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + cc, base_cy + 0, sig) not in cache:
+                    need_sample = True
+                    break
+                if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + cc, base_cy + last_r, sig) not in cache:
+                    need_sample = True
+                    break
+            if not need_sample:
+                for rr in range(rows):
+                    if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + 0, base_cy + rr, sig) not in cache:
+                        need_sample = True
+                        break
+                    if (lod_id, cell_w_tiles, cell_h_tiles, base_cx + last_c, base_cy + rr, sig) not in cache:
+                        need_sample = True
+                        break
+        else:
+            need_sample = True
+
+        if need_sample:
+            try:
+                from edgecaster.overmap_accel import render_overmap_buffers_numpy
+                import numpy as np
+
+                span_wx = float(cols * cell_w_tiles)
+                span_wy = float(rows * cell_h_tiles)
+
+                # Iter budget: interactive, with more detail when zoomed in.
+                zoom_factor = max(1.0, float(total_w) / max(1e-9, span_wx))
+                iters = 48 + int(24 * math.log(max(1.0, zoom_factor)))
+                iters = int(max(24, min(iters, 320)))
+
+                rgb_main, _rgb_corr, _peak2 = render_overmap_buffers_numpy(
+                    px_w=int(cols),
+                    px_h=int(rows),
+                    total_w=total_w,
+                    total_h=total_h,
+                    j_min_x=float(p["view_min_jx"]),
+                    j_max_x=float(p["view_max_jx"]),
+                    j_min_y=float(p["view_min_jy"]),
+                    j_max_y=float(p["view_max_jy"]),
+                    view_min_wx=float(snap_min_wx),
+                    view_min_wy=float(snap_min_wy),
+                    view_span_wx=float(span_wx),
+                    view_span_wy=float(span_wy),
+                    visual_c=p["visual_c"],
+                    iters=iters,
+                    corruption_level=float(p.get("corruption_level", 0.0) or 0.0),
+                    corruption_seed=int(p.get("corruption_seed", 1337) or 1337),
+                    spline_weight=float(p.get("corruption_spline_weight", 0.0) or 0.0),
+                    hotspots=p.get("corruption_hotspots", None),
+                    anchors=p.get("corruption_anchors", None),
+                )
+
+                from edgecaster.biome import ANCHORS_RGB, BIOME_GLYPHS_NP
+                anchors_rgb = np.asarray(ANCHORS_RGB, dtype=np.int16)
+                glyph_lut = BIOME_GLYPHS_NP.astype(np.int16, copy=False)
+                rgb16 = rgb_main.astype(np.int16)
+                dif = rgb16[:, :, None, :] - anchors_rgb[None, None, :, :]
+                dist2 = (dif * dif).sum(axis=3)
+                idx = dist2.argmin(axis=2).astype(np.int16)
+
+                glyph_codes = glyph_lut[idx]  # (rows, cols)
+                col = anchors_rgb[idx].astype(np.int16)
+                col = np.clip(col + 28, 0, 255).astype(np.uint8)
+
+                for rr in range(rows):
+                    cy = base_cy + rr
+                    for cc in range(cols):
+                        cx = base_cx + cc
+                        k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
+                        if k in cache:
+                            continue
+                        g = int(glyph_codes[rr, cc])
+                        ch = chr(g)
+                        color = (int(col[rr, cc, 0]), int(col[rr, cc, 1]), int(col[rr, cc, 2]))
+                        cache[k] = (ch, color)
+
+                max_cells = int(getattr(self, "lod_cache_max_cells", 250_000) or 250_000)
+                if len(cache) > max_cells:
+                    drop_n = max(10_000, len(cache) - max_cells)
+                    for _ in range(drop_n):
+                        try:
+                            cache.pop(next(iter(cache)))
+                        except Exception:
+                            break
+
+            except Exception:
+                return out
+
+        font_px = max(8, min(256, int(min(cell_px_w, cell_px_h) * 0.90)))
+        font = self._get_cached_map_font(font_px)
+
+        for rr in range(rows):
+            cy = base_cy + rr
+            py_f = float(rect_y) + float(rr) * float(cell_h_tiles) * float(world_scale) - float(offset_px_y)
+            # Skip rows wholly above/below the viewport (with 1-cell padding).
+            if py_f + float(cell_px_h_f) < float(rect_y - cell_px_h) or py_f > float(rect_y + rect_h + cell_px_h):
+                continue
+
+            for cc in range(cols):
+                cx = base_cx + cc
+                px_f = float(rect_x) + float(cc) * float(cell_w_tiles) * float(world_scale) - float(offset_px_x)
+                if px_f + float(cell_px_w_f) < float(rect_x - cell_px_w) or px_f > float(rect_x + rect_w + cell_px_w):
                     continue
-                base_col = tile.tint if getattr(tile, "tint", None) else palette.get(tile.glyph, self.fg)
-                # sanitize color: ensure length 3 and ints 0-255
-                if base_col is None:
-                    base_col = self.fg
-                if len(base_col) >= 3:
-                    base_col = tuple(max(0, min(255, int(base_col[i]))) for i in range(3))
-                else:
-                    base_col = self.fg
-                if tile.visible:
-                    color = base_col
-                else:
-                    # dim the color for explored but not visible
-                    color = tuple(max(0, int(c * 0.5)) for c in base_col)
-                ch = tile.glyph
-                text = self.map_font.render(ch, True, color)
-                px = x * self.tile + self.origin_x
-                py = y * self.tile + self.origin_y
-                if px >= self.width - self.log_panel_width or py >= self.height - self.ability_bar_height:
+
+                px = int(round(px_f))
+                py = int(round(py_f))
+
+                k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
+                val = cache.get(k)
+                if not val:
                     continue
-                self.surface.blit(text, (px, py))
+                ch, color = val
+
+                surf = font.render(ch, True, color)
+                gx = px + (cell_px_w - surf.get_width()) // 2
+                gy = py + (cell_px_h - surf.get_height()) // 2
+                out.blit(surf, (gx, gy))
+
+        return out
+
+
+
+    
+    def _render_zone_grid(self, game, map_rect, zone_w: int, zone_h: int, world_scale: float) -> pygame.Surface:
+        """
+        Render a coarse ASCII glyph grid for zoomed-out views.
+
+        IMPORTANT: returns a pygame.Surface (SRCALPHA), not a Python list.
+        This keeps draw_world_zoomed() logic unchanged (it expects .set_alpha()).
+
+        Option B: Prefer Schwab's accelerated numpy overmap renderer as a *sampler*:
+          - render a very low-res rgb buffer covering the visible world window
+          - quantize each sample to (glyph, color)
+          - draw into the zone-grid surface
+
+        Fallback: if accel isn't available/ready, draw a simple placeholder grid.
+        """
+        import math
+
+        # map_rect is a pygame.Rect in your code, but tuple-unpacking works too.
+        rect_x, rect_y, rect_w, rect_h = int(map_rect.x), int(map_rect.y), int(map_rect.w), int(map_rect.h)
+
+        grid_surf = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        if rect_w <= 0 or rect_h <= 0:
+            return grid_surf
+
+        cam = getattr(game, "camera", None)
+
+        if cam is not None:
+            abs_wx = float(getattr(cam, "world_x", 0.0))
+            abs_wy = float(getattr(cam, "world_y", 0.0))
+        else:
+            abs_wx, abs_wy = self._infer_world_center_from_renderer(
+                game,
+                map_rect=map_rect,
+                world_scale=world_scale,
+                zone_w=zone_w,
+                zone_h=zone_h,
+            )
+
+
+
+        # ---- LOD step: how many world-tiles each drawn glyph cell represents ----
+        # Instead of tying to an arbitrary pixel threshold (world_scale < 6),
+        # tie LOD to the same crossfade regime used in draw_world_zoomed.
+
+        if world_scale <= 0:
+            world_scale = 1e-6
+
+        # We want the grid to start "chunking" once the global layer is becoming dominant.
+        # blend isn't passed in, but we can reconstruct something similar:
+        # derive zoom from world_scale / base_tile.
+        zoom = float(world_scale) / float(max(1, self.base_tile))
+
+        # Recompute zoom_start from map_rect + zone dimensions (same as draw_world_zoomed)
+        tile_fit_px = min(map_rect.w / float(zone_w), map_rect.h / float(zone_h))
+        zoom_start = float(tile_fit_px) / float(max(1, self.base_tile))
+
+        # ratio > 1 when zoomed out past the "zone fits" point
+        ratio = max(1.0, zoom_start / max(1e-6, zoom))
+
+        # Power-of-two steps: 1,2,4,8,... as we zoom out past zoom_start
+        lod_step = int(2 ** int(math.floor(math.log(ratio, 2))))
+        lod_step = max(1, min(lod_step, 256))
+
+
+        cell_px_w = max(1, int(round(float(lod_step) * float(world_scale))))
+        cell_px_h = max(1, int(round(float(lod_step) * float(world_scale))))
+
+
+        cols = max(1, int(math.ceil(rect_w / float(cell_px_w))))
+        rows = max(1, int(math.ceil(rect_h / float(cell_px_h))))
+
+        # Subslots: increase sampling slightly when near the blend boundary, but keep cheap.
+        slots_x = 4
+        slots_y = 4
+        if lod_step == 1:
+            if world_scale >= 10.0:
+                slots_x = slots_y = 4
+            elif world_scale >= 7.0:
+                slots_x = slots_y = 4
+            else:
+                slots_x = slots_y = 4
+
+        # Absolute world size in tiles (global coordinates)
+        cfg = getattr(game, "cfg", None)
+        total_w = total_h = 0
+        if cfg is not None:
+            try:
+                total_w = int(cfg.world_map_screens * cfg.world_width)
+                total_h = int(cfg.world_map_screens * cfg.world_height)
+            except Exception:
+                total_w = total_h = 0
+
+
+        # Visible span in world tiles covered by the on-screen map rect.
+        # This keeps sampling *locked* to camera/world coordinates (no drifting with LOD).
+        view_span_wx = float(rect_w) / float(world_scale)
+        view_span_wy = float(rect_h) / float(world_scale)
+        view_min_wx = abs_wx - view_span_wx * 0.5
+        view_min_wy = abs_wy - view_span_wy * 0.5
+
+
+        # Absolute world size in tiles (global coordinates). Used for clamping at edges to avoid
+        # sampling out-of-bounds (persistent black bars at max pan / max zoom).
+        cfg = getattr(game, "cfg", None)
+        total_w = total_h = 0
+        if cfg is not None:
+            try:
+                total_w = int(cfg.world_map_screens * cfg.world_width)
+                total_h = int(cfg.world_map_screens * cfg.world_height)
+            except Exception:
+                total_w = total_h = 0
+
+        # Clamp the visible window to world bounds.
+        if total_w > 0:
+            if view_span_wx >= float(total_w):
+                view_min_wx = 0.0
+            else:
+                view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
+        if total_h > 0:
+            if view_span_wy >= float(total_h):
+                view_min_wy = 0.0
+            else:
+                view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
+
+        # ---------------------------------------------------------------------
+        # Accel path: render tiny rgb buffer for the visible window and quantize
+        # ---------------------------------------------------------------------
+        accel_ok = False
+        rgb_main = None
+
+        p = getattr(game, "overmap_params", None)
+        if p and total_w > 1 and total_h > 1:
+            try:
+                import numpy as np
+                from edgecaster.overmap_accel import render_overmap_buffers_numpy
+
+                px_w = int(cols * slots_x)
+                px_h = int(rows * slots_y)
+
+                # Cache the expensive numpy call when the view hasn't changed meaningfully.
+                # (This cache is intentionally simple; we can refine later.)
+                key = (
+                    px_w, px_h,
+                    int(round(view_min_wx * 10)), int(round(view_min_wy * 10)),
+                    int(round(view_span_wx * 10)), int(round(view_span_wy * 10)),
+                    float(p.get("corruption_level", 0.0) or 0.0),
+                    int(p.get("corruption_seed", 1337) or 1337),
+                )
+                cached = getattr(self, "_zone_grid_accel_cache", None)
+                if cached is None:
+                    cached = {}
+                    self._zone_grid_accel_cache = cached
+
+                if key in cached:
+                    rgb_main = cached[key]
+                    accel_ok = True
+                else:
+                    # Iter budget: keep it interactive. If you want, we can tie this to lod_step.
+                    zoom_factor = max(1.0, float(total_w) / max(1e-9, view_span_wx))
+                    iters = 48 + int(24 * math.log(max(1.0, zoom_factor)))
+                    iters = int(max(24, min(iters, 320)))
+
+                    rgb_main, _rgb_corr, _peak2 = render_overmap_buffers_numpy(
+                        px_w=px_w,
+                        px_h=px_h,
+                        total_w=total_w,
+                        total_h=total_h,
+                        j_min_x=float(p["view_min_jx"]),
+                        j_max_x=float(p["view_max_jx"]),
+                        j_min_y=float(p["view_min_jy"]),
+                        j_max_y=float(p["view_max_jy"]),
+                        view_min_wx=float(view_min_wx),
+                        view_min_wy=float(view_min_wy),
+                        view_span_wx=float(view_span_wx),
+                        view_span_wy=float(view_span_wy),
+                        visual_c=p["visual_c"],
+                        iters=iters,
+                        corruption_level=float(p.get("corruption_level", 0.0) or 0.0),
+                        corruption_seed=int(p.get("corruption_seed", 1337) or 1337),
+                        spline_weight=float(p.get("corruption_spline_weight", 0.0) or 0.0),
+                        hotspots=p.get("corruption_hotspots", None),
+                        anchors=p.get("corruption_anchors", None),
+                    )
+
+                    # Store only rgb_main in cache (small enough at this resolution).
+                    cached[key] = rgb_main
+                    # Keep cache from growing forever
+                    if len(cached) > 32:
+                        # drop an arbitrary old item
+                        cached.pop(next(iter(cached)))
+
+                    accel_ok = True
+
+            except Exception:
+                accel_ok = False
+                rgb_main = None
+
+        # ---------------------------------------------------------------------
+        # Quantize RGB -> glyph + color (cheap + stable)
+        # ---------------------------------------------------------------------
+        if accel_ok and rgb_main is not None:
+            import numpy as np
+
+            from edgecaster.biome import ANCHORS_RGB, BIOME_GLYPHS_NP
+            anchors_rgb = np.asarray(ANCHORS_RGB, dtype=np.int16)
+            glyph_lut = BIOME_GLYPHS_NP.astype(np.int16, copy=False)
+            rgb16 = rgb_main.astype(np.int16)
+            dif = rgb16[:, :, None, :] - anchors_rgb[None, None, :, :]
+            dist2 = (dif * dif).sum(axis=3)
+            idx = dist2.argmin(axis=2).astype(np.int16)
+
+            glyph_codes = glyph_lut[idx]  # (px_h, px_w)
+            col = anchors_rgb[idx].astype(np.int16)
+            col = np.clip(col + 28, 0, 255).astype(np.uint8)
+
+            # Draw: one glyph per *cell* (aggregate subslots by majority vote)
+            font_px = max(8, min(64, int(min(cell_px_w, cell_px_h) * 0.90)))
+            font = self._get_cached_map_font(font_px)
+
+            for r in range(rows):
+                for c in range(cols):
+                    # aggregate subslots
+                    x0 = c * slots_x
+                    y0 = r * slots_y
+                    block = glyph_codes[y0:y0 + slots_y, x0:x0 + slots_x].reshape(-1)
+                    if block.size == 0:
+                        continue
+                    # majority vote glyph
+                    # (np.bincount wants non-negative ints)
+                    bc = np.bincount(block.astype(np.int32))
+                    g = int(bc.argmax())
+                    ch = chr(g)
+
+                    # color: average of subslots’ anchor colors
+                    col_block = col[y0:y0 + slots_y, x0:x0 + slots_x, :].reshape(-1, 3)
+                    if col_block.size == 0:
+                        continue
+                    rr = int(col_block[:, 0].mean())
+                    gg = int(col_block[:, 1].mean())
+                    bb = int(col_block[:, 2].mean())
+                    color = (rr, gg, bb)
+
+                    # cell rect in screen space
+                    px = rect_x + c * cell_px_w
+                    py = rect_y + r * cell_px_h
+
+                    # quick reject
+                    if px >= rect_x + rect_w or py >= rect_y + rect_h:
+                        continue
+
+                    # render centered
+                    surf = font.render(ch, True, color)
+                    gx = px + (cell_px_w - surf.get_width()) // 2
+                    gy = py + (cell_px_h - surf.get_height()) // 2
+                    grid_surf.blit(surf, (gx, gy))
+
+            return grid_surf
+
+        # ---------------------------------------------------------------------
+        # Fallback: cheap placeholder grid (keeps engine running if accel not ready)
+        # ---------------------------------------------------------------------
+        font_px = max(8, int(min(cell_px_w, cell_px_h) * 0.90))
+        font = self._get_cached_map_font(font_px)
+        dim = (140, 140, 150)
+
+        for r in range(rows):
+            for c in range(cols):
+                px = rect_x + c * cell_px_w
+                py = rect_y + r * cell_px_h
+                if px >= rect_x + rect_w or py >= rect_y + rect_h:
+                    continue
+                surf = font.render("·", True, dim)
+                gx = px + (cell_px_w - surf.get_width()) // 2
+                gy = py + (cell_px_h - surf.get_height()) // 2
+                grid_surf.blit(surf, (gx, gy))
+
+        return grid_surf
+
+
+    def _get_cached_font(self, px: int) -> pygame.font.Font:
+        if not hasattr(self, "_font_cache"):
+            self._font_cache = {}
+        cache = self._font_cache
+        if px not in cache:
+            cache[px] = pygame.font.SysFont("consolas", px, bold=True)
+        return cache[px]
+
+    def _get_cached_map_font(self, px: int) -> pygame.font.Font:
+        """Font cache for map glyphs (local + global layers).
+
+        Critical: keep styling consistent with `self.map_font` (non-bold). If
+        we use a bold font here, the zoomed-out / global glyphs look like a
+        different tileset even when the glyph char is identical.
+        """
+        px = int(px)
+        if px <= 0:
+            px = 1
+        f = self._map_font_cache.get(px)
+        if f is None:
+            # Match `self.map_font` styling: Consolas, NOT bold.
+            f = pygame.font.SysFont("consolas", px, bold=False)
+            self._map_font_cache[px] = f
+        return f
+
+
 
     def draw_lorenz_overlay(self, game: Game) -> None:
         """Draw Lorenz 'butterflies' with short, tapered afterimage trails."""
@@ -459,21 +1388,216 @@ class AsciiRenderer:
 
 
 
+    # ------------------------------------------------------------------
+    # Entity icon / sprite rendering (renderer-agnostic hook)
+    # ------------------------------------------------------------------
+    def get_entity_icon_surface(
+        self,
+        ent,
+        *,
+        size_px: int,
+        scene_effects: list[str] | None = None,
+        prefer_sprite: bool = True,
+    ) -> pygame.Surface:
+        """Return an RGBA surface representing an entity at a given pixel size.
+
+        This is the *general* hook UI code should use for magnified previews,
+        diagrammatic zoom, tooltips, etc. It supports:
+          - sprite/icon images (if resolvable)
+          - glyph fallback (ASCII)
+          - scene + entity visual effects (overlays, transforms, tints where applicable)
+
+        Conventions for sprite resolution (in priority order):
+          1) ent.sprite_path / ent.sprite / ent.icon_path (string path)
+          2) ent.tags['icon_path'] or ent.tags['icon'] (string path)
+          3) ent.tags['currency'] -> assets/icons/<currency>.png
+        """
+        size_px = max(1, int(size_px))
+        eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
+
+        # Lazily allocate caches
+        if not hasattr(self, "_entity_icon_cache_scaled"):
+            self._entity_icon_cache_scaled = {}  # (path, size_px) -> Surface
+        if not hasattr(self, "_entity_icon_cache_raw"):
+            self._entity_icon_cache_raw = {}  # path -> Surface
+
+        path = None
+        if prefer_sprite:
+            for attr in ("sprite_path", "sprite", "icon_path"):
+                v = getattr(ent, attr, None)
+                if isinstance(v, str) and v.strip():
+                    path = v.strip()
+                    break
+            if path is None:
+                tags = getattr(ent, "tags", {}) or {}
+                v = tags.get("icon_path") or tags.get("icon")
+                if isinstance(v, str) and v.strip():
+                    path = v.strip()
+            if path is None:
+                tags = getattr(ent, "tags", {}) or {}
+                cur = tags.get("currency")
+                if isinstance(cur, str) and cur.strip():
+                    # Convention: currencies live in assets/icons/<currency>.png
+                    path = f"assets/icons/{cur.strip()}.png"
+
+        # Try sprite path if available
+        if path:
+            surf = self._load_and_scale_icon(path, size_px=size_px)
+            if surf is not None:
+                # Apply overlays/transforms on top of the icon.
+                return self._apply_entity_effects_to_icon(ent, surf, size_px=size_px, eff=eff)
+
+        # Fallback: render a glyph (ASCII)
+        return self._render_entity_glyph_icon(ent, size_px=size_px, eff=eff)
+
+    def _load_and_scale_icon(self, path: str, *, size_px: int) -> pygame.Surface | None:
+        """Load an icon (cached) and return a smoothly scaled copy."""
+        try:
+            key = (path, int(size_px))
+            cached = self._entity_icon_cache_scaled.get(key)
+            if cached is not None:
+                return cached
+
+            raw = self._entity_icon_cache_raw.get(path)
+            if raw is None:
+                # Resolve relative paths against the project root.
+                p = Path(path)
+                if not p.is_absolute():
+                    p = (self._project_root / p).resolve()
+                raw = pygame.image.load(str(p)).convert_alpha()
+                self._entity_icon_cache_raw[path] = raw
+
+            scaled = pygame.transform.smoothscale(raw, (int(size_px), int(size_px)))
+            self._entity_icon_cache_scaled[key] = scaled
+            return scaled
+        except Exception:
+            return None
+
+    def _render_entity_glyph_icon(self, ent, *, size_px: int, eff: str) -> pygame.Surface:
+        """Glyph fallback for get_entity_icon_surface()."""
+        glyph = str(getattr(ent, "glyph", "@"))[:1]
+
+        # Pick base color using the same logic as map entity rendering.
+        base_color = getattr(self, "fg", (240, 240, 255))
+        try:
+            _, base_color = self._entity_visual(ent)
+        except Exception:
+            pass
+        color = apply_entity_color_effects(ent, base_color, eff)
+
+        # Choose a font size that tends to fill the requested square.
+        font_px = max(10, int(round(size_px * 0.90)))
+        font = pygame.font.SysFont("consolas", font_px, bold=True)
+
+        base_rect = pygame.Rect(0, 0, size_px, size_px)
+        union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+
+        canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+        ox, oy = -union_rect.left, -union_rect.top
+
+        gsurf = font.render(glyph, True, color)
+        gx = ox + (size_px - gsurf.get_width()) // 2
+        gy = oy + (size_px - gsurf.get_height()) // 2
+        canvas.blit(gsurf, (gx, gy))
+
+        if eff:
+            shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+            apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+        if eff:
+            try:
+                visual = build_visual_profile(VisualProfile(), eff)
+                out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+                apply_visual_panel(out, canvas, out.get_rect(), visual)
+                return out
+            except Exception:
+                pass
+
+        return canvas
+
+    def _apply_entity_effects_to_icon(self, ent, icon: pygame.Surface, *, size_px: int, eff: str) -> pygame.Surface:
+        """Apply overlay + geometric effects to a sprite/icon surface."""
+        base_rect = pygame.Rect(0, 0, size_px, size_px)
+        union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+
+        # Canvas with extra room for overlay bounds.
+        canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+        ox, oy = -union_rect.left, -union_rect.top
+
+        # Center the icon in the base rect region.
+        ix = ox + (size_px - icon.get_width()) // 2
+        iy = oy + (size_px - icon.get_height()) // 2
+        canvas.blit(icon, (ix, iy))
+
+        if eff:
+            shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+            apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+        # Apply geometry transforms (rotate/flip/scale) if any.
+        if eff:
+            try:
+                visual = build_visual_profile(VisualProfile(), eff)
+                out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+                apply_visual_panel(out, canvas, out.get_rect(), visual)
+                return out
+            except Exception:
+                pass
+        return canvas
+
 
     def draw_entities(self, world: World, entities) -> None:
+        """Draw all renderable entities (actors, items, features...) on the map.
+
+        This wrapper supports LOD fading: when the map is cross-fading to the
+        global grid, entities fade with the local layer.
+        """
+        alpha = int(getattr(self, "_local_fade_alpha", 255))
+        if alpha <= 0:
+            return
+        if alpha >= 255:
+            self._draw_entities_impl(world, entities)
+            return
+
+        # Draw entities onto a temporary surface, then alpha-blend onto the main surface.
+        temp = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        prev_surface = self.surface
+        self.surface = temp
+        try:
+            self._draw_entities_impl(world, entities)
+        finally:
+            self.surface = prev_surface
+
+        temp.set_alpha(alpha)
+        self.surface.blit(temp, (0, 0))
+
+
+    def _draw_entities_impl(self, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
 
         Ordering is controlled by an optional 'render_layer' attribute:
         higher layers are drawn later (on top).
         """
-        # Sort by render_layer; actors get default layer 2, others 1.
         def layer(ent) -> int:
             if hasattr(ent, "faction"):
-                # treat actors as a higher layer by default
                 return getattr(ent, "render_layer", 2)
             return getattr(ent, "render_layer", 1)
 
         entities_sorted = sorted(entities, key=layer)
+
+        tile_px_f = float(getattr(self, "tile_px", float(self.tile)))
+        tile_px_i = max(1, int(round(tile_px_f)))
+
+        # Approx “map viewport” bounds, used as a sane cap for huge zoom-in.
+        map_w = max(1, int(self.width - self.log_panel_width))
+        map_h = max(1, int(self.height - self.ability_bar_height - self._map_origin_base()[1]))
+        min_dim = max(1, min(map_w, map_h))
+
+        # Allow entities to get VERY large, but cap to roughly the visible map area.
+        # (Keeps us from allocating absurdly huge fonts/surfaces at extreme zoom.)
+        size_cap = int(min_dim * 1.05)
+
+        # Effects active at the scene level (if any)
+        scene_eff = getattr(self, "active_visual_effects", None) or []
 
         for ent in entities_sorted:
             pos = getattr(ent, "pos", None)
@@ -486,55 +1610,94 @@ class AsciiRenderer:
             if not tile or not tile.visible:
                 continue
 
-            px = x * self.tile + self.origin_x
-            py = y * self.tile + self.origin_y
-            if px >= self.width or py >= self.height:
+            px_f = x * tile_px_f + float(self.origin_x)
+            py_f = y * tile_px_f + float(self.origin_y)
+
+            # Quick reject (coarse)
+            if px_f > float(self.width) or py_f > float(self.height):
+                continue
+            if px_f + tile_px_f < 0 or py_f + tile_px_f < 0:
                 continue
 
+            # -----------------------------
+            # 1) Try sprite/icon (general)
+            # -----------------------------
+            want_px = max(1, min(tile_px_i, size_cap))
+
+            # Centerpoint for the tile
+            cx = int(round(px_f + tile_px_f * 0.5))
+            cy = int(round(py_f + tile_px_f * 0.5))
+
+            # Ask the general hook for an icon surface.
+            # If the entity has no resolvable sprite/icon, the hook returns a glyph surface anyway,
+            # but we only want to use it for *sprite/icon* here. So we do a cheap “does it have a path?” check first.
             tags = getattr(ent, "tags", {}) or {}
-            if tags.get("currency") == "bismuth" and getattr(self, "bismuth_icon_map", None) is not None:
-                icon = self.bismuth_icon_map
-                self.surface.blit(icon, (px, py))
+            has_sprite_hint = False
+            for attr in ("sprite_path", "sprite", "icon_path"):
+                v = getattr(ent, attr, None)
+                if isinstance(v, str) and v.strip():
+                    has_sprite_hint = True
+                    break
+            if not has_sprite_hint:
+                v = tags.get("icon_path") or tags.get("icon")
+                if isinstance(v, str) and v.strip():
+                    has_sprite_hint = True
+            if not has_sprite_hint:
+                cur = tags.get("currency")
+                if isinstance(cur, str) and cur.strip():
+                    has_sprite_hint = True  # convention assets/icons/<currency>.png
+
+            if has_sprite_hint:
+                icon = self.get_entity_icon_surface(
+                    ent,
+                    size_px=want_px,
+                    scene_effects=scene_eff,
+                    prefer_sprite=True,
+                )
+                if icon is not None:
+                    rect = icon.get_rect(center=(cx, cy))
+                    self.surface.blit(icon, rect.topleft)
+                    continue
+
+            # -----------------------------
+            # 2) Glyph fallback (big!)
+            # -----------------------------
+            glyph, base_color = self._entity_visual(ent)
+
+            ent_eff = effect_names_from_obj(ent)
+            eff = concat_effect_names(scene_eff, ent_eff)
+            color = apply_entity_color_effects(ent, base_color, eff)
+
+            # Let glyph font scale with zoom, but cap it.
+            font_px = max(8, min(want_px, 1024))
+            font = self._get_cached_map_font(font_px)
+
+            base_rect = pygame.Rect(0, 0, tile_px_i, tile_px_i)
+            union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+            canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+            ox, oy = -union_rect.left, -union_rect.top
+
+            glyph_surf = font.render(glyph, True, color)
+            gx = ox + (tile_px_i - glyph_surf.get_width()) // 2
+            gy = oy + (tile_px_i - glyph_surf.get_height()) // 2
+            canvas.blit(glyph_surf, (gx, gy))
+
+            if eff:
+                shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+                apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+            dest = pygame.Rect(
+                int(round(px_f + union_rect.left)),
+                int(round(py_f + union_rect.top)),
+                union_rect.w,
+                union_rect.h,
+            )
+            if eff:
+                visual = build_visual_profile(VisualProfile(), eff)
+                apply_visual_panel(self.surface, canvas, dest, visual)
             else:
-                glyph, base_color = self._entity_visual(ent)
+                self.surface.blit(canvas, dest.topleft)
 
-                scene_eff = getattr(self, "active_visual_effects", None) or []
-                ent_eff = effect_names_from_obj(ent)
-                eff = concat_effect_names(scene_eff, ent_eff)
-
-                # Color lane
-                color = apply_entity_color_effects(ent, base_color, eff)
-
-                # Base tile rect in LOCAL coords
-                base_rect = pygame.Rect(0, 0, self.tile, self.tile)
-
-                # Compute union overlay bounds (may extend beyond base_rect)
-                union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
-
-                # Allocate a canvas large enough for overlays (aura space)
-                canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
-
-                # Offset that maps base_rect space into canvas space
-                ox, oy = -union_rect.left, -union_rect.top
-
-                # Render glyph centered inside the base tile region (shifted onto canvas)
-                glyph_surf = self.map_font.render(glyph, True, color)
-                gx = ox + (self.tile - glyph_surf.get_width()) // 2
-                gy = oy + (self.tile - glyph_surf.get_height()) // 2
-                canvas.blit(glyph_surf, (gx, gy))
-
-                # Overlay lane: per-effect rects, shifted into canvas coords
-                if eff:
-                    shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
-                    apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
-
-                # Geometry lane: apply transforms to the whole canvas when blitting
-                dest = pygame.Rect(px + union_rect.left, py + union_rect.top, union_rect.w, union_rect.h)
-                if eff:
-                    visual = build_visual_profile(VisualProfile(), eff)
-                    apply_visual_panel(self.surface, canvas, dest, visual)
-                else:
-                    self.surface.blit(canvas, dest.topleft)
 
     def draw_pattern_overlay(self, game: Game) -> None:
         self.edges_surface.fill((0, 0, 0, 0))
@@ -763,11 +1926,15 @@ class AsciiRenderer:
         if not game.world.in_bounds(tx, ty):
             return
 
-        px = tx * self.tile + self.origin_x
-        py = ty * self.tile + self.origin_y
+        tile_px = float(self.tile)
+        size = max(1, int(round(tile_px)))
 
-        rect = pygame.Rect(px, py, self.tile, self.tile)
+        px = int(round(tx * tile_px + self.origin_x))
+        py = int(round(ty * tile_px + self.origin_y))
+
+        rect = pygame.Rect(px, py, size, size)
         pygame.draw.rect(self.surface, (255, 255, 120), rect, 2)
+
         
         
     def draw_look_overlay(self, game: Game) -> None:
@@ -1132,6 +2299,9 @@ class AsciiRenderer:
         else:
             self.pause_requested = False
 
+        # Reset camera each time we enter the dungeon loop (new game / reload).
+        self.reset_camera(game)
+
         # Start target cursor at player position (scene/ui_state drives it)
         player = game.actors[game.player_id]
         if getattr(self, "ui_state", None) is not None:
@@ -1151,7 +2321,7 @@ class AsciiRenderer:
         """
         # refactor: renderer should consume scene-provided state; drop ability/hover logic here.
 
-        self.draw_world(game.world)
+        self.draw_world_zoomed(game)
         self.draw_lorenz_overlay(game)
 
         self.draw_pattern_overlay(game)
@@ -1220,36 +2390,88 @@ class AsciiRenderer:
 
 
 
+
     def _change_zoom(self, delta_steps: int, pos: Tuple[int, int]) -> None:
         # delta_steps: mouse wheel y (positive zoom in), pos in surface coords
         mx, my = pos
-        # world position under cursor before zoom
-        wx = (mx - self.origin_x) / self.tile
-        wy = (my - self.origin_y) / self.tile
 
-        new_zoom = self.zoom + delta_steps * 0.1
-        new_zoom = max(0.3, min(6.0, new_zoom))
-        if abs(new_zoom - self.zoom) < 1e-3:
+        # Keep the world point under the cursor stable while zooming.
+        base_x, base_y = self._map_origin_base()
+        self.origin_x = base_x + self.pan_x
+        self.origin_y = base_y + self.pan_y
+
+        # Use the *true* continuous world scale (pixels per world-tile).
+        cur_scale = float(self.base_tile) * float(self.zoom)
+        cur_scale = max(1e-6, cur_scale)
+
+        wx = (mx - self.origin_x) / cur_scale
+        wy = (my - self.origin_y) / cur_scale
+
+        # Tunables
+        ZOOM_RATE = 0.15          # base wheel sensitivity
+        ZOOM_DAMP_EXP = 0.6       # >0 slows zoom more at extremes
+
+        # Symmetric damping: avoids zoom exploding at large zoom.
+        z = float(self.zoom)
+        if z < 1.0:
+            damp = max(0.05, z ** ZOOM_DAMP_EXP)
+        else:
+            damp = max(0.05, z ** (-ZOOM_DAMP_EXP))
+
+        zoom_factor = 1.0 + float(delta_steps) * ZOOM_RATE * damp
+        new_zoom = float(self.zoom) * zoom_factor
+
+        # Allow deep zoom-out AND deep zoom-in (micro realms).
+        new_zoom = max(0.002, min(2048.0, new_zoom))
+        if abs(new_zoom - float(self.zoom)) < 1e-6:
             return
-        self.zoom = new_zoom
-        self.tile = max(8, int(self.base_tile * self.zoom))
-        # refresh surfaces (fonts stay constant size)
+
+        self.zoom = float(new_zoom)
+
+        # True world scale for ALL placement math (terrain + entities + targeting).
+        new_scale = float(self.base_tile) * float(self.zoom)
+        new_scale = max(1e-6, new_scale)
+        self.tile_px = float(new_scale)
+
+        # CRITICAL: self.tile must remain WORLD scale (not clamped glyph size).
+        # A lot of targeting/overlay math still uses self.tile.
+        self.tile = float(self.tile_px)
+
+        # Clamped render glyph size (fonts/icons) for legibility.
+        self.glyph_px = int(max(8, min(96, round(new_scale))))
+
+        # Refresh helper surfaces
         self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        # map font scales with zoom; UI fonts remain constant
-        self.map_font = pygame.font.SysFont("consolas", max(8, int(self.tile)))
-        # rescale currency icon for map tiles when zoom changes
+
+        # Map font scales with clamped glyph size; UI fonts remain constant.
+        self.map_font = pygame.font.SysFont("consolas", int(self.glyph_px), bold=False)
+
+        # Rescale currency icon for map tiles when zoom changes (use clamped glyph size).
         if getattr(self, "bismuth_icon", None) is not None:
             try:
-                self.bismuth_icon_map = pygame.transform.smoothscale(self.bismuth_icon, (self.tile, self.tile))
+                self.bismuth_icon_map = pygame.transform.smoothscale(
+                    self.bismuth_icon, (int(self.glyph_px), int(self.glyph_px))
+                )
             except Exception:
                 self.bismuth_icon_map = None
-        # adjust origin so world point under cursor stays under cursor
-        base_x, base_y = self._map_origin_base()
-        target_origin_x = mx - wx * self.tile
-        target_origin_y = my - wy * self.tile
-        self.pan_x = target_origin_x - base_x
-        self.pan_y = target_origin_y - base_y
+
+        # Adjust pan so world point under cursor stays under cursor (use TRUE scale).
+        target_origin_x = mx - wx * new_scale
+        target_origin_y = my - wy * new_scale
+        self.pan_x = float(target_origin_x - base_x)
+        self.pan_y = float(target_origin_y - base_y)
+
+        # Keep TileCamera in sync if present.
+        cam = getattr(self, "camera", None)
+        if cam is not None:
+            try:
+                cam.zoom = float(self.zoom)
+                cam.pan_x = float(self.pan_x)
+                cam.pan_y = float(self.pan_y)
+            except Exception:
+                pass
+
 
     def _get_glow_sprite(self, radius: int, color: Tuple[int, int, int]) -> pygame.Surface:
         key = (radius, color)
@@ -1533,4 +2755,3 @@ class AsciiRenderer:
         
     def apply_shake(self, amplitude: float = 12.0, duration_ms: int = 250):
         self.visual_fx.trigger_shake(amplitude_px=float(amplitude), duration_ms=int(duration_ms))
-

@@ -1,6 +1,6 @@
 ﻿SPRING CLEANING — ACTIONABLE PLAN
-Updated: 2025-12-15
-Status: UI migration largely complete; polish + consolidation phase
+Updated: 2025-12-22
+Status: UI migration largely complete; map zoom refactor complete
 
 Legend:
 [CLEANUP] structure / correctness
@@ -8,82 +8,43 @@ Legend:
 [VISION] long-term direction
 
 ===============================================================================
-SLICE 1 — TARGETMODE (FOUNDATION COMPLETE)
-
-✓ Unified tile / vertex / look targeting
-✓ Mouse + keyboard parity
-✓ Inspect mode respects entity inheritance
-
-Next:
-[BEHAVIOR] Cone / line targeting shapes
-[BEHAVIOR] Ranged preview overlays
-[BEHAVIOR] Multi-step targeting for complex spells
+SLICE 1 — TARGETMODE
+[unchanged]
 
 ===============================================================================
-SLICE 2 — MENU & UI SYSTEM (MAJOR MILESTONE REACHED)
-
-Problem (historical):
-Menus, keybinds, inventory, and popups relied on
-scene-specific layout hacks and ad hoc hit-testing.
-
-Current reality:
-✓ PanelScene is the universal UI foundation
-✓ Widget system stable and in active use
-✓ GeneralMenuScene replaces legacy MenuScene logic
-✓ PopupMenuScene is a thin wrapper (parity preserved)
-✓ VisualProfiles / VisualEffects apply uniformly
-✓ Mouse hit-testing works under rotation/scale
-✓ MenuFrameWidget provides sane default layout
-✓ Wrapped text everywhere (no ellipses regressions)
-✓ Popup underlay rebuilt safely (no burn-in, no flicker)
-
-Migrated scenes:
-✓ Main Menu
-✓ Options
-✓ Keybindings
-✓ Character Creation
-✓ Urgent Message
-✓ Dialogue
-
-Remaining UI work:
-[CLEANUP] Inventory UI refinement (two-pane list/details)
-[CLEANUP] Normalize menu padding, borders, and dim levels
-[CLEANUP] Standardize title/body/choice fonts
-[CLEANUP] Unify list scrolling behavior
-[CLEANUP] Remove leftover legacy wrap_text / draw paths
-[CLEANUP] Keep popup sizing snug but readable
+SLICE 2 — MENU & UI SYSTEM
+[unchanged]
 
 ===============================================================================
 SLICE 3 — VISUAL EFFECTS & PRESENTATION
-
-Status:
-✓ visual_effects.py is the single registry
-✓ Effects support multiple lanes:
-  – geometry
-  – color
-  – overlay
-  – present
-✓ Overlay bounds allow localized auras / smoke
-✓ Effects stack intentionally (recursive weirdness preserved)
-
-Next:
-[CLEANUP] Define canonical menu background + popup dim level
-[CLEANUP] Small library of panel styles (fullscreen / compact / wide)
-[CLEANUP] Re-audit overlay brightness (avoid unintended lightening)
+[unchanged]
 
 ===============================================================================
-SLICE 4 — DATA-DRIVEN EVERYTHING [VISION]
+SLICE 4 — MAP & CAMERA SYSTEMS (NEW SLICE)
 
-Expand entity prototypes with:
-• materials
-• physiology
-• resistances
-• behavior components
+Recent milestone:
+✓ Continuous local → global map zoom implemented
+✓ Single camera model across all scales
+✓ Snapped LoD terrain rendering (no swimming tiles)
+✓ ASCII renderer kept active at all zoom levels
+✓ Major ascii.py purge completed
 
-Longer-term:
-[VISION] Conditions/adjectives system attaching gameplay + visual effects
-[VISION] Procedural descriptions and naming
-[VISION] Reduced hardcoded flavor once systems mature
+Key files now responsible:
+
+• camera.py
+  – owns zoom, pan, coordinate transforms
+
+• render/overmap_lod.py
+  – LoD grid logic
+  – sampling, caching, blend thresholds
+
+• biome.py
+  – biome definitions shared by local + global render paths
+
+Cleanup tasks:
+[CLEANUP] Further slim ascii.py (draw-only invariant)
+[CLEANUP] Document LoD constants & tuning knobs
+[CLEANUP] Normalize zoom step curve (feel tuning)
 
 ===============================================================================
 ONGOING ENGINE CLEANUPS
@@ -93,10 +54,7 @@ ONGOING ENGINE CLEANUPS
 [CLEANUP] MessageLog performance
 [CLEANUP] Entity/actor ID consistency
 [CLEANUP] Level registry invariants
-[CLEANUP] Kill-path and LOS consistency
 [CLEANUP] Inventory/entity lookup optimizations
-[CLEANUP] Normalize content-file resolution
-[CLEANUP] Remove debug scaffolding
 [CLEANUP] Explicit initialization pipeline
 [CLEANUP] Centralize tuning constants
 

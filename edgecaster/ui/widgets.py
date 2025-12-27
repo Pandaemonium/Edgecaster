@@ -1158,31 +1158,59 @@ class WrappedListWidget(Widget):
         if not (self.visible and self.enabled):
             return False
 
-        if not self.scrollable:
+        # Ensure we have an up-to-date wrap cache for accurate hit testing.
+        if not self._wrapped or len(self._wrapped) != len(self.items):
+            self._rebuild_wrap_cache(ctx)
+
+        # Mouse wheel only affects scrollable lists.
+        if event.type == pygame.MOUSEWHEEL:
+            if not self.scrollable:
+                return False
+            if self.rect.collidepoint(getattr(pygame.mouse, "get_pos", lambda: (0, 0))()):
+                cap_items = max(1, self._visible_items_capacity())
+                max_off = max(0, len(self.items) - cap_items)
+                self.scroll_offset = max(0, min(self.scroll_offset - int(event.y), max_off))
+                return True
             return False
+
+        def _pick_index_from_mouse_y(mouse_y: int) -> int | None:
+            rel_y = mouse_y - self.rect.y - self.padding
+            if rel_y < 0 or self._line_h <= 0:
+                return None
+            line_idx = int(rel_y // self._line_h)
+
+            idx = int(self.scroll_offset)
+            while idx < len(self.items):
+                wrapped = self._wrapped[idx] if idx < len(self._wrapped) else [self._item_label(self.items[idx])]
+                n_lines = max(1, len(wrapped))
+                if line_idx < n_lines:
+                    return idx
+                line_idx -= n_lines
+                idx += 1
+            return None
 
         if event.type == pygame.MOUSEMOTION:
             if self.rect.collidepoint(event.pos):
-                rel_y = event.pos[1] - self.rect.y - self.padding
-                if self._line_h > 0:
-                    approx_item = self.scroll_offset + int(rel_y // (self._line_h * 2))
-                    if 0 <= approx_item < len(self.items):
-                        self.selected_index = approx_item
-                        self.ensure_visible(self.selected_index)
+                idx = _pick_index_from_mouse_y(event.pos[1])
+                if idx is not None:
+                    self.selected_index = int(idx)
+                    self.ensure_visible(self.selected_index)
+                    return True
+            return False
 
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.rect.collidepoint(event.pos):
-                rel_y = event.pos[1] - self.rect.y - self.padding
-                if self._line_h > 0:
-                    approx_item = self.scroll_offset + int(rel_y // (self._line_h * 2))
-                    if 0 <= approx_item < len(self.items):
-                        self.selected_index = approx_item
-                        self.ensure_visible(self.selected_index)
-                        if self.on_activate:
-                            self.on_activate(self.selected_index, self.items[self.selected_index])
-                        return True
+                idx = _pick_index_from_mouse_y(event.pos[1])
+                if idx is not None:
+                    self.selected_index = int(idx)
+                    self.ensure_visible(self.selected_index)
+                    if self.on_activate:
+                        self.on_activate(self.selected_index, self.items[self.selected_index])
+                    return True
+            return False
 
         return super().handle_event(event, ctx)
+
 
 
 class TwoColumnListWidget(ListWidget):

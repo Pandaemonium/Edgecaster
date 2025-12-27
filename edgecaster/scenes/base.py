@@ -1047,6 +1047,14 @@ class PopupMenuScene(GeneralMenuScene):
         self.popup_scale = scale
         self._background: Optional[pygame.Surface] = None
 
+    def get_dim_alpha(self, renderer=None, manager=None) -> int:
+        """Return the dim overlay alpha for this popup (0-255).
+
+        Default is a fixed dim. Subclasses can override to make it depend on
+        push/pop animations (for smooth cross-fades between stack levels).
+        """
+        return 140
+
     # --- Text scaling / “logical panel” behavior ------------------------
 
     # Baseline behavior (old OptionsScene): draw the menu at a mostly-fullscreen
@@ -1232,7 +1240,13 @@ class PopupMenuScene(GeneralMenuScene):
         # Optional dim overlay
         if self.dim_background:
             overlay = pygame.Surface((renderer.width, renderer.height), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 140))
+            alpha = 0
+            try:
+                alpha = int(getattr(self, 'get_dim_alpha')(renderer, manager))
+            except Exception:
+                alpha = 140
+            alpha = max(0, min(255, alpha))
+            overlay.fill((0, 0, 0, alpha))
             renderer.surface.blit(overlay, (0, 0))
 
         # Keep your existing “overlay widget layers” behavior (HUD over dim)

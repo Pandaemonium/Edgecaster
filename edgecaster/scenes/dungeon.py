@@ -143,6 +143,9 @@ class DungeonScene(Scene):
         self.input = GameInput()
         self._started = False
         self._old_urgent_cb = None
+        # Right-mouse drag camera panning state
+        self._rmb_dragging: bool = False
+        self._rmb_last_pos: tuple[int, int] | None = None
 
 
 ##debug widget
@@ -185,11 +188,40 @@ class DungeonScene(Scene):
 
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
+            # Right mouse: click-and-drag pan (camera)
+            if getattr(event, "button", None) == 3:
+                self._rmb_dragging = True
+                self._rmb_last_pos = getattr(event, "pos", None)
+                return
+
             cmds = self.input.handle_mousebutton(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)
 
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if getattr(event, "button", None) == 3:
+                self._rmb_dragging = False
+                self._rmb_last_pos = None
+                return
+
         elif event.type == pygame.MOUSEMOTION:
+            # While right-dragging, pan camera and swallow hover/aim updates.
+            if self._rmb_dragging:
+                # Convert display-space rel -> logical surface rel
+                scale = float(getattr(renderer, "lb_scale", 1.0) or 1.0)
+                rx, ry = getattr(event, "rel", (0, 0))
+                dx = float(rx) / scale
+                dy = float(ry) / scale
+                try:
+                    renderer.pan_by_px(dx, dy)
+                except Exception:
+                    # Fallback: direct pan fields if present
+                    if hasattr(renderer, "pan_x"):
+                        renderer.pan_x += dx
+                    if hasattr(renderer, "pan_y"):
+                        renderer.pan_y += dy
+                return
+
             cmds = self.input.handle_mousemotion(event)
             for cmd in cmds:
                 self._handle_command(game, renderer, cmd, manager)
@@ -738,29 +770,40 @@ class DungeonScene(Scene):
             ]
 
             if entities_here:
-                # For now just inspect the first visible entity on this tile.
+                # First pass: open a read-only inspect popup (InventoryScene in look mode)
                 primary = entities_here[0]
                 info = describe_entity_for_look(primary)
 
+                try:
+                    from .inventory_scene import LookScene
+                except Exception:
+                    LookScene = None  # type: ignore[assignment]
+
+                ent_id = getattr(primary, "id", None)
+                if LookScene is not None and ent_id is not None:
+                    manager.push_scene(
+                        LookScene(
+                            game,
+                            owner_id=str(ent_id),
+                            title=info.get("name", "You inspect...") or "You inspect...",
+                        )
+                    )
+                    return
+
+                # Fallback if LookScene can't be imported / entity has no id
                 title = info.get("name", title) or title
                 glyph = info.get("glyph", "?")
                 desc = info.get("description", "") or "You see nothing remarkable about it."
 
-                # Layout:
-                #  [glyph]
-                #  (blank line)
-                #  [description]
                 lines: list[str] = []
                 if glyph:
-                    # Later we could teach UrgentMessageScene to draw this big & colored,
-                    # using info["color"]; for now it's just a plain line.
                     lines.append(str(glyph))
                     lines.append("")
                 lines.append(str(desc))
                 hp_txt = info.get("hp_text")
                 if hp_txt:
                     lines.append("")
-                    lines.append(hp_txt)
+                    lines.append(str(hp_txt))
                 body = "\n".join(lines)
             else:
                 # No entities here: fall back to a tile description if available.
@@ -768,6 +811,7 @@ class DungeonScene(Scene):
                     body = game.describe_tile_at((tx, ty))
                 else:
                     body = f"You look at the tile at {tx}, {ty}."
+
         else:
             body = f"You look at the tile at {tx}, {ty}."
 
@@ -1334,6 +1378,16 @@ class DungeonScene(Scene):
                             cmd.wheel_y,
                             renderer._to_surface(pygame.mouse.get_pos()),
                         )
+            return
+
+
+        if kind == "center_camera":
+            # Safety valve: recenter on the player if the camera gets lost.
+            try:
+                snap = bool(getattr(renderer, "zoom", 1.0) < 0.35)
+                renderer.reset_camera(game)
+            except Exception:
+                pass
             return
 
         if kind == "toggle_door":

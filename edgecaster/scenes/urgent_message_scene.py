@@ -162,7 +162,7 @@ class UrgentMessageScene(PopupMenuScene):
     """
 
     FOOTER_TEXT = ""
-    WRAP_SELECTION: bool = False
+    WRAP_SELECTION: bool = True
 
     # Reserved vertical space for future artwork (blank block for now).
     ART_HEIGHT_PX: int = 96

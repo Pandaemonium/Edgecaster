@@ -64,12 +64,19 @@ def unproject_mouse(pos_display, window_rect, visual: VisualProfile) -> tuple[fl
     dx = pos_display[0] - (window_rect.centerx + visual.offset_x)
     dy = pos_display[1] - (window_rect.centery + visual.offset_y)
 
-    # Undo rotation (inverse angle)
+    # Undo rotation (inverse of pygame.transform.rotozoom with y-down coords)
     if visual.angle:
-        angle_rad = math.radians(visual.angle)
-        cos_a = math.cos(angle_rad)
-        sin_a = math.sin(angle_rad)
+        a = math.radians(visual.angle)
+        cos_a = math.cos(a)
+        sin_a = math.sin(a)
+
+        # Inverse of y-down CCW rotation:
+        # forward:  x' = x cos + y sin
+        #           y' = -x sin + y cos
+        # inverse:  x = x' cos - y' sin
+        #           y = x' sin + y' cos
         dx, dy = (dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a)
+
 
     # Undo flips
     if visual.flip_x:
