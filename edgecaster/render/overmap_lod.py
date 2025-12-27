@@ -37,7 +37,7 @@ def choose_lod_blend(
     tile_px: int,
     target_glyph_px: int = 18,
     radix: int = 2,
-) -> Tuple[int, int, float, float, int, int]:
+) -> Tuple[float, float, float, float, int, int]:
     """Pick two adjacent cell sizes (in tiles) and blend weights for crossfade.
 
     Returns:
@@ -55,11 +55,12 @@ def choose_lod_blend(
     scale = float(target_glyph_px) / float(tile_px)
 
     # Convert to a cell-size in tiles. Then snap to radix^k.
-    # We cap at 1 tile (local) on the low end.
-    ideal = max(1.0, scale)
+    # Allow k to go negative so we can render 'micro' LODs where one tile splits
+    # into many sub-tiles (cell size < 1 tile).
+    ideal = float(scale) if scale > 0 else 1.0
     k = int(math.floor(math.log(ideal, radix))) if ideal > 0 else 0
-    cell0 = int(radix ** max(0, k))
-    cell1 = int(cell0 * radix)
+    cell0 = float(radix ** k)
+    cell1 = float(radix ** (k + 1))
 
     # Blend based on where 'ideal' lies between cell0 and cell1.
     if cell1 == cell0:
@@ -197,8 +198,8 @@ class OvermapLodRenderer:
         zone_w: int,
         zone_h: int,
         world_scale: float,
-        cell_w_tiles: int,
-        cell_h_tiles: int,
+        cell_w_tiles: float,
+        cell_h_tiles: float,
         lod_id: int,
         snap_base_tiles: Optional[int] = None,
         alpha: float = 1.0,
@@ -253,12 +254,20 @@ class OvermapLodRenderer:
             else:
                 view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
 
-        cell_w_tiles = max(1, int(cell_w_tiles))
-        cell_h_tiles = max(1, int(cell_h_tiles))
+        cell_w_tiles = float(cell_w_tiles) if cell_w_tiles else 1.0
+        cell_h_tiles = float(cell_h_tiles) if cell_h_tiles else 1.0
+
+        # Clamp effective cell size so each cell is at least 1px in screen space.
+        # This prevents enormous loops when zooming so far in that cells would be sub-pixel.
+        layout_cell_w_tiles = max(cell_w_tiles, 1.0 / world_scale)
+        layout_cell_h_tiles = max(cell_h_tiles, 1.0 / world_scale)
+
 
         # Snap view_min to cell boundaries so the grid is rigid/stable.
-        snap_w = float(max(1, int(snap_base_tiles or cell_w_tiles)))
-        snap_h = float(max(1, int(snap_base_tiles or cell_h_tiles)))
+        # For macro LODs (cell >= 1), snap to the cell size. For micro LODs (cell < 1),
+        # snap to whole-tile boundaries so sub-tiles remain rigid within each tile.
+        snap_w = float(snap_base_tiles) if snap_base_tiles else (cell_w_tiles if cell_w_tiles >= 1.0 else 1.0)
+        snap_h = float(snap_base_tiles) if snap_base_tiles else (cell_h_tiles if cell_h_tiles >= 1.0 else 1.0)
         snap_min_wx = math.floor(view_min_wx / snap_w) * snap_w
         snap_min_wy = math.floor(view_min_wy / snap_h) * snap_h
 
@@ -279,17 +288,18 @@ class OvermapLodRenderer:
         offset_px_y = (view_min_wy - snap_min_wy) * world_scale
 
         # How many cells cover the viewport (+padding to avoid 'island in black').
-        cols = max(1, int(math.ceil(view_span_wx / float(cell_w_tiles))) + 3)
-        rows = max(1, int(math.ceil(view_span_wy / float(cell_h_tiles))) + 3)
+        cols = max(1, int(math.ceil(view_span_wx / float(layout_cell_w_tiles))) + 3)
+        rows = max(1, int(math.ceil(view_span_wy / float(layout_cell_h_tiles))) + 3)
 
-        cell_px_w_f = max(1e-6, float(cell_w_tiles) * world_scale)
-        cell_px_h_f = max(1e-6, float(cell_h_tiles) * world_scale)
+        cell_px_w_f = max(1.0, float(layout_cell_w_tiles) * world_scale)
+        cell_px_h_f = max(1.0, float(layout_cell_h_tiles) * world_scale)
+
         cell_px_w = max(1, int(round(cell_px_w_f)))
         cell_px_h = max(1, int(round(cell_px_h_f)))
 
         # Base cell coordinate in world-cell units.
-        base_cx = int(math.floor(snap_min_wx / float(cell_w_tiles)))
-        base_cy = int(math.floor(snap_min_wy / float(cell_h_tiles)))
+        base_cx = int(math.floor((snap_min_wx + 1e-9) / float(layout_cell_w_tiles)))
+        base_cy = int(math.floor((snap_min_wy + 1e-9) / float(layout_cell_h_tiles)))
 
         sig = overmap_signature(game)
 
@@ -322,10 +332,9 @@ class OvermapLodRenderer:
                 key = (
                     int(sample_w),
                     int(sample_h),
-                    round(float(snap_min_wx), 3),
-                    round(float(snap_min_wy), 3),
-                    round(float(view_span_wx), 3),
-                    round(float(view_span_wy), 3),
+                    int(lod_id),
+                    int(base_cx),
+                    int(base_cy),
                     sig,
                 )
                 cached = self._rgb_cache
@@ -415,7 +424,7 @@ class OvermapLodRenderer:
 
                         cx = base_cx + c
                         cy = base_cy + r
-                        k = (int(lod_id), int(cell_w_tiles), int(cell_h_tiles), int(cx), int(cy), sig)
+                        k = (int(lod_id), int(cx), int(cy), sig)
                         self._cell_cache[k] = (ch, color)
 
                 self._trim_cache()
@@ -433,20 +442,20 @@ class OvermapLodRenderer:
 
         for rr in range(rows):
             cy = base_cy + rr
-            py_f = float(rect_y) + float(rr) * float(cell_h_tiles) * float(world_scale) - float(offset_px_y)
+            py_f = float(rect_y) + float(rr) * float(layout_cell_h_tiles) * float(world_scale) - float(offset_px_y)
             if py_f + float(cell_px_h_f) < float(rect_y - cell_px_h) or py_f > float(rect_y + rect_h + cell_px_h):
                 continue
 
             for cc in range(cols):
                 cx = base_cx + cc
-                px_f = float(rect_x) + float(cc) * float(cell_w_tiles) * float(world_scale) - float(offset_px_x)
+                px_f = float(rect_x) + float(cc) * float(layout_cell_w_tiles) * float(world_scale) - float(offset_px_x)
                 if px_f + float(cell_px_w_f) < float(rect_x - cell_px_w) or px_f > float(rect_x + rect_w + cell_px_w):
                     continue
 
                 px = int(round(px_f))
                 py = int(round(py_f))
 
-                k = (int(lod_id), int(cell_w_tiles), int(cell_h_tiles), int(cx), int(cy), sig)
+                k = (int(lod_id), int(cx), int(cy), sig)
                 val = self._cell_cache.get(k)
 
                 if not val:

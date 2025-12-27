@@ -879,7 +879,7 @@ class InventoryScene(PopupMenuScene):
                 self._zoom_source_glyph_px = None
 
         # Cached map tile pixel size (respects mousewheel zoom).
-        self._zoom_map_tile_px: int = 32
+        self._zoom_map_tile_px: float = 32.0
 
         # Panel-local anchor (center of the preview glyph) we keep glued to the source.
         self._zoom_anchor_panel: tuple[float, float] | None = None
@@ -1861,10 +1861,16 @@ class InventoryScene(PopupMenuScene):
                 return
 
         # Cache map tile pixel size (tracks mousewheel zoom).
+        #
+        # IMPORTANT: renderer.tile is now allowed to be non-integer (micro / fractional zoom).
+        # If we truncate it to int, tx*tile accumulates error and the computed source point
+        # drifts up-left as you zoom (exactly the bug you're seeing).
         try:
             renderer = getattr(manager, "renderer", None)
-            if renderer is not None and hasattr(renderer, "tile"):
-                self._zoom_map_tile_px = int(getattr(renderer, "tile"))
+            if renderer is not None:
+                tile_px = getattr(renderer, "tile_px", getattr(renderer, "tile", None))
+                if tile_px is not None:
+                    self._zoom_map_tile_px = float(tile_px)
         except Exception:
             pass
 
@@ -1872,11 +1878,16 @@ class InventoryScene(PopupMenuScene):
         if self._zoom_source_px is None and self._zoom_owner_world is not None:
             try:
                 renderer = getattr(manager, "renderer", None)
-                if renderer is not None and hasattr(renderer, "tile"):
-                    tx, ty = self._zoom_owner_world
-                    px = int(tx * int(renderer.tile) + int(getattr(renderer, "origin_x", 0)) + int(renderer.tile) // 2)
-                    py = int(ty * int(renderer.tile) + int(getattr(renderer, "origin_y", 0)) + int(renderer.tile) // 2)
-                    self._zoom_source_px = (px, py)
+                if renderer is not None:
+                    tile_px = float(getattr(renderer, "tile_px", getattr(renderer, "tile", 0.0)))
+                    ox = float(getattr(renderer, "origin_x", 0.0))
+                    oy = float(getattr(renderer, "origin_y", 0.0))
+                    if tile_px > 0.0:
+                        tx, ty = self._zoom_owner_world
+                        # Center of the tile in *current* screen space.
+                        px = int(round(float(tx) * tile_px + ox + tile_px * 0.5))
+                        py = int(round(float(ty) * tile_px + oy + tile_px * 0.5))
+                        self._zoom_source_px = (px, py)
             except Exception:
                 self._zoom_source_px = None
 
@@ -1958,7 +1969,7 @@ class InventoryScene(PopupMenuScene):
 # --- Proportional scale ----------------------------------------------
         # We want: (panel scale) * (final glyph px) ~= (map tile px) at p=0.
         glyph_full_px = max(1.0, float(self._zoom_glyph_base_px) * float(max(0.01, min(logical_to_window_scale_x, logical_to_window_scale_y))))
-        want_px = float(max(1, int(self._zoom_map_tile_px)))
+        want_px = max(1.0, float(self._zoom_map_tile_px))
         if self._source_from_parent_panel:
             # When the zoom source is a glyph inside a *parent* inventory panel,
             # prefer the measured on-screen size of that glyph (so the new menu truly

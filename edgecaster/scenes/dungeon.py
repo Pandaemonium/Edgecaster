@@ -1385,7 +1385,7 @@ class DungeonScene(Scene):
             # Safety valve: recenter on the player if the camera gets lost.
             try:
                 snap = bool(getattr(renderer, "zoom", 1.0) < 0.35)
-                renderer.center_camera_on_player(game, snap_zoom=snap)
+                renderer.reset_camera(game)
             except Exception:
                 pass
             return

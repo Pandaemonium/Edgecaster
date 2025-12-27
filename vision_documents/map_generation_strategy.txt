@@ -5,7 +5,9 @@ This document describes how the game currently generates:
 * The global overworld “world map” (Julia-based visualization, with zoomable view window).
 * Each local overworld zone (a tile map the player walks around in).
 * Phase 1 “corruption”: a deterministic distortion field that perturbs the Julia iterator.
-* Multi-scale (local → global) map views via level-of-detail (LoD) aggregation.   [NEW]
+* Multi-scale (micro → local → global) map views via level-of-detail (LoD) aggregation, including support for negative LoD (“micro realms”).
+* LoD 0 is not special: it is simply the scale at which one rendered cell corresponds to one world tile. Positive LoD aggregates tiles; negative LoD subdivides tiles.
+
 
 This is intended as a shared reference for collaborators. If you touch map
 generation, try to preserve these invariants unless you are deliberately
@@ -67,6 +69,9 @@ gx in [0, total_w-1], gy in [0, total_h-1]
 where:
 total_w = cfg.world_map_screens * cfg.world_width
 total_h = cfg.world_map_screens * cfg.world_height
+World tile coordinates may be treated as continuous (floating-point) values for rendering and camera purposes. Negative LoD views operate by sampling the same world grid at sub-tile resolution, not by switching coordinate systems.
+
+
 
 Zone coordinates (screens)
 
@@ -102,6 +107,9 @@ is sampled and displayed.
 
 The camera is renderer-agnostic and lives outside map generation logic.
 
+Renderer note: renderers may distinguish between the true pixels-per-world-tile scale (a continuous float used for all spatial placement) and a clamped or quantized glyph/sprite pixel size used only for rasterization. Spatial transforms must always use the true world-tile scale to avoid drift at extreme zoom.
+
+
 ## Where things live (code map)
 
 World map scene + zoom/preview logic:
@@ -135,6 +143,7 @@ NEW — Zoomed-out LoD aggregation:
 * Chooses representative glyph and color via sampling / biome weighting.
 * Owns caching keyed by region and zoom level.
 * Optional acceleration via numpy paths.
+LoD selection is continuous and symmetric around LoD 0; negative LoD values correspond to sub-tile refinement rather than aggregation.
 
 Local overworld generation:
 

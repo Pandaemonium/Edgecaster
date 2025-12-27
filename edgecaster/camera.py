@@ -30,7 +30,10 @@ class TileCamera:
 
     # Guardrails / legibility
     min_zoom: float = 0.002
-    max_zoom: float = 6.0
+    # NOTE: we allow *very* deep zoom-in so negative LoD terrain can be explored.
+    # Rough calibration: to reach LoD -10 with base_tile==target_glyph_px==16 you
+    # need zoom ~= 1024, so give ourselves headroom.
+    max_zoom: float = 2048.0
     min_tile_px: int = 1
 
     @property
@@ -103,10 +106,15 @@ class TileCamera:
 
         before_wx, before_wy = self.world_from_screen_px((cx, cy), base_origin_px)
 
-        # Dampen zoom changes as we get very zoomed out (small zoom values),
-        # so wheel steps don't become huge "teleports".
+        # Symmetric damping: slow down wheel steps both when extremely zoomed out
+        # *and* extremely zoomed in.
         z = float(self.zoom)
-        damp = max(0.05, z ** float(damp_exp))
+        if z <= 0.0:
+            return False
+        if z < 1.0:
+            damp = max(0.05, z ** float(damp_exp))
+        else:
+            damp = max(0.05, z ** (-float(damp_exp)))
         zoom_factor = 1.0 + float(delta_steps) * float(zoom_rate) * damp
         if zoom_factor <= 0.0:
             return False
