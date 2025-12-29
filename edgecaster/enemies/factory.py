@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Tuple
 from pathlib import Path
 
-from edgecaster.state.actors import Actor, Stats
-import edgecaster.enemies.templates as templates
+from edgecaster.state.actors import Actor
+from edgecaster import prototypes
+from edgecaster import spawn_factory
 
 # debug logger
 _DEBUG_PATH = Path(__file__).resolve().parent.parent / "debug.log"
@@ -17,6 +18,7 @@ def _dbg(msg: str) -> None:
     except Exception:
         pass
 
+
 _enemy_counter = 1
 
 
@@ -27,80 +29,39 @@ def _next_id(prefix: str = "enemy") -> str:
     return eid
 
 
-def _ensure_templates_loaded() -> None:
-    if not templates.ENEMY_TEMPLATES:
-        try:
-            templates.load_enemy_templates(logger=_dbg)
-        except Exception as e:
-            _dbg(f"load_enemy_templates failed: {e!r}")
-
-
 def spawn_enemy(tmpl_id: str, pos: Tuple[int, int]) -> Actor:
-    """Create an Actor from a template id at the given position."""
-    _ensure_templates_loaded()
-    if tmpl_id not in templates.ENEMY_TEMPLATES:
-        _dbg(f"Unknown enemy template id '{tmpl_id}', registry keys={list(templates.ENEMY_TEMPLATES.keys())}")
-        # try reloading in case new templates were added mid-run
-        _ensure_templates_loaded()
-    if tmpl_id not in templates.ENEMY_TEMPLATES:
-        # fallback: if any template exists, use the first; else make a dummy
-        if templates.ENEMY_TEMPLATES:
-            fallback = next(iter(templates.ENEMY_TEMPLATES.keys()))
-            _dbg(f"Falling back to first template id '{fallback}'")
-            tmpl_id = fallback
-        else:
-            _dbg("No templates loaded; creating placeholder enemy")
-            actor = Actor(
-                id=_next_id(),
-                name="Unknown",
-                pos=pos,
-                glyph="i",
-                color=(255, 120, 120),
-                render_layer=2,
-                kind="enemy",
-                blocks_movement=True,
-                tags={"ai": "skirmisher"},
-                statuses={},
-                faction="hostile",
-                actions=("move", "wait"),
-            )
-            actor.stats = Stats(hp=5, max_hp=5)
-            return actor
+    """Create an Actor from a prototype id at the given position."""
+    try:
+        spec = prototypes.resolve_proto(tmpl_id)
+    except Exception as e:
+        _dbg(f"resolve_proto({tmpl_id!r}) failed: {e!r}")
+        spec = {}
 
-    tmpl: templates.EnemyTemplate = templates.ENEMY_TEMPLATES[tmpl_id]
+    if not spec:
+        _dbg(f"Unknown enemy proto id '{tmpl_id}'. Falling back to placeholder Actor.")
+        # Placeholder enemy (same spirit as before)
+        return spawn_factory.build_actor_from_spec(
+            spec={
+                "id": "unknown_enemy",
+                "name": "Unknown",
+                "glyph": "i",
+                "color": (255, 120, 120),
+                "faction": "hostile",
+                "ai": "skirmisher",
+                "base_hp": 5,
+                "base_attack": 1,
+                "base_defense": 0,
+                "speed": 1.0,
+                "actions": ("move", "wait"),
+                "tags": ["placeholder"],
+            },
+            aid=_next_id(),
+            pos=pos,
+        )
 
-    actor = Actor(
-        id=_next_id(),
-        name=tmpl.name,
+    # Normal case: build actor from resolved proto
+    return spawn_factory.build_actor_from_spec(
+        spec=spec,
+        aid=_next_id(),
         pos=pos,
-        glyph=tmpl.glyph,
-        color=tmpl.color,
-        render_layer=2,
-        kind="enemy",
-        blocks_movement=True,
-        tags={
-            "template_id": tmpl.id,
-            "ai": tmpl.ai,
-            "base_attack": tmpl.base_attack,
-            "base_defense": tmpl.base_defense,
-        },
-        statuses={},
-        faction=tmpl.faction,
-        actions=tuple(tmpl.actions) if tmpl.actions else ("move", "wait"),
     )
-    actor.stats = Stats(
-        hp=tmpl.base_hp,
-        max_hp=tmpl.base_hp,
-        mana=0,
-        max_mana=0,
-        xp=0,
-        level=1,
-        xp_to_next=0,
-        coherence=0,
-        max_coherence=0,
-    )
-    # stash movement speed in tags for later use by the turn/energy system
-    actor.tags["speed"] = tmpl.speed
-    actor.tags["tags"] = tmpl.tags.copy()
-    actor.tags["xp"] = tmpl.xp
-    return actor

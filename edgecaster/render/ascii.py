@@ -738,8 +738,17 @@ class AsciiRenderer:
         offset_px_y = (view_min_wy - snap_min_wy) * world_scale
 
         # How many cells cover the viewport (+padding to avoid "island in black").
-        cols = max(1, int(math.ceil(view_span_wx / float(cell_w_tiles))) + 3)
-        rows = max(1, int(math.ceil(view_span_wy / float(cell_h_tiles))) + 3)
+        PAD_CELLS = 2
+
+        cols = max(1, int(math.ceil(view_span_wx / float(cell_w_tiles))) + 3 + 2 * PAD_CELLS)
+        rows = max(1, int(math.ceil(view_span_wy / float(cell_h_tiles))) + 3 + 2 * PAD_CELLS)
+
+        base_cx = int(math.floor(snap_min_wx / float(cell_w_tiles))) - PAD_CELLS
+        base_cy = int(math.floor(snap_min_wy / float(cell_h_tiles))) - PAD_CELLS
+
+        pad_px_x = float(PAD_CELLS) * float(cell_w_tiles) * float(world_scale)
+        pad_px_y = float(PAD_CELLS) * float(cell_h_tiles) * float(world_scale)
+
 
         # Cell size in pixels.
         cell_px_w_f = max(1e-6, float(cell_w_tiles) * world_scale)
@@ -867,14 +876,14 @@ class AsciiRenderer:
 
         for rr in range(rows):
             cy = base_cy + rr
-            py_f = float(rect_y) + float(rr) * float(cell_h_tiles) * float(world_scale) - float(offset_px_y)
+            py_f = map_rect.y + rr * cell_h_tiles * world_scale - offset_px_y - pad_px_y
             # Skip rows wholly above/below the viewport (with 1-cell padding).
             if py_f + float(cell_px_h_f) < float(rect_y - cell_px_h) or py_f > float(rect_y + rect_h + cell_px_h):
                 continue
 
             for cc in range(cols):
                 cx = base_cx + cc
-                px_f = float(rect_x) + float(cc) * float(cell_w_tiles) * float(world_scale) - float(offset_px_x)
+                px_f = map_rect.x + cc * cell_w_tiles * world_scale - offset_px_x - pad_px_x
                 if px_f + float(cell_px_w_f) < float(rect_x - cell_px_w) or px_f > float(rect_x + rect_w + cell_px_w):
                     continue
 

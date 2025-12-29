@@ -2,69 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Literal, Protocol
-from pathlib import Path
-import yaml
-
-
-
-
-
-
-# Lightweight prototype cache built from the YAML content layer.
-_ENTITY_PROTO_INDEX: Dict[str, dict] = {}
-_ENEMY_PROTO_INDEX: Dict[str, dict] = {}
-_PROTO_INDEX: Dict[str, dict] = {}
-
-def get_prototype(proto_id: str) -> dict:
-    """Return the raw prototype dict (entities + enemies) for a given id.
-
-    This is a thin wrapper over the cached YAML content.
-    """
-    if not proto_id:
-        return {}
-    if not _PROTO_INDEX:
-        _load_prototype_index()
-    return _PROTO_INDEX.get(str(proto_id), {})
-
-def _load_prototype_index() -> None:
-    global _ENTITY_PROTO_INDEX, _ENEMY_PROTO_INDEX, _PROTO_INDEX
-
-    try:
-        content_root = Path(__file__).resolve().parents[1] / "content"
-        entities_path = content_root / "entities.yaml"
-        enemies_path = content_root / "enemies.yaml"
-    except Exception:
-        return
-
-    try:
-        if entities_path.is_file():
-            with entities_path.open("r", encoding="utf-8") as f:
-                entities = yaml.safe_load(f) or []
-                _ENTITY_PROTO_INDEX = {
-                    str(p.get("id")): p for p in entities if isinstance(p, dict) and "id" in p
-                }
-        if enemies_path.is_file():
-            with enemies_path.open("r", encoding="utf-8") as f:
-                enemies = yaml.safe_load(f) or []
-                _ENEMY_PROTO_INDEX = {
-                    str(p.get("id")): p for p in enemies if isinstance(p, dict) and "id" in p
-                }
-    except Exception:
-        _ENTITY_PROTO_INDEX = {}
-        _ENEMY_PROTO_INDEX = {}
-
-    _PROTO_INDEX = {}
-    _PROTO_INDEX.update(_ENTITY_PROTO_INDEX)
-    _PROTO_INDEX.update(_ENEMY_PROTO_INDEX)
-
-# Build the cache at import time (best-effort).
-_load_prototype_index()
 
 # Optional: pattern colors (only imported when used to avoid extra deps elsewhere)
 try:
     from edgecaster.patterns import colors as pattern_colors
 except Exception:  # pragma: no cover - keep fail-soft for minimal envs/tests
     pattern_colors = None
+
+from edgecaster import prototypes
+
+
+# ---------------------------------------------------------------------------
+# Prototype helpers (YAML content layer: entities + enemies merged into one pool)
+# ---------------------------------------------------------------------------
+
+def get_prototype(proto_id: str) -> dict:
+    """
+    Return the RESOLVED prototype dict (entities + enemies) for a given id,
+    with inheritance applied.
+    """
+    if not proto_id:
+        return {}
+    return prototypes.resolve_proto(str(proto_id))
 
 
 def _lookup_proto_id_for_entity(ent: Any) -> str | None:
@@ -93,34 +52,10 @@ def _lookup_proto_id_for_entity(ent: Any) -> str | None:
     return None
 
 
-
-def _resolve_description_via_parents(proto_id: str) -> str | None:
-    if not proto_id or not _PROTO_INDEX:
-        return None
-
-    visited: set[str] = set()
-    cur = proto_id
-
-    while cur and cur not in visited:
-        visited.add(cur)
-        proto = _PROTO_INDEX.get(cur)
-        if not proto:
-            break
-        desc = proto.get("description")
-        if desc:
-            return str(desc)
-        parent = proto.get("parent")
-        if not parent:
-            break
-        cur = str(parent)
-
-    return None
-
-
 def resolve_entity_description(ent: Any) -> str | None:
     """
     1. If ent.description exists, use that.
-    2. Else infer proto id (kind/id) and climb YAML parent chain.
+    2. Else infer proto id and use resolved prototype chain.
     """
     direct = getattr(ent, "description", None)
     if direct:
@@ -130,14 +65,16 @@ def resolve_entity_description(ent: Any) -> str | None:
     if not proto_id:
         return None
 
-    return _resolve_description_via_parents(proto_id)
+    proto = prototypes.resolve_proto(proto_id)
+    desc = proto.get("description")
+    return str(desc) if desc else None
 
 
 def describe_entity_for_look(ent: Any) -> Dict[str, Any]:
     """Return name, glyph, color, and description for an entity."""
 
     proto_id = _lookup_proto_id_for_entity(ent)
-    proto = _PROTO_INDEX.get(proto_id, {}) if proto_id and _PROTO_INDEX else {}
+    proto = prototypes.resolve_proto(proto_id) if proto_id else {}
 
     name = (
         getattr(ent, "name", None)
@@ -190,7 +127,6 @@ class ActionFunc(Protocol):
     def __call__(self, game: Any, actor_id: str, **kwargs: Any) -> None: ...
 
 
-
 @dataclass
 class TargetingSpec:
     kind: str | None = None              # "tile" or "vertex"
@@ -199,9 +135,6 @@ class TargetingSpec:
     radius_param: str | None = None      # e.g. "radius" for activate_all
     neighbor_depth_param: str | None = None  # e.g. "neighbor_depth" for activate_seed
     requires_confirm: bool = True        # reserved for later (auto-fire on click, etc.)
-
-
-
 
 
 @dataclass

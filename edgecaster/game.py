@@ -28,9 +28,10 @@ from edgecaster.systems.actions import get_action, action_delay
 from edgecaster.patterns import colors as pattern_colors
 from edgecaster.patterns import motion as pattern_motion
 from edgecaster.systems import ai
-import edgecaster.enemies.templates as enemy_templates
 from . import lorenz
 import math
+from edgecaster import prototypes
+from edgecaster import spawn_factory
 
 
 Move = Tuple[int, int]
@@ -1712,54 +1713,21 @@ class Game:
         pos: Tuple[int, int],
         overrides: Optional[Dict[str, object]] = None,
     ) -> Entity:
-        """Instantiate a plain Entity from entities.yaml at the given position.
+        """Instantiate a plain Entity from the unified prototype bucket.
 
-        `overrides` can supply name/color/kind/etc. and will be merged on top
-        of the template; `tags` are merged rather than replaced.
+        Uses prototypes.resolve_proto() so inheritance works across entities.yaml/enemies.yaml/etc.
+        `overrides` merges on top; `tags` merge dict-wise (entity-style).
         """
-        templates = self._entity_templates()
-        tmpl = templates.get(template_id)
-        if tmpl is None:
-            raise KeyError(f"Unknown entity template id {template_id!r}")
-
-        # Base fields from template
-        name = tmpl.get("name", template_id)
-        glyph = tmpl.get("glyph", "?")
-        color = tmpl.get("color", (255, 255, 255))
-        if isinstance(color, list):
-            color = tuple(color)
-        kind = tmpl.get("kind", "generic")
-        render_layer = int(tmpl.get("render_layer", 1))
-        blocks_movement = bool(tmpl.get("blocks_movement", False))
-        tags = dict(tmpl.get("tags", {}) or {})
-        statuses = dict(tmpl.get("statuses", {}) or {})
-
-        # Apply overrides (tags merged)
-        if overrides:
-            o = dict(overrides)  # shallow copy
-            override_tags = o.pop("tags", None)
-            if override_tags:
-                tags.update(override_tags)
-
-            name = o.get("name", name)
-            glyph = o.get("glyph", glyph)
-            color = tuple(o.get("color", color))
-            kind = o.get("kind", kind)
-            render_layer = int(o.get("render_layer", render_layer))
-            blocks_movement = bool(o.get("blocks_movement", blocks_movement))
+        spec = prototypes.resolve_proto(template_id)
+        if not spec:
+            raise KeyError(f"Unknown prototype id {template_id!r}")
 
         eid = self._new_id()
-        return Entity(
-            id=eid,
-            name=name,
+        return spawn_factory.build_entity_from_spec(
+            spec=spec,
+            eid=eid,
             pos=pos,
-            glyph=glyph,
-            color=color,            # type: ignore[arg-type]
-            render_layer=render_layer,
-            kind=kind,
-            blocks_movement=blocks_movement,
-            tags=tags,
-            statuses=statuses,
+            overrides=overrides,  # tags merge handled inside builder
         )
 
 
@@ -2298,7 +2266,7 @@ class Game:
             "unassuming", "subtle", "gaudy", "ornate", "gem-encrusted",
             "golden", "wooden", "marbled", "spiked", "luminescent",
             "electrified", "poisonous", "venomous", "mangled",
-            "malfunctioning", "twisted", "octonionic", "eldritch", "malted",
+            "malfunctioning", "twisted", "eldritch", "malted",
             "syrupy", "tumultuous", "festooned", "inappropriate", "entropic",
             "extropic", "overpopulated", "arbitrary",
             "ecstatic", "carbon-based", "semifluid", "carbonated",
