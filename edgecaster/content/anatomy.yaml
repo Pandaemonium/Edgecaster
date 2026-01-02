@@ -1,0 +1,29 @@
+- id: body
+  name: Body
+  parent: entity
+  description: A central mass or torso-like core.
+
+- id: head
+  name: Head
+  parent: entity
+  description: A head, home to senses and teeth-to-be.
+
+- id: tail
+  name: Tail
+  parent: entity
+  description: A tail, used for balance, signaling, or simply existing.
+
+- id: limb
+  name: Limb
+  parent: entity
+  description: A generic limb.
+
+- id: arm
+  name: Arm
+  parent: limb
+  description: A limb suited for grasping.
+
+- id: leg
+  name: Leg
+  parent: limb
+  description: A limb suited for support and locomotion.

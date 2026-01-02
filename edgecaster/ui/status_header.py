@@ -14,6 +14,30 @@ class StatusHeaderWidget(Widget):
     becomes composable and the renderer stays closer to draw-only plumbing.
     """
 
+    @staticmethod
+    def _format_meters(dist_m: float) -> str:
+        """Always format in meters (no cm/km). Precision adapts smoothly."""
+        d = max(0.0, float(dist_m))
+
+        # Choose precision that feels "fluid" without jittering too much.
+        # You can tweak these thresholds easily.
+        if d >= 10000:
+            return f"{d:,.0f} m"
+        if d >= 1000:
+            return f"{d:,.1f} m"
+        if d >= 100:
+            return f"{d:.1f} m"
+        if d >= 10:
+            return f"{d:.2f} m"
+        if d >= 1:
+            return f"{d:.3f} m"
+        # Below 1 meter, keep a bit more precision.
+        if d >= 0.1:
+            return f"{d:.4f} m"
+        if d >= 0.01:
+            return f"{d:.5f} m"
+        return f"{d:.6f} m"
+
     def layout(self, ctx: WidgetContext) -> None:
         # Default to the renderer's top bar region if caller didn't set a size.
         if self.rect.w == 0 and self.rect.h == 0:
@@ -35,7 +59,7 @@ class StatusHeaderWidget(Widget):
         if small_font is None:
             return
 
-        # Reuse renderer colors/fonts so visuals stay identical for now.
+        # Reuse renderer colors/fonts so visuals stay consistent.
         fg = getattr(renderer, "fg", (220, 230, 240))
         bar_bg = getattr(renderer, "bar_bg", (40, 40, 60))
         hp_color = getattr(renderer, "hp_color", (200, 80, 80))
@@ -141,27 +165,74 @@ class StatusHeaderWidget(Widget):
         tick_x = surface_w - tick_text.get_width() - 8
         level_x = surface_w - level_text.get_width() - 8
 
-        # --- Currency (bismuth) icon + amount, left of tick block ---
+        # --- Currency (bismuth) icon + amount, left of tick/zone block ---
         try:
             balance = getattr(game, "bismuth", 0)
         except Exception:
             balance = 0
+
         icon = getattr(renderer, "bismuth_icon_hud", None) or getattr(renderer, "bismuth_icon", None)
         bal_text = small_font.render(f"{balance}", True, fg)
+
         pad = 8
         icon_w = icon.get_width() if icon is not None else 0
         icon_h = icon.get_height() if icon is not None else 0
-        # place currency immediately to the left of whichever of tick/zone is farther left
+
+        # Place currency immediately to the left of whichever of tick/zone is farther left.
         currency_right = min(tick_x, level_x) - pad
         bx = currency_right - icon_w - bal_text.get_width() - pad
         by = self.rect.y + 12
         if bx < pad:
             bx = pad
+
+        # --- Zoom scale bar: fixed pixel length, label changes fluidly ---
+        # Assumption: LoD 0 tiles correspond to 1 meter in-world.
+        # tile_px should represent pixels per world-tile at current zoom.
+        tile_px = float(getattr(renderer, "tile_px", getattr(renderer, "tile", 16) or 16))
+        tile_px = max(1e-6, tile_px)
+
+        # Fixed on-screen length for the bar (does NOT change with zoom).
+        SCALE_BAR_PX = 110
+
+        # Put the scale bar to the *left of the bismuth indicator*.
+        # We reserve room for the bismuth icon+amount; bar ends a little before bx.
+        bar_gap = 12
+        bar_right = max(pad + SCALE_BAR_PX, bx - bar_gap)
+        bar_left = bar_right - SCALE_BAR_PX
+
+        # Convert bar pixels -> world tiles -> meters (LoD0: 1 tile = 1 m)
+        meters_per_px = 1.0 / tile_px
+        bar_meters = float(SCALE_BAR_PX) * meters_per_px
+        bar_label = self._format_meters(bar_meters)
+
+        bar_y = self.rect.y + 50
+        line_y = bar_y + 3
+
+        # Draw line with end caps
+        pygame.draw.line(ctx.surface, fg, (bar_left, line_y), (bar_right, line_y), 2)
+        pygame.draw.line(ctx.surface, fg, (bar_left, line_y - 4), (bar_left, line_y + 4), 2)
+        pygame.draw.line(ctx.surface, fg, (bar_right, line_y - 4), (bar_right, line_y + 4), 2)
+
+        label_surf = small_font.render(bar_label, True, fg)
+        lx = bar_right - label_surf.get_width()
+        ly = bar_y - label_surf.get_height() - 2
+        if ly < self.rect.y + 2:
+            ly = bar_y + 10
+        ctx.surface.blit(label_surf, (lx, ly))
+
+        # --- Draw bismuth after scale bar so it stays visually on top / unambiguous ---
         if icon is not None:
             ctx.surface.blit(icon, (bx, by))
-            bx += icon_w + 6
-        ctx.surface.blit(bal_text, (bx, by + max(0, (icon_h - bal_text.get_height()) // 2)))
+            bx2 = bx + icon_w + 6
+        else:
+            bx2 = bx
 
+        ctx.surface.blit(
+            bal_text,
+            (bx2, by + max(0, (icon_h - bal_text.get_height()) // 2)),
+        )
+
+        # --- Draw tick/zone text (far right) ---
         ctx.surface.blit(tick_text, (tick_x, 12))
         ctx.surface.blit(level_text, (level_x, 30))
 

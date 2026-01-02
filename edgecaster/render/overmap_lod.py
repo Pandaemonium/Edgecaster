@@ -283,13 +283,21 @@ class OvermapLodRenderer:
             max_snap_min_wy = max(0.0, float(total_h) - view_span_wy)
             snap_min_wy = max(0.0, min(snap_min_wy, max_snap_min_wy))
 
-# Fractional scroll within the snapped cell grid (in pixels).
+        # Fractional scroll within the snapped cell grid (in pixels).
         offset_px_x = (view_min_wx - snap_min_wx) * world_scale
         offset_px_y = (view_min_wy - snap_min_wy) * world_scale
 
-        # How many cells cover the viewport (+padding to avoid 'island in black').
-        cols = max(1, int(math.ceil(view_span_wx / float(layout_cell_w_tiles))) + 3)
-        rows = max(1, int(math.ceil(view_span_wy / float(layout_cell_h_tiles))) + 3)
+        # Extra safety margin (in cells) to absorb rounding at extreme zoom.
+        PAD_CELLS = 2
+
+        cols = max(
+            1,
+            int(math.ceil(view_span_wx / float(layout_cell_w_tiles))) + 3 + 2 * PAD_CELLS,
+        )
+        rows = max(
+            1,
+            int(math.ceil(view_span_wy / float(layout_cell_h_tiles))) + 3 + 2 * PAD_CELLS,
+        )
 
         cell_px_w_f = max(1.0, float(layout_cell_w_tiles) * world_scale)
         cell_px_h_f = max(1.0, float(layout_cell_h_tiles) * world_scale)
@@ -297,9 +305,15 @@ class OvermapLodRenderer:
         cell_px_w = max(1, int(round(cell_px_w_f)))
         cell_px_h = max(1, int(round(cell_px_h_f)))
 
-        # Base cell coordinate in world-cell units.
-        base_cx = int(math.floor((snap_min_wx + 1e-9) / float(layout_cell_w_tiles)))
-        base_cy = int(math.floor((snap_min_wy + 1e-9) / float(layout_cell_h_tiles)))
+        # Base cell coordinate in world-cell units (expanded by padding).
+        base_cx = int(math.floor((snap_min_wx + 1e-9) / float(layout_cell_w_tiles))) - PAD_CELLS
+        base_cy = int(math.floor((snap_min_wy + 1e-9) / float(layout_cell_h_tiles))) - PAD_CELLS
+
+        # Pixel shift so the extra padded cells are actually drawn above/left of the viewport.
+        pad_px_x = float(PAD_CELLS) * float(layout_cell_w_tiles) * float(world_scale)
+        pad_px_y = float(PAD_CELLS) * float(layout_cell_h_tiles) * float(world_scale)
+
+
 
         sig = overmap_signature(game)
 
@@ -442,13 +456,23 @@ class OvermapLodRenderer:
 
         for rr in range(rows):
             cy = base_cy + rr
-            py_f = float(rect_y) + float(rr) * float(layout_cell_h_tiles) * float(world_scale) - float(offset_px_y)
+            py_f = (
+                float(rect_y)
+                + float(rr) * float(layout_cell_h_tiles) * float(world_scale)
+                - float(offset_px_y)
+                - float(pad_px_y)
+            )
             if py_f + float(cell_px_h_f) < float(rect_y - cell_px_h) or py_f > float(rect_y + rect_h + cell_px_h):
                 continue
 
             for cc in range(cols):
                 cx = base_cx + cc
-                px_f = float(rect_x) + float(cc) * float(layout_cell_w_tiles) * float(world_scale) - float(offset_px_x)
+                px_f = (
+                    float(rect_x)
+                    + float(cc) * float(layout_cell_w_tiles) * float(world_scale)
+                    - float(offset_px_x)
+                    - float(pad_px_x)
+                )
                 if px_f + float(cell_px_w_f) < float(rect_x - cell_px_w) or px_f > float(rect_x + rect_w + cell_px_w):
                     continue
 

@@ -28,9 +28,10 @@ from edgecaster.systems.actions import get_action, action_delay
 from edgecaster.patterns import colors as pattern_colors
 from edgecaster.patterns import motion as pattern_motion
 from edgecaster.systems import ai
-import edgecaster.enemies.templates as enemy_templates
 from . import lorenz
 import math
+from edgecaster import prototypes
+from edgecaster import spawn_factory
 
 
 Move = Tuple[int, int]
@@ -1532,7 +1533,7 @@ class Game:
             lab_state = None
         # Apply POIs (records ids on world)
         poi_hits = mapgen.apply_pois(world, coord)
-        # Build starting structures (e.g., depot)
+        # Build starting structures (e.g., depotdepot)
         if "starting_zone" in poi_hits:
             try:
                 depot_info = mapgen.build_item_depot(world, self.rng, world.entry)
@@ -1712,54 +1713,21 @@ class Game:
         pos: Tuple[int, int],
         overrides: Optional[Dict[str, object]] = None,
     ) -> Entity:
-        """Instantiate a plain Entity from entities.yaml at the given position.
+        """Instantiate a plain Entity from the unified prototype bucket.
 
-        `overrides` can supply name/color/kind/etc. and will be merged on top
-        of the template; `tags` are merged rather than replaced.
+        Uses prototypes.resolve_proto() so inheritance works across entities.yaml/enemies.yaml/etc.
+        `overrides` merges on top; `tags` merge dict-wise (entity-style).
         """
-        templates = self._entity_templates()
-        tmpl = templates.get(template_id)
-        if tmpl is None:
-            raise KeyError(f"Unknown entity template id {template_id!r}")
-
-        # Base fields from template
-        name = tmpl.get("name", template_id)
-        glyph = tmpl.get("glyph", "?")
-        color = tmpl.get("color", (255, 255, 255))
-        if isinstance(color, list):
-            color = tuple(color)
-        kind = tmpl.get("kind", "generic")
-        render_layer = int(tmpl.get("render_layer", 1))
-        blocks_movement = bool(tmpl.get("blocks_movement", False))
-        tags = dict(tmpl.get("tags", {}) or {})
-        statuses = dict(tmpl.get("statuses", {}) or {})
-
-        # Apply overrides (tags merged)
-        if overrides:
-            o = dict(overrides)  # shallow copy
-            override_tags = o.pop("tags", None)
-            if override_tags:
-                tags.update(override_tags)
-
-            name = o.get("name", name)
-            glyph = o.get("glyph", glyph)
-            color = tuple(o.get("color", color))
-            kind = o.get("kind", kind)
-            render_layer = int(o.get("render_layer", render_layer))
-            blocks_movement = bool(o.get("blocks_movement", blocks_movement))
+        spec = prototypes.resolve_proto(template_id)
+        if not spec:
+            raise KeyError(f"Unknown prototype id {template_id!r}")
 
         eid = self._new_id()
-        return Entity(
-            id=eid,
-            name=name,
+        return spawn_factory.build_entity_from_spec(
+            spec=spec,
+            eid=eid,
             pos=pos,
-            glyph=glyph,
-            color=color,            # type: ignore[arg-type]
-            render_layer=render_layer,
-            kind=kind,
-            blocks_movement=blocks_movement,
-            tags=tags,
-            statuses=statuses,
+            overrides=overrides,  # tags merge handled inside builder
         )
 
 
@@ -1910,7 +1878,7 @@ class Game:
                             pass
                     # Place items in interior
                     interior = depot_info.get("interior") or []
-                    item_ids = ["blueberry", "raspberry", "strawberry", "destabilizer", "debug_inventory", "healing_kit", "scrap_blade"]
+                    item_ids = ["blueberry", "raspberry", "strawberry", "destabilizer", "debug_inventory", "healing_kit", "koch_knife"]
                     for pos in interior:
                         try:
                             template_id = self.rng.choice(item_ids)
@@ -2258,7 +2226,7 @@ class Game:
             "clockwise": ["clockwise"],
             "counter-clockwise": ["counter-clockwise"],
             "ghostly": ["ghostly"],
-            "mirrored": [],  # chosen dynamically: ["mirror_x"] or ["mirror_y"]
+            "mirrored": ["mirror_x"],
             "fiery": ["fiery"],
             "bismuth": ["bismuth"],
             "jittery": ["jittery"],
@@ -2298,7 +2266,7 @@ class Game:
             "unassuming", "subtle", "gaudy", "ornate", "gem-encrusted",
             "golden", "wooden", "marbled", "spiked", "luminescent",
             "electrified", "poisonous", "venomous", "mangled",
-            "malfunctioning", "twisted", "octonionic", "eldritch", "malted",
+            "malfunctioning", "twisted", "eldritch", "malted",
             "syrupy", "tumultuous", "festooned", "inappropriate", "entropic",
             "extropic", "overpopulated", "arbitrary",
             "ecstatic", "carbon-based", "semifluid", "carbonated",
@@ -2345,8 +2313,6 @@ class Game:
 
             if functional:
                 effects = list(functional_map.get(adjective, []))
-                if adjective == "mirrored":
-                    effects = [self.rng.choice(["mirror_x", "mirror_y"])]
                 if effects:
                     tags["visual_effects"] = effects
 
@@ -3163,6 +3129,74 @@ class Game:
         self.log.add(f"You put {article} {name.lower()} into {dest_label}.")
 
 
+    # ---------------------------------------------------------------------
+    # Equipment tagging (UI-facing, lightweight)
+    # ---------------------------------------------------------------------
+
+    def get_equipped_in_slot(self, owner_id: str, slot_id: str):
+        """Return the inventory entity currently tagged as equipped in `slot_id`, if any."""
+        inv = self.get_inventory(str(owner_id))
+        sid = str(slot_id)
+        for ent in inv:
+            tags = getattr(ent, "tags", {}) or {}
+            cur = tags.get("equipped_slot") or tags.get("equipped")
+            if cur is not None and str(cur) == sid:
+                return ent
+        return None
+
+    def unequip_slot(self, owner_id: str, slot_id: str) -> None:
+        """Clear any item currently equipped in `slot_id`."""
+        ent = self.get_equipped_in_slot(owner_id, slot_id)
+        if ent is None:
+            return
+        tags = getattr(ent, "tags", {}) or {}
+        tags.pop("equipped_slot", None)
+        tags.pop("equipped", None)
+        try:
+            setattr(ent, "tags", tags)
+        except Exception:
+            pass
+
+    def unequip_item(self, owner_id: str, item_id: str) -> None:
+        """Clear equipped tags from the given inventory item if present."""
+        inv = self.get_inventory(str(owner_id))
+        iid = str(item_id)
+        for ent in inv:
+            if str(getattr(ent, "id", "")) != iid:
+                continue
+            tags = getattr(ent, "tags", {}) or {}
+            tags.pop("equipped_slot", None)
+            tags.pop("equipped", None)
+            try:
+                setattr(ent, "tags", tags)
+            except Exception:
+                pass
+            return
+
+    def equip_item_to_slot(self, owner_id: str, item_id: str, slot_id: str) -> None:
+        """Tag an existing inventory item as 'equipped' in `slot_id`.
+
+        For now, this is intentionally permissive: any item can be equipped into any slot.
+        If the slot is already occupied, it will be replaced.
+        """
+        oid = str(owner_id)
+        iid = str(item_id)
+        sid = str(slot_id)
+
+        # Ensure only one item occupies a slot.
+        self.unequip_slot(oid, sid)
+
+        inv = self.get_inventory(oid)
+        for ent in inv:
+            if str(getattr(ent, "id", "")) != iid:
+                continue
+            tags = getattr(ent, "tags", {}) or {}
+            tags["equipped_slot"] = sid
+            try:
+                setattr(ent, "tags", tags)
+            except Exception:
+                pass
+            return
 
 
 

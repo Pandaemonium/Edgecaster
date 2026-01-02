@@ -31,6 +31,8 @@ from edgecaster.ui.widgets import (
     _wrap_text_px
 )
 
+from edgecaster.prototypes import resolve_body_schema
+
 if TYPE_CHECKING:
     from .manager import SceneManager
 
@@ -50,6 +52,219 @@ def _smoothstep(x: float) -> float:
 
 def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+# ---------------------------------------------------------------------------
+# Body-plan overlay helpers (read-only for now)
+# ---------------------------------------------------------------------------
+
+def _safe_float(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+def _display_body_node_label(nid: str) -> str:
+    s = str(nid)
+    if s.endswith("_m"):
+        return f"mirrored {s[:-2]}"
+    return s
+
+
+
+def _node_layout_xy(node_spec: dict) -> Optional[tuple[float, float]]:
+    if not isinstance(node_spec, dict):
+        return None
+    layout = node_spec.get("layout")
+    if not isinstance(layout, dict):
+        return None
+    x = _safe_float(layout.get("x"))
+    y = _safe_float(layout.get("y"))
+    if x is None or y is None:
+        return None
+    return (x, y)
+
+
+def _children_of(node_spec: dict) -> list[str]:
+    if not isinstance(node_spec, dict):
+        return []
+    ch = node_spec.get("children") or []
+    if isinstance(ch, list):
+        out: list[str] = []
+        for c in ch:
+            if c is None:
+                continue
+            out.append(str(c))
+        return out
+    return []
+
+
+def _default_offsets() -> list[tuple[int, int]]:
+    # "Convenient" placements around parent; expands outward.
+    return [
+        (-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (1, -1), (-1, 1), (1, 1),
+        (-2, 0), (2, 0), (0, -2), (0, 2),
+        (-2, -1), (-2, 1), (2, -1), (2, 1),
+        (-1, -2), (1, -2), (-1, 2), (1, 2),
+        (-2, -2), (2, -2), (-2, 2), (2, 2),
+    ]
+
+
+def _compute_body_positions(schema: dict) -> dict[str, tuple[float, float]]:
+    """
+    Returns node_id -> (x, y) in abstract layout units.
+    Uses YAML coords when present; otherwise assigns positions near parent.
+    """
+    if not isinstance(schema, dict):
+        return {}
+    nodes = schema.get("nodes") or {}
+    if not isinstance(nodes, dict):
+        return {}
+    root = schema.get("root")
+    root_id = str(root) if root is not None else None
+
+    # 1) Start with explicit coords where provided.
+    pos: dict[str, tuple[float, float]] = {}
+    for nid, spec in nodes.items():
+        nid_s = str(nid)
+        xy = _node_layout_xy(spec if isinstance(spec, dict) else {})
+        if xy is not None:
+            pos[nid_s] = xy
+
+    # 2) Ensure root exists; if no explicit position, place at origin.
+    if root_id and root_id in nodes and root_id not in pos:
+        pos[root_id] = (0.0, 0.0)
+
+    # If schema has no root, pick a stable "first" node.
+    if root_id is None:
+        for nid in nodes.keys():
+            root_id = str(nid)
+            break
+        if root_id is not None and root_id not in pos:
+            pos[root_id] = (0.0, 0.0)
+
+    if root_id is None:
+        return pos
+
+    # Occupancy set for integer-ish collision checks.
+    occupied: set[tuple[int, int]] = set()
+    for p in pos.values():
+        occupied.add((int(round(p[0])), int(round(p[1]))))
+
+    # 3) BFS assign missing nodes relative to parent.
+    from collections import deque
+    q = deque([root_id])
+    seen: set[str] = set()
+
+    offsets = _default_offsets()
+
+    while q:
+        cur = q.popleft()
+        if cur in seen:
+            continue
+        seen.add(cur)
+
+        cur_spec = nodes.get(cur) if isinstance(nodes.get(cur), dict) else {}
+        cur_pos = pos.get(cur)
+        if cur_pos is None:
+            # If parent didn't get a position somehow, pin it.
+            cur_pos = (0.0, 0.0)
+            pos[cur] = cur_pos
+            occupied.add((0, 0))
+
+        children = _children_of(cur_spec)
+        for idx, ch in enumerate(children):
+            if ch not in nodes:
+                continue
+            if ch not in pos:
+                # Propose an offset near parent, avoiding collisions.
+                base_x, base_y = cur_pos
+                placed = None
+                for j, (ox, oy) in enumerate(offsets):
+                    # Rotate starting offset based on child index for variety.
+                    k = (idx + j) % len(offsets)
+                    ox2, oy2 = offsets[k]
+                    tx = int(round(base_x + ox2))
+                    ty = int(round(base_y + oy2))
+                    if (tx, ty) not in occupied:
+                        placed = (float(tx), float(ty))
+                        occupied.add((tx, ty))
+                        break
+                if placed is None:
+                    # Worst-case: just shove it somewhere far.
+                    tx = int(round(base_x)) + 3 + idx
+                    ty = int(round(base_y)) + 3
+                    placed = (float(tx), float(ty))
+                    occupied.add((tx, ty))
+                pos[ch] = placed
+            q.append(ch)
+
+    # 4) Any orphan nodes not reached from root: sprinkle them.
+    if nodes:
+        i = 0
+        for nid in nodes.keys():
+            nid = str(nid)
+            if nid in pos:
+                continue
+            tx = 3 + (i % 6)
+            ty = -3 - (i // 6)
+            while (tx, ty) in occupied:
+                tx += 1
+            pos[nid] = (float(tx), float(ty))
+            occupied.add((tx, ty))
+            i += 1
+
+    return pos
+
+
+def _map_positions_to_rect(
+    positions: dict[str, tuple[float, float]],
+    target_rect: pygame.Rect,
+    *,
+    margin_frac: float = 0.12,
+) -> tuple[dict[str, tuple[int, int]], float]:
+    """
+    Map abstract (x,y) positions into pixel coords in target_rect.
+    Returns (node_id -> (px, py), scale_px_per_unit).
+    """
+    if not positions:
+        return {}, 1.0
+
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+
+    # Avoid zero spans
+    spanx = max(1e-6, (maxx - minx))
+    spany = max(1e-6, (maxy - miny))
+
+    m = int(min(target_rect.w, target_rect.h) * float(margin_frac))
+    inner = target_rect.inflate(-2 * m, -2 * m)
+    if inner.w <= 1 or inner.h <= 1:
+        inner = target_rect.copy()
+
+    # scale so it "mostly fills"
+    sx = inner.w / spanx
+    sy = inner.h / spany
+    scale = float(min(sx, sy))
+
+    # center in inner rect
+    cx_u = (minx + maxx) * 0.5
+    cy_u = (miny + maxy) * 0.5
+    cx_px = inner.centerx
+    cy_px = inner.centery
+
+    out: dict[str, tuple[int, int]] = {}
+    for nid, (x, y) in positions.items():
+        px = int(round(cx_px + (x - cx_u) * scale))
+        py = int(round(cy_px + (y - cy_u) * scale))
+        out[nid] = (px, py)
+
+    return out, scale
+
 
 
 def _render_entity_glyph_canvas(
@@ -294,6 +509,13 @@ class InventoryListWidget(ListWidget):
         self._press_pos = None
         self._press_ms = 0
         self._dragging = False
+
+
+
+
+
+
+
 
     def handle_event(self, event, ctx: WidgetContext) -> bool:
         # If we're currently dragging, eat mouse events and forward to scene.
@@ -545,6 +767,12 @@ class EntityPreviewWidget(Widget):
         r = self.rect
         card = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
 
+        # Clear any previous frame's body overlay (we'll set it again if we draw one).
+        try:
+            setattr(scene, "_body_overlay_panel_surface", None)
+        except Exception:
+            pass
+
         bg = getattr(renderer, "bg", (10, 10, 20))
         fg = getattr(renderer, "fg", (240, 240, 255))
 
@@ -552,10 +780,14 @@ class EntityPreviewWidget(Widget):
         card.fill(fill)
         pygame.draw.rect(card, (*fg, 120), card.get_rect(), 2, border_radius=10)
 
-        title_font = getattr(renderer, "menu_font", None)
+        title_font = getattr(renderer, "menu_title_font", None)
         if title_font is None:
-            title_font = pygame.font.SysFont("consolas", 18, bold=True)
-        ts = title_font.render("Inhabiting", True, fg)
+            title_font = getattr(renderer, "menu_font", None)
+        if title_font is None:
+            title_font = pygame.font.SysFont("consolas", 22, bold=True)
+
+        # Title: entity name (no \"inhabiting\" label).
+        ts = title_font.render(str(name), True, fg)
         card.blit(ts, (14, 12))
 
         # Stable center in pane coords.
@@ -565,7 +797,8 @@ class EntityPreviewWidget(Widget):
         # Optional label.
         nfont = pygame.font.SysFont("consolas", 16, bold=True)
         ns = nfont.render(str(name), True, fg)
-        card.blit(ns, (14, 36))
+
+
 
         # Only draw the glyph here if the scene is NOT doing the external opaque overlay.
         if not bool(getattr(scene, "_external_opaque_glyph", False)):
@@ -583,27 +816,483 @@ class EntityPreviewWidget(Widget):
             card.blit(gcanvas, (gx, gy))
 
         desc = info.get("description") or getattr(owner, "description", None)
+
+        # --- Description footer (Magic-card style) -------------------------
         if desc:
-            dfont = pygame.font.SysFont("consolas", 14, italic=True)
-            dcolor = (
-                int(fg[0] * 0.7),
-                int(fg[1] * 0.7),
-                int(fg[2] * 0.7),
-            )
+            try:
+                # Italic + slightly grayed out
+                dfont = pygame.font.SysFont("consolas", 16, italic=True)
+            except Exception:
+                dfont = pygame.font.SysFont("consolas", 16)
 
-            # Simple word wrap (later replace with a real widget if desired)
-            max_w = r.w - 28
-            y = r.h - 14
-            lines = _wrap_text_px(dfont, desc, max_w)
+            # Wrap to the inner card width
+            max_w = max(1, r.w - 28)
+            lines = _wrap_text_px(dfont, str(desc), max_w)
 
+            # Draw from the bottom up so it hugs the bottom margin consistently
+            y = r.h - 16  # bottom padding
+            color = (185, 185, 195)  # gray-ish
+            alpha = 210
+
+            # Render lines bottom-up
             for line in reversed(lines):
-                line_surf = dfont.render(line, True, dcolor)
-                y -= line_surf.get_height()
-                card.blit(line_surf, (14, y))
+                if not line:
+                    y -= dfont.get_height()
+                    continue
+                s = dfont.render(line, True, color).convert_alpha()
+                s.set_alpha(alpha)
+                y -= s.get_height()
+                card.blit(s, (14, y))
 
-
+        # (Body-plan node overlay is drawn by BodyPlanGraphWidget.)
 
         surf.blit(card, r.topleft)
+
+
+
+class BodyPlanGraphWidget(Widget):
+    """Read-only body-plan node graph overlay for the right pane.
+
+    Implemented as a widget so hover/collision uses PanelScene's standardized
+    event -> panel logical coordinate conversion (including renderer._to_surface
+    and VisualProfile unprojection).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hovered_nid: str | None = None
+        # Click/drag gesture tracking (panel-local coords)
+        self._press_nid: str | None = None
+        self._press_pos: tuple[int, int] | None = None
+        self._press_ms: int = 0
+        self._dragging: bool = False
+
+        self.DRAG_HOLD_MS: int = 220
+        self.DRAG_MIN_PX: int = 6
+
+
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
+            return False
+
+        scene = ctx.scene
+
+        def _cancel_press() -> None:
+            self._press_nid = None
+            self._press_pos = None
+            self._press_ms = 0
+            self._dragging = False
+
+        def _begin_drag_if_ready(cur_pos: tuple[int, int]) -> bool:
+            if self._press_nid is None or self._dragging:
+                return False
+
+            now = int(pygame.time.get_ticks())
+            held = (now - int(self._press_ms)) >= int(self.DRAG_HOLD_MS)
+
+            moved = False
+            if self._press_pos is not None:
+                dx = int(cur_pos[0]) - int(self._press_pos[0])
+                dy = int(cur_pos[1]) - int(self._press_pos[1])
+                moved = (dx * dx + dy * dy) >= int(self.DRAG_MIN_PX * self.DRAG_MIN_PX)
+
+            if not (held or moved):
+                return False
+
+            cb = getattr(scene, "_body_drag_begin", None)
+            if callable(cb):
+                try:
+                    if cb(node_id=str(self._press_nid), pos=cur_pos):
+                        self._dragging = True
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        if event.type == pygame.MOUSEMOTION:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return False
+            mx, my = int(pos[0]), int(pos[1])
+
+            try:
+                setattr(scene, "_right_panel_hovered", bool(self.rect.collidepoint((mx, my))))
+            except Exception:
+                pass
+
+            # If we have a pending press, maybe promote it into a drag.
+            if self._press_nid is not None and not bool(getattr(scene, "_drag_active", False)):
+                if _begin_drag_if_ready((mx, my)):
+                    # update drag ghost immediately
+                    cb2 = getattr(scene, "_inv_drag_update", None)
+                    if callable(cb2):
+                        try:
+                            cb2(pos=(mx, my))
+                        except Exception:
+                            pass
+                    self.hovered_nid = self._hit_test_node((mx, my), ctx)
+                    return True
+
+            # If an actual drag is active, keep ghost updated in panel-local coords.
+            if bool(getattr(scene, "_drag_active", False)):
+                cb = getattr(scene, "_inv_drag_update", None)
+                if callable(cb):
+                    try:
+                        cb(pos=(mx, my))
+                    except Exception:
+                        pass
+                self.hovered_nid = self._hit_test_node((mx, my), ctx)
+                return True
+
+            self.hovered_nid = self._hit_test_node((mx, my), ctx)
+            return False
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return False
+            mx, my = int(pos[0]), int(pos[1])
+
+            if getattr(event, "button", None) == 1 and self.rect.collidepoint((mx, my)):
+                nid = self._hit_test_node((mx, my), ctx)
+                if nid:
+                    # Record press; DO NOT start drag yet.
+                    self._press_nid = str(nid)
+                    self._press_pos = (mx, my)
+                    self._press_ms = int(pygame.time.get_ticks())
+                    self._dragging = False
+                    return True
+            return False
+
+        if event.type == pygame.MOUSEBUTTONUP:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return False
+            mx, my = int(pos[0]), int(pos[1])
+
+            if getattr(event, "button", None) == 1:
+                was_dragging = bool(getattr(scene, "_drag_active", False))
+
+                # If a drag is active, end it and consume.
+                if was_dragging:
+                    cb = getattr(scene, "_inv_drag_end", None)
+                    if callable(cb):
+                        try:
+                            cb(pos=(mx, my))
+                        except Exception:
+                            pass
+                    _cancel_press()
+                    return True
+
+                # No drag active: if we had a press and release on an equipped node -> activate.
+                press_nid = self._press_nid
+                _cancel_press()
+
+                if press_nid and self.rect.collidepoint((mx, my)):
+                    # Optional: require release on the same node; feels better.
+                    release_nid = self._hit_test_node((mx, my), ctx)
+                    if release_nid and str(release_nid) == str(press_nid):
+                        # Only activate if something is equipped there.
+                        eq = scene._equipped_entity_for_slot(str(press_nid)) if hasattr(scene, "_equipped_entity_for_slot") else None
+                        if eq is not None:
+                            try:
+                                setattr(scene, "_pending_node_activate", str(press_nid))
+                            except Exception:
+                                pass
+                            return True
+
+            return False
+
+        return False
+
+
+    def _hit_test_node(self, mp: tuple[int, int], ctx: WidgetContext) -> str | None:
+        scene = ctx.scene
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            return None
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        # Reserve a region that mostly covers the glyph area, not the header/footer text.
+        r = self.rect
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+
+        if region.w <= 10 or region.h <= 10:
+            return None
+
+        try:
+            schema = resolve_body_schema(owner)
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+
+        pos_u = _compute_body_positions(schema)
+        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+
+        node_size = int(max(18, min(56, scale * 0.45)))
+        half = node_size // 2
+
+        mx, my = mp
+        # Convert mp (panel) into region-local coords for the hit-test.
+        lx = mx - region.x
+        ly = my - region.y
+
+        for nid, (px, py) in pos_px.items():
+            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
+                continue
+            sq_local = pygame.Rect(int(px - half), int(py - half), int(node_size), int(node_size))
+            if sq_local.collidepoint((lx, ly)):
+                return str(nid)
+
+        return None
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
+            return
+
+        scene = ctx.scene
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            return
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        r = self.rect
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+        if region.w <= 10 or region.h <= 10:
+            return
+
+        try:
+            schema = resolve_body_schema(owner)
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+
+        pos_u = _compute_body_positions(schema)
+        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+
+        node_size = int(max(18, min(56, scale * 0.45)))
+        half = node_size // 2
+
+        hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
+        alpha = 150 if hovered_right else 70
+
+        drag_active = bool(getattr(scene, "_drag_active", False))
+        drag_kind = getattr(scene, "_drag_target_kind", None) if drag_active else None
+        drag_node = getattr(scene, "_drag_target_node_id", None) if drag_active else None
+
+        fg = getattr(scene, "fg", (230, 230, 230))
+        hilite = getattr(scene, "hilite", (255, 255, 100))
+
+        def _half_mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float = 0.7) -> tuple[int, int, int]:
+            def ch(i: int) -> int:
+                v = int(a[i] + (b[i] - a[i]) * t)
+                return 0 if v < 0 else 255 if v > 255 else v
+            return (ch(0), ch(1), ch(2))
+
+        half_yellow = _half_mix(tuple(fg[:3]), tuple(hilite[:3]), 0.7)
+
+        # IMPORTANT: draw in panel coordinates, so the overlay must be panel-sized.
+        overlay = pygame.Surface(ctx.surface.get_size(), pygame.SRCALPHA)
+
+        # --- edges ---
+        nodes = schema.get("nodes") if isinstance(schema, dict) else None
+        if isinstance(nodes, dict):
+            line_col = (*fg, int(alpha * 0.85))
+            for nid, spec in nodes.items():
+                a = pos_px.get(nid)
+                if a is None:
+                    continue
+                for ch in _children_of(spec if isinstance(spec, dict) else {}):
+                    b = pos_px.get(ch)
+                    if b is None:
+                        continue
+                    ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                    bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                    pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 2)
+
+        node_fill = (*fg, int(alpha * 0.10))
+        node_border = (*fg, int(alpha * 0.85))
+        hi_border = (*hilite, int(alpha * 1.0))
+        half_border = (*half_yellow, int(alpha * 0.98))
+
+        label_col = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(alpha * 0.95))
+        label_hi = (int(hilite[0]), int(hilite[1]), int(hilite[2]), int(alpha * 0.98))
+        label_half = (int(half_yellow[0]), int(half_yellow[1]), int(half_yellow[2]), int(alpha * 0.97))
+
+        hovered_nid = self.hovered_nid
+
+        # Fonts: decouple glyph rendering from labels so the glyph can be big.
+        try:
+            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)), bold=True)
+            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)), bold=True)
+            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)), bold=False)
+        except Exception:
+            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)))
+            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)))
+            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)))
+
+        owner_id = str(getattr(owner, "id", ""))
+
+        def _equipped_for(nid: str):
+            if hasattr(scene, "game") and hasattr(scene.game, "get_equipped_in_slot"):
+                try:
+                    return scene.game.get_equipped_in_slot(owner_id, str(nid))
+                except Exception:
+                    return None
+            try:
+                inv = scene.game.get_inventory(owner_id)
+            except Exception:
+                inv = None
+            if inv:
+                for it in inv:
+                    tags = getattr(it, "tags", {}) or {}
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(nid):
+                        return it
+            return None
+
+        for nid, (px, py) in pos_px.items():
+            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
+                continue
+
+            is_hover = (hovered_nid is not None and str(nid) == hovered_nid)
+            is_target = (drag_kind == "body_node" and drag_node is not None and str(nid) == str(drag_node))
+            is_hot = bool(is_hover or is_target)
+
+            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
+            pygame.draw.rect(overlay, node_fill, sq)
+
+            border_col = hi_border if is_hover else (half_border if is_target else node_border)
+            pygame.draw.rect(overlay, border_col, sq, 3 if is_hover else 2)
+
+            eq = _equipped_for(str(nid))
+
+            # --- Subpart label ABOVE the node ---
+            try:
+                label = _display_body_node_label(str(nid))
+                ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+                lx = sq.centerx - ls.get_width() // 2
+                ly = sq.top - ls.get_height() - 3
+                overlay.blit(ls, (lx, ly))
+            except Exception:
+                pass
+
+            # --- Equipped glyph (with color + effects) inside the square ---
+            if eq is not None:
+                try:
+                    r2 = ctx.renderer
+                    # Make the *logical* base cell big; overlays may expand beyond.
+                    base_px = int(node_size * 0.86)
+
+                    eff_scene = []
+                    try:
+                        eff_scene = list(getattr(scene, "scene_effects", []) or [])
+                    except Exception:
+                        eff_scene = []
+
+                    gcanvas, anchor = _render_entity_glyph_canvas_with_anchor(
+                        r2,
+                        eq,
+                        font=glyph_font,
+                        base_px=base_px,
+                        scene_effects=eff_scene,
+                    )
+                    # Place so that the glyph-cell center (anchor) is centered in the node square.
+                    gx = int(round(sq.centerx - float(anchor[0])))
+                    gy = int(round(sq.centery - float(anchor[1])))
+
+                    # Opacity tuning:
+                    # - idle: fairly faded
+                    # - hover/target: near-opaque so effects (fire/smoke/etc.) still pop
+                    if is_hot:
+                        glyph_alpha = 245
+                    else:
+                        glyph_alpha = 120 if hovered_right else 85
+
+                    tmp = gcanvas.convert_alpha()
+                    tmp.set_alpha(int(glyph_alpha))
+                    overlay.blit(tmp, (gx, gy))
+
+                except Exception:
+                    # Fallback: at least draw a big glyph
+                    try:
+                        glyph = str(getattr(eq, "glyph", "?"))[:1]
+                        gsurf = glyph_font.render(glyph, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                        if is_hot:
+                            glyph_alpha = 245
+                        else:
+                            glyph_alpha = 120 if hovered_right else 85
+
+                        gsurf.set_alpha(int(glyph_alpha))
+                        gx = sq.centerx - gsurf.get_width() // 2
+                        gy = sq.centery - gsurf.get_height() // 2
+                        overlay.blit(gsurf, (gx, gy))
+
+                    except Exception:
+                        pass
+
+            # --- Equipped item label BELOW the node (if any) ---
+            try:
+                if eq is not None:
+                    item_name = str(getattr(eq, "name", None) or "Item")
+                    ns = item_font.render(item_name, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                    ns.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+                    nx = sq.centerx - ns.get_width() // 2
+                    ny = sq.bottom + 3
+                    overlay.blit(ns, (nx, ny))
+            except Exception:
+                pass
+
+
+        # If we're in "opaque glyph overlay" mode, InventoryScene will composite this overlay
+        # *above* the sprite after it draws the opaque glyph. Otherwise, draw directly.
+        try:
+            setattr(scene, "_body_overlay_panel_surface", overlay)
+        except Exception:
+            pass
+
+        if not bool(getattr(scene, "_external_opaque_glyph", False)):
+            ctx.surface.blit(overlay, (0, 0))
+
+
+
+class RightPaneWidget(Widget):
+    """Layered right pane: base preview + body-plan graph overlay."""
+
+    def __init__(self, *, preview: Widget, body_graph: Widget) -> None:
+        super().__init__()
+        self.preview = preview
+        self.body_graph = body_graph
+        # Draw order: preview first, overlay second.
+        self.add_child(self.preview)
+        self.add_child(self.body_graph)
+
+    def layout(self, ctx: WidgetContext) -> None:
+        # Both layers occupy the same rect.
+        self.preview.rect = pygame.Rect(self.rect)
+        self.body_graph.rect = pygame.Rect(self.rect)
+        self.preview.layout(ctx)
+        self.body_graph.layout(ctx)
+
 
 
 class DragOverlayWidget(Widget):
@@ -905,8 +1594,15 @@ class InventoryScene(PopupMenuScene):
         self._drag_src_owner_id: str | None = None
         self._drag_pos: tuple[int, int] | None = None  # panel-local cursor pos
         self._drag_label: str = ""
-        self._drag_target_owner_id: str | None = None
+        self._drag_target_owner_id: str | None = None  # container/back target (left list)
+        self._drag_target_kind: str | None = None  # "container" | "body_node" | None
+        self._drag_target_node_id: str | None = None  # for body_node targets
         self._drag_hint: str = ""
+
+        # Drag source metadata
+        self._drag_src_kind: str | None = None  # "list" | "body_node"
+        self._drag_src_slot_id: str | None = None  # node id if dragging an equipped item
+
 
         # Pending action requested by widgets (handled in Scene.handle_event where we have a manager)
         self._pending_double_open_index: int | None = None
@@ -990,20 +1686,77 @@ class InventoryScene(PopupMenuScene):
         if ent is None:
             return False
 
-        # Only items in the current inventory space can be dragged for now.
         self._drag_active = True
         self._drag_row = row
         self._drag_ent = ent
         self._drag_src_owner_id = self._owner_id()
         self._drag_pos = (int(pos[0]), int(pos[1]))
 
+        self._drag_src_kind = "list"
+        self._drag_src_slot_id = None
+
         glyph = str(getattr(ent, "glyph", "?"))[:1]
         name = getattr(ent, "name", None) or getattr(row, "label", "Item")
         self._drag_label = f"{glyph} {name}"
 
         self._drag_target_owner_id = None
+        self._drag_target_kind = None
+        self._drag_target_node_id = None
         self._drag_hint = ""
         return True
+
+
+    def _body_drag_begin(self, *, node_id: str, pos: tuple[int, int]) -> bool:
+        """Begin dragging an equipped item out of a body node."""
+        if not bool(getattr(self, "allow_drag_drop", True)):
+            return False
+
+        owner = self._preview_entity() if callable(getattr(self, "_preview_entity", None)) else self._find_owner_entity()
+        if owner is None:
+            return False
+
+        owner_id = str(getattr(owner, "id", self._owner_id()))
+
+        ent = None
+        if hasattr(self.game, "get_equipped_in_slot"):
+            try:
+                ent = self.game.get_equipped_in_slot(owner_id, str(node_id))
+            except Exception:
+                ent = None
+        if ent is None:
+            # Fallback: scan inventory tags
+            try:
+                inv = self.game.get_inventory(owner_id)
+                for it in inv:
+                    tags = getattr(it, "tags", {}) or {}
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(node_id):
+                        ent = it
+                        break
+            except Exception:
+                ent = None
+
+        if ent is None:
+            return False
+
+        self._drag_active = True
+        self._drag_row = None
+        self._drag_ent = ent
+        self._drag_src_owner_id = owner_id
+        self._drag_pos = (int(pos[0]), int(pos[1]))
+
+        self._drag_src_kind = "body_node"
+        self._drag_src_slot_id = str(node_id)
+
+        glyph = str(getattr(ent, "glyph", "?"))[:1]
+        name = getattr(ent, "name", None) or "Item"
+        self._drag_label = f"{glyph} {name}"
+
+        self._drag_target_owner_id = None
+        self._drag_target_kind = None
+        self._drag_target_node_id = None
+        self._drag_hint = ""
+        return True
+
 
     def _inv_drag_update(self, *, pos: tuple[int, int]) -> None:
         if not self._drag_active:
@@ -1017,33 +1770,137 @@ class InventoryScene(PopupMenuScene):
         if pos is not None:
             self._drag_pos = (int(pos[0]), int(pos[1]))
 
-        # Commit drop if we have a valid target; else cancel.
-        if self._drag_target_owner_id and self._drag_ent is not None and self._drag_src_owner_id is not None:
-            dest_owner_id = self._drag_target_owner_id
-            src_owner_id = self._drag_src_owner_id
+        dragged_ent = self._drag_ent
+        src_owner_id = self._drag_src_owner_id
 
-            # Special target: hovering over "Back" means pop outward ("Take").
-            # If we're at the root (player inventory), this becomes "Drop" (to ground),
-            # approximated via Game.drop_inventory_item for now.
-            if dest_owner_id == "__BACK__":
-                dest_owner_id = "__BACK__"  # sentinel; handled below
-
+        def _refresh_ui() -> None:
             try:
-                src_inv = self.game.get_inventory(src_owner_id) if hasattr(self.game, "get_inventory") else None
+                self._refresh_rows()
+                if self._list is not None:
+                    self._list.items = self._rows
+            except Exception:
+                pass
+
+        # ------------------------------------------------------------
+        # Drop onto a body node => equip / re-slot
+        # ------------------------------------------------------------
+        if (
+            self._drag_target_kind == "body_node"
+            and self._drag_target_node_id
+            and dragged_ent is not None
+            and src_owner_id is not None
+        ):
+            try:
+                ent_id = str(getattr(dragged_ent, "id", ""))
+                if hasattr(self.game, "equip_item_to_slot"):
+                    self.game.equip_item_to_slot(str(src_owner_id), ent_id, str(self._drag_target_node_id))
+                else:
+                    tags = getattr(dragged_ent, "tags", {}) or {}
+                    tags["equipped_slot"] = str(self._drag_target_node_id)
+                    try:
+                        setattr(dragged_ent, "tags", tags)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            _refresh_ui()
+
+            # Clear state and return
+            self._drag_active = False
+            self._drag_row = None
+            self._drag_ent = None
+            self._drag_src_owner_id = None
+            self._drag_pos = None
+            self._drag_label = ""
+            self._drag_target_owner_id = None
+            self._drag_target_kind = None
+            self._drag_target_node_id = None
+            self._drag_hint = ""
+            self._drag_src_kind = None
+            self._drag_src_slot_id = None
+            return
+
+        # ------------------------------------------------------------
+        # Drop into left-list "unequip zone" => unequip (but keep in same inventory)
+        # ------------------------------------------------------------
+        if (
+            self._drag_target_kind == "unequip_zone"
+            and dragged_ent is not None
+            and src_owner_id is not None
+        ):
+            try:
+                if hasattr(self.game, "unequip_item"):
+                    self.game.unequip_item(str(src_owner_id), str(getattr(dragged_ent, "id", "")))
+                else:
+                    tags = getattr(dragged_ent, "tags", {}) or {}
+                    tags.pop("equipped_slot", None)
+                    tags.pop("equipped", None)
+                    try:
+                        setattr(dragged_ent, "tags", tags)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            _refresh_ui()
+
+            # Clear state and return (PREVENTS falling through into move_item_between_inventories)
+            self._drag_active = False
+            self._drag_row = None
+            self._drag_ent = None
+            self._drag_src_owner_id = None
+            self._drag_pos = None
+            self._drag_label = ""
+            self._drag_target_owner_id = None
+            self._drag_target_kind = None
+            self._drag_target_node_id = None
+            self._drag_hint = ""
+            self._drag_src_kind = None
+            self._drag_src_slot_id = None
+            return
+
+
+        # ------------------------------------------------------------
+        # Drop onto a container/back in the left list => existing move
+        # (If the item was equipped, unequip first.)
+        # ------------------------------------------------------------
+        if self._drag_target_owner_id and dragged_ent is not None and src_owner_id is not None:
+            dest_owner_id = self._drag_target_owner_id
+
+            # Unequip if needed
+            try:
+                tags = getattr(dragged_ent, "tags", {}) or {}
+                if tags.get("equipped_slot") or tags.get("equipped"):
+                    if hasattr(self.game, "unequip_item"):
+                        self.game.unequip_item(str(src_owner_id), str(getattr(dragged_ent, "id", "")))
+                    else:
+                        tags.pop("equipped_slot", None)
+                        tags.pop("equipped", None)
+                        try:
+                            setattr(dragged_ent, "tags", tags)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            src_inv = None
+            try:
+                src_inv = self.game.get_inventory(str(src_owner_id))
             except Exception:
                 src_inv = None
 
             src_index = None
             if src_inv:
                 try:
-                    src_index = src_inv.index(self._drag_ent)
+                    src_index = src_inv.index(dragged_ent)
                 except Exception:
                     src_index = None
 
             if src_index is not None:
                 if dest_owner_id == "__BACK__":
                     # Pop outward from current inventory
-                    if src_owner_id == str(getattr(self.game, "player_id", "")) and self.parent_owner_id is None:
+                    if str(src_owner_id) == str(getattr(self.game, "player_id", "")) and self.parent_owner_id is None:
                         # Root: treat as drop-to-ground (via existing drop API)
                         if hasattr(self.game, "drop_inventory_item"):
                             try:
@@ -1054,23 +1911,23 @@ class InventoryScene(PopupMenuScene):
                         out_owner = self.parent_owner_id or str(getattr(self.game, "player_id", ""))
                         if hasattr(self.game, "move_item_between_inventories"):
                             try:
-                                self.game.move_item_between_inventories(src_owner_id, int(src_index), out_owner)
+                                self.game.move_item_between_inventories(str(src_owner_id), int(src_index), str(out_owner))
                             except Exception:
                                 pass
                 else:
                     if hasattr(self.game, "move_item_between_inventories"):
                         try:
-                            self.game.move_item_between_inventories(src_owner_id, int(src_index), dest_owner_id)
+                            self.game.move_item_between_inventories(str(src_owner_id), int(src_index), str(dest_owner_id))
                         except Exception:
                             pass
 
-            # Refresh immediately so the list reflects the move.
-            try:
-                self._refresh_rows()
-                if self._list is not None:
-                    self._list.items = self._rows
-            except Exception:
-                pass
+            _refresh_ui()
+
+        else:
+            # No valid target: cancel drag (keep item where it was).
+            # This enables "drop in dead zone to cancel" and "drop back onto same slot".
+            pass
+
 
         # Clear state
         self._drag_active = False
@@ -1080,65 +1937,135 @@ class InventoryScene(PopupMenuScene):
         self._drag_pos = None
         self._drag_label = ""
         self._drag_target_owner_id = None
+        self._drag_target_kind = None
+        self._drag_target_node_id = None
         self._drag_hint = ""
+        self._drag_src_kind = None
+        self._drag_src_slot_id = None
+
+
+
 
     def _update_drag_target(self) -> None:
-        """Recompute which container (if any) is currently under the drag ghost."""
+        """Recompute which target (container row / back / body node / unequip-zone) is under the drag ghost.
+
+        Priority:
+          1) Right pane body-node targets
+          2) Specific actionable left-row targets (container row, Back)
+          3) Left-half deadzone => Unequip (only when dragging from a body node)
+        """
         self._drag_target_owner_id = None
+        self._drag_target_kind = None
+        self._drag_target_node_id = None
         self._drag_hint = ""
 
-        if not self._drag_active or self._drag_pos is None or self._list is None:
+
+        if not self._drag_active or self._drag_pos is None:
             return
 
-        # Only drop onto container rows in the visible list.
+        # -------------------------
+        # 1) Prefer body-node targets when hovering the right pane.
+        # -------------------------
         try:
-            idx = self._list.pick_index_at(self._drag_pos) if hasattr(self._list, "pick_index_at") else None
+            hovered_right = bool(getattr(self, "_right_panel_hovered", False))
         except Exception:
-            idx = None
+            hovered_right = False
 
-        if idx is None:
-            return
-        if not (0 <= idx < len(self._rows)):
-            return
+        if hovered_right:
+            nid = getattr(self._body_graph, "hovered_nid", None)
+            if nid:
+                self._drag_target_kind = "body_node"
+                self._drag_target_node_id = str(nid)
+                sn = getattr(self._drag_ent, "name", None) or "Item"
+                dn = _display_body_node_label(str(nid))
+                self._drag_hint = f"Equip {sn} to {dn}"
+                return
 
-        row = self._rows[idx]
-        ent = getattr(row, "ent", None)
+        # -------------------------
+        # 2) If we're over a *specific* left list row that is actionable, target it.
+        #    (This must run BEFORE the generic unequip deadzone.)
+        # -------------------------
+        if self._list is not None:
+            try:
+                idx = self._list.pick_index_at(self._drag_pos) if hasattr(self._list, "pick_index_at") else None
+            except Exception:
+                idx = None
 
-        # Hovering over the Back row while dragging means "Take" (pop outward).
-        # If we're at the root (player inventory), this becomes "Drop" (onto ground),
-        # which we approximate via Game.drop_inventory_item for now.
-        if ent is None:
-            self._drag_target_owner_id = "__BACK__"
-            sn = getattr(self._drag_ent, "name", None) or "Item"
-            # Root inventory: dropping outward means dropping to ground.
-            if self._drag_src_owner_id == str(getattr(self.game, "player_id", "")) and self.parent_owner_id is None:
-                self._drag_hint = f"Drop {sn}"
-            else:
-                self._drag_hint = f"Take {sn}"
-            return
+            if idx is not None:
+                try:
+                    idx_i = int(idx)
+                except Exception:
+                    idx_i = None
 
-        tags = getattr(ent, "tags", {}) or {}
-        if not tags.get("container"):
-            return
+                if idx_i is not None and 0 <= idx_i < len(self._rows):
+                    row = self._rows[idx_i]
+                    ent = getattr(row, "ent", None)
 
-        ent_id = getattr(ent, "id", None)
-        dragged_id = getattr(self._drag_ent, "id", None) if self._drag_ent is not None else None
-        if ent_id is None or (dragged_id is not None and ent_id == dragged_id):
-            return
+                    # 'Back' row: pop outward / drop-to-ground behavior
+                    if ent is None and str(getattr(row, "label", "")).strip().lower() == "back":
+                        self._drag_target_kind = "container"
+                        self._drag_target_owner_id = "__BACK__"
+                        sn = getattr(self._drag_ent, "name", None) or "Item"
+                        self._drag_hint = f"Take {sn}"
+                        return
 
-        # Validate that this is a legal container in the same space.
-        try:
-            ok = any(cid == str(ent_id) for cid, _ in self._find_container_targets(exclude_id=str(dragged_id) if dragged_id else None))
-        except Exception:
-            ok = True
+                    if ent is not None:
+                        tags = getattr(ent, "tags", {}) or {}
+                        if bool(tags.get("container")):
+                            ent_id = getattr(ent, "id", None)
+                            if ent_id is not None:
+                                # Don't allow dropping an item into itself.
+                                if self._drag_ent is not None and getattr(self._drag_ent, "id", None) == ent_id:
+                                    pass
+                                else:
+                                    # Validate as a target (exclude recursive pitfalls)
+                                    try:
+                                        ok = (
+                                            str(ent_id) in set(
+                                                str(cid) for cid, _ in self._find_container_targets(
+                                                    exclude_id=str(getattr(self._drag_ent, "id", ""))
+                                                )
+                                            )
+                                        )
+                                    except Exception:
+                                        ok = True
 
-        if not ok:
-            return
+                                    if ok:
+                                        self._drag_target_kind = "container"
+                                        self._drag_target_owner_id = str(ent_id)
+                                        dn = getattr(ent, "name", None) or "Container"
+                                        sn = getattr(self._drag_ent, "name", None) or "Item"
+                                        self._drag_hint = f"Put {sn} into {dn}"
+                                        return
 
-        self._drag_target_owner_id = str(ent_id)
-        dn = getattr(ent, "name", None) or "Container"
-        sn = getattr(self._drag_ent, "name", None) or "Item"
-        self._drag_hint = f"Put {sn} into {dn}"
+        # -------------------------
+        # 3) Generic "unequip zone" deadzone: left half of the panel
+        #    (Only applies when dragging from a body node.)
+        # -------------------------
+        if self._drag_src_kind == "body_node":
+            try:
+                panel = getattr(self, "_panel", None)
+                if panel is not None:
+                    pw, ph = panel.get_size()
+                elif getattr(self, "root", None) is not None and getattr(self.root, "rect", None) is not None:
+                    pw, ph = int(self.root.rect.w), int(self.root.rect.h)
+                else:
+                    pw, ph = 0, 0
+
+                if pw > 0:
+                    mx = int(self._drag_pos[0])
+                    if mx <= int(pw * 0.5):
+                        self._drag_target_kind = "unequip_zone"
+                        self._drag_target_owner_id = None
+                        sn = getattr(self._drag_ent, "name", None) or "Item"
+                        self._drag_hint = f"Unequip {sn}"
+                        return
+            except Exception:
+                pass
+
+        # Otherwise: no target (drop cancels)
+        return
+
 
 
     
@@ -1213,13 +2140,24 @@ class InventoryScene(PopupMenuScene):
 
 
     def _preview_entity(self):
-        """Entity currently highlighted in the left list (if any).
+        """Entity shown in the right preview pane.
 
-        For InventoryScene/LookScene we want the right-pane preview (and description)
-        to reflect the *selected row*, not necessarily the inventory owner.
-        Falls back to the owner entity if nothing is selected.
+        - Inventory mode: keep the *owner/player* stable on the right, while the left list
+          is the owner's inventory.
+        - Look mode (and other future browse modes): the right pane reflects the currently
+          selected row (so you can cycle through multiple things on a tile, etc.).
+
+        Falls back to the owner entity if nothing is selected / row has no entity.
         """
-        # Prefer the live widget selection (it updates with mouse/keys).
+        # Inventory screen: always preview the owner (player / container we're inside).
+        try:
+            if str(getattr(self, "mode", "inventory")) == "inventory":
+                return self._find_owner_entity()
+        except Exception:
+            # Fail-soft: if mode is weird, treat as inventory.
+            return self._find_owner_entity()
+
+        # Otherwise (e.g. look screen): follow selection.
         try:
             if self._list is not None and getattr(self._list, "selected_index", None) is not None:
                 sel = int(self._list.selected_index)
@@ -1255,6 +2193,13 @@ class InventoryScene(PopupMenuScene):
         rows: list[_InvRow] = []
         if inv:
             for ent in inv:
+                # Equipped items remain in the inventory registry, but are hidden from the
+                # left list; they show up on the body graph instead.
+                tags = getattr(ent, "tags", {}) or {}
+                equipped_slot = tags.get("equipped_slot") or tags.get("equipped")
+                if equipped_slot:
+                    continue
+
                 name = getattr(ent, "name", None) or "(unnamed item)"
                 glyph = getattr(ent, "glyph", None) or "?"
                 rows.append(_InvRow(f"{str(glyph)[:1]}  {name}", ent=ent))
@@ -1263,6 +2208,7 @@ class InventoryScene(PopupMenuScene):
 
         rows.append(_InvRow("Back", ent=None))
         self._rows = rows
+
 
     # ---------------------------------------------------------------------
     # GeneralMenuScene hooks
@@ -1292,6 +2238,84 @@ class InventoryScene(PopupMenuScene):
         self._close_elapsed = 0
         return True
 
+
+
+
+    def _screen_pos_to_panel_logical(self, screen_pos: tuple[int, int], manager: "SceneManager") -> tuple[int, int] | None:
+        """Convert renderer/screen mouse pos into *logical panel* coords, undoing the current VisualProfile."""
+        try:
+            self._ensure_window_rect(manager)
+            if self.window_rect is None:
+                return None
+
+            sx, sy = int(screen_pos[0]), int(screen_pos[1])
+
+            # First get mouse in window-local coords (0..w, 0..h)
+            wx = float(sx - int(self.window_rect.x))
+            wy = float(sy - int(self.window_rect.y))
+
+            # If we're outside the window, bail.
+            if wx < 0 or wy < 0 or wx >= self.window_rect.w or wy >= self.window_rect.h:
+                return None
+
+            # We need the same visual used for drawing this frame.
+            panel = self._get_panel(manager)
+            pw, ph = panel.get_width(), panel.get_height()
+
+            vx = float(self.window_rect.w) / float(max(1, pw))
+            vy = float(self.window_rect.h) / float(max(1, ph))
+            visual = self._current_visual_profile(logical_to_window_scale_x=vx, logical_to_window_scale_y=vy)
+
+            # Invert apply_visual_panel transform (mirror of _project_point_window_to_screen math)
+            cx = float(self.window_rect.w) * 0.5
+            cy = float(self.window_rect.h) * 0.5
+
+            # Undo translation (center + offsets)
+            dx = wx - (cx + float(getattr(visual, "offset_x", 0.0)))
+            dy = wy - (cy + float(getattr(visual, "offset_y", 0.0)))
+
+            # Undo rotation FIRST (reverse of forward order: scale -> flip -> rotate)
+            ang = float(getattr(visual, "angle", 0.0))
+            if ang:
+                rad = math.radians(ang)
+                c = math.cos(rad)
+                s = math.sin(rad)
+                # rotate by -ang
+                dx, dy = (dx * c - dy * s, dx * s + dy * c)
+
+            # Undo flips
+            if getattr(visual, "flip_x", False):
+                dx = -dx
+            if getattr(visual, "flip_y", False):
+                dy = -dy
+
+            # Undo scale LAST
+            scx = float(getattr(visual, "scale_x", 1.0))
+            scy = float(getattr(visual, "scale_y", 1.0))
+            if abs(scx) < 1e-6 or abs(scy) < 1e-6:
+                return None
+            dx /= scx
+            dy /= scy
+
+
+
+            # Back to window-local “panel_to_blit” coords
+            px_win = cx + dx
+            py_win = cy + dy
+
+            # Map window-local coords back to *logical panel* coords
+            lx = px_win * float(pw) / float(max(1, self.window_rect.w))
+            ly = py_win * float(ph) / float(max(1, self.window_rect.h))
+
+            return (int(round(lx)), int(round(ly)))
+        except Exception:
+            return None
+
+
+
+
+
+
     def handle_event(self, event, manager: "SceneManager") -> None:
         # While closing, swallow inputs so the selection doesn't jitter mid-collapse.
         if self._closing:
@@ -1301,6 +2325,38 @@ class InventoryScene(PopupMenuScene):
         if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
             self._pending_click_activate_index = None
             self._pending_click_activate_due_ms = 0
+
+        # Track last mouse position in *logical panel coords* (unproject through the current VisualProfile).
+        try:
+            if hasattr(event, "pos") and event.pos is not None:
+                mp = self._screen_pos_to_panel_logical((int(event.pos[0]), int(event.pos[1])), manager)
+                if mp is not None:
+                    self._mouse_pos = mp
+        except Exception:
+            pass
+
+        # While dragging: update drag ghost from the scene's canonical panel-logical mouse.
+        # IMPORTANT: drag can be initiated from widgets (which may deliver panel-logical pos),
+        # but scene events start as screen coords. Mixing these causes consistent hitbox drift.
+        if self._drag_active and event.type == pygame.MOUSEMOTION:
+            try:
+                mp2 = getattr(self, "_mouse_pos", None)
+                if mp2 is not None:
+                    self._inv_drag_update(pos=mp2)
+            except Exception:
+                pass
+
+
+
+
+
+        try:
+            if hasattr(event, "pos") and event.pos is not None:
+                self._mouse_screen = (int(event.pos[0]), int(event.pos[1]))
+        except Exception:
+            pass
+
+
 
         super().handle_event(event, manager)
 
@@ -1317,6 +2373,29 @@ class InventoryScene(PopupMenuScene):
                     self._open_container_from_index(int(idx), manager)
             except Exception:
                 pass
+        # Widget-triggered click on an equipped body node: open context menu immediately.
+        pending_node = getattr(self, "_pending_node_activate", None)
+        if pending_node is not None:
+            try:
+                self._pending_node_activate = None
+            except Exception:
+                pass
+            try:
+                node_id = str(pending_node)
+                eq = self._equipped_entity_for_slot(node_id)
+                if eq is not None:
+                    src_px, src_sz = self._node_glyph_screen_info(node_id, manager)
+                    self._open_entity_context_menu(
+                        eq,
+                        manager,
+                        source_px=src_px,
+                        source_glyph_px=src_sz,
+                        equipped_slot_id=node_id,
+                    )
+            except Exception:
+                pass
+
+
         return
 
 
@@ -1325,6 +2404,456 @@ class InventoryScene(PopupMenuScene):
             manager.pop_scene()
         else:
             manager.set_scene(None)
+
+    # ---------------------------------------------------------------------
+    # Context menus / equip helpers
+    # ---------------------------------------------------------------------
+
+    def _body_slot_targets(self) -> list[tuple[str, str]]:
+        """Return [(node_id, display_label), ...] for the current owner's body schema."""
+        owner = None
+        try:
+            owner = self._find_owner_entity()
+        except Exception:
+            owner = None
+        if owner is None:
+            try:
+                owner = self._preview_entity()
+            except Exception:
+                owner = None
+        if owner is None:
+            return []
+        try:
+            schema = resolve_body_schema(owner) or {}
+        except Exception:
+            schema = {}
+        nodes = schema.get("nodes", {}) or {}
+        out: list[tuple[str, str]] = []
+        try:
+            for nid in nodes.keys():
+                sn = str(nid)
+                out.append((sn, _display_body_node_label(sn)))
+        except Exception:
+            return []
+        return out
+
+    def _equipped_entity_for_slot(self, slot_id: str):
+        """Best-effort: return the entity equipped in the given slot (or None)."""
+        owner_id = str(self._owner_id())
+        if hasattr(self.game, "get_equipped_in_slot"):
+            try:
+                return self.game.get_equipped_in_slot(owner_id, str(slot_id))
+            except Exception:
+                pass
+        try:
+            inv = self.game.get_inventory(owner_id) or []
+        except Exception:
+            inv = []
+        for it in inv:
+            try:
+                tags = getattr(it, "tags", {}) or {}
+                if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(slot_id):
+                    return it
+            except Exception:
+                continue
+        return None
+
+    def _node_glyph_screen_info(
+        self, node_id: str, manager: "SceneManager"
+    ) -> tuple[tuple[int, int] | None, int | None]:
+        """Return (screen_px, approx_screen_size_px) for the glyph drawn inside a body node."""
+        try:
+            renderer = manager.renderer
+        except Exception:
+            return (None, None)
+        self._ensure_window_rect(manager)
+        if self.window_rect is None or self._body_graph is None:
+            return (None, None)
+        panel = self._get_panel(manager)
+        try:
+            # Layout widgets into the panel surface so self._body_graph.rect is up-to-date.
+            self.draw_panel(panel, renderer, manager)
+        except Exception:
+            pass
+        region = pygame.Rect(getattr(self._body_graph, "rect", pygame.Rect(0, 0, 0, 0)))
+        if region.w <= 0 or region.h <= 0:
+            return (None, None)
+        owner = None
+        try:
+            owner = self._find_owner_entity()
+        except Exception:
+            owner = None
+        if owner is None:
+            return (None, None)
+        try:
+            schema = resolve_body_schema(owner) or {"root": None, "nodes": {}}
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+        pos_u = _compute_body_positions(schema)
+        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+        nid = str(node_id)
+        if nid not in pos_px:
+            return (None, None)
+        node_size = int(max(18, min(56, scale * 0.45)))
+        cx, cy = pos_px[nid]
+        gx = float(region.x + int(cx))
+        gy = float(region.y + int(cy))
+        pw, ph = panel.get_size()
+        sx = float(self.window_rect.w) / float(max(1, pw))
+        sy = float(self.window_rect.h) / float(max(1, ph))
+        win_pt = (gx * sx, gy * sy)
+        visual = self._current_visual_profile(logical_to_window_scale_x=sx, logical_to_window_scale_y=sy)
+        screen_px = self._project_point_window_to_screen(win_pt, visual)
+        try:
+            base_px = int(node_size * 0.86)
+            cell_w_win = float(base_px) * sx
+            cell_h_win = float(base_px) * sy
+            sw = cell_w_win * float(abs(getattr(visual, "scale_x", 1.0)))
+            sh = cell_h_win * float(abs(getattr(visual, "scale_y", 1.0)))
+            size_px = int(round(max(sw, sh)))
+            size_px = max(4, min(1024, size_px))
+        except Exception:
+            size_px = None
+        return (screen_px, size_px)
+
+    def _open_container_from_entity(
+        self,
+        ent,
+        manager: "SceneManager",
+        *,
+        source_px: tuple[int, int] | None = None,
+        source_glyph_px: int | None = None,
+    ) -> None:
+        """Open the given container entity directly (folder-style)."""
+        try:
+            nested_owner_id = getattr(ent, "id", None)
+            if nested_owner_id is None:
+                return
+        except Exception:
+            return
+        manager.push_scene(
+            InventoryScene(
+                self.game,
+                owner_id=str(nested_owner_id),
+                parent_owner_id=self._owner_id(),
+                title=getattr(ent, "name", None) or "Container",
+                base_effects=list(self.visual_effects),
+                source_px=source_px,
+                source_glyph_px=source_glyph_px,
+                stack_depth=self.stack_depth + 1,
+                animate_affine=self.animate_affine,
+            )
+        )
+
+    def _open_entity_context_menu(
+        self,
+        ent,
+        manager: "SceneManager",
+        *,
+        source_px: tuple[int, int] | None = None,
+        source_glyph_px: int | None = None,
+        equipped_slot_id: str | None = None,
+    ) -> bool:
+        """Open the standard context menu for an entity.
+
+        If equipped_slot_id is provided, show 'Unequip' (and do not show 'Equip...').
+        """
+        if ent is None:
+            return False
+        tags = getattr(ent, "tags", {}) or {}
+        is_container = bool(tags.get("container"))
+        is_berry = self._is_berry_from_tags(tags)
+        choices: list[str] = []
+        owner_id = self._owner_id()
+        container_targets = self._find_container_targets(exclude_id=getattr(ent, "id", None))
+        if equipped_slot_id:
+            choices.append("Unequip")
+        if owner_id == self.game.player_id:
+            choices.append("Drop")
+            if is_berry or is_container:
+                choices.append("Eat")
+            if container_targets:
+                choices.append("Put into...")
+        else:
+            choices.append("Take")
+            if is_berry or is_container:
+                choices.append("Eat")
+            if container_targets:
+                choices.append("Put into...")
+        if not equipped_slot_id:
+            if self._body_slot_targets():
+                choices.append("Equip...")
+        if is_container and bool(getattr(self, "allow_open_containers", True)):
+            choices.append("Open")
+        if not choices:
+            return False
+
+        def _handle_choice(choice_idx: int, mgr: "SceneManager") -> None:
+            if choice_idx < 0 or choice_idx >= len(choices):
+                return
+            choice = choices[choice_idx]
+            current_owner_id = self._owner_id()
+            cur_inv = None
+            try:
+                cur_inv = self.game.get_inventory(current_owner_id)
+            except Exception:
+                cur_inv = None
+            cur_ent = ent
+            cur_index = 0
+            if cur_inv:
+                try:
+                    cur_index = cur_inv.index(ent)
+                except Exception:
+                    try:
+                        cur_index = int(self.selected_idx() or 0)
+                    except Exception:
+                        cur_index = 0
+                try:
+                    if 0 <= cur_index < len(cur_inv):
+                        cur_ent = cur_inv[cur_index]
+                except Exception:
+                    cur_ent = ent
+            cur_tags = getattr(cur_ent, "tags", {}) or {}
+            cur_is_container = bool(cur_tags.get("container"))
+            cur_is_berry = self._is_berry_from_tags(cur_tags)
+
+            def _refresh_ui() -> None:
+                try:
+                    self._refresh_rows()
+                    if self._list is not None:
+                        self._list.items = self._rows
+                except Exception:
+                    pass
+ 
+            def _ensure_unequipped(item_ent) -> None:
+                """If item is equipped on this owner, clear equip state before moving/dropping/eating."""
+                try:
+                    t = getattr(item_ent, "tags", {}) or {}
+                    if t.get("equipped_slot") or t.get("equipped") or equipped_slot_id:
+                        if hasattr(self.game, "unequip_item"):
+                            self.game.unequip_item(str(current_owner_id), str(getattr(item_ent, "id", "")))
+                        else:
+                            t.pop("equipped_slot", None)
+                            t.pop("equipped", None)
+                            try:
+                                setattr(item_ent, "tags", t)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            if choice == "Unequip":
+                try:
+                    if hasattr(self.game, "unequip_item"):
+                        self.game.unequip_item(str(current_owner_id), str(getattr(cur_ent, "id", "")))
+                    else:
+                        t = getattr(cur_ent, "tags", {}) or {}
+                        t.pop("equipped_slot", None)
+                        t.pop("equipped", None)
+                        try:
+                            setattr(cur_ent, "tags", t)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                _refresh_ui()
+                return
+
+            if choice == "Drop" and current_owner_id == self.game.player_id:
+                _ensure_unequipped(cur_ent)
+
+                if hasattr(self.game, "drop_inventory_item"):
+                    try:
+                        self.game.drop_inventory_item(cur_index)
+                    except Exception:
+                        pass
+                _refresh_ui()
+                return
+
+            if choice == "Take" and current_owner_id != self.game.player_id:
+                _ensure_unequipped(cur_ent)
+
+                dest_owner_id = self.parent_owner_id or self.game.player_id
+                if hasattr(self.game, "move_item_between_inventories"):
+                    try:
+                        self.game.move_item_between_inventories(
+                            current_owner_id,
+                            cur_index,
+                            dest_owner_id,
+                        )
+                    except Exception:
+                        pass
+                _refresh_ui()
+                return
+
+            if choice == "Put into...":
+                targets = self._find_container_targets(exclude_id=getattr(cur_ent, "id", None))
+                if not targets:
+                    return
+                target_labels = [label for (_oid, label) in targets]
+
+                def on_target_choice(target_idx: int, mgr2: "SceneManager") -> None:
+                    if target_idx < 0 or target_idx >= len(targets):
+                        return
+                    dest_owner_id, _dest_label = targets[target_idx]
+                    src_owner_id = self._owner_id()
+
+                    _ensure_unequipped(cur_ent)
+
+
+                    src_inv = None
+                    try:
+                        src_inv = self.game.get_inventory(src_owner_id)
+                    except Exception:
+                        src_inv = None
+                    if not src_inv:
+                        return
+                    try:
+                        src_index = src_inv.index(cur_ent)
+                    except Exception:
+                        src_index = cur_index
+                    if not (0 <= src_index < len(src_inv)):
+                        return
+                    if hasattr(self.game, "move_item_between_inventories"):
+                        try:
+                            self.game.move_item_between_inventories(
+                                src_owner_id,
+                                src_index,
+                                dest_owner_id,
+                            )
+                        except Exception:
+                            pass
+                    _refresh_ui()
+
+                mgr.push_scene(
+                    UrgentMessageScene(
+                        self.game,
+                        "",
+                        title="Put into which container?",
+                        choices=target_labels,
+                        on_choice=on_target_choice,
+                        back_confirms=False,
+                    )
+                )
+                return
+
+            if choice == "Equip...":
+                targets = self._body_slot_targets()
+                if not targets:
+                    return
+                target_labels = [lbl for (_nid, lbl) in targets]
+
+                def on_slot_choice(target_idx: int, mgr2: "SceneManager") -> None:
+                    if target_idx < 0 or target_idx >= len(targets):
+                        return
+                    slot_id, _lbl = targets[target_idx]
+                    try:
+                        ent_id = str(getattr(cur_ent, "id", ""))
+                        if hasattr(self.game, "equip_item_to_slot"):
+                            self.game.equip_item_to_slot(str(current_owner_id), ent_id, str(slot_id))
+                        else:
+                            t = getattr(cur_ent, "tags", {}) or {}
+                            t["equipped_slot"] = str(slot_id)
+                            try:
+                                setattr(cur_ent, "tags", t)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    _refresh_ui()
+
+                mgr.push_scene(
+                    UrgentMessageScene(
+                        self.game,
+                        "",
+                        title="Equip to which slot?",
+                        choices=target_labels,
+                        on_choice=on_slot_choice,
+                        back_confirms=False,
+                    )
+                )
+                return
+
+            if choice == "Open" and cur_is_container and bool(getattr(self, "allow_open_containers", True)):
+                self._open_container_from_entity(cur_ent, mgr, source_px=source_px, source_glyph_px=source_glyph_px)
+                return
+
+            if choice == "Eat":
+                # If the item is equipped, unequip first (so consuming doesn't leave ghost equip state).
+                _ensure_unequipped(cur_ent)
+
+                # Re-resolve the entity + index after unequip (some games rebind inventory objects).
+                ent_id = str(getattr(cur_ent, "id", ""))
+                src_inv = None
+                try:
+                    src_inv = self.game.get_inventory(current_owner_id) or []
+                except Exception:
+                    src_inv = []
+
+                src_index: int | None = None
+                try:
+                    for i, it in enumerate(src_inv):
+                        if str(getattr(it, "id", "")) == ent_id:
+                            src_index = int(i)
+                            cur_ent = it  # refresh reference
+                            break
+                except Exception:
+                    src_index = None
+
+                # Eat only if valid target type.
+                if cur_is_berry or cur_is_container:
+                    if hasattr(self.game, "eat_inventory_item"):
+                        fn = self.game.eat_inventory_item
+
+                        # Try a few likely signatures. (Stop on the first one that works.)
+                        tried = False
+
+                        # 1) (owner_id, ent_id)  [what we used to do]
+                        try:
+                            fn(current_owner_id, ent_id)
+                            tried = True
+                        except TypeError:
+                            pass
+                        except Exception:
+                            tried = True
+
+                        # 2) (owner_id, index)
+                        if not tried and src_index is not None:
+                            try:
+                                fn(current_owner_id, int(src_index))
+                                tried = True
+                            except TypeError:
+                                pass
+                            except Exception:
+                                tried = True
+
+                        # 3) (index)
+                        if not tried and src_index is not None:
+                            try:
+                                fn(int(src_index))
+                                tried = True
+                            except TypeError:
+                                pass
+                            except Exception:
+                                tried = True
+
+                _refresh_ui()
+                return
+
+
+        manager.push_scene(
+            UrgentMessageScene(
+                self.game,
+                "",
+                title=getattr(ent, "name", None) or "",
+                choices=choices,
+                on_choice=_handle_choice,
+                back_confirms=False,
+            )
+        )
+
+        return True
+
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:
         """
@@ -1376,241 +2905,15 @@ class InventoryScene(PopupMenuScene):
             )
             return True
 
-        is_container = bool(tags.get("container"))
-        is_berry = self._is_berry_from_tags(tags)
-
-        choices: list[str] = []
-
-        owner_id = self._owner_id()
-        container_targets = self._find_container_targets(exclude_id=getattr(ent, "id", None))
-
-        if owner_id == self.game.player_id:
-            choices.append("Drop")
-            if is_berry or is_container:
-                choices.append("Eat")
-            if container_targets:
-                choices.append("Put into...")
-        else:
-            choices.append("Take")
-            if is_berry:
-                choices.append("Eat")
-            if container_targets:
-                choices.append("Put into...")
-
-        if is_container:
-            choices.append("Open")
-
-        if not choices:
-            return False
-
-        def _handle_choice(choice_idx: int, mgr: "SceneManager") -> None:
-            if choice_idx < 0 or choice_idx >= len(choices):
-                return
-            choice = choices[choice_idx]
-
-            # Re-fetch inventory in case it changed while popup was open.
-            current_owner_id = self._owner_id()
-            cur_inv = self.game.get_inventory(current_owner_id)
-            if not cur_inv:
-                return
-
-            # Re-find this entity by identity if possible (more robust than index when list changes).
-            try:
-                cur_index = cur_inv.index(ent)
-            except Exception:
-                # Fallback: trust the original index if it still maps to an entity.
-                cur_index = index
-
-            if cur_index < 0 or cur_index >= len(cur_inv):
-                return
-
-            cur_ent = cur_inv[cur_index]
-            cur_tags = getattr(cur_ent, "tags", {}) or {}
-            cur_is_container = bool(cur_tags.get("container"))
-
-            if choice == "Drop" and current_owner_id == self.game.player_id:
-                if hasattr(self.game, "drop_inventory_item"):
-                    self.game.drop_inventory_item(cur_index)
-                return
-
-            if choice == "Take" and current_owner_id != self.game.player_id:
-                dest_owner_id = self.parent_owner_id or self.game.player_id
-                if hasattr(self.game, "move_item_between_inventories"):
-                    self.game.move_item_between_inventories(
-                        current_owner_id,
-                        cur_index,
-                        dest_owner_id,
-                    )
-                return
-
-            if choice == "Put into...":
-                targets = self._find_container_targets(exclude_id=getattr(cur_ent, "id", None))
-                if not targets:
-                    return
-
-                target_labels = [label for (_oid, label) in targets]
-
-                def on_target_choice(target_idx: int, mgr2: "SceneManager") -> None:
-                    if target_idx < 0 or target_idx >= len(targets):
-                        return
-
-                    dest_owner_id, _dest_label = targets[target_idx]
-
-                    src_owner_id = self._owner_id()
-                    src_inv = self.game.get_inventory(src_owner_id)
-                    if not src_inv:
-                        return
-
-                    try:
-                        src_index = src_inv.index(cur_ent)
-                    except Exception:
-                        src_index = cur_index
-
-                    if not (0 <= src_index < len(src_inv)):
-                        return
-
-                    if hasattr(self.game, "move_item_between_inventories"):
-                        self.game.move_item_between_inventories(
-                            src_owner_id,
-                            src_index,
-                            dest_owner_id,
-                        )
-
-                mgr.push_scene(
-                    UrgentMessageScene(
-                        self.game,
-                        "",
-                        title="Put into which container?",
-                        choices=target_labels,
-                        on_choice=on_target_choice,
-                        back_confirms=False,
-                    )
-                )
-                return
-
-            if choice == "Open" and cur_is_container:
-                nested_owner_id = getattr(cur_ent, "id", None)
-                if nested_owner_id is None:
-                    return
-
-                # When opening a nested inventory, we want the new panel to "emerge"
-                # from the glyph that represents this item in the *current* list.
-                src_px, src_sz = self._row_glyph_screen_info(index, mgr)
-
-                mgr.push_scene(
-                    InventoryScene(
-                        self.game,
-                        owner_id=str(nested_owner_id),
-                        parent_owner_id=self._owner_id(),
-                        title=getattr(cur_ent, "name", None) or "Container",
-                        base_effects=list(self.visual_effects),
-                        source_px=src_px,
-                        source_glyph_px=src_sz,
-                        stack_depth=self.stack_depth + 1,
-                    )
-                )
-                return
-
-            if choice == "Eat":
-                # Recompute berry/container flags (inventory may have changed)
-                cur_is_berry = self._is_berry_from_tags(cur_tags)
-
-                if cur_is_container and not cur_is_berry:
-                    # --- Eat the inventory (container), recursively -----------------------
-
-                    # 1) Remove the container item itself from the current inventory
-                    eaten_ent = cur_inv.pop(cur_index)
-                    eaten_id = getattr(eaten_ent, "id", None)
-
-                    # 2) Walk the inventory tree, collecting effects from:
-                    #    - the container itself
-                    #    - every item inside it
-                    #    - every nested container and its contents, recursively
-                    all_effects: list[str] = []
-                    all_effects = concat_effect_names(all_effects, effect_names_from_obj(eaten_ent))
-
-                    def _consume_inventory_tree(owner_id2: str, visited: set[str]) -> None:
-                        if not owner_id2 or owner_id2 in visited:
-                            return
-                        visited.add(owner_id2)
-
-                        inv_map = getattr(self.game, "inventories", None)
-                        if not isinstance(inv_map, dict):
-                            return
-
-                        inv_list = inv_map.get(owner_id2)
-                        if not inv_list:
-                            inv_map.pop(owner_id2, None)
-                            return
-
-                        for child in list(inv_list):
-                            nonlocal all_effects
-                            all_effects = concat_effect_names(all_effects, effect_names_from_obj(child))
-
-                            child_id = getattr(child, "id", None)
-                            child_tags = getattr(child, "tags", {}) or {}
-                            child_is_container = bool(child_tags.get("container"))
-
-                            # If a berry is inside, try to "eat" it so HP/log happen.
-                            child_is_berry = self._is_berry_from_tags(child_tags)
-                            if child_is_berry:
-                                try:
-                                    if hasattr(self.game, "eat_item_from_inventory"):
-                                        idx2 = inv_list.index(child)
-                                        self.game.eat_item_from_inventory(owner_id2, idx2)
-                                    elif owner_id2 == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
-                                        idx2 = inv_list.index(child)
-                                        self.game.eat_inventory_item(idx2)
-                                except Exception:
-                                    pass
-
-                            if child_is_container and child_id and child_id in inv_map:
-                                _consume_inventory_tree(str(child_id), visited)
-
-                        inv_map.pop(owner_id2, None)
-
-                    if eaten_id and hasattr(self.game, "inventories"):
-                        _consume_inventory_tree(str(eaten_id), set())
-
-                    # 3) Apply ALL collected effects globally (stacking)
-                    if all_effects:
-                        try:
-                            existing = list(getattr(mgr.renderer.visual_fx, "global_effects", []) or [])
-                        except Exception:
-                            existing = []
-                        if hasattr(mgr, "set_global_visual_effects"):
-                            mgr.set_global_visual_effects(concat_effect_names(existing, all_effects))
-
-                    # 4) Log
-                    if hasattr(self.game, "log") and hasattr(self.game.log, "add"):
-                        self.game.log.add("You're not sure if you should have eaten that inventory...")
-                        seen: set[str] = set()
-                        for eff in all_effects:
-                            if eff in seen:
-                                continue
-                            seen.add(eff)
-                            self.game.log.add(f"You feel {eff}.")
-                    return
-
-                # Otherwise: eating a berry directly from this inventory menu
-                if cur_is_berry:
-                    if hasattr(self.game, "eat_item_from_inventory"):
-                        self.game.eat_item_from_inventory(current_owner_id, cur_index)
-                    elif current_owner_id == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
-                        self.game.eat_inventory_item(cur_index)
-                return
-
-        manager.push_scene(
-            UrgentMessageScene(
-                self.game,
-                "",
-                title=getattr(ent, "name", None) or "",
-                choices=choices,
-                on_choice=_handle_choice,
-                back_confirms=False,
-            )
+        # Normal inventory mode: open the standard context menu (with Equip...).
+        src_px, src_sz = self._row_glyph_screen_info(index, manager)
+        self._open_entity_context_menu(
+            ent,
+            manager,
+            source_px=src_px,
+            source_glyph_px=src_sz,
+            equipped_slot_id=None,
         )
-
         return True
 
     # ---------------------------------------------------------------------
@@ -1647,12 +2950,14 @@ class InventoryScene(PopupMenuScene):
         left_col.add_child(self._list)
 
         self._preview = EntityPreviewWidget()
+        self._body_graph = BodyPlanGraphWidget()
+        self._right_pane = RightPaneWidget(preview=self._preview, body_graph=self._body_graph)
         footer = LabelWidget(self.FOOTER_TEXT, align="left")
 
         self.root = TwoPaneInventoryRoot(
             header=header,
             left=left_col,
-            right=self._preview,
+            right=self._right_pane,
             footer=footer,
             padding=14,
             spacing=12,
@@ -2125,14 +3430,33 @@ class InventoryScene(PopupMenuScene):
         # originate "from below" for those effects. Instead, we compute the
         # *logical glyph cell center* inside the rendered canvas and store the
         # panel-space coordinate of that logical center.
+        #
+        # ALSO IMPORTANT: the preview pane now includes footer text (entity description).
+        # The opaque glyph overlay should stay inside the main "glyph region" so it doesn't
+        # paint over the description at the bottom.
         try:
             if self._preview is not None:
-                # Base size of the final glyph cell in logical panel coords.
-                self._zoom_glyph_base_px = max(12, int(min(self._preview.rect.w, self._preview.rect.h) * 0.50))
-
                 owner = self._find_owner_entity()
+
+                # Determine whether a description footer will be drawn (affects reserved space).
+                try:
+                    info = describe_entity_for_look(owner) if owner is not None else {}
+                    desc = info.get("description") or getattr(owner, "description", None)
+                except Exception:
+                    desc = getattr(owner, "description", None)
+
+                # Match EntityPreviewWidget's internal layout margins/reserved header/footer.
+                top_reserved = 70
+                bottom_reserved = 80 if desc else 56
+                region_w = max(1, int(self._preview.rect.w) - 28)
+                region_h = max(1, int(self._preview.rect.h) - int(top_reserved) - int(bottom_reserved))
+
+                # Base size of the final glyph cell in logical panel coords.
+                # Use the available glyph region (not the full pane height) so the overlay doesn't
+                # trample the description area.
+                self._zoom_glyph_base_px = max(12, int(min(region_w, region_h) * 0.50))
+
                 if owner is not None:
-                    # Match the overlay render parameters as closely as possible.
                     base_px = int(self._zoom_glyph_base_px)
                     font = pygame.font.SysFont("consolas", max(10, int(base_px)), bold=True)
 
@@ -2144,14 +3468,14 @@ class InventoryScene(PopupMenuScene):
                         scene_effects=list(getattr(self, "visual_effects", []) or []),
                     )
 
-                    # The preview pane "drawn position" is centered.
-                    cx = float(self._preview.rect.centerx)
-                    cy = float(self._preview.rect.centery)
-                    gx = cx - float(gcanvas.get_width()) * 0.5
-                    gy = cy - float(gcanvas.get_height()) * 0.5
+                    # Place the glyph so that its *logical cell center* lands at the center of the
+                    # reserved glyph region (excluding header and description footer).
+                    region_cx = float(self._preview.rect.x) + 14.0 + float(region_w) * 0.5
+                    region_cy = float(self._preview.rect.y) + float(top_reserved) + float(region_h) * 0.5
 
                     # Store anchor as the *glyph cell center* in panel coords.
-                    self._zoom_anchor_panel = (gx + float(ganchor[0]), gy + float(ganchor[1]))
+                    # (Render() later positions gcanvas so this anchor lands at the same place.)
+                    self._zoom_anchor_panel = (region_cx, region_cy)
                 else:
                     self._zoom_anchor_panel = (float(self._preview.rect.centerx), float(self._preview.rect.centery))
         except Exception:
@@ -2227,17 +3551,43 @@ class InventoryScene(PopupMenuScene):
                 glyph_layer.blit(gcanvas, (gx, gy))
 
                 # Apply the exact same transform but force alpha to 1.0.
+                hovered_right = bool(getattr(self, "_right_panel_hovered", False))
+                glyph_alpha = 0.72 if hovered_right else 1.0
+
                 visual_g = VisualProfile(
                     scale_x=visual.scale_x,
                     scale_y=visual.scale_y,
                     offset_x=visual.offset_x,
                     offset_y=visual.offset_y,
                     angle=visual.angle,
-                    alpha=1.0,
+                    alpha=float(glyph_alpha),
                     flip_x=visual.flip_x,
                     flip_y=visual.flip_y,
                 )
                 apply_visual_panel(renderer.surface, glyph_layer, self.window_rect, visual_g)
+            except Exception:
+                pass
+
+        # Draw body-plan overlay ABOVE the opaque glyph (so nodes/labels sit on top of the sprite).
+        body_overlay = getattr(self, "_body_overlay_panel_surface", None)
+        if body_overlay is not None:
+            try:
+                # Scale overlay to window size if needed (same as panel scaling).
+                overlay_to_blit = body_overlay
+                if overlay_to_blit.get_size() != self.window_rect.size:
+                    overlay_to_blit = pygame.transform.smoothscale(overlay_to_blit, self.window_rect.size)
+
+                visual_o = VisualProfile(
+                    scale_x=visual.scale_x,
+                    scale_y=visual.scale_y,
+                    offset_x=visual.offset_x,
+                    offset_y=visual.offset_y,
+                    angle=visual.angle,
+                    alpha=1.0,  # overlay surface already encodes fade alpha
+                    flip_x=visual.flip_x,
+                    flip_y=visual.flip_y,
+                )
+                apply_visual_panel(renderer.surface, overlay_to_blit, self.window_rect, visual_o)
             except Exception:
                 pass
 
