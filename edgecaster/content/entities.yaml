@@ -12,6 +12,25 @@
   description: "A thing. In a place. Don't like it? Try a new place. At a different time."
   tags: {}
 
+
+- id: physical_object
+  name: Physical Object
+  parent: entity
+  mass: 1
+  size: 1
+  material: matter
+  body:
+    root: body
+    nodes:
+      body:
+        proto: body
+        children: []
+        layout:
+          x: 0
+          y: 0
+  description: A physical object, possessed of mass and size.
+
+
 # --- BERRY TEMPLATE ------------------------------------------
 - id: berry
   name: Berry
@@ -120,17 +139,17 @@
   tags:
     item_type: healing_kit
 
-- id: scrap_blade
-  name: Scrap Blade
+- id: koch_knife
+  name: Koch knife
   glyph: "/"
-  color: [180, 180, 180]
+  color: [180, 180, 220]
   kind: item
   render_layer: 1
   blocks_movement: false
-  parent: entity
-  description: "A jagged length of metal. Not quite a sword, but sharp enough."
+  parent: physical_object
+  description: "Seems to get sharper the closer you look. Ouch, not that close!"
   tags:
-    item_type: scrap_blade
+    item_type: koch_knife
 
 # --- SIGN / DOOR FEATURES -------------------------------------------
 - id: sign

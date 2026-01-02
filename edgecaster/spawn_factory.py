@@ -75,6 +75,16 @@ def build_entity_from_spec(
         statuses=statuses,
     )
 
+    # Keep a reference to the originating prototype id (critical for body schemas, save/load, introspection).
+    # IMPORTANT: this must be the prototype id, not the runtime instance id.
+    src_pid = s.get("id")  # resolved prototype id
+    if src_pid is not None:
+        try:
+            ent.proto_id = str(src_pid)
+        except Exception:
+            pass
+
+
     # Optional: attach description if your Entity supports it (it seems to in your project).
     # This is safe even if not declared in the dataclass, because Python allows dynamic attrs.
     desc = s.get("description", None)
@@ -108,7 +118,13 @@ def build_actor_from_spec(
     glyph = s.get("glyph", "@")
     color = _as_color(s.get("color"), (255, 255, 255))
     faction = s.get("faction", "neutral")
-    actions = tuple(s.get("actions", ("move", "wait")) or ("move", "wait"))
+    # Preserve explicit empty action lists from YAML (e.g. training dummies).
+    # Only fall back to default if the key is missing or None.
+    raw_actions = s.get("actions", None)
+    if raw_actions is None:
+        actions = ("move", "wait")
+    else:
+        actions = tuple(raw_actions)
 
     base_hp = int(s.get("base_hp", 1) or 1)
     base_attack = int(s.get("base_attack", 1) or 1)
@@ -136,6 +152,16 @@ def build_actor_from_spec(
         faction=faction,
         actions=actions,
     )
+
+    # Keep a reference to the originating prototype id (critical for body schemas, save/load, introspection).
+    # IMPORTANT: this must be the prototype id, not the runtime instance id.
+    src_pid = s.get("id")  # resolved prototype id
+    if src_pid is not None:
+        try:
+            actor.proto_id = str(src_pid)
+        except Exception:
+            pass
+
 
     actor.stats = Stats(
         hp=base_hp,

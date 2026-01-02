@@ -1533,7 +1533,7 @@ class Game:
             lab_state = None
         # Apply POIs (records ids on world)
         poi_hits = mapgen.apply_pois(world, coord)
-        # Build starting structures (e.g., depot)
+        # Build starting structures (e.g., depotdepot)
         if "starting_zone" in poi_hits:
             try:
                 depot_info = mapgen.build_item_depot(world, self.rng, world.entry)
@@ -1878,7 +1878,7 @@ class Game:
                             pass
                     # Place items in interior
                     interior = depot_info.get("interior") or []
-                    item_ids = ["blueberry", "raspberry", "strawberry", "destabilizer", "debug_inventory", "healing_kit", "scrap_blade"]
+                    item_ids = ["blueberry", "raspberry", "strawberry", "destabilizer", "debug_inventory", "healing_kit", "koch_knife"]
                     for pos in interior:
                         try:
                             template_id = self.rng.choice(item_ids)
@@ -2226,7 +2226,7 @@ class Game:
             "clockwise": ["clockwise"],
             "counter-clockwise": ["counter-clockwise"],
             "ghostly": ["ghostly"],
-            "mirrored": [],  # chosen dynamically: ["mirror_x"] or ["mirror_y"]
+            "mirrored": ["mirror_x"],
             "fiery": ["fiery"],
             "bismuth": ["bismuth"],
             "jittery": ["jittery"],
@@ -2313,8 +2313,6 @@ class Game:
 
             if functional:
                 effects = list(functional_map.get(adjective, []))
-                if adjective == "mirrored":
-                    effects = [self.rng.choice(["mirror_x", "mirror_y"])]
                 if effects:
                     tags["visual_effects"] = effects
 

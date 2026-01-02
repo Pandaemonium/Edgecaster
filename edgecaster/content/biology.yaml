@@ -1,0 +1,191 @@
+
+
+- id: organism
+  name: Organism
+  parent: physical_object
+  material: organic matter
+  description: A living (or once-living) thing made of organic matter.
+
+- id: animal
+  name: Animal
+  parent: organism
+  material: flesh
+  description: A mobile organism of flesh.
+
+- id: vertebrate
+  name: Vertebrate
+  parent: animal
+  body_patch:
+    - op: add_node
+      node: head
+      proto: head
+      attach_to: body
+      layout:
+        x: -2
+        y: 1
+    - op: add_node
+      node: tail
+      proto: tail
+      attach_to: body
+      layout:
+        x: 2
+        y: -1
+    - op: replace_node
+      node: body
+      layout:
+        x: 0
+        y: 0
+      children: [head, tail]
+  description: An animal with a head and tail, oriented along a spine.
+
+- id: mammal
+  name: Mammal
+  parent: vertebrate
+  body_patch:
+    - op: add_node
+      node: forelimb
+      proto: limb
+      attach_to: body
+      layout:
+        x: -1
+        y: 1
+    - op: add_node
+      node: forelimb_m
+      proto: limb
+      attach_to: body
+      props:
+        mirrored: true
+      layout:
+        x: -1
+        y: 0
+    - op: add_node
+      node: hindlimb
+      proto: limb
+      attach_to: body
+      layout:
+        x: 1
+        y: -1
+    - op: add_node
+      node: hindlimb_m
+      proto: limb
+      attach_to: body
+      props:
+        mirrored: true
+      layout:
+        x: 1
+        y: 0
+    - op: replace_node
+      node: body
+      children: [head, tail, forelimb, forelimb_m, hindlimb, hindlimb_m]
+  description: A vertebrate with four limbs.
+
+- id: monkey
+  name: Monkey
+  parent: mammal
+  body_patch:
+    - op: add_node
+      node: arm
+      proto: arm
+      attach_to: body
+      layout:
+        x: -1
+        y: 1
+    - op: add_node
+      node: arm_m
+      proto: arm
+      attach_to: body
+      props:
+        mirrored: true
+      layout:
+        x: -1
+        y: 0
+    - op: add_node
+      node: leg
+      proto: leg
+      attach_to: body
+      layout:
+        x: 1
+        y: -1
+    - op: add_node
+      node: leg_m
+      proto: leg
+      attach_to: body
+      props:
+        mirrored: true
+      layout:
+        x: 1
+        y: 0
+    - op: delete_node
+      node: forelimb
+    - op: delete_node
+      node: forelimb_m
+    - op: delete_node
+      node: hindlimb
+    - op: delete_node
+      node: hindlimb_m
+    - op: replace_node
+      node: body
+      children: [head, tail, arm, arm_m, leg, leg_m]
+  description: A mammal whose forelimbs are arms and hindlimbs are legs.
+
+- id: ape
+  name: Ape
+  parent: monkey
+  body_patch:
+    - op: delete_node
+      node: tail
+    - op: replace_node
+      node: body
+      children: [head, arm, arm_m, leg, leg_m]
+  description: A monkey without a tail.
+
+- id: humanoid
+  name: Humanoid
+  parent: ape
+  body_patch:
+    - op: replace_node
+      node: head
+      layout:
+        x: 0
+        y: -2
+    - op: replace_node
+      node: body
+      layout:
+        x: 0
+        y: 0
+    - op: replace_node
+      node: arm
+      layout:
+        x: -2
+        y: 0
+    - op: replace_node
+      node: arm_m
+      layout:
+        x: 2
+        y: 0
+    - op: replace_node
+      node: leg
+      layout:
+        x: -1
+        y: 2
+    - op: replace_node
+      node: leg_m
+      layout:
+        x: 1
+        y: 2
+  description: A roughly bipedal ape in a paper-doll orientation.
+
+- id: human
+  name: Human
+  parent: humanoid
+  description: Halfway between an ape and an angel.
+
+# NOTE: "actor" remains as a legacy template concept for now.
+# We'll later migrate "actor-ness" into a property/tag + energy-queue participation.
+- id: actor
+  name: Actor
+  parent: entity
+  tags:
+    actor: true
+    template: true
+  description: All the world's a stage -- and it is theater in the round.

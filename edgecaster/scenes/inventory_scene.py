@@ -31,6 +31,8 @@ from edgecaster.ui.widgets import (
     _wrap_text_px
 )
 
+from edgecaster.prototypes import resolve_body_schema
+
 if TYPE_CHECKING:
     from .manager import SceneManager
 
@@ -50,6 +52,219 @@ def _smoothstep(x: float) -> float:
 
 def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+# ---------------------------------------------------------------------------
+# Body-plan overlay helpers (read-only for now)
+# ---------------------------------------------------------------------------
+
+def _safe_float(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+def _display_body_node_label(nid: str) -> str:
+    s = str(nid)
+    if s.endswith("_m"):
+        return f"mirrored {s[:-2]}"
+    return s
+
+
+
+def _node_layout_xy(node_spec: dict) -> Optional[tuple[float, float]]:
+    if not isinstance(node_spec, dict):
+        return None
+    layout = node_spec.get("layout")
+    if not isinstance(layout, dict):
+        return None
+    x = _safe_float(layout.get("x"))
+    y = _safe_float(layout.get("y"))
+    if x is None or y is None:
+        return None
+    return (x, y)
+
+
+def _children_of(node_spec: dict) -> list[str]:
+    if not isinstance(node_spec, dict):
+        return []
+    ch = node_spec.get("children") or []
+    if isinstance(ch, list):
+        out: list[str] = []
+        for c in ch:
+            if c is None:
+                continue
+            out.append(str(c))
+        return out
+    return []
+
+
+def _default_offsets() -> list[tuple[int, int]]:
+    # "Convenient" placements around parent; expands outward.
+    return [
+        (-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (1, -1), (-1, 1), (1, 1),
+        (-2, 0), (2, 0), (0, -2), (0, 2),
+        (-2, -1), (-2, 1), (2, -1), (2, 1),
+        (-1, -2), (1, -2), (-1, 2), (1, 2),
+        (-2, -2), (2, -2), (-2, 2), (2, 2),
+    ]
+
+
+def _compute_body_positions(schema: dict) -> dict[str, tuple[float, float]]:
+    """
+    Returns node_id -> (x, y) in abstract layout units.
+    Uses YAML coords when present; otherwise assigns positions near parent.
+    """
+    if not isinstance(schema, dict):
+        return {}
+    nodes = schema.get("nodes") or {}
+    if not isinstance(nodes, dict):
+        return {}
+    root = schema.get("root")
+    root_id = str(root) if root is not None else None
+
+    # 1) Start with explicit coords where provided.
+    pos: dict[str, tuple[float, float]] = {}
+    for nid, spec in nodes.items():
+        nid_s = str(nid)
+        xy = _node_layout_xy(spec if isinstance(spec, dict) else {})
+        if xy is not None:
+            pos[nid_s] = xy
+
+    # 2) Ensure root exists; if no explicit position, place at origin.
+    if root_id and root_id in nodes and root_id not in pos:
+        pos[root_id] = (0.0, 0.0)
+
+    # If schema has no root, pick a stable "first" node.
+    if root_id is None:
+        for nid in nodes.keys():
+            root_id = str(nid)
+            break
+        if root_id is not None and root_id not in pos:
+            pos[root_id] = (0.0, 0.0)
+
+    if root_id is None:
+        return pos
+
+    # Occupancy set for integer-ish collision checks.
+    occupied: set[tuple[int, int]] = set()
+    for p in pos.values():
+        occupied.add((int(round(p[0])), int(round(p[1]))))
+
+    # 3) BFS assign missing nodes relative to parent.
+    from collections import deque
+    q = deque([root_id])
+    seen: set[str] = set()
+
+    offsets = _default_offsets()
+
+    while q:
+        cur = q.popleft()
+        if cur in seen:
+            continue
+        seen.add(cur)
+
+        cur_spec = nodes.get(cur) if isinstance(nodes.get(cur), dict) else {}
+        cur_pos = pos.get(cur)
+        if cur_pos is None:
+            # If parent didn't get a position somehow, pin it.
+            cur_pos = (0.0, 0.0)
+            pos[cur] = cur_pos
+            occupied.add((0, 0))
+
+        children = _children_of(cur_spec)
+        for idx, ch in enumerate(children):
+            if ch not in nodes:
+                continue
+            if ch not in pos:
+                # Propose an offset near parent, avoiding collisions.
+                base_x, base_y = cur_pos
+                placed = None
+                for j, (ox, oy) in enumerate(offsets):
+                    # Rotate starting offset based on child index for variety.
+                    k = (idx + j) % len(offsets)
+                    ox2, oy2 = offsets[k]
+                    tx = int(round(base_x + ox2))
+                    ty = int(round(base_y + oy2))
+                    if (tx, ty) not in occupied:
+                        placed = (float(tx), float(ty))
+                        occupied.add((tx, ty))
+                        break
+                if placed is None:
+                    # Worst-case: just shove it somewhere far.
+                    tx = int(round(base_x)) + 3 + idx
+                    ty = int(round(base_y)) + 3
+                    placed = (float(tx), float(ty))
+                    occupied.add((tx, ty))
+                pos[ch] = placed
+            q.append(ch)
+
+    # 4) Any orphan nodes not reached from root: sprinkle them.
+    if nodes:
+        i = 0
+        for nid in nodes.keys():
+            nid = str(nid)
+            if nid in pos:
+                continue
+            tx = 3 + (i % 6)
+            ty = -3 - (i // 6)
+            while (tx, ty) in occupied:
+                tx += 1
+            pos[nid] = (float(tx), float(ty))
+            occupied.add((tx, ty))
+            i += 1
+
+    return pos
+
+
+def _map_positions_to_rect(
+    positions: dict[str, tuple[float, float]],
+    target_rect: pygame.Rect,
+    *,
+    margin_frac: float = 0.12,
+) -> tuple[dict[str, tuple[int, int]], float]:
+    """
+    Map abstract (x,y) positions into pixel coords in target_rect.
+    Returns (node_id -> (px, py), scale_px_per_unit).
+    """
+    if not positions:
+        return {}, 1.0
+
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+
+    # Avoid zero spans
+    spanx = max(1e-6, (maxx - minx))
+    spany = max(1e-6, (maxy - miny))
+
+    m = int(min(target_rect.w, target_rect.h) * float(margin_frac))
+    inner = target_rect.inflate(-2 * m, -2 * m)
+    if inner.w <= 1 or inner.h <= 1:
+        inner = target_rect.copy()
+
+    # scale so it "mostly fills"
+    sx = inner.w / spanx
+    sy = inner.h / spany
+    scale = float(min(sx, sy))
+
+    # center in inner rect
+    cx_u = (minx + maxx) * 0.5
+    cy_u = (miny + maxy) * 0.5
+    cx_px = inner.centerx
+    cy_px = inner.centery
+
+    out: dict[str, tuple[int, int]] = {}
+    for nid, (x, y) in positions.items():
+        px = int(round(cx_px + (x - cx_u) * scale))
+        py = int(round(cy_px + (y - cy_u) * scale))
+        out[nid] = (px, py)
+
+    return out, scale
+
 
 
 def _render_entity_glyph_canvas(
@@ -294,6 +509,13 @@ class InventoryListWidget(ListWidget):
         self._press_pos = None
         self._press_ms = 0
         self._dragging = False
+
+
+
+
+
+
+
 
     def handle_event(self, event, ctx: WidgetContext) -> bool:
         # If we're currently dragging, eat mouse events and forward to scene.
@@ -545,6 +767,12 @@ class EntityPreviewWidget(Widget):
         r = self.rect
         card = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
 
+        # Clear any previous frame's body overlay (we'll set it again if we draw one).
+        try:
+            setattr(scene, "_body_overlay_panel_surface", None)
+        except Exception:
+            pass
+
         bg = getattr(renderer, "bg", (10, 10, 20))
         fg = getattr(renderer, "fg", (240, 240, 255))
 
@@ -552,10 +780,14 @@ class EntityPreviewWidget(Widget):
         card.fill(fill)
         pygame.draw.rect(card, (*fg, 120), card.get_rect(), 2, border_radius=10)
 
-        title_font = getattr(renderer, "menu_font", None)
+        title_font = getattr(renderer, "menu_title_font", None)
         if title_font is None:
-            title_font = pygame.font.SysFont("consolas", 18, bold=True)
-        ts = title_font.render("Inhabiting", True, fg)
+            title_font = getattr(renderer, "menu_font", None)
+        if title_font is None:
+            title_font = pygame.font.SysFont("consolas", 22, bold=True)
+
+        # Title: entity name (no \"inhabiting\" label).
+        ts = title_font.render(str(name), True, fg)
         card.blit(ts, (14, 12))
 
         # Stable center in pane coords.
@@ -565,7 +797,8 @@ class EntityPreviewWidget(Widget):
         # Optional label.
         nfont = pygame.font.SysFont("consolas", 16, bold=True)
         ns = nfont.render(str(name), True, fg)
-        card.blit(ns, (14, 36))
+
+
 
         # Only draw the glyph here if the scene is NOT doing the external opaque overlay.
         if not bool(getattr(scene, "_external_opaque_glyph", False)):
@@ -583,27 +816,271 @@ class EntityPreviewWidget(Widget):
             card.blit(gcanvas, (gx, gy))
 
         desc = info.get("description") or getattr(owner, "description", None)
+
+        # --- Description footer (Magic-card style) -------------------------
         if desc:
-            dfont = pygame.font.SysFont("consolas", 14, italic=True)
-            dcolor = (
-                int(fg[0] * 0.7),
-                int(fg[1] * 0.7),
-                int(fg[2] * 0.7),
-            )
+            try:
+                # Italic + slightly grayed out
+                dfont = pygame.font.SysFont("consolas", 16, italic=True)
+            except Exception:
+                dfont = pygame.font.SysFont("consolas", 16)
 
-            # Simple word wrap (later replace with a real widget if desired)
-            max_w = r.w - 28
-            y = r.h - 14
-            lines = _wrap_text_px(dfont, desc, max_w)
+            # Wrap to the inner card width
+            max_w = max(1, r.w - 28)
+            lines = _wrap_text_px(dfont, str(desc), max_w)
 
+            # Draw from the bottom up so it hugs the bottom margin consistently
+            y = r.h - 16  # bottom padding
+            color = (185, 185, 195)  # gray-ish
+            alpha = 210
+
+            # Render lines bottom-up
             for line in reversed(lines):
-                line_surf = dfont.render(line, True, dcolor)
-                y -= line_surf.get_height()
-                card.blit(line_surf, (14, y))
+                if not line:
+                    y -= dfont.get_height()
+                    continue
+                s = dfont.render(line, True, color).convert_alpha()
+                s.set_alpha(alpha)
+                y -= s.get_height()
+                card.blit(s, (14, y))
 
-
+        # (Body-plan node overlay is drawn by BodyPlanGraphWidget.)
 
         surf.blit(card, r.topleft)
+
+
+
+class BodyPlanGraphWidget(Widget):
+    """Read-only body-plan node graph overlay for the right pane.
+
+    Implemented as a widget so hover/collision uses PanelScene's standardized
+    event -> panel logical coordinate conversion (including renderer._to_surface
+    and VisualProfile unprojection).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hovered_nid: str | None = None
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
+            return False
+
+        scene = ctx.scene
+
+        if event.type == pygame.MOUSEMOTION:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return False
+
+            mx, my = int(pos[0]), int(pos[1])
+
+            # Track whether the mouse is over the right pane at all (used to fade the overlay).
+            try:
+                setattr(scene, "_right_panel_hovered", bool(self.rect.collidepoint((mx, my))))
+            except Exception:
+                pass
+
+            # Compute hovered node id (if any). This is deliberately recomputed
+            # from the current schema + layout so it stays correct even as the
+            # previewed entity changes.
+            self.hovered_nid = self._hit_test_node((mx, my), ctx)
+
+            return False  # never “consume” motion; let other widgets also update
+
+        return False
+
+    def _hit_test_node(self, mp: tuple[int, int], ctx: WidgetContext) -> str | None:
+        scene = ctx.scene
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            return None
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        # Reserve a region that mostly covers the glyph area, not the header/footer text.
+        r = self.rect
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+
+        if region.w <= 10 or region.h <= 10:
+            return None
+
+        try:
+            schema = resolve_body_schema(owner)
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+
+        pos_u = _compute_body_positions(schema)
+        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+
+        node_size = int(max(18, min(56, scale * 0.45)))
+        half = node_size // 2
+
+        mx, my = mp
+        # Convert mp (panel) into region-local coords for the hit-test.
+        lx = mx - region.x
+        ly = my - region.y
+
+        for nid, (px, py) in pos_px.items():
+            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
+                continue
+            sq_local = pygame.Rect(int(px - half), int(py - half), int(node_size), int(node_size))
+            if sq_local.collidepoint((lx, ly)):
+                return str(nid)
+
+        return None
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
+            return
+
+        scene = ctx.scene
+        renderer = ctx.renderer
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            try:
+                setattr(scene, "_body_overlay_panel_surface", None)
+            except Exception:
+                pass
+            return
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        try:
+            schema = resolve_body_schema(owner)
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+
+        # Region is in *widget-local* coords for drawing, then we place it into the panel overlay.
+        r = pygame.Rect(0, 0, self.rect.w, self.rect.h)
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(14, top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+
+        if region.w <= 10 or region.h <= 10:
+            try:
+                setattr(scene, "_body_overlay_panel_surface", None)
+            except Exception:
+                pass
+            return
+
+        # Fade overlay in/out based on right-pane hover.
+        hovered = bool(getattr(scene, "_right_panel_hovered", False))
+        alpha = 150 if hovered else 70
+
+        # Colors derived from the scene's palette (fallbacks if missing).
+        fg = getattr(scene, "fg", (230, 230, 230))
+        hilite = getattr(scene, "hilite", (255, 255, 100))
+
+        overlay = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
+
+        pos_u = _compute_body_positions(schema)
+        pos_px, scale = _map_positions_to_rect(pos_u, region)
+
+        node_size = int(max(18, min(56, scale * 0.45)))
+        half = node_size // 2
+
+        # Draw edges
+        nodes = schema.get("nodes") if isinstance(schema, dict) else None
+        if isinstance(nodes, dict):
+            line_col = (*fg, int(alpha * 0.85))
+
+            for nid, spec in nodes.items():
+                a = pos_px.get(nid)
+                if a is None:
+                    continue
+                for ch in _children_of(spec if isinstance(spec, dict) else {}):
+                    b = pos_px.get(ch)
+                    if b is None:
+                        continue
+                    pygame.draw.line(overlay, line_col, a, b, 2)
+
+        # Draw squares + labels
+        label_font = pygame.font.SysFont("consolas", max(15, int(node_size * 0.60)), bold=True)
+        node_border = (*fg, int(alpha * 1.0))
+        node_fill = (0, 0, 0, int(alpha * 0.35))
+        hi_border = (*hilite, int(alpha * 1.0))
+        label_col = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(alpha * 0.95))
+        label_hi = (int(hilite[0]), int(hilite[1]), int(hilite[2]), int(alpha * 0.98))
+
+        # Apply region offset (pos_px is region-local).
+        hovered_nid = self.hovered_nid
+
+        for nid, (px, py) in pos_px.items():
+            if not region.collidepoint(px, py):
+                continue
+
+            is_hot = (hovered_nid is not None and str(nid) == hovered_nid)
+
+            sq = pygame.Rect(int(px - half), int(py - half), int(node_size), int(node_size))
+            pygame.draw.rect(overlay, node_fill, sq)
+            pygame.draw.rect(overlay, hi_border if is_hot else node_border, sq, 3 if is_hot else 2)
+
+            try:
+                # Smaller font for node labels
+                label_font = pygame.font.SysFont(
+                    "consolas",
+                    max(12, int(node_size * 0.45)),
+                    bold=True,
+                )
+
+                label = _display_body_node_label(nid)
+                ls = label_font.render(label, True, label_hi if is_hot else label_col).convert_alpha()
+                ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+
+                # Center label horizontally over the node box, slightly above it
+                lx = sq.centerx - ls.get_width() // 2
+                ly = sq.top - ls.get_height() - 4
+
+                overlay.blit(ls, (lx, ly))
+
+            except Exception:
+                pass
+
+        # Store a panel-sized overlay surface so InventoryScene can render it above the opaque glyph layer.
+        try:
+            panel_w, panel_h = ctx.surface.get_size()
+            overlay_panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+            overlay_panel.blit(overlay, self.rect.topleft)
+            setattr(scene, "_body_overlay_panel_surface", overlay_panel)
+        except Exception:
+            pass
+
+
+class RightPaneWidget(Widget):
+    """Layered right pane: base preview + body-plan graph overlay."""
+
+    def __init__(self, *, preview: Widget, body_graph: Widget) -> None:
+        super().__init__()
+        self.preview = preview
+        self.body_graph = body_graph
+        # Draw order: preview first, overlay second.
+        self.add_child(self.preview)
+        self.add_child(self.body_graph)
+
+    def layout(self, ctx: WidgetContext) -> None:
+        # Both layers occupy the same rect.
+        self.preview.rect = pygame.Rect(self.rect)
+        self.body_graph.rect = pygame.Rect(self.rect)
+        self.preview.layout(ctx)
+        self.body_graph.layout(ctx)
+
 
 
 class DragOverlayWidget(Widget):
@@ -1213,13 +1690,24 @@ class InventoryScene(PopupMenuScene):
 
 
     def _preview_entity(self):
-        """Entity currently highlighted in the left list (if any).
+        """Entity shown in the right preview pane.
 
-        For InventoryScene/LookScene we want the right-pane preview (and description)
-        to reflect the *selected row*, not necessarily the inventory owner.
-        Falls back to the owner entity if nothing is selected.
+        - Inventory mode: keep the *owner/player* stable on the right, while the left list
+          is the owner's inventory.
+        - Look mode (and other future browse modes): the right pane reflects the currently
+          selected row (so you can cycle through multiple things on a tile, etc.).
+
+        Falls back to the owner entity if nothing is selected / row has no entity.
         """
-        # Prefer the live widget selection (it updates with mouse/keys).
+        # Inventory screen: always preview the owner (player / container we're inside).
+        try:
+            if str(getattr(self, "mode", "inventory")) == "inventory":
+                return self._find_owner_entity()
+        except Exception:
+            # Fail-soft: if mode is weird, treat as inventory.
+            return self._find_owner_entity()
+
+        # Otherwise (e.g. look screen): follow selection.
         try:
             if self._list is not None and getattr(self._list, "selected_index", None) is not None:
                 sel = int(self._list.selected_index)
@@ -1292,6 +1780,83 @@ class InventoryScene(PopupMenuScene):
         self._close_elapsed = 0
         return True
 
+
+
+
+    def _screen_pos_to_panel_logical(self, screen_pos: tuple[int, int], manager: "SceneManager") -> tuple[int, int] | None:
+        """Convert renderer/screen mouse pos into *logical panel* coords, undoing the current VisualProfile."""
+        try:
+            self._ensure_window_rect(manager)
+            if self.window_rect is None:
+                return None
+
+            sx, sy = int(screen_pos[0]), int(screen_pos[1])
+
+            # First get mouse in window-local coords (0..w, 0..h)
+            wx = float(sx - int(self.window_rect.x))
+            wy = float(sy - int(self.window_rect.y))
+
+            # If we're outside the window, bail.
+            if wx < 0 or wy < 0 or wx >= self.window_rect.w or wy >= self.window_rect.h:
+                return None
+
+            # We need the same visual used for drawing this frame.
+            panel = self._get_panel(manager)
+            pw, ph = panel.get_width(), panel.get_height()
+
+            vx = float(self.window_rect.w) / float(max(1, pw))
+            vy = float(self.window_rect.h) / float(max(1, ph))
+            visual = self._current_visual_profile(logical_to_window_scale_x=vx, logical_to_window_scale_y=vy)
+
+            # Invert apply_visual_panel transform (mirror of _project_point_window_to_screen math)
+            cx = float(self.window_rect.w) * 0.5
+            cy = float(self.window_rect.h) * 0.5
+
+            # Undo translation (center + offsets)
+            dx = wx - (cx + float(getattr(visual, "offset_x", 0.0)))
+            dy = wy - (cy + float(getattr(visual, "offset_y", 0.0)))
+
+            # Undo scale FIRST (matches forward order rotate/flip/scale used by apply_visual_panel)
+            scx = float(getattr(visual, "scale_x", 1.0))
+            scy = float(getattr(visual, "scale_y", 1.0))
+            if abs(scx) < 1e-6 or abs(scy) < 1e-6:
+                return None
+            dx /= scx
+            dy /= scy
+
+            # Undo flips
+            if getattr(visual, "flip_x", False):
+                dx = -dx
+            if getattr(visual, "flip_y", False):
+                dy = -dy
+
+            # Undo rotation LAST
+            ang = float(getattr(visual, "angle", 0.0))
+            if ang:
+                rad = math.radians(ang)
+                c = math.cos(rad)
+                s = math.sin(rad)
+                # rotate by -ang
+                dx, dy = (dx * c - dy * s, dx * s + dy * c)
+
+
+            # Back to window-local “panel_to_blit” coords
+            px_win = cx + dx
+            py_win = cy + dy
+
+            # Map window-local coords back to *logical panel* coords
+            lx = px_win * float(pw) / float(max(1, self.window_rect.w))
+            ly = py_win * float(ph) / float(max(1, self.window_rect.h))
+
+            return (int(round(lx)), int(round(ly)))
+        except Exception:
+            return None
+
+
+
+
+
+
     def handle_event(self, event, manager: "SceneManager") -> None:
         # While closing, swallow inputs so the selection doesn't jitter mid-collapse.
         if self._closing:
@@ -1301,6 +1866,23 @@ class InventoryScene(PopupMenuScene):
         if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
             self._pending_click_activate_index = None
             self._pending_click_activate_due_ms = 0
+
+        # Track last mouse position in *logical panel coords* (unproject through the current VisualProfile).
+        try:
+            if hasattr(event, "pos") and event.pos is not None:
+                mp = self._screen_pos_to_panel_logical((int(event.pos[0]), int(event.pos[1])), manager)
+                if mp is not None:
+                    self._mouse_pos = mp
+        except Exception:
+            pass
+
+        try:
+            if hasattr(event, "pos") and event.pos is not None:
+                self._mouse_screen = (int(event.pos[0]), int(event.pos[1]))
+        except Exception:
+            pass
+
+
 
         super().handle_event(event, manager)
 
@@ -1647,12 +2229,14 @@ class InventoryScene(PopupMenuScene):
         left_col.add_child(self._list)
 
         self._preview = EntityPreviewWidget()
+        self._body_graph = BodyPlanGraphWidget()
+        self._right_pane = RightPaneWidget(preview=self._preview, body_graph=self._body_graph)
         footer = LabelWidget(self.FOOTER_TEXT, align="left")
 
         self.root = TwoPaneInventoryRoot(
             header=header,
             left=left_col,
-            right=self._preview,
+            right=self._right_pane,
             footer=footer,
             padding=14,
             spacing=12,
@@ -2125,14 +2709,33 @@ class InventoryScene(PopupMenuScene):
         # originate "from below" for those effects. Instead, we compute the
         # *logical glyph cell center* inside the rendered canvas and store the
         # panel-space coordinate of that logical center.
+        #
+        # ALSO IMPORTANT: the preview pane now includes footer text (entity description).
+        # The opaque glyph overlay should stay inside the main "glyph region" so it doesn't
+        # paint over the description at the bottom.
         try:
             if self._preview is not None:
-                # Base size of the final glyph cell in logical panel coords.
-                self._zoom_glyph_base_px = max(12, int(min(self._preview.rect.w, self._preview.rect.h) * 0.50))
-
                 owner = self._find_owner_entity()
+
+                # Determine whether a description footer will be drawn (affects reserved space).
+                try:
+                    info = describe_entity_for_look(owner) if owner is not None else {}
+                    desc = info.get("description") or getattr(owner, "description", None)
+                except Exception:
+                    desc = getattr(owner, "description", None)
+
+                # Match EntityPreviewWidget's internal layout margins/reserved header/footer.
+                top_reserved = 70
+                bottom_reserved = 80 if desc else 56
+                region_w = max(1, int(self._preview.rect.w) - 28)
+                region_h = max(1, int(self._preview.rect.h) - int(top_reserved) - int(bottom_reserved))
+
+                # Base size of the final glyph cell in logical panel coords.
+                # Use the available glyph region (not the full pane height) so the overlay doesn't
+                # trample the description area.
+                self._zoom_glyph_base_px = max(12, int(min(region_w, region_h) * 0.50))
+
                 if owner is not None:
-                    # Match the overlay render parameters as closely as possible.
                     base_px = int(self._zoom_glyph_base_px)
                     font = pygame.font.SysFont("consolas", max(10, int(base_px)), bold=True)
 
@@ -2144,14 +2747,14 @@ class InventoryScene(PopupMenuScene):
                         scene_effects=list(getattr(self, "visual_effects", []) or []),
                     )
 
-                    # The preview pane "drawn position" is centered.
-                    cx = float(self._preview.rect.centerx)
-                    cy = float(self._preview.rect.centery)
-                    gx = cx - float(gcanvas.get_width()) * 0.5
-                    gy = cy - float(gcanvas.get_height()) * 0.5
+                    # Place the glyph so that its *logical cell center* lands at the center of the
+                    # reserved glyph region (excluding header and description footer).
+                    region_cx = float(self._preview.rect.x) + 14.0 + float(region_w) * 0.5
+                    region_cy = float(self._preview.rect.y) + float(top_reserved) + float(region_h) * 0.5
 
                     # Store anchor as the *glyph cell center* in panel coords.
-                    self._zoom_anchor_panel = (gx + float(ganchor[0]), gy + float(ganchor[1]))
+                    # (Render() later positions gcanvas so this anchor lands at the same place.)
+                    self._zoom_anchor_panel = (region_cx, region_cy)
                 else:
                     self._zoom_anchor_panel = (float(self._preview.rect.centerx), float(self._preview.rect.centery))
         except Exception:
@@ -2227,17 +2830,43 @@ class InventoryScene(PopupMenuScene):
                 glyph_layer.blit(gcanvas, (gx, gy))
 
                 # Apply the exact same transform but force alpha to 1.0.
+                hovered_right = bool(getattr(self, "_right_panel_hovered", False))
+                glyph_alpha = 0.72 if hovered_right else 1.0
+
                 visual_g = VisualProfile(
                     scale_x=visual.scale_x,
                     scale_y=visual.scale_y,
                     offset_x=visual.offset_x,
                     offset_y=visual.offset_y,
                     angle=visual.angle,
-                    alpha=1.0,
+                    alpha=float(glyph_alpha),
                     flip_x=visual.flip_x,
                     flip_y=visual.flip_y,
                 )
                 apply_visual_panel(renderer.surface, glyph_layer, self.window_rect, visual_g)
+            except Exception:
+                pass
+
+        # Draw body-plan overlay ABOVE the opaque glyph (so nodes/labels sit on top of the sprite).
+        body_overlay = getattr(self, "_body_overlay_panel_surface", None)
+        if body_overlay is not None:
+            try:
+                # Scale overlay to window size if needed (same as panel scaling).
+                overlay_to_blit = body_overlay
+                if overlay_to_blit.get_size() != self.window_rect.size:
+                    overlay_to_blit = pygame.transform.smoothscale(overlay_to_blit, self.window_rect.size)
+
+                visual_o = VisualProfile(
+                    scale_x=visual.scale_x,
+                    scale_y=visual.scale_y,
+                    offset_x=visual.offset_x,
+                    offset_y=visual.offset_y,
+                    angle=visual.angle,
+                    alpha=1.0,  # overlay surface already encodes fade alpha
+                    flip_x=visual.flip_x,
+                    flip_y=visual.flip_y,
+                )
+                apply_visual_panel(renderer.surface, overlay_to_blit, self.window_rect, visual_o)
             except Exception:
                 pass
 

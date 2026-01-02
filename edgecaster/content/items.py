@@ -1,2 +1,0 @@
-"""Item data placeholder."""
-items = []

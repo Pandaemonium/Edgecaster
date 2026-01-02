@@ -7,40 +7,10 @@
 
 
 
-- id: actor
-  name: Actor
-  glyph: "@"
-  color: [255, 255, 255]
-  faction: template
-  ai: none
-  base_hp: 1
-  base_mana: 0
-  base_attack: 1
-  base_defense: 0
-  speed: 1.0
-  parent: entity
-  description: "All the world's a stage -- and it is theater in the round."
-  tags: ["template", "actor"]
-
-- id: humanoid
-  name: Humanoid
-  glyph: "@"
-  color: [255, 210, 80]
-  faction: template
-  ai: none
-  base_hp: 1
-  base_mana: 0
-  base_attack: 1
-  base_defense: 0
-  speed: 1.0
-  parent: actor
-  description: "The average humanoid is actually quite a bit smaller than a human."
-  tags: ["template", "humanoid"]
-
 - id: demon
   name: Demon
-  glyph: "d"
-  color: [255, 80, 80]
+  glyph: "&"
+  color: [255, 0, 120]
   faction: template
   ai: none
   base_hp: 1
@@ -49,13 +19,15 @@
   base_defense: 0
   speed: 1.0
   parent: actor
-  description: "These guys REALLY hate fractals."
-  tags: ["template", "demon"]
+  description: These guys REALLY hate fractals.
+  tags:
+    template: true
+    demon: true
 
 - id: beast
   name: Beast
-  glyph: "b"
-  color: [160, 200, 120]
+  glyph: b
+  color: [80, 200, 120]
   faction: template
   ai: none
   base_hp: 1
@@ -64,168 +36,195 @@
   base_defense: 0
   speed: 1.0
   parent: actor
-  description: "From your point of view, at least."
-  tags: ["template", "beast"]
-
-# --- PLAYER BASE TEMPLATE ------------------------------------
+  description: From your point of view, at least.
+  tags:
+    template: true
+    beast: true
 
 - id: human_base
   name: Human
-  glyph: "@"
+  glyph: '@'
   color: [255, 210, 80]
-  faction: player
-  ai: none          # or omit / special-case in factory
-  base_hp: 1        # will be overridden by Character stats
-  base_mana: 0      # ditto
+  actions: [move, wait]
+  base_hp: 1
+  base_mana: 0
   base_attack: 1
   base_defense: 0
   speed: 100
-  parent: humanoid
-  description: "Halfway between an ape and a god."
-  tags: ["humanoid"]
+  faction: player
+  ai: none
+  xp: 0
+  parent: human
+  description: Halfway between an ape and an angel.
+  tags:
+    humanoid: true
+    player: true
 
-# --- ENEMIES -------------------------------------------------
+- id: imp
+  name: Imp
+  glyph: i
+  color: [255, 80, 120]
+  actions: [move, wait, imp_taunt]
+  base_hp: 3
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.0
+  faction: hostile
+  ai: imp_loudmouth
+  xp: 3
+  parent: demon
+  description: Gratingly obnoxious, even by demon standards.
+  tags:
+    imp: true
 
-- id: "imp"
-  name: "Imp"
-  glyph: "i"
-  color: [255, 120, 120]
-  actions: ["move", "wait", "imp_taunt"]
-  base_hp: 6
-  base_attack: 3
+- id: shadow
+  name: Shadow
+  glyph: s
+  color: [120, 120, 120]
+  actions: [move, wait]
+  base_hp: 2
+  base_mana: 2
+  base_attack: 1
   base_defense: 0
   speed: 1.2
-  faction: "hostile"
-  ai: "imp_loudmouth"
-  xp: 10
+  faction: hostile
+  ai: skirmisher
+  xp: 4
   parent: demon
-  description: "Gratingly obnoxious, even by demon standards."
-  tags: ["demon", "trivial", "taunting"]
+  description: No lights without shadow, no trees without blight.
+  tags:
+    shadow: true
 
-- id: "shadow"
-  name: "Shadow"
-  glyph: "s"
-  color: [80, 80, 140]
-  actions: ["move", "wait"]
-  base_hp: 12
-  base_attack: 5
-  base_defense: 2
-  speed: 1.0
-  faction: "demons"
-  ai: "stalker"
-  xp: 20
+- id: fractal_echo
+  name: Fractal Echo
+  glyph: f
+  color: [140, 200, 255]
+  actions: [move, wait]
+  base_hp: 4
+  base_mana: 3
+  base_attack: 1
+  base_defense: 0
+  speed: 0.9
+  faction: hostile
+  ai: skirmisher
+  xp: 7
   parent: demon
-  description: "No lights without shadow, no trees without blight."
-  tags: ["undead", "ethereal"]
+  description: Haven't you seen this before?
+  tags:
+    fractal_echo: true
 
-- id: "fractal_echo"
-  name: "Fractal Echo"
-  glyph: "f"
-  color: [160, 200, 255]
-  actions: ["move", "wait"]
+- id: corrupted_thug
+  name: Corrupted Thug
+  glyph: T
+  color: [255, 180, 80]
+  actions: [move, wait]
   base_hp: 6
-  base_attack: 3
-  base_defense: 0
-  speed: 1.0
-  faction: "hostile"
-  ai: "skirmisher"
-  xp: 10
-  parent: demon
-  description: "Haven't you seen this before?"
-  tags: ["echo", "fractal"]
-
-- id: "corrupted_thug"
-  name: "Corrupted Thug"
-  glyph: "t"
-  color: [180, 120, 90]
-  actions: ["move", "wait"]
-  base_hp: 25
-  base_attack: 12
-  base_defense: 4
-  speed: 0.75
-  faction: "corrupted"
-  ai: "melee_brute"
-  xp: 12
-  parent: humanoid
-  description: "You might have thought the corruption would impair his thuggishness."
-  tags: ["humanoid", "melee"]
-
-- id: "goblin"
-  name: "Goblin"
-  glyph: "g"
-  color: [120, 200, 120]
-  actions: ["move", "wait"]
-  base_hp: 8
-  base_attack: 5
+  base_mana: 0
+  base_attack: 2
   base_defense: 1
-  speed: 1.1
-  faction: "goblins"
-  ai: "skirmisher"
-  xp: 10
+  speed: 0.9
+  faction: hostile
+  ai: skirmisher
+  xp: 6
   parent: humanoid
-  description: "Professional backstabber, amateur frontstabber."
-  tags: ["humanoid", "scout", "loot_drop"]
+  description: You might have thought the corruption would impair his thuggishness.
+  tags:
+    corrupted_thug: true
 
-- id: "vampire_bat"
-  name: "Vampire Bat"
-  glyph: "b"
-  color: [200, 0, 0]
-  actions: ["move", "wait"]
-  base_hp: 5
-  base_attack: 3
+- id: goblin
+  name: Goblin
+  glyph: g
+  color: [80, 200, 120]
+  actions: [move, wait]
+  base_hp: 4
+  base_mana: 0
+  base_attack: 1
   base_defense: 0
-  speed: 2.5
-  faction: "beasts"
-  ai: "dive_bite"
-  xp: 10
-  parent: beast
-  description: "Or was it a bat vampire?"
-  tags: ["flying", "beast", "pack_hunter"]
+  speed: 1.1
+  faction: hostile
+  ai: skirmisher
+  xp: 4
+  parent: humanoid
+  description: Professional backstabber, amateur frontstabber.
+  tags:
+    goblin: true
 
-- id: "raving_lunatic"
-  name: "Raving Lunatic"
-  glyph: "L"
-  color: [220, 220, 120]
-  actions: ["move", "wait"]
-  base_hp: 15
-  base_attack: 5
+- id: vampire_bat
+  name: Vampire Bat
+  glyph: v
+  color: [200, 120, 200]
+  actions: [move, wait]
+  base_hp: 3
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.4
+  faction: hostile
+  ai: skirmisher
+  xp: 4
+  parent: beast
+  description: Or was it a bat vampire?
+  tags:
+    vampire_bat: true
+
+- id: raving_lunatic
+  name: Raving Lunatic
+  glyph: L
+  color: [255, 210, 80]
+  actions: [move, wait]
+  base_hp: 5
+  base_mana: 0
+  base_attack: 2
   base_defense: 0
   speed: 1.0
-  faction: "madmen"
-  ai: "lunatic"
-  xp: 10
+  faction: hostile
+  ai: skirmisher
+  xp: 5
   parent: humanoid
-  description: "Even a thousand monkeys are right twice a day."
-  tags: ["humanoid", "chaotic", "talker"]
+  description: Even a thousand monkeys are right twice a day.
+  tags:
+    raving_lunatic: true
 
-- id: "mana_viper"
-  name: "Mana Viper"
-  glyph: "v"
-  color: [100, 200, 255]
-  actions: ["move", "wait"]
-  base_hp: 16
-  base_attack: 6
-  base_defense: 2
-  speed: 1.3
-  faction: "beasts"
-  ai: "mana_bite"
-  xp: 30
+- id: mana_viper
+  name: Mana Viper
+  glyph: V
+  color: [140, 200, 255]
+  actions: [move, wait]
+  base_hp: 4
+  base_mana: 3
+  base_attack: 2
+  base_defense: 0
+  speed: 1.2
+  faction: hostile
+  ai: skirmisher
+  xp: 6
   parent: beast
-  description: "He'll vipe the mana right outta ya!"
-  tags: ["beast", "magic", "poisonous"]
-- id: "caged_demon"
-  name: "Caged Demon"
+  description: He'll vipe the mana right outta ya!
+  tags:
+    mana_viper: true
+
+- id: caged_demon
+  name: Caged Demon
   glyph: "&"
-  color: [255, 80, 80]
-  faction: "neutral"
-  ai: "idle"
-  base_hp: 1000
+  color: [255, 0, 120]
+  actions: []
+  base_hp: 999
   base_mana: 0
   base_attack: 0
   base_defense: 0
   speed: 0.0
-  parent: demon
-  description: "A hulking demon chained for training bouts. It regenerates rapidly."
-  actions: []
+  faction: hostile
+  ai: none
   xp: 0
-  tags: ["training_dummy"]
+  parent: demon
+  description: A hulking demon chained for training bouts. It regenerates rapidly.
+  tags:
+    training_dummy: true
+
+
+
+
+
+
+

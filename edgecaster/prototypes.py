@@ -13,7 +13,13 @@ import yaml
 
 # Files we treat as top-level "prototype buckets".
 # (These are human convenience groupings; we merge them into one ontological pool.)
-DEFAULT_BUCKET_FILES: Tuple[str, ...] = ("entities.yaml", "enemies.yaml")
+DEFAULT_BUCKET_FILES: Tuple[str, ...] = (
+    "entities.yaml",
+    "anatomy.yaml",
+    "biology.yaml",
+    "enemies.yaml",
+)
+
 
 # Internal caches
 _RAW_PROTO_INDEX: Dict[str, dict] = {}
@@ -36,6 +42,71 @@ def _coerce_id(x: Any) -> Optional[str]:
         return None
     s = str(x).strip()
     return s or None
+
+def _proto_id_from_obj(obj: Any) -> Optional[str]:
+    """
+    Extract a prototype id from either:
+      - a proto id string
+      - a runtime entity instance
+      - a dict-like entity/spec
+
+    IMPORTANT: we only accept ids that actually exist in the master bucket.
+    This prevents accidentally treating instance ids as prototype ids.
+    """
+    if obj is None:
+        return None
+
+    if not _LOADED:
+        load_master_bucket()
+
+    # Already a string-like proto id?
+    if isinstance(obj, str):
+        pid = _coerce_id(obj)
+        if pid and pid in _RAW_PROTO_INDEX:
+            return pid
+        return None
+
+    # Dict-like
+    if isinstance(obj, dict):
+        # Prefer explicit proto keys
+        for k in ("proto_id", "prototype_id", "proto", "prototype", "kind", "type"):
+            pid = _coerce_id(obj.get(k))
+            if pid and pid in _RAW_PROTO_INDEX:
+                return pid
+
+        # Sometimes the dict itself *is* a raw proto (has id/parent/etc).
+        pid = _coerce_id(obj.get("id"))
+        if pid and pid in _RAW_PROTO_INDEX:
+            return pid
+
+        return None
+
+    # Object attributes
+    for attr in ("proto_id", "prototype_id", "proto", "prototype", "kind", "type", "template_id", "spec_id"):
+        pid = _coerce_id(getattr(obj, attr, None))
+        if pid and pid in _RAW_PROTO_INDEX:
+            return pid
+
+    # Some entities keep a spec dict (or resolved proto) attached
+    spec = getattr(obj, "spec", None)
+    if isinstance(spec, dict):
+        pid = _proto_id_from_obj(spec)
+        if pid:
+            return pid
+
+    data = getattr(obj, "data", None)
+    if isinstance(data, dict):
+        pid = _proto_id_from_obj(data)
+        if pid:
+            return pid
+
+    tags = getattr(obj, "tags", None)
+    if isinstance(tags, dict):
+        pid = _proto_id_from_obj(tags)
+        if pid:
+            return pid
+
+    return None
 
 
 def _load_yaml_list(path: Path) -> List[dict]:
@@ -500,27 +571,21 @@ def _validate_body_schema(schema: dict) -> dict:
     return schema
 
 
-def resolve_body_schema(proto_id: str) -> dict:
+def resolve_body_schema(proto_or_obj: Any) -> dict:
     """
-    Resolve the attachment-body schema for a prototype id.
+    Resolve the attachment-body schema for a prototype id OR a runtime entity object.
 
-    Conventions:
-      - Prototype inheritance uses YAML `parent:` (ontological "is-a")
-      - Attachment edges are `children:` inside body nodes (mereological "part-of")
-      - A prototype may define:
-          body: {root: ..., nodes: ...}          # full override of current schema
-          body_patch: [ {op: ...}, ... ]         # patch ops applied to current schema
-        Both may appear; if both appear, apply full override first, then patch.
-
-    Returns:
-      dict with keys:
-        - root: Optional[str]
-        - nodes: Dict[str, dict]
+    If given an object, we extract a proto id using _proto_id_from_obj() and only
+    accept ids that exist in the master bucket.
     """
     if not _LOADED:
         load_master_bucket()
 
-    pid = str(proto_id)
+    pid = _proto_id_from_obj(proto_or_obj)
+    if not pid:
+        # Fail-soft: unknown prototype -> empty schema
+        return {"root": None, "nodes": {}}
+
     if pid in _RESOLVED_BODY_CACHE:
         return _RESOLVED_BODY_CACHE[pid]
 
@@ -544,6 +609,7 @@ def resolve_body_schema(proto_id: str) -> dict:
     schema = _validate_body_schema(schema)
     _RESOLVED_BODY_CACHE[pid] = schema
     return schema
+
 
 
 def clear_proto_caches() -> None:

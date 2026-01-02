@@ -154,11 +154,105 @@ visual_effects.py:
 
 ===============================================================================
 SECTION 7 — PANELSCENE & WIDGET SYSTEM
-[unchanged — see previous version]
+
+Widget foundation (edgecaster/ui/widgets.py):
+
+• WidgetContext(surface, game, scene, renderer)
+• Widget base class (layout, draw, handle_event, update)
+• Layout containers (VBox/HBox)
+• Interactive widgets (Label, Button, List, etc.)
+• Wrapped-text widgets (pixel-based, no ellipses)
+• Scaled label widgets for title hierarchy
+
+Ownership model:
+• Scenes own widget trees
+• Input routed to widgets first
+• Renderer remains draw-only
+
+PanelScene (edgecaster/scenes/base.py):
+
+• Owns logical panel surface + rect (fullscreen or popup)
+• Owns root widget tree
+• Routes input to widgets FIRST
+• Applies VisualProfiles / VisualEffects consistently
+• Converts mouse events to panel-local coordinates
+
+GeneralMenuScene:
+
+Built on PanelScene.
+Provides:
+• Selection model
+• Confirm/cancel behavior
+• Scrolling
+• Keyboard + mouse arbitration
+
+MenuFrameWidget:
+Standard layout:
+• Title/banner at top
+• Optional body text
+• Scrollable list
+• Optional footer pinned bottom
 
 ===============================================================================
-SECTION 8 — ENTITY / INVENTORY / MAP ONTOLOGY
-[unchanged — see previous version]
+SECTION 8 — ENTITY, PROTOTYPES, & ONTOLOGY
+
+Edgecaster uses a data-driven prototype system to define all entities in the world:
+players, enemies, NPCs, items, terrain features, body parts, and abstract constructs.
+
+Prototypes
+
+• Prototypes are defined in YAML data files (e.g. entities.yaml, enemies.yaml, biology.yaml, anatomy.yaml).
+• All prototype files are merged into a single master prototype pool at load time.
+• Prototypes form a single inheritance tree rooted at the ur-entity.
+
+Inheritance rules:
+• A prototype may define parent: (ontological “is-a” inheritance).
+• Any field defined on a parent is inherited by children unless overridden.
+• Nested dictionaries are merged; lists override by default.
+• Structural deletions may be expressed via explicit patch operations.
+
+Resolution:
+• All gameplay systems use resolved prototypes, not raw YAML entries.
+• Prototype resolution is centralized in prototypes.py.
+
+Entities (runtime instances)
+
+• An Entity is a runtime instance created from a resolved prototype.
+• Instances store only:
+– per-instance state (position, hp, statuses, inventory, etc.)
+– a reference to their originating prototype id (for save/load and introspection).
+
+Entities are intentionally lightweight; structure lives in data.
+
+Body schemas & subparts
+
+• Prototypes may define a body schema describing attachable subparts as a graph.
+• Body schemas are pure data:
+– nodes reference prototype ids for parts (e.g. hand, head)
+– edges describe attachment (“part-of”), not ontological inheritance
+• Ontological parentage (parent:) and attachment parentage are distinct concepts.
+
+Inheritance:
+• Body schemas inherit down the prototype chain.
+• Descendants may modify structure using body_patch operations
+(add/remove/replace nodes, change attachment topology, adjust layout hints).
+
+Fractal attention & instantiation
+
+• Body schemas describe what could exist; they do not force instantiation.
+• Subpart entities are instantiated lazily, only when attention requires it
+(inventory view, targeted actions, damage resolution, etc.).
+• This mirrors the game’s zoom/LoD philosophy: structure exists independently of observation.
+
+Actor-ness & agency
+
+• “Actor” is not an ontological category.
+• Agency (participation in the energy/action queue) is granted via properties/tags
+and handled by systems, not inheritance.
+
+Key principle:
+
+Everything is an entity; differences emerge from data, inheritance, and attention.
 
 ===============================================================================
 SECTION 9 — MAP SCALE & ZOOM PHILOSOPHY (NEW)
