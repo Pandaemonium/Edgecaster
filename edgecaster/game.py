@@ -3129,6 +3129,74 @@ class Game:
         self.log.add(f"You put {article} {name.lower()} into {dest_label}.")
 
 
+    # ---------------------------------------------------------------------
+    # Equipment tagging (UI-facing, lightweight)
+    # ---------------------------------------------------------------------
+
+    def get_equipped_in_slot(self, owner_id: str, slot_id: str):
+        """Return the inventory entity currently tagged as equipped in `slot_id`, if any."""
+        inv = self.get_inventory(str(owner_id))
+        sid = str(slot_id)
+        for ent in inv:
+            tags = getattr(ent, "tags", {}) or {}
+            cur = tags.get("equipped_slot") or tags.get("equipped")
+            if cur is not None and str(cur) == sid:
+                return ent
+        return None
+
+    def unequip_slot(self, owner_id: str, slot_id: str) -> None:
+        """Clear any item currently equipped in `slot_id`."""
+        ent = self.get_equipped_in_slot(owner_id, slot_id)
+        if ent is None:
+            return
+        tags = getattr(ent, "tags", {}) or {}
+        tags.pop("equipped_slot", None)
+        tags.pop("equipped", None)
+        try:
+            setattr(ent, "tags", tags)
+        except Exception:
+            pass
+
+    def unequip_item(self, owner_id: str, item_id: str) -> None:
+        """Clear equipped tags from the given inventory item if present."""
+        inv = self.get_inventory(str(owner_id))
+        iid = str(item_id)
+        for ent in inv:
+            if str(getattr(ent, "id", "")) != iid:
+                continue
+            tags = getattr(ent, "tags", {}) or {}
+            tags.pop("equipped_slot", None)
+            tags.pop("equipped", None)
+            try:
+                setattr(ent, "tags", tags)
+            except Exception:
+                pass
+            return
+
+    def equip_item_to_slot(self, owner_id: str, item_id: str, slot_id: str) -> None:
+        """Tag an existing inventory item as 'equipped' in `slot_id`.
+
+        For now, this is intentionally permissive: any item can be equipped into any slot.
+        If the slot is already occupied, it will be replaced.
+        """
+        oid = str(owner_id)
+        iid = str(item_id)
+        sid = str(slot_id)
+
+        # Ensure only one item occupies a slot.
+        self.unequip_slot(oid, sid)
+
+        inv = self.get_inventory(oid)
+        for ent in inv:
+            if str(getattr(ent, "id", "")) != iid:
+                continue
+            tags = getattr(ent, "tags", {}) or {}
+            tags["equipped_slot"] = sid
+            try:
+                setattr(ent, "tags", tags)
+            except Exception:
+                pass
+            return
 
 
 
