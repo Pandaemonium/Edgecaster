@@ -861,6 +861,16 @@ class BodyPlanGraphWidget(Widget):
     def __init__(self) -> None:
         super().__init__()
         self.hovered_nid: str | None = None
+        # Click/drag gesture tracking (panel-local coords)
+        self._press_nid: str | None = None
+        self._press_pos: tuple[int, int] | None = None
+        self._press_ms: int = 0
+        self._dragging: bool = False
+
+        self.DRAG_HOLD_MS: int = 220
+        self.DRAG_MIN_PX: int = 6
+
+
 
     def handle_event(self, event, ctx: WidgetContext) -> bool:
         if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
@@ -868,21 +878,63 @@ class BodyPlanGraphWidget(Widget):
 
         scene = ctx.scene
 
+        def _cancel_press() -> None:
+            self._press_nid = None
+            self._press_pos = None
+            self._press_ms = 0
+            self._dragging = False
+
+        def _begin_drag_if_ready(cur_pos: tuple[int, int]) -> bool:
+            if self._press_nid is None or self._dragging:
+                return False
+
+            now = int(pygame.time.get_ticks())
+            held = (now - int(self._press_ms)) >= int(self.DRAG_HOLD_MS)
+
+            moved = False
+            if self._press_pos is not None:
+                dx = int(cur_pos[0]) - int(self._press_pos[0])
+                dy = int(cur_pos[1]) - int(self._press_pos[1])
+                moved = (dx * dx + dy * dy) >= int(self.DRAG_MIN_PX * self.DRAG_MIN_PX)
+
+            if not (held or moved):
+                return False
+
+            cb = getattr(scene, "_body_drag_begin", None)
+            if callable(cb):
+                try:
+                    if cb(node_id=str(self._press_nid), pos=cur_pos):
+                        self._dragging = True
+                        return True
+                except Exception:
+                    pass
+            return False
+
         if event.type == pygame.MOUSEMOTION:
             pos = getattr(event, "pos", None)
             if pos is None:
                 return False
-
             mx, my = int(pos[0]), int(pos[1])
 
-            # Track whether the mouse is over the right pane at all (used to fade the overlay).
             try:
                 setattr(scene, "_right_panel_hovered", bool(self.rect.collidepoint((mx, my))))
             except Exception:
                 pass
 
-            # NEW: if a drag is active (started from a node), keep drag position in PANEL-LOCAL coords.
-            # This mirrors InventoryListWidget's behavior and avoids screen->panel conversion drift.
+            # If we have a pending press, maybe promote it into a drag.
+            if self._press_nid is not None and not bool(getattr(scene, "_drag_active", False)):
+                if _begin_drag_if_ready((mx, my)):
+                    # update drag ghost immediately
+                    cb2 = getattr(scene, "_inv_drag_update", None)
+                    if callable(cb2):
+                        try:
+                            cb2(pos=(mx, my))
+                        except Exception:
+                            pass
+                    self.hovered_nid = self._hit_test_node((mx, my), ctx)
+                    return True
+
+            # If an actual drag is active, keep ghost updated in panel-local coords.
             if bool(getattr(scene, "_drag_active", False)):
                 cb = getattr(scene, "_inv_drag_update", None)
                 if callable(cb):
@@ -890,14 +942,11 @@ class BodyPlanGraphWidget(Widget):
                         cb(pos=(mx, my))
                     except Exception:
                         pass
-                # We can still compute hovered_nid for highlights.
                 self.hovered_nid = self._hit_test_node((mx, my), ctx)
-                return True  # consume so the scene-level fallback doesn't override with a different coord space
+                return True
 
-            # Compute hovered node id (if any).
             self.hovered_nid = self._hit_test_node((mx, my), ctx)
-            return False  # don't consume
-
+            return False
 
         if event.type == pygame.MOUSEBUTTONDOWN:
             pos = getattr(event, "pos", None)
@@ -908,13 +957,12 @@ class BodyPlanGraphWidget(Widget):
             if getattr(event, "button", None) == 1 and self.rect.collidepoint((mx, my)):
                 nid = self._hit_test_node((mx, my), ctx)
                 if nid:
-                    cb = getattr(scene, "_body_drag_begin", None)
-                    if callable(cb):
-                        try:
-                            if cb(node_id=str(nid), pos=(mx, my)):
-                                return True
-                        except Exception:
-                            pass
+                    # Record press; DO NOT start drag yet.
+                    self._press_nid = str(nid)
+                    self._press_pos = (mx, my)
+                    self._press_ms = int(pygame.time.get_ticks())
+                    self._dragging = False
+                    return True
             return False
 
         if event.type == pygame.MOUSEBUTTONUP:
@@ -922,13 +970,38 @@ class BodyPlanGraphWidget(Widget):
             if pos is None:
                 return False
             mx, my = int(pos[0]), int(pos[1])
+
             if getattr(event, "button", None) == 1:
-                cb = getattr(scene, "_inv_drag_end", None)
-                if callable(cb):
-                    try:
-                        cb(pos=(mx, my))
-                    except Exception:
-                        pass
+                was_dragging = bool(getattr(scene, "_drag_active", False))
+
+                # If a drag is active, end it and consume.
+                if was_dragging:
+                    cb = getattr(scene, "_inv_drag_end", None)
+                    if callable(cb):
+                        try:
+                            cb(pos=(mx, my))
+                        except Exception:
+                            pass
+                    _cancel_press()
+                    return True
+
+                # No drag active: if we had a press and release on an equipped node -> activate.
+                press_nid = self._press_nid
+                _cancel_press()
+
+                if press_nid and self.rect.collidepoint((mx, my)):
+                    # Optional: require release on the same node; feels better.
+                    release_nid = self._hit_test_node((mx, my), ctx)
+                    if release_nid and str(release_nid) == str(press_nid):
+                        # Only activate if something is equipped there.
+                        eq = scene._equipped_entity_for_slot(str(press_nid)) if hasattr(scene, "_equipped_entity_for_slot") else None
+                        if eq is not None:
+                            try:
+                                setattr(scene, "_pending_node_activate", str(press_nid))
+                            except Exception:
+                                pass
+                            return True
+
             return False
 
         return False
@@ -2300,6 +2373,29 @@ class InventoryScene(PopupMenuScene):
                     self._open_container_from_index(int(idx), manager)
             except Exception:
                 pass
+        # Widget-triggered click on an equipped body node: open context menu immediately.
+        pending_node = getattr(self, "_pending_node_activate", None)
+        if pending_node is not None:
+            try:
+                self._pending_node_activate = None
+            except Exception:
+                pass
+            try:
+                node_id = str(pending_node)
+                eq = self._equipped_entity_for_slot(node_id)
+                if eq is not None:
+                    src_px, src_sz = self._node_glyph_screen_info(node_id, manager)
+                    self._open_entity_context_menu(
+                        eq,
+                        manager,
+                        source_px=src_px,
+                        source_glyph_px=src_sz,
+                        equipped_slot_id=node_id,
+                    )
+            except Exception:
+                pass
+
+
         return
 
 
@@ -2308,6 +2404,456 @@ class InventoryScene(PopupMenuScene):
             manager.pop_scene()
         else:
             manager.set_scene(None)
+
+    # ---------------------------------------------------------------------
+    # Context menus / equip helpers
+    # ---------------------------------------------------------------------
+
+    def _body_slot_targets(self) -> list[tuple[str, str]]:
+        """Return [(node_id, display_label), ...] for the current owner's body schema."""
+        owner = None
+        try:
+            owner = self._find_owner_entity()
+        except Exception:
+            owner = None
+        if owner is None:
+            try:
+                owner = self._preview_entity()
+            except Exception:
+                owner = None
+        if owner is None:
+            return []
+        try:
+            schema = resolve_body_schema(owner) or {}
+        except Exception:
+            schema = {}
+        nodes = schema.get("nodes", {}) or {}
+        out: list[tuple[str, str]] = []
+        try:
+            for nid in nodes.keys():
+                sn = str(nid)
+                out.append((sn, _display_body_node_label(sn)))
+        except Exception:
+            return []
+        return out
+
+    def _equipped_entity_for_slot(self, slot_id: str):
+        """Best-effort: return the entity equipped in the given slot (or None)."""
+        owner_id = str(self._owner_id())
+        if hasattr(self.game, "get_equipped_in_slot"):
+            try:
+                return self.game.get_equipped_in_slot(owner_id, str(slot_id))
+            except Exception:
+                pass
+        try:
+            inv = self.game.get_inventory(owner_id) or []
+        except Exception:
+            inv = []
+        for it in inv:
+            try:
+                tags = getattr(it, "tags", {}) or {}
+                if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(slot_id):
+                    return it
+            except Exception:
+                continue
+        return None
+
+    def _node_glyph_screen_info(
+        self, node_id: str, manager: "SceneManager"
+    ) -> tuple[tuple[int, int] | None, int | None]:
+        """Return (screen_px, approx_screen_size_px) for the glyph drawn inside a body node."""
+        try:
+            renderer = manager.renderer
+        except Exception:
+            return (None, None)
+        self._ensure_window_rect(manager)
+        if self.window_rect is None or self._body_graph is None:
+            return (None, None)
+        panel = self._get_panel(manager)
+        try:
+            # Layout widgets into the panel surface so self._body_graph.rect is up-to-date.
+            self.draw_panel(panel, renderer, manager)
+        except Exception:
+            pass
+        region = pygame.Rect(getattr(self._body_graph, "rect", pygame.Rect(0, 0, 0, 0)))
+        if region.w <= 0 or region.h <= 0:
+            return (None, None)
+        owner = None
+        try:
+            owner = self._find_owner_entity()
+        except Exception:
+            owner = None
+        if owner is None:
+            return (None, None)
+        try:
+            schema = resolve_body_schema(owner) or {"root": None, "nodes": {}}
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+        pos_u = _compute_body_positions(schema)
+        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+        nid = str(node_id)
+        if nid not in pos_px:
+            return (None, None)
+        node_size = int(max(18, min(56, scale * 0.45)))
+        cx, cy = pos_px[nid]
+        gx = float(region.x + int(cx))
+        gy = float(region.y + int(cy))
+        pw, ph = panel.get_size()
+        sx = float(self.window_rect.w) / float(max(1, pw))
+        sy = float(self.window_rect.h) / float(max(1, ph))
+        win_pt = (gx * sx, gy * sy)
+        visual = self._current_visual_profile(logical_to_window_scale_x=sx, logical_to_window_scale_y=sy)
+        screen_px = self._project_point_window_to_screen(win_pt, visual)
+        try:
+            base_px = int(node_size * 0.86)
+            cell_w_win = float(base_px) * sx
+            cell_h_win = float(base_px) * sy
+            sw = cell_w_win * float(abs(getattr(visual, "scale_x", 1.0)))
+            sh = cell_h_win * float(abs(getattr(visual, "scale_y", 1.0)))
+            size_px = int(round(max(sw, sh)))
+            size_px = max(4, min(1024, size_px))
+        except Exception:
+            size_px = None
+        return (screen_px, size_px)
+
+    def _open_container_from_entity(
+        self,
+        ent,
+        manager: "SceneManager",
+        *,
+        source_px: tuple[int, int] | None = None,
+        source_glyph_px: int | None = None,
+    ) -> None:
+        """Open the given container entity directly (folder-style)."""
+        try:
+            nested_owner_id = getattr(ent, "id", None)
+            if nested_owner_id is None:
+                return
+        except Exception:
+            return
+        manager.push_scene(
+            InventoryScene(
+                self.game,
+                owner_id=str(nested_owner_id),
+                parent_owner_id=self._owner_id(),
+                title=getattr(ent, "name", None) or "Container",
+                base_effects=list(self.visual_effects),
+                source_px=source_px,
+                source_glyph_px=source_glyph_px,
+                stack_depth=self.stack_depth + 1,
+                animate_affine=self.animate_affine,
+            )
+        )
+
+    def _open_entity_context_menu(
+        self,
+        ent,
+        manager: "SceneManager",
+        *,
+        source_px: tuple[int, int] | None = None,
+        source_glyph_px: int | None = None,
+        equipped_slot_id: str | None = None,
+    ) -> bool:
+        """Open the standard context menu for an entity.
+
+        If equipped_slot_id is provided, show 'Unequip' (and do not show 'Equip...').
+        """
+        if ent is None:
+            return False
+        tags = getattr(ent, "tags", {}) or {}
+        is_container = bool(tags.get("container"))
+        is_berry = self._is_berry_from_tags(tags)
+        choices: list[str] = []
+        owner_id = self._owner_id()
+        container_targets = self._find_container_targets(exclude_id=getattr(ent, "id", None))
+        if equipped_slot_id:
+            choices.append("Unequip")
+        if owner_id == self.game.player_id:
+            choices.append("Drop")
+            if is_berry or is_container:
+                choices.append("Eat")
+            if container_targets:
+                choices.append("Put into...")
+        else:
+            choices.append("Take")
+            if is_berry or is_container:
+                choices.append("Eat")
+            if container_targets:
+                choices.append("Put into...")
+        if not equipped_slot_id:
+            if self._body_slot_targets():
+                choices.append("Equip...")
+        if is_container and bool(getattr(self, "allow_open_containers", True)):
+            choices.append("Open")
+        if not choices:
+            return False
+
+        def _handle_choice(choice_idx: int, mgr: "SceneManager") -> None:
+            if choice_idx < 0 or choice_idx >= len(choices):
+                return
+            choice = choices[choice_idx]
+            current_owner_id = self._owner_id()
+            cur_inv = None
+            try:
+                cur_inv = self.game.get_inventory(current_owner_id)
+            except Exception:
+                cur_inv = None
+            cur_ent = ent
+            cur_index = 0
+            if cur_inv:
+                try:
+                    cur_index = cur_inv.index(ent)
+                except Exception:
+                    try:
+                        cur_index = int(self.selected_idx() or 0)
+                    except Exception:
+                        cur_index = 0
+                try:
+                    if 0 <= cur_index < len(cur_inv):
+                        cur_ent = cur_inv[cur_index]
+                except Exception:
+                    cur_ent = ent
+            cur_tags = getattr(cur_ent, "tags", {}) or {}
+            cur_is_container = bool(cur_tags.get("container"))
+            cur_is_berry = self._is_berry_from_tags(cur_tags)
+
+            def _refresh_ui() -> None:
+                try:
+                    self._refresh_rows()
+                    if self._list is not None:
+                        self._list.items = self._rows
+                except Exception:
+                    pass
+ 
+            def _ensure_unequipped(item_ent) -> None:
+                """If item is equipped on this owner, clear equip state before moving/dropping/eating."""
+                try:
+                    t = getattr(item_ent, "tags", {}) or {}
+                    if t.get("equipped_slot") or t.get("equipped") or equipped_slot_id:
+                        if hasattr(self.game, "unequip_item"):
+                            self.game.unequip_item(str(current_owner_id), str(getattr(item_ent, "id", "")))
+                        else:
+                            t.pop("equipped_slot", None)
+                            t.pop("equipped", None)
+                            try:
+                                setattr(item_ent, "tags", t)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            if choice == "Unequip":
+                try:
+                    if hasattr(self.game, "unequip_item"):
+                        self.game.unequip_item(str(current_owner_id), str(getattr(cur_ent, "id", "")))
+                    else:
+                        t = getattr(cur_ent, "tags", {}) or {}
+                        t.pop("equipped_slot", None)
+                        t.pop("equipped", None)
+                        try:
+                            setattr(cur_ent, "tags", t)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                _refresh_ui()
+                return
+
+            if choice == "Drop" and current_owner_id == self.game.player_id:
+                _ensure_unequipped(cur_ent)
+
+                if hasattr(self.game, "drop_inventory_item"):
+                    try:
+                        self.game.drop_inventory_item(cur_index)
+                    except Exception:
+                        pass
+                _refresh_ui()
+                return
+
+            if choice == "Take" and current_owner_id != self.game.player_id:
+                _ensure_unequipped(cur_ent)
+
+                dest_owner_id = self.parent_owner_id or self.game.player_id
+                if hasattr(self.game, "move_item_between_inventories"):
+                    try:
+                        self.game.move_item_between_inventories(
+                            current_owner_id,
+                            cur_index,
+                            dest_owner_id,
+                        )
+                    except Exception:
+                        pass
+                _refresh_ui()
+                return
+
+            if choice == "Put into...":
+                targets = self._find_container_targets(exclude_id=getattr(cur_ent, "id", None))
+                if not targets:
+                    return
+                target_labels = [label for (_oid, label) in targets]
+
+                def on_target_choice(target_idx: int, mgr2: "SceneManager") -> None:
+                    if target_idx < 0 or target_idx >= len(targets):
+                        return
+                    dest_owner_id, _dest_label = targets[target_idx]
+                    src_owner_id = self._owner_id()
+
+                    _ensure_unequipped(cur_ent)
+
+
+                    src_inv = None
+                    try:
+                        src_inv = self.game.get_inventory(src_owner_id)
+                    except Exception:
+                        src_inv = None
+                    if not src_inv:
+                        return
+                    try:
+                        src_index = src_inv.index(cur_ent)
+                    except Exception:
+                        src_index = cur_index
+                    if not (0 <= src_index < len(src_inv)):
+                        return
+                    if hasattr(self.game, "move_item_between_inventories"):
+                        try:
+                            self.game.move_item_between_inventories(
+                                src_owner_id,
+                                src_index,
+                                dest_owner_id,
+                            )
+                        except Exception:
+                            pass
+                    _refresh_ui()
+
+                mgr.push_scene(
+                    UrgentMessageScene(
+                        self.game,
+                        "",
+                        title="Put into which container?",
+                        choices=target_labels,
+                        on_choice=on_target_choice,
+                        back_confirms=False,
+                    )
+                )
+                return
+
+            if choice == "Equip...":
+                targets = self._body_slot_targets()
+                if not targets:
+                    return
+                target_labels = [lbl for (_nid, lbl) in targets]
+
+                def on_slot_choice(target_idx: int, mgr2: "SceneManager") -> None:
+                    if target_idx < 0 or target_idx >= len(targets):
+                        return
+                    slot_id, _lbl = targets[target_idx]
+                    try:
+                        ent_id = str(getattr(cur_ent, "id", ""))
+                        if hasattr(self.game, "equip_item_to_slot"):
+                            self.game.equip_item_to_slot(str(current_owner_id), ent_id, str(slot_id))
+                        else:
+                            t = getattr(cur_ent, "tags", {}) or {}
+                            t["equipped_slot"] = str(slot_id)
+                            try:
+                                setattr(cur_ent, "tags", t)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    _refresh_ui()
+
+                mgr.push_scene(
+                    UrgentMessageScene(
+                        self.game,
+                        "",
+                        title="Equip to which slot?",
+                        choices=target_labels,
+                        on_choice=on_slot_choice,
+                        back_confirms=False,
+                    )
+                )
+                return
+
+            if choice == "Open" and cur_is_container and bool(getattr(self, "allow_open_containers", True)):
+                self._open_container_from_entity(cur_ent, mgr, source_px=source_px, source_glyph_px=source_glyph_px)
+                return
+
+            if choice == "Eat":
+                # If the item is equipped, unequip first (so consuming doesn't leave ghost equip state).
+                _ensure_unequipped(cur_ent)
+
+                # Re-resolve the entity + index after unequip (some games rebind inventory objects).
+                ent_id = str(getattr(cur_ent, "id", ""))
+                src_inv = None
+                try:
+                    src_inv = self.game.get_inventory(current_owner_id) or []
+                except Exception:
+                    src_inv = []
+
+                src_index: int | None = None
+                try:
+                    for i, it in enumerate(src_inv):
+                        if str(getattr(it, "id", "")) == ent_id:
+                            src_index = int(i)
+                            cur_ent = it  # refresh reference
+                            break
+                except Exception:
+                    src_index = None
+
+                # Eat only if valid target type.
+                if cur_is_berry or cur_is_container:
+                    if hasattr(self.game, "eat_inventory_item"):
+                        fn = self.game.eat_inventory_item
+
+                        # Try a few likely signatures. (Stop on the first one that works.)
+                        tried = False
+
+                        # 1) (owner_id, ent_id)  [what we used to do]
+                        try:
+                            fn(current_owner_id, ent_id)
+                            tried = True
+                        except TypeError:
+                            pass
+                        except Exception:
+                            tried = True
+
+                        # 2) (owner_id, index)
+                        if not tried and src_index is not None:
+                            try:
+                                fn(current_owner_id, int(src_index))
+                                tried = True
+                            except TypeError:
+                                pass
+                            except Exception:
+                                tried = True
+
+                        # 3) (index)
+                        if not tried and src_index is not None:
+                            try:
+                                fn(int(src_index))
+                                tried = True
+                            except TypeError:
+                                pass
+                            except Exception:
+                                tried = True
+
+                _refresh_ui()
+                return
+
+
+        manager.push_scene(
+            UrgentMessageScene(
+                self.game,
+                "",
+                title=getattr(ent, "name", None) or "",
+                choices=choices,
+                on_choice=_handle_choice,
+                back_confirms=False,
+            )
+        )
+
+        return True
+
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:
         """
@@ -2359,241 +2905,15 @@ class InventoryScene(PopupMenuScene):
             )
             return True
 
-        is_container = bool(tags.get("container"))
-        is_berry = self._is_berry_from_tags(tags)
-
-        choices: list[str] = []
-
-        owner_id = self._owner_id()
-        container_targets = self._find_container_targets(exclude_id=getattr(ent, "id", None))
-
-        if owner_id == self.game.player_id:
-            choices.append("Drop")
-            if is_berry or is_container:
-                choices.append("Eat")
-            if container_targets:
-                choices.append("Put into...")
-        else:
-            choices.append("Take")
-            if is_berry:
-                choices.append("Eat")
-            if container_targets:
-                choices.append("Put into...")
-
-        if is_container:
-            choices.append("Open")
-
-        if not choices:
-            return False
-
-        def _handle_choice(choice_idx: int, mgr: "SceneManager") -> None:
-            if choice_idx < 0 or choice_idx >= len(choices):
-                return
-            choice = choices[choice_idx]
-
-            # Re-fetch inventory in case it changed while popup was open.
-            current_owner_id = self._owner_id()
-            cur_inv = self.game.get_inventory(current_owner_id)
-            if not cur_inv:
-                return
-
-            # Re-find this entity by identity if possible (more robust than index when list changes).
-            try:
-                cur_index = cur_inv.index(ent)
-            except Exception:
-                # Fallback: trust the original index if it still maps to an entity.
-                cur_index = index
-
-            if cur_index < 0 or cur_index >= len(cur_inv):
-                return
-
-            cur_ent = cur_inv[cur_index]
-            cur_tags = getattr(cur_ent, "tags", {}) or {}
-            cur_is_container = bool(cur_tags.get("container"))
-
-            if choice == "Drop" and current_owner_id == self.game.player_id:
-                if hasattr(self.game, "drop_inventory_item"):
-                    self.game.drop_inventory_item(cur_index)
-                return
-
-            if choice == "Take" and current_owner_id != self.game.player_id:
-                dest_owner_id = self.parent_owner_id or self.game.player_id
-                if hasattr(self.game, "move_item_between_inventories"):
-                    self.game.move_item_between_inventories(
-                        current_owner_id,
-                        cur_index,
-                        dest_owner_id,
-                    )
-                return
-
-            if choice == "Put into...":
-                targets = self._find_container_targets(exclude_id=getattr(cur_ent, "id", None))
-                if not targets:
-                    return
-
-                target_labels = [label for (_oid, label) in targets]
-
-                def on_target_choice(target_idx: int, mgr2: "SceneManager") -> None:
-                    if target_idx < 0 or target_idx >= len(targets):
-                        return
-
-                    dest_owner_id, _dest_label = targets[target_idx]
-
-                    src_owner_id = self._owner_id()
-                    src_inv = self.game.get_inventory(src_owner_id)
-                    if not src_inv:
-                        return
-
-                    try:
-                        src_index = src_inv.index(cur_ent)
-                    except Exception:
-                        src_index = cur_index
-
-                    if not (0 <= src_index < len(src_inv)):
-                        return
-
-                    if hasattr(self.game, "move_item_between_inventories"):
-                        self.game.move_item_between_inventories(
-                            src_owner_id,
-                            src_index,
-                            dest_owner_id,
-                        )
-
-                mgr.push_scene(
-                    UrgentMessageScene(
-                        self.game,
-                        "",
-                        title="Put into which container?",
-                        choices=target_labels,
-                        on_choice=on_target_choice,
-                        back_confirms=False,
-                    )
-                )
-                return
-
-            if choice == "Open" and cur_is_container:
-                nested_owner_id = getattr(cur_ent, "id", None)
-                if nested_owner_id is None:
-                    return
-
-                # When opening a nested inventory, we want the new panel to "emerge"
-                # from the glyph that represents this item in the *current* list.
-                src_px, src_sz = self._row_glyph_screen_info(index, mgr)
-
-                mgr.push_scene(
-                    InventoryScene(
-                        self.game,
-                        owner_id=str(nested_owner_id),
-                        parent_owner_id=self._owner_id(),
-                        title=getattr(cur_ent, "name", None) or "Container",
-                        base_effects=list(self.visual_effects),
-                        source_px=src_px,
-                        source_glyph_px=src_sz,
-                        stack_depth=self.stack_depth + 1,
-                    )
-                )
-                return
-
-            if choice == "Eat":
-                # Recompute berry/container flags (inventory may have changed)
-                cur_is_berry = self._is_berry_from_tags(cur_tags)
-
-                if cur_is_container and not cur_is_berry:
-                    # --- Eat the inventory (container), recursively -----------------------
-
-                    # 1) Remove the container item itself from the current inventory
-                    eaten_ent = cur_inv.pop(cur_index)
-                    eaten_id = getattr(eaten_ent, "id", None)
-
-                    # 2) Walk the inventory tree, collecting effects from:
-                    #    - the container itself
-                    #    - every item inside it
-                    #    - every nested container and its contents, recursively
-                    all_effects: list[str] = []
-                    all_effects = concat_effect_names(all_effects, effect_names_from_obj(eaten_ent))
-
-                    def _consume_inventory_tree(owner_id2: str, visited: set[str]) -> None:
-                        if not owner_id2 or owner_id2 in visited:
-                            return
-                        visited.add(owner_id2)
-
-                        inv_map = getattr(self.game, "inventories", None)
-                        if not isinstance(inv_map, dict):
-                            return
-
-                        inv_list = inv_map.get(owner_id2)
-                        if not inv_list:
-                            inv_map.pop(owner_id2, None)
-                            return
-
-                        for child in list(inv_list):
-                            nonlocal all_effects
-                            all_effects = concat_effect_names(all_effects, effect_names_from_obj(child))
-
-                            child_id = getattr(child, "id", None)
-                            child_tags = getattr(child, "tags", {}) or {}
-                            child_is_container = bool(child_tags.get("container"))
-
-                            # If a berry is inside, try to "eat" it so HP/log happen.
-                            child_is_berry = self._is_berry_from_tags(child_tags)
-                            if child_is_berry:
-                                try:
-                                    if hasattr(self.game, "eat_item_from_inventory"):
-                                        idx2 = inv_list.index(child)
-                                        self.game.eat_item_from_inventory(owner_id2, idx2)
-                                    elif owner_id2 == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
-                                        idx2 = inv_list.index(child)
-                                        self.game.eat_inventory_item(idx2)
-                                except Exception:
-                                    pass
-
-                            if child_is_container and child_id and child_id in inv_map:
-                                _consume_inventory_tree(str(child_id), visited)
-
-                        inv_map.pop(owner_id2, None)
-
-                    if eaten_id and hasattr(self.game, "inventories"):
-                        _consume_inventory_tree(str(eaten_id), set())
-
-                    # 3) Apply ALL collected effects globally (stacking)
-                    if all_effects:
-                        try:
-                            existing = list(getattr(mgr.renderer.visual_fx, "global_effects", []) or [])
-                        except Exception:
-                            existing = []
-                        if hasattr(mgr, "set_global_visual_effects"):
-                            mgr.set_global_visual_effects(concat_effect_names(existing, all_effects))
-
-                    # 4) Log
-                    if hasattr(self.game, "log") and hasattr(self.game.log, "add"):
-                        self.game.log.add("You're not sure if you should have eaten that inventory...")
-                        seen: set[str] = set()
-                        for eff in all_effects:
-                            if eff in seen:
-                                continue
-                            seen.add(eff)
-                            self.game.log.add(f"You feel {eff}.")
-                    return
-
-                # Otherwise: eating a berry directly from this inventory menu
-                if cur_is_berry:
-                    if hasattr(self.game, "eat_item_from_inventory"):
-                        self.game.eat_item_from_inventory(current_owner_id, cur_index)
-                    elif current_owner_id == self.game.player_id and hasattr(self.game, "eat_inventory_item"):
-                        self.game.eat_inventory_item(cur_index)
-                return
-
-        manager.push_scene(
-            UrgentMessageScene(
-                self.game,
-                "",
-                title=getattr(ent, "name", None) or "",
-                choices=choices,
-                on_choice=_handle_choice,
-                back_confirms=False,
-            )
+        # Normal inventory mode: open the standard context menu (with Equip...).
+        src_px, src_sz = self._row_glyph_screen_info(index, manager)
+        self._open_entity_context_menu(
+            ent,
+            manager,
+            source_px=src_px,
+            source_glyph_px=src_sz,
+            equipped_slot_id=None,
         )
-
         return True
 
     # ---------------------------------------------------------------------
