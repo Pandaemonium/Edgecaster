@@ -2244,7 +2244,7 @@ class Game:
             "entropic": ["entropic"],
             "underwhelming": ["underwhelming"],
             "revolving": ["revolving"],
-            "orbiting": ["orbiting"],
+            "orbital": ["orbital"],
 
         }
 

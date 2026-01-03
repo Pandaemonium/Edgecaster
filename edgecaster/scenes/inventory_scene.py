@@ -571,8 +571,18 @@ class InventoryListWidget(ListWidget):
                         cb(pos=getattr(event, "pos", None))
                     except Exception:
                         pass
+
+                # IMPORTANT: let the base widget logic see the button-up so it can
+                # release any internal mouse-capture/pressed state; otherwise hover can “freeze”
+                # until the next click.
+                try:
+                    super().handle_event(event, ctx)
+                except Exception:
+                    pass
+
                 self._cancel_press()
                 return True
+
 
             # Not dragging: treat as a click-activate *if* we release on the same row.
             release_idx = self.pick_index_at(getattr(event, "pos", None))
@@ -982,8 +992,16 @@ class BodyPlanGraphWidget(Widget):
                             cb(pos=(mx, my))
                         except Exception:
                             pass
+
+                    # Same reasoning: ensure any underlying capture/pressed bookkeeping is released.
+                    try:
+                        super().handle_event(event, ctx)
+                    except Exception:
+                        pass
+
                     _cancel_press()
                     return True
+
 
                 # No drag active: if we had a press and release on an equipped node -> activate.
                 press_nid = self._press_nid
@@ -2006,8 +2024,15 @@ class InventoryScene(PopupMenuScene):
                         self._drag_target_kind = "container"
                         self._drag_target_owner_id = "__BACK__"
                         sn = getattr(self._drag_ent, "name", None) or "Item"
-                        self._drag_hint = f"Take {sn}"
+
+                        # If we're at the base inventory depth, "Back" means dropping to terrain.
+                        is_root = (
+                            str(self._owner_id()) == str(getattr(self.game, "player_id", ""))
+                            and self.parent_owner_id is None
+                        )
+                        self._drag_hint = f"Drop {sn}" if is_root else f"Take {sn}"
                         return
+
 
                     if ent is not None:
                         tags = getattr(ent, "tags", {}) or {}
@@ -2358,7 +2383,42 @@ class InventoryScene(PopupMenuScene):
 
 
 
+        # --- NEW: detect drag-end that happens during widget dispatch ---
+        was_drag_active = bool(self._drag_active)
+
         super().handle_event(event, manager)
+
+        # If a drag ended during super().handle_event (i.e. inside widget code),
+        # force a "release" + hover refresh immediately so left-list yellow tracking resumes.
+        if was_drag_active and (not bool(self._drag_active)):
+            try:
+                mp3 = getattr(self, "_mouse_pos", None)
+                if mp3 is not None and getattr(self, "root", None) is not None:
+                    panel = self._get_panel(manager)
+                    ctx = WidgetContext(surface=panel, game=self.game, scene=self, renderer=manager.renderer)
+
+                    # 1) Force-release any widget-level pressed/capture state (ListWidget hover can freeze without this).
+                    fake_up = pygame.event.Event(
+                        pygame.MOUSEBUTTONUP,
+                        {"pos": mp3, "button": 1},
+                    )
+                    try:
+                        self.root.handle_event(fake_up, ctx)
+                    except Exception:
+                        pass
+
+                    # 2) Then re-run hover with a clean "no buttons pressed" motion.
+                    fake_motion = pygame.event.Event(
+                        pygame.MOUSEMOTION,
+                        {"pos": mp3, "rel": (0, 0), "buttons": (0, 0, 0)},
+                    )
+                    try:
+                        self.root.handle_event(fake_motion, ctx)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
 
         # Widget-triggered double-click open: handled here because we need the manager
         # to push the nested InventoryScene.
@@ -2782,33 +2842,114 @@ class InventoryScene(PopupMenuScene):
                 # If the item is equipped, unequip first (so consuming doesn't leave ghost equip state).
                 _ensure_unequipped(cur_ent)
 
-                # Re-resolve the entity + index after unequip (some games rebind inventory objects).
-                ent_id = str(getattr(cur_ent, "id", ""))
-                src_inv = None
+                # Re-fetch inventory in case it changed while popup was open / unequip changed refs.
+                current_owner_id = self._owner_id()
                 try:
                     src_inv = self.game.get_inventory(current_owner_id) or []
                 except Exception:
                     src_inv = []
 
+                # Re-resolve the entity by id if possible (robust across object replacement).
+                ent_id = str(getattr(cur_ent, "id", ""))
                 src_index: int | None = None
                 try:
                     for i, it in enumerate(src_inv):
                         if str(getattr(it, "id", "")) == ent_id:
                             src_index = int(i)
-                            cur_ent = it  # refresh reference
+                            cur_ent = it
                             break
                 except Exception:
                     src_index = None
 
-                # Eat only if valid target type.
+                cur_tags = getattr(cur_ent, "tags", {}) or {}
+                cur_is_container = bool(cur_tags.get("container"))
+                cur_is_berry = self._is_berry_from_tags(cur_tags)
+
+                # ------------------------------------------------------------
+                # Eat container (inventory) recursively (the "funny trick")
+                # ------------------------------------------------------------
+                if cur_is_container and not cur_is_berry:
+                    if src_index is None or not (0 <= src_index < len(src_inv)):
+                        _refresh_ui()
+                        return
+
+                    # 1) Remove the container item itself from the current inventory list
+                    eaten_ent = src_inv.pop(int(src_index))
+                    eaten_id = getattr(eaten_ent, "id", None)
+
+                    # 2) Walk the inventory tree, collecting effects from:
+                    #    - the container itself
+                    #    - every item inside it
+                    #    - every nested container and its contents, recursively
+                    all_effects: list[str] = []
+                    all_effects = concat_effect_names(all_effects, effect_names_from_obj(eaten_ent))
+
+                    def _consume_inventory_tree(owner_id: str, visited: set[str]) -> None:
+                        if not owner_id or owner_id in visited:
+                            return
+                        visited.add(owner_id)
+
+                        inv_map = getattr(self.game, "inventories", None)
+                        if not isinstance(inv_map, dict):
+                            return
+
+                        inv_list = inv_map.get(owner_id)
+                        if not inv_list:
+                            inv_map.pop(owner_id, None)
+                            return
+
+                        # Iterate a snapshot because we'll delete the mapping at the end.
+                        for child in list(inv_list):
+                            nonlocal all_effects
+                            all_effects = concat_effect_names(all_effects, effect_names_from_obj(child))
+
+                            child_id = getattr(child, "id", None)
+                            child_tags = getattr(child, "tags", {}) or {}
+                            child_is_container = bool(child_tags.get("container"))
+
+                            if child_is_container and child_id is not None and str(child_id) in inv_map:
+                                _consume_inventory_tree(str(child_id), visited)
+
+                        # Finally delete this inventory list (consumes its contents)
+                        inv_map.pop(owner_id, None)
+
+                    if eaten_id is not None and hasattr(self.game, "inventories"):
+                        _consume_inventory_tree(str(eaten_id), set())
+
+                    # 3) Apply ALL collected effects globally (stacking)
+                    if all_effects:
+                        try:
+                            existing = list(getattr(mgr.renderer.visual_fx, "global_effects", []) or [])
+                        except Exception:
+                            existing = []
+                        try:
+                            mgr.set_global_visual_effects(concat_effect_names(existing, all_effects))
+                        except Exception:
+                            pass
+
+                    # 4) Log
+                    if hasattr(self.game, "log") and hasattr(self.game.log, "add"):
+                        self.game.log.add("You're not sure if you should have eaten that inventory...")
+                        seen: set[str] = set()
+                        for eff in all_effects:
+                            if eff in seen:
+                                continue
+                            seen.add(eff)
+                            self.game.log.add(f"You feel {eff}.")
+
+                    _refresh_ui()
+                    return
+
+                # ------------------------------------------------------------
+                # Eat berries (and other explicitly edible items)
+                # ------------------------------------------------------------
                 if cur_is_berry or cur_is_container:
+                    # Prefer the game's handler if it exists.
                     if hasattr(self.game, "eat_inventory_item"):
                         fn = self.game.eat_inventory_item
-
-                        # Try a few likely signatures. (Stop on the first one that works.)
                         tried = False
 
-                        # 1) (owner_id, ent_id)  [what we used to do]
+                        # 1) (owner_id, ent_id)
                         try:
                             fn(current_owner_id, ent_id)
                             tried = True
@@ -2836,6 +2977,10 @@ class InventoryScene(PopupMenuScene):
                                 pass
                             except Exception:
                                 tried = True
+
+                    _refresh_ui()
+                    return
+
 
                 _refresh_ui()
                 return
