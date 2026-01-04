@@ -27,3 +27,42 @@
   name: Leg
   parent: limb
   description: A limb suited for support and locomotion.
+- id: shoulder
+  name: Shoulder
+  parent: arm
+  description: The shoulder joint, where arm meets torso.
+
+- id: upper_arm
+  name: Upper Arm
+  parent: arm
+  description: The upper arm segment (humerus-ish).
+
+- id: elbow
+  name: Elbow
+  parent: arm
+  description: The elbow joint.
+
+- id: forearm
+  name: Forearm
+  parent: arm
+  description: The forearm segment.
+
+- id: hand
+  name: Hand
+  parent: arm
+  description: A hand, suited for grasping and wearing gloves.
+
+- id: wrist
+  name: Wrist
+  parent: hand
+  description: The wrist joint.
+
+- id: palm
+  name: Palm
+  parent: hand
+  description: The palm of the hand.
+
+- id: finger
+  name: Finger
+  parent: hand
+  description: A finger, suited for rings and trouble.

@@ -153,16 +153,146 @@
       layout:
         x: 0
         y: 0
+
     - op: replace_node
       node: arm
       layout:
         x: -2
         y: 0
+      detail_root: shoulder
     - op: replace_node
       node: arm_m
       layout:
         x: 2
         y: 0
+      detail_root: shoulder_m
+
+    - op: add_node
+      node: shoulder
+      proto: shoulder
+      layout: {x: -2.2, y: -0.2}
+      children: [upper_arm]
+    - op: add_node
+      node: upper_arm
+      proto: upper_arm
+      layout: {x: -2.5, y: 0.5}
+      children: [elbow]
+    - op: add_node
+      node: elbow
+      proto: elbow
+      layout: {x: -2.7, y: 1.1}
+      children: [forearm]
+    - op: add_node
+      node: forearm
+      proto: forearm
+      layout: {x: -2.4, y: 1.7}
+      children: [hand]
+    - op: add_node
+      node: hand
+      proto: hand
+      layout: {x: -2.0, y: 2.3}
+      detail_root: wrist
+
+    - op: add_node
+      node: wrist
+      proto: wrist
+      layout: {x: -2.0, y: 2.7}
+      children: [palm]
+    - op: add_node
+      node: palm
+      proto: palm
+      layout: {x: -2.0, y: 3.2}
+      children: [finger_1, finger_2, finger_3, finger_4, finger_5]
+    - op: add_node
+      node: finger_1
+      proto: finger
+      layout: {x: -2.4, y: 3.7}
+    - op: add_node
+      node: finger_2
+      proto: finger
+      layout: {x: -2.2, y: 3.8}
+    - op: add_node
+      node: finger_3
+      proto: finger
+      layout: {x: -2.0, y: 3.85}
+    - op: add_node
+      node: finger_4
+      proto: finger
+      layout: {x: -1.8, y: 3.8}
+    - op: add_node
+      node: finger_5
+      proto: finger
+      layout: {x: -1.6, y: 3.7}
+
+    - op: add_node
+      node: shoulder_m
+      proto: shoulder
+      props: {mirrored: true}
+      layout: {x: 2.2, y: -0.2}
+      children: [upper_arm_m]
+    - op: add_node
+      node: upper_arm_m
+      proto: upper_arm
+      props: {mirrored: true}
+      layout: {x: 2.5, y: 0.5}
+      children: [elbow_m]
+    - op: add_node
+      node: elbow_m
+      proto: elbow
+      props: {mirrored: true}
+      layout: {x: 2.7, y: 1.1}
+      children: [forearm_m]
+    - op: add_node
+      node: forearm_m
+      proto: forearm
+      props: {mirrored: true}
+      layout: {x: 2.4, y: 1.7}
+      children: [hand_m]
+    - op: add_node
+      node: hand_m
+      proto: hand
+      props: {mirrored: true}
+      layout: {x: 2.0, y: 2.3}
+      detail_root: wrist_m
+
+    - op: add_node
+      node: wrist_m
+      proto: wrist
+      props: {mirrored: true}
+      layout: {x: 2.0, y: 2.7}
+      children: [palm_m]
+    - op: add_node
+      node: palm_m
+      proto: palm
+      props: {mirrored: true}
+      layout: {x: 2.0, y: 3.2}
+      children: [finger_1_m, finger_2_m, finger_3_m, finger_4_m, finger_5_m]
+    - op: add_node
+      node: finger_1_m
+      proto: finger
+      props: {mirrored: true}
+      layout: {x: 2.4, y: 3.7}
+    - op: add_node
+      node: finger_2_m
+      proto: finger
+      props: {mirrored: true}
+      layout: {x: 2.2, y: 3.8}
+    - op: add_node
+      node: finger_3_m
+      proto: finger
+      props: {mirrored: true}
+      layout: {x: 2.0, y: 3.85}
+    - op: add_node
+      node: finger_4_m
+      proto: finger
+      props: {mirrored: true}
+      layout: {x: 1.8, y: 3.8}
+    - op: add_node
+      node: finger_5_m
+      proto: finger
+      props: {mirrored: true}
+      layout: {x: 1.6, y: 3.7}
+
     - op: replace_node
       node: leg
       layout:
@@ -174,6 +304,7 @@
         x: 1
         y: 2
   description: A roughly bipedal ape in a paper-doll orientation.
+
 
 - id: human
   name: Human
@@ -189,3 +320,129 @@
     actor: true
     template: true
   description: All the world's a stage -- and it is theater in the round.
+- op: add_node
+  node: shoulder
+  proto: shoulder
+  layout: {x: -2.2, y: -0.2}
+  children: [upper_arm]
+- op: add_node
+  node: upper_arm
+  proto: upper_arm
+  layout: {x: -2.5, y: 0.5}
+  children: [elbow]
+- op: add_node
+  node: elbow
+  proto: elbow
+  layout: {x: -2.7, y: 1.1}
+  children: [forearm]
+- op: add_node
+  node: forearm
+  proto: forearm
+  layout: {x: -2.4, y: 1.7}
+  children: [hand]
+- op: add_node
+  node: hand
+  proto: hand
+  layout: {x: -2.0, y: 2.3}
+  detail_root: wrist
+
+- op: add_node
+  node: wrist
+  proto: wrist
+  layout: {x: -2.0, y: 2.7}
+  children: [palm]
+- op: add_node
+  node: palm
+  proto: palm
+  layout: {x: -2.0, y: 3.2}
+  children: [finger_1, finger_2, finger_3, finger_4, finger_5]
+- op: add_node
+  node: finger_1
+  proto: finger
+  layout: {x: -2.4, y: 3.7}
+- op: add_node
+  node: finger_2
+  proto: finger
+  layout: {x: -2.2, y: 3.8}
+- op: add_node
+  node: finger_3
+  proto: finger
+  layout: {x: -2.0, y: 3.85}
+- op: add_node
+  node: finger_4
+  proto: finger
+  layout: {x: -1.8, y: 3.8}
+- op: add_node
+  node: finger_5
+  proto: finger
+  layout: {x: -1.6, y: 3.7}
+
+- op: add_node
+  node: shoulder_m
+  proto: shoulder
+  props: {mirrored: true}
+  layout: {x: 2.2, y: -0.2}
+  children: [upper_arm_m]
+- op: add_node
+  node: upper_arm_m
+  proto: upper_arm
+  props: {mirrored: true}
+  layout: {x: 2.5, y: 0.5}
+  children: [elbow_m]
+- op: add_node
+  node: elbow_m
+  proto: elbow
+  props: {mirrored: true}
+  layout: {x: 2.7, y: 1.1}
+  children: [forearm_m]
+- op: add_node
+  node: forearm_m
+  proto: forearm
+  props: {mirrored: true}
+  layout: {x: 2.4, y: 1.7}
+  children: [hand_m]
+- op: add_node
+  node: hand_m
+  proto: hand
+  props: {mirrored: true}
+  layout: {x: 2.0, y: 2.3}
+  detail_root: wrist_m
+
+- op: add_node
+  node: wrist_m
+  proto: wrist
+  props: {mirrored: true}
+  layout: {x: 2.0, y: 2.7}
+  children: [palm_m]
+- op: add_node
+  node: palm_m
+  proto: palm
+  props: {mirrored: true}
+  layout: {x: 2.0, y: 3.2}
+  children: [finger_1_m, finger_2_m, finger_3_m, finger_4_m, finger_5_m]
+- op: add_node
+  node: finger_1_m
+  proto: finger
+  props: {mirrored: true}
+  layout: {x: 2.4, y: 3.7}
+- op: add_node
+  node: finger_2_m
+  proto: finger
+  props: {mirrored: true}
+  layout: {x: 2.2, y: 3.8}
+- op: add_node
+  node: finger_3_m
+  proto: finger
+  props: {mirrored: true}
+  layout: {x: 2.0, y: 3.85}
+- op: add_node
+  node: finger_4_m
+  proto: finger
+  props: {mirrored: true}
+  layout: {x: 1.8, y: 3.8}
+- op: add_node
+  node: finger_5_m
+  proto: finger
+  props: {mirrored: true}
+  layout: {x: 1.6, y: 3.7}
+

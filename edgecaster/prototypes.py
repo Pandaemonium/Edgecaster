@@ -426,6 +426,16 @@ def _op_add_node(schema: dict, op: dict) -> None:
     else:
         new_spec["children"] = []
 
+
+    # Copy any additional per-node fields (e.g., detail_root, ui hints)
+    for k, v in op.items():
+        if k in ("op", "node", "proto", "attach_to", "props", "layout", "children"):
+            continue
+        if v is None:
+            new_spec.pop(k, None)
+        else:
+            new_spec[k] = copy.deepcopy(v)
+
     nodes[nk] = new_spec
 
     # Attach as child if requested
@@ -500,6 +510,16 @@ def _op_replace_node(schema: dict, op: dict) -> None:
             ns["children"] = [str(x) for x in children if x is not None]
         elif children is None:
             ns.pop("children", None)
+
+
+    # Copy any additional per-node fields (e.g., detail_root, ui hints)
+    for k, v in op.items():
+        if k in ("op", "node", "attach_to", "proto", "props", "layout", "children"):
+            continue
+        if v is None:
+            ns.pop(k, None)
+        else:
+            ns[k] = copy.deepcopy(v)
 
 
 def _op_set_children(schema: dict, op: dict) -> None:

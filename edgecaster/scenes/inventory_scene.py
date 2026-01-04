@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 from typing import Any, Optional, TYPE_CHECKING
 
 import pygame
@@ -310,6 +311,79 @@ def _compute_body_positions(schema: dict) -> dict[str, tuple[float, float]]:
             i += 1
 
     return pos
+
+
+def _derive_visible_body_schema(schema: dict, zoom_stack: list[str]) -> dict:
+    """Derive a visible subgraph from a master body schema using the zoom stack."""
+    if not isinstance(schema, dict):
+        return {"root": None, "nodes": {}}
+
+    root = schema.get("root")
+    nodes = schema.get("nodes") or {}
+    if not isinstance(nodes, dict):
+        return {"root": root, "nodes": {}}
+
+    out_nodes: dict[str, dict] = {}
+    for nid, spec in nodes.items():
+        if isinstance(spec, dict):
+            out_nodes[str(nid)] = copy.deepcopy(spec)
+
+    # Apply local expansions (ghost connectors + attach detail_root).
+    for raw in zoom_stack or []:
+        nid = str(raw)
+        spec = out_nodes.get(nid)
+        if not isinstance(spec, dict):
+            continue
+        dr = spec.get("detail_root")
+        if not dr:
+            continue
+        dr_id = str(dr)
+        if dr_id not in out_nodes:
+            continue
+
+        spec["ghost"] = True
+        ch = _children_of(spec)
+        if dr_id not in ch:
+            ch.append(dr_id)
+            spec["children"] = ch
+
+    # Prune to nodes reachable from root.
+    root_id = str(root) if root is not None else None
+    if not root_id or root_id not in out_nodes:
+        return {"root": root, "nodes": out_nodes}
+
+    reachable: set[str] = set()
+    stack = [root_id]
+    while stack:
+        cur = stack.pop()
+        if cur in reachable:
+            continue
+        reachable.add(cur)
+        cs = out_nodes.get(cur)
+        if isinstance(cs, dict):
+            for c in _children_of(cs):
+                if c in out_nodes and c not in reachable:
+                    stack.append(c)
+
+    pruned = {nid: out_nodes[nid] for nid in reachable if nid in out_nodes}
+    return {"root": root, "nodes": pruned}
+
+
+def _resolve_visible_body_schema(owner: object, zoom_stack: list[str]) -> dict:
+    """
+    Resolve the owner's master body schema (from prototypes) and then derive the
+    locally-expanded visible schema for the current zoom stack.
+    """
+    try:
+        # NOTE: resolve_body_schema is imported from edgecaster.prototypes
+        schema = resolve_body_schema(owner)
+    except Exception:
+        schema = {"root": None, "nodes": {}}
+
+    try:
+        return _derive_visible_body_schema(schema, zoom_stack)
+    except Exception:
+        return schema
 
 
 def _map_positions_to_rect(
@@ -935,7 +1009,7 @@ class EntityPreviewWidget(Widget):
 
             # Compute body node positions so we can anchor the glyph to the schema root.
             try:
-                schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
+                schema = _resolve_visible_body_schema(owner, getattr(scene, "_body_zoom_stack", [])) if owner is not None else {"root": None, "nodes": {}}
             except Exception:
                 schema = {"root": None, "nodes": {}}
 
@@ -1251,7 +1325,7 @@ class BodyPlanGraphWidget(Widget):
             return None
 
         try:
-            schema = resolve_body_schema(owner)
+            schema = _resolve_visible_body_schema(owner, getattr(scene, "_body_zoom_stack", []))
         except Exception:
             schema = {"root": None, "nodes": {}}
 
@@ -1346,7 +1420,7 @@ class BodyPlanGraphWidget(Widget):
             return
 
         try:
-            schema = resolve_body_schema(owner)
+            schema = _resolve_visible_body_schema(owner, getattr(scene, "_body_zoom_stack", []))
         except Exception:
             schema = {"root": None, "nodes": {}}
 
@@ -1499,10 +1573,23 @@ class BodyPlanGraphWidget(Widget):
             is_target = (drag_kind == "body_node" and drag_node is not None and str(nid) == str(drag_node))
             is_hot = bool(is_hover or is_target)
 
-            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
-            pygame.draw.rect(overlay, node_fill, sq)
+            nodes = schema.get("nodes") or {}
+            spec = nodes.get(str(nid)) if isinstance(nodes, dict) else None
+            is_ghost = bool(isinstance(spec, dict) and spec.get("ghost"))
+            local_a = alpha * (0.35 if is_ghost else 1.0)
 
-            border_col = hi_border if is_hover else (half_border if is_target else node_border)
+            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
+            node_fill2 = (*fg, int(local_a * 0.10))
+            node_border2 = (*fg, int(local_a * 0.85))
+            hi_border2 = (*hilite, int(local_a * 1.0))
+            half_border2 = (*half_yellow, int(local_a * 0.98))
+            label_col2 = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(local_a * 0.95))
+            label_hi2 = (int(hilite[0]), int(hilite[1]), int(hilite[2]), int(local_a * 0.98))
+            label_half2 = (int(half_yellow[0]), int(half_yellow[1]), int(half_yellow[2]), int(local_a * 0.97))
+
+            pygame.draw.rect(overlay, node_fill2, sq)
+
+            border_col = hi_border2 if is_hover else (half_border2 if is_target else node_border2)
             pygame.draw.rect(overlay, border_col, sq, 3 if is_hover else 2)
 
             eq = _equipped_for(str(nid))
@@ -1510,8 +1597,8 @@ class BodyPlanGraphWidget(Widget):
             # --- Subpart label ABOVE the node ---
             try:
                 label = _display_body_node_label(str(nid))
-                ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
-                ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+                ls = label_font.render(label, True, label_hi2 if is_hover else (label_half2 if is_target else label_col2)).convert_alpha()
+                ls.set_alpha(int(local_a * (0.98 if is_hot else 0.90)))
                 lx = sq.centerx - ls.get_width() // 2
                 ly = sq.top - ls.get_height() - 3
                 overlay.blit(ls, (lx, ly))
@@ -1558,7 +1645,7 @@ class BodyPlanGraphWidget(Widget):
                     # Fallback: at least draw a big glyph
                     try:
                         glyph = str(getattr(eq, "glyph", "?"))[:1]
-                        gsurf = glyph_font.render(glyph, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                        gsurf = glyph_font.render(glyph, True, label_hi2 if is_hover else (label_half2 if is_target else label_col2)).convert_alpha()
                         if is_hot:
                             glyph_alpha = 245
                         else:
@@ -1576,7 +1663,7 @@ class BodyPlanGraphWidget(Widget):
             try:
                 if eq is not None:
                     item_name = str(getattr(eq, "name", None) or "Item")
-                    ns = item_font.render(item_name, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                    ns = item_font.render(item_name, True, label_hi2 if is_hover else (label_half2 if is_target else label_col2)).convert_alpha()
                     ns.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
                     nx = sq.centerx - ns.get_width() // 2
                     ny = sq.bottom + 3
@@ -1636,7 +1723,7 @@ class RightPaneWidget(Widget):
 
                 if region.w > 10 and region.h > 10:
                     try:
-                        schema = resolve_body_schema(owner)
+                        schema = _resolve_visible_body_schema(owner, getattr(scene, "_body_zoom_stack", []))
                     except Exception:
                         schema = {"root": None, "nodes": {}}
 
@@ -2966,7 +3053,7 @@ class InventoryScene(PopupMenuScene):
         if owner is None:
             return []
         try:
-            schema = resolve_body_schema(owner) or {}
+            schema = _resolve_visible_body_schema(owner, getattr(scene, "_body_zoom_stack", [])) or {}
         except Exception:
             schema = {}
         nodes = schema.get("nodes", {}) or {}
@@ -3028,7 +3115,7 @@ class InventoryScene(PopupMenuScene):
         if owner is None:
             return (None, None)
         try:
-            schema = resolve_body_schema(owner) or {"root": None, "nodes": {}}
+            schema = _resolve_visible_body_schema(owner, getattr(scene, "_body_zoom_stack", [])) or {"root": None, "nodes": {}}
         except Exception:
             schema = {"root": None, "nodes": {}}
         pos_u = _compute_body_positions(schema)
