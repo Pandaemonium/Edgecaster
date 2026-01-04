@@ -19,6 +19,12 @@ academy:
 starting_zone:
   coord: [50, 50, 0]
   npcs:
+    - npc_id: guide_npc
+      name: Local Guide
+      glyph: "@"
+      color: [180, 220, 180]
+      offsets: [[3, 2], [4, 2], [2, 3], [3, 3]]
+      description: "A friendly local who knows the area well."
     - npc_id: caged_demon
       name: Caged Demon
       glyph: "&"
@@ -27,6 +33,16 @@ starting_zone:
       description: "A hulking demon chained and pitted for training."
   structures:
     - kind: item_depot
+inventor_workshop:
+  coord: [55, 48, 0]  # Within 5 screens of starting_zone (50, 50)
+  npcs:
+    - npc_id: inventor_npc
+      name: The Inventor
+      glyph: "@"
+      color: [200, 180, 255]
+      offsets: [[0, 0], [1, 0], [-1, 0]]
+      description: "An eccentric inventor studying corruption patterns."
+  structures: []
 lab:
   coord: [0, 0, 0]   # overwritten at runtime by the chosen lab zone
   npcs: []

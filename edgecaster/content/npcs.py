@@ -41,4 +41,29 @@ NPC_DEFS = {
             "Let's draft on a spacious rectangular grid.",
         ],
     },
+    "guide_npc": {
+        "name": "Local Guide",
+        "factions": ["neutral"],
+        "base_disposition": 10,
+        "description": "A friendly local who knows the area well.",
+        "dialogue": [
+            "Welcome, traveler! I know these lands like the back of my hand.",
+            "There's an inventor nearby who studies the corruption patterns. You should visit them!",
+            "I've marked their workshop on your map. Head northeast from here.",
+        ],
+        "quest_trigger": "find_the_inventor",  # Quest to give
+        "quest_location": [55, 48],  # Inventor's location to mark on map
+    },
+    "inventor_npc": {
+        "name": "The Inventor",
+        "factions": ["neutral"],
+        "base_disposition": 5,
+        "description": "An eccentric inventor studying corruption patterns.",
+        "dialogue": [
+            "Fascinating! Another pattern-weaver arrives.",
+            "I've been studying the corruption's mathematical properties. Such elegant chaos!",
+            "If you learn anything about the seals, do return. I'd love to compare notes.",
+        ],
+        "quest_complete": "find_the_inventor",  # Quest to complete on dialogue
+    },
 }

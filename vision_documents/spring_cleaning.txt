@@ -59,6 +59,41 @@ ONGOING ENGINE CLEANUPS
 [CLEANUP] Centralize tuning constants
 
 ===============================================================================
+NEW ISSUES IDENTIFIED (2026-01-04)
+
+[CLEANUP] Renderer UI state migration incomplete
+  - ascii.py still owns some targeting/ability state
+  - Should migrate remaining state to DungeonUIState in dungeon.py
+  - Goal: Pure draw-only renderer invariant
+
+[CLEANUP] Prototype ID vs Runtime ID semantics unclear
+  - Some systems use runtime entity IDs (instance.id)
+  - Others use prototype IDs (proto_id, kind, template_id)
+  - Need clear documentation on when to use which
+  - Consider audit pass through systems/actions.py and spawn_factory.py
+
+[CLEANUP] Import time module loading
+  - architecture.txt warns: "Avoid importing scenes package root at module import time"
+  - Should audit for circular imports or lazy-loading opportunities
+  - May affect startup time as codebase grows
+
+[CLEANUP] Threading usage in game.py
+  - game.py imports threading but usage unclear from initial scan
+  - Verify thread safety if background tasks exist
+  - Document threading model if intentional
+
+[CLEANUP] Exception handling in prototypes.py
+  - Fail-soft pattern in systems/actions.py: "except Exception: pass"
+  - May silently swallow errors during pattern_colors import
+  - Consider more specific exception types
+
+[VISION] Body schema system (anatomy.yaml/biology.yaml)
+  - Foundation exists but not fully integrated
+  - Body-swapping mechanics referenced but not implemented
+  - Subpart instantiation is "lazy" but needs attention system
+  - Long-term feature but data structures ready
+
+===============================================================================
 GUIDING PRINCIPLES
 
 • Prefer architecture over cleverness

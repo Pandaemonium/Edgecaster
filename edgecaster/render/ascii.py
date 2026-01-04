@@ -874,6 +874,23 @@ class AsciiRenderer:
         font_px = max(8, min(256, int(min(cell_px_w, cell_px_h) * 0.90)))
         font = self._get_cached_map_font(font_px)
 
+        # Get player position, world, and zone offset for FOV-based dimming
+        player_pos = None
+        world = None
+        zone_offset_x = 0
+        zone_offset_y = 0
+        fov_radius = 8  # Match the FOV radius from _update_fov
+        try:
+            player = game.actors[game.player_id]
+            player_pos = player.pos
+            world = game._level().world
+            # Get zone coordinates to convert global -> local tile coords
+            zone_x, zone_y, _zone_z = game.zone_coord
+            zone_offset_x = zone_x * zone_w
+            zone_offset_y = zone_y * zone_h
+        except (Exception, KeyError, AttributeError):
+            pass  # No player/world available, render everything at full brightness
+
         for rr in range(rows):
             cy = base_cy + rr
             py_f = map_rect.y + rr * cell_h_tiles * world_scale - offset_px_y - pad_px_y
@@ -894,7 +911,61 @@ class AsciiRenderer:
                 val = cache.get(k)
                 if not val:
                     continue
-                ch, color = val
+                ch, orig_color = val
+
+                # Apply FOV-based dimming - DEBUG VERSION
+                color = orig_color  # Start with cached color
+                if player_pos is not None and world is not None and cell_w_tiles == 1.0:
+                    # DEBUG: Log coordinate mapping on first iteration
+                    if rr == 0 and cc == 0:
+                        import sys
+                        print(f"\n=== VISIBILITY DEBUG ===", file=sys.stderr)
+                        print(f"Player pos (local): {player_pos}", file=sys.stderr)
+                        print(f"Zone coord: {game.zone_coord}", file=sys.stderr)
+                        print(f"Zone offset: ({zone_offset_x}, {zone_offset_y})", file=sys.stderr)
+                        print(f"Zone size: ({zone_w}, {zone_h})", file=sys.stderr)
+                        print(f"World bounds: ({world.width}, {world.height})", file=sys.stderr)
+                        print(f"base_cx={base_cx}, base_cy={base_cy}", file=sys.stderr)
+                        print(f"cell_w_tiles={cell_w_tiles}, cell_h_tiles={cell_h_tiles}", file=sys.stderr)
+                        print(f"snap_min_wx={snap_min_wx}, snap_min_wy={snap_min_wy}", file=sys.stderr)
+                        print(f"cell_w_tiles == 1.0? {cell_w_tiles == 1.0}", file=sys.stderr)
+                        print(f"Visibility logic will run? {player_pos is not None and world is not None and cell_w_tiles == 1.0}", file=sys.stderr)
+
+                    # DEBUG: Log a specific cell near the player
+                    global_x_test = int(cx * cell_w_tiles)
+                    global_y_test = int(cy * cell_h_tiles)
+                    local_x_test = global_x_test - zone_offset_x
+                    local_y_test = global_y_test - zone_offset_y
+
+                    # Check if this cell is near the player (within 1 tile)
+                    px_local, py_local = player_pos
+                    if abs(local_x_test - px_local) <= 1 and abs(local_y_test - py_local) <= 1:
+                        import sys
+                        print(f"Cell near player: cx={cx}, cy={cy} -> global=({global_x_test},{global_y_test}) -> local=({local_x_test},{local_y_test}) | Player at local ({px_local},{py_local})", file=sys.stderr)
+                        if world.in_bounds(local_x_test, local_y_test):
+                            tile_test = world.get_tile(local_x_test, local_y_test)
+                            if tile_test:
+                                print(f"  Tile: explored={tile_test.explored}, visible={tile_test.visible}", file=sys.stderr)
+                        else:
+                            print(f"  OUT OF BOUNDS", file=sys.stderr)
+
+                    # Actual visibility logic (unchanged for now)
+                    global_x = int(cx * cell_w_tiles)
+                    global_y = int(cy * cell_h_tiles)
+                    local_x = global_x - zone_offset_x
+                    local_y = global_y - zone_offset_y
+
+                    if world.in_bounds(local_x, local_y):
+                        tile = world.get_tile(local_x, local_y)
+                        if tile:
+                            if not tile.explored:
+                                continue
+                            if not tile.visible:
+                                r, g, b = orig_color
+                                color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
+                    else:
+                        r, g, b = orig_color
+                        color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
 
                 surf = font.render(ch, True, color)
                 gx = px + (cell_px_w - surf.get_width()) // 2
