@@ -1415,7 +1415,7 @@ def _revolving_profile(p: VisualProfile, t: int) -> VisualProfile:
     )
 
 
-def _orbiting_profile(p: VisualProfile, t: int) -> VisualProfile:
+def _orbital_profile(p: VisualProfile, t: int) -> VisualProfile:
     # Translates in a small circular orbit.
     period_ms = 3200
     radius_px = 20
@@ -1521,7 +1521,7 @@ def _install_builtin_effects() -> None:
         draw_overlay=_candlelit_overlay,
     ))
     register_effect(VisualEffectDef("revolving", modify_profile=_revolving_profile))
-    register_effect(VisualEffectDef("orbiting", modify_profile=_orbiting_profile))
+    register_effect(VisualEffectDef("orbital", modify_profile=_orbital_profile))
 
 
 _install_builtin_effects()
