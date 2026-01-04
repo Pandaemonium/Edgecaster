@@ -749,6 +749,13 @@ class AsciiRenderer:
         pad_px_x = float(PAD_CELLS) * float(cell_w_tiles) * float(world_scale)
         pad_px_y = float(PAD_CELLS) * float(cell_h_tiles) * float(world_scale)
 
+        # IMPORTANT: sampling and drawing must agree on the same padded origin.
+        # We draw PAD_CELLS worth of extra cells around the viewport to avoid
+        # "island in black" artifacts when panning/zooming. That means the
+        # sampled overmap window must also start at the padded origin.
+        sample_min_wx = float(base_cx) * float(cell_w_tiles)
+        sample_min_wy = float(base_cy) * float(cell_h_tiles)
+
 
         # Cell size in pixels.
         cell_px_w_f = max(1e-6, float(cell_w_tiles) * world_scale)
@@ -767,9 +774,6 @@ class AsciiRenderer:
         if cache is None:
             cache = {}
             self._lod_cell_cache = cache
-
-        base_cx = int(math.floor(snap_min_wx / float(cell_w_tiles)))
-        base_cy = int(math.floor(snap_min_wy / float(cell_h_tiles)))
 
         # Decide whether we must sample this viewport into the per-cell cache.
         #
@@ -822,8 +826,8 @@ class AsciiRenderer:
                     j_max_x=float(p["view_max_jx"]),
                     j_min_y=float(p["view_min_jy"]),
                     j_max_y=float(p["view_max_jy"]),
-                    view_min_wx=float(snap_min_wx),
-                    view_min_wy=float(snap_min_wy),
+                    view_min_wx=float(sample_min_wx),
+                    view_min_wy=float(sample_min_wy),
                     view_span_wx=float(span_wx),
                     view_span_wy=float(span_wy),
                     visual_c=p["visual_c"],
@@ -913,43 +917,9 @@ class AsciiRenderer:
                     continue
                 ch, orig_color = val
 
-                # Apply FOV-based dimming - DEBUG VERSION
+                # Apply FOV-based dimming using the same tile.visible flags as entities.
                 color = orig_color  # Start with cached color
                 if player_pos is not None and world is not None and cell_w_tiles == 1.0:
-                    # DEBUG: Log coordinate mapping on first iteration
-                    if rr == 0 and cc == 0:
-                        import sys
-                        print(f"\n=== VISIBILITY DEBUG ===", file=sys.stderr)
-                        print(f"Player pos (local): {player_pos}", file=sys.stderr)
-                        print(f"Zone coord: {game.zone_coord}", file=sys.stderr)
-                        print(f"Zone offset: ({zone_offset_x}, {zone_offset_y})", file=sys.stderr)
-                        print(f"Zone size: ({zone_w}, {zone_h})", file=sys.stderr)
-                        print(f"World bounds: ({world.width}, {world.height})", file=sys.stderr)
-                        print(f"base_cx={base_cx}, base_cy={base_cy}", file=sys.stderr)
-                        print(f"cell_w_tiles={cell_w_tiles}, cell_h_tiles={cell_h_tiles}", file=sys.stderr)
-                        print(f"snap_min_wx={snap_min_wx}, snap_min_wy={snap_min_wy}", file=sys.stderr)
-                        print(f"cell_w_tiles == 1.0? {cell_w_tiles == 1.0}", file=sys.stderr)
-                        print(f"Visibility logic will run? {player_pos is not None and world is not None and cell_w_tiles == 1.0}", file=sys.stderr)
-
-                    # DEBUG: Log a specific cell near the player
-                    global_x_test = int(cx * cell_w_tiles)
-                    global_y_test = int(cy * cell_h_tiles)
-                    local_x_test = global_x_test - zone_offset_x
-                    local_y_test = global_y_test - zone_offset_y
-
-                    # Check if this cell is near the player (within 1 tile)
-                    px_local, py_local = player_pos
-                    if abs(local_x_test - px_local) <= 1 and abs(local_y_test - py_local) <= 1:
-                        import sys
-                        print(f"Cell near player: cx={cx}, cy={cy} -> global=({global_x_test},{global_y_test}) -> local=({local_x_test},{local_y_test}) | Player at local ({px_local},{py_local})", file=sys.stderr)
-                        if world.in_bounds(local_x_test, local_y_test):
-                            tile_test = world.get_tile(local_x_test, local_y_test)
-                            if tile_test:
-                                print(f"  Tile: explored={tile_test.explored}, visible={tile_test.visible}", file=sys.stderr)
-                        else:
-                            print(f"  OUT OF BOUNDS", file=sys.stderr)
-
-                    # Actual visibility logic (unchanged for now)
                     global_x = int(cx * cell_w_tiles)
                     global_y = int(cy * cell_h_tiles)
                     local_x = global_x - zone_offset_x
@@ -964,8 +934,8 @@ class AsciiRenderer:
                                 r, g, b = orig_color
                                 color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
                     else:
-                        r, g, b = orig_color
-                        color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
+                        # Out-of-zone cells should behave like unexplored tiles: render nothing.
+                        continue
 
                 surf = font.render(ch, True, color)
                 gx = px + (cell_px_w - surf.get_width()) // 2
