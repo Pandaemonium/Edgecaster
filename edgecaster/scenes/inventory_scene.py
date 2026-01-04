@@ -6,6 +6,99 @@ from typing import Any, Optional, TYPE_CHECKING
 import pygame
 import math
 
+def _body_zoom_pan_t(obj: object, zoom_scale: float) -> float:
+    """Blend factor for body-graph camera panning.
+
+    Returns 0..1 and is used to blend the camera pivot between the region center
+    (0) and the current focus position (1).
+
+    Important: during an active zoom animation we must *reverse* the blend when
+    zooming out, so that pan+zoom are the exact inverse of zoom-in (no snap/
+    boomerang on offset nodes).
+    """
+    try:
+        # Default when idle: if zoomed in (scale != 1), pivot fully on focus.
+        if abs(float(zoom_scale) - 1.0) <= 1e-3:
+            idle_pan = 0.0
+        else:
+            idle_pan = 1.0
+
+        anim = getattr(obj, "_body_zoom_anim", None)
+        if anim is None:
+            return float(idle_pan)
+
+        _from_focus, _to_focus, from_s, to_s, start_ms, dur_ms = anim
+        now = int(pygame.time.get_ticks())
+        if int(dur_ms) <= 0:
+            t = 1.0
+        else:
+            t = (now - int(start_ms)) / float(dur_ms)
+            if t < 0.0:
+                t = 0.0
+            if t > 1.0:
+                t = 1.0
+
+        # smoothstep easing
+        t = t * t * (3.0 - 2.0 * t)
+
+        # If we're zooming out (scale decreasing), reverse the pan blend.
+        if float(to_s) < float(from_s):
+            t = 1.0 - t
+
+        return float(t)
+    except Exception:
+        return 0.0
+
+
+
+def _apply_body_zoom_to_points(
+    pos_px: dict[str, tuple[float, float]],
+    *,
+    region_w: float,
+    region_h: float,
+    focus_pos: tuple[float, float] | None,
+    zoom_scale: float,
+    pan_t: float,
+) -> dict[str, tuple[float, float]]:
+    """Apply the body-graph camera transform to a dict of point positions."""
+    if not focus_pos:
+        return pos_px
+
+    cx, cy = (float(region_w) * 0.5), (float(region_h) * 0.5)
+    fx, fy = float(focus_pos[0]), float(focus_pos[1])
+
+    # Pivot shifts from center -> focus as pan_t goes 0 -> 1.
+    px = (cx * (1.0 - float(pan_t))) + (fx * float(pan_t))
+    py = (cy * (1.0 - float(pan_t))) + (fy * float(pan_t))
+
+    s = float(zoom_scale)
+    return {nid: ((x - px) * s + cx, (y - py) * s + cy) for nid, (x, y) in pos_px.items()}
+
+
+def _apply_body_zoom_to_point(
+    x: float,
+    y: float,
+    *,
+    region_w: float,
+    region_h: float,
+    focus_pos: tuple[float, float] | None,
+    zoom_scale: float,
+    pan_t: float,
+) -> tuple[float, float]:
+    """Apply the body-graph camera transform to a single point."""
+    if not focus_pos:
+        return (float(x), float(y))
+
+    cx, cy = (float(region_w) * 0.5), (float(region_h) * 0.5)
+    fx, fy = float(focus_pos[0]), float(focus_pos[1])
+
+    px = (cx * (1.0 - float(pan_t))) + (fx * float(pan_t))
+    py = (cy * (1.0 - float(pan_t))) + (fy * float(pan_t))
+
+    s = float(zoom_scale)
+    return ((float(x) - px) * s + cx, (float(y) - py) * s + cy)
+
+
 from .base import PopupMenuScene
 from .urgent_message_scene import UrgentMessageScene
 
@@ -753,7 +846,7 @@ class EntityPreviewWidget(Widget):
         self._font_cache: dict[int, pygame.font.Font] = {}
 
     def _get_font(self, size: int) -> pygame.font.Font:
-        size = int(max(10, min(256, size)))
+        size = int(max(10, min(2048, size)))
         f = self._font_cache.get(size)
         if f is None:
             f = pygame.font.SysFont("consolas", size, bold=True)
@@ -800,32 +893,112 @@ class EntityPreviewWidget(Widget):
         ts = title_font.render(str(name), True, fg)
         card.blit(ts, (14, 12))
 
-        # Stable center in pane coords.
-        cx = r.w * 0.50
-        cy = r.h * 0.50
+        # Glyph region matches BodyPlanGraphWidget's reserved header/footer space.
+        desc = info.get("description") or getattr(owner, "description", None)
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region_w = max(1, int(r.w) - 28)
+        region_h = max(1, int(r.h) - int(top_reserved) - int(bottom_reserved))
 
-        # Optional label.
-        nfont = pygame.font.SysFont("consolas", 16, bold=True)
-        ns = nfont.render(str(name), True, fg)
+        # Local center within the reserved glyph region.
+        cx_local = float(region_w) * 0.5
+        cy_local = float(region_h) * 0.5
 
-
+        # Phase 5: body-graph "camera zoom" should pan/scale the background glyph rigidly with the skeleton.
+        try:
+            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
+            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
+            pan_t = _body_zoom_pan_t(scene, zoom_scale)
+            cx_local, cy_local = _apply_body_zoom_to_point(
+                cx_local,
+                cy_local,
+                region_w=float(region_w),
+                region_h=float(region_h),
+                focus_pos=focus_pos,
+                zoom_scale=zoom_scale,
+                pan_t=pan_t,
+            )
+        except Exception:
+            zoom_scale = 1.0
 
         # Only draw the glyph here if the scene is NOT doing the external opaque overlay.
+        #
+        # Phase 5: when the body-graph camera zooms, the background glyph should zoom/pan
+        # in the SAME way as the node skeleton (and stay clipped inside this pane).
         if not bool(getattr(scene, "_external_opaque_glyph", False)):
-            base_px = max(12, int(min(r.w, r.h) * 0.50))
-            font = self._get_font(max(10, int(base_px)))
+            # Match BodyPlanGraphWidget's overlay region so the glyph and nodes share a space.
+            top_reserved = 70
+            bottom_reserved = 80 if info.get("description") or getattr(owner, "description", None) else 56
+            region_w = max(1, int(r.w) - 28)
+            region_h = max(1, int(r.h) - int(top_reserved) - int(bottom_reserved))
+            region = pygame.Rect(14, top_reserved, region_w, region_h)
+
+            # Compute body node positions so we can anchor the glyph to the schema root.
+            try:
+                schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
+            except Exception:
+                schema = {"root": None, "nodes": {}}
+
+            pos_u = _compute_body_positions(schema)
+            pos_px, _scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+
+            # Apply the same camera zoom transform used by BodyPlanGraphWidget.
+            # Use the *animated/interpolated* focus_pos (not the discrete node id),
+            # otherwise zoom-out will snap/teleport when focus changes.
+            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
+            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
+
+            pan_t = _body_zoom_pan_t(scene, zoom_scale)
+            pos_px = _apply_body_zoom_to_points(
+                pos_px,
+                region_w=float(region.w),
+                region_h=float(region.h),
+                focus_pos=focus_pos,
+                zoom_scale=zoom_scale,
+                pan_t=pan_t,
+            )
+
+
+            # Anchor the glyph at the (zoomed) root node position if available; otherwise the region center.
+            root_id = schema.get("root") if isinstance(schema, dict) else None
+            root_id = str(root_id) if root_id is not None else None
+            anchor = pos_px.get(root_id) if root_id else None
+            if anchor is None:
+                anchor = (region.w * 0.5, region.h * 0.5)
+
+            # Use the scene-derived base glyph size so the "external opaque glyph" overlay and
+            # the in-widget glyph match exactly at the moment we switch modes.
+            base_px = int(getattr(scene, "_zoom_glyph_base_px", 0) or 0)
+            if base_px <= 0:
+                base_px = max(12, int(min(region.w, region.h) * 0.50))
+
+            # Apply body-graph camera zoom here (this is the intended place for it).
+            glyph_px = int(max(10, min(2048, float(base_px) * max(0.25, min(6.0, zoom_scale)))))
+
+
+            font = self._get_font(glyph_px)
             gcanvas = _render_entity_glyph_canvas(
                 renderer,
                 owner if owner is not None else type("X", (), {"glyph": glyph})(),
                 font=font,
-                base_px=base_px,
+                base_px=glyph_px,
                 scene_effects=list(getattr(scene, "visual_effects", []) or []),
             )
-            gx = int(cx - gcanvas.get_width() // 2)
-            gy = int(cy - gcanvas.get_height() // 2)
-            card.blit(gcanvas, (gx, gy))
 
-        desc = info.get("description") or getattr(owner, "description", None)
+            # Fade the glyph when hovering the right pane so the node skeleton is easier to see.
+            hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
+            gcanvas.set_alpha(120 if hovered_right else 255)
+
+            # Clip to the glyph region (prevents spilling outside the right pane / over footer text).
+            old_clip = card.get_clip()
+            try:
+                card.set_clip(region)
+                gx = int(region.x + float(anchor[0]) - gcanvas.get_width() // 2)
+                gy = int(region.y + float(anchor[1]) - gcanvas.get_height() // 2)
+                card.blit(gcanvas, (gx, gy))
+            finally:
+                card.set_clip(old_clip)
+
 
         # --- Description footer (Magic-card style) -------------------------
         if desc:
@@ -879,6 +1052,9 @@ class BodyPlanGraphWidget(Widget):
 
         self.DRAG_HOLD_MS: int = 220
         self.DRAG_MIN_PX: int = 6
+        # Double-click tracking (panel-local)
+        self._last_click_nid: str | None = None
+        self._last_click_ms: int = 0
 
 
 
@@ -1011,14 +1187,39 @@ class BodyPlanGraphWidget(Widget):
                     # Optional: require release on the same node; feels better.
                     release_nid = self._hit_test_node((mx, my), ctx)
                     if release_nid and str(release_nid) == str(press_nid):
-                        # Only activate if something is equipped there.
-                        eq = scene._equipped_entity_for_slot(str(press_nid)) if hasattr(scene, "_equipped_entity_for_slot") else None
+                        now_ms = int(pygame.time.get_ticks())
+
+                        # Double-click -> request zoom-in on this node (even if empty).
+                        try:
+                            if (
+                                self._last_click_nid is not None
+                                and str(self._last_click_nid) == str(release_nid)
+                                and (now_ms - int(self._last_click_ms)) <= 320
+                            ):
+                                setattr(scene, "_pending_body_zoom_in", str(release_nid))
+                                self._last_click_nid = None
+                                self._last_click_ms = 0
+                                return True
+                        except Exception:
+                            pass
+
+                        # Not a double-click: record click for next time.
+                        self._last_click_nid = str(release_nid)
+                        self._last_click_ms = now_ms
+
+                        # Single-click: only activate if something is equipped there.
+                        eq = (
+                            scene._equipped_entity_for_slot(str(press_nid))
+                            if hasattr(scene, "_equipped_entity_for_slot")
+                            else None
+                        )
                         if eq is not None:
                             try:
                                 setattr(scene, "_pending_node_activate", str(press_nid))
                             except Exception:
                                 pass
                             return True
+
 
             return False
 
@@ -1056,6 +1257,51 @@ class BodyPlanGraphWidget(Widget):
 
         pos_u = _compute_body_positions(schema)
         pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+
+        # Apply scene-driven "camera zoom" for body graph (must match draw()).
+        try:
+            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
+
+            # If an animation is active, interpolate focus between nodes (prevents snap on zoom-out).
+            anim = getattr(scene, "_body_zoom_anim", None)
+            if anim is not None:
+                from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
+                now = int(pygame.time.get_ticks())
+                if dur_ms <= 0:
+                    t = 1.0
+                else:
+                    t = (now - int(start_ms)) / float(dur_ms)
+                    if t < 0.0:
+                        t = 0.0
+                    if t > 1.0:
+                        t = 1.0
+                t = t * t * (3.0 - 2.0 * t)
+
+                if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
+                    x0, y0 = pos_px[from_focus]
+                    x1, y1 = pos_px[to_focus]
+                    focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
+                elif to_focus and to_focus in pos_px:
+                    focus_pos = pos_px[to_focus]
+                elif from_focus and from_focus in pos_px:
+                    focus_pos = pos_px[from_focus]
+            else:
+                zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+                focus_pos = pos_px.get(zoom_focus) if zoom_focus else focus_pos
+
+            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
+            pan_t = _body_zoom_pan_t(scene, zoom_scale)
+            pos_px = _apply_body_zoom_to_points(
+                pos_px,
+                region_w=float(region.w),
+                region_h=float(region.h),
+                focus_pos=focus_pos,
+                zoom_scale=zoom_scale,
+                pan_t=pan_t,
+            )
+        except Exception:
+            pass
+
 
         node_size = int(max(18, min(56, scale * 0.45)))
         half = node_size // 2
@@ -1107,6 +1353,60 @@ class BodyPlanGraphWidget(Widget):
         pos_u = _compute_body_positions(schema)
         pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
 
+        # Determine zoom focus position for the preview glyph underlay.
+        # If a zoom animation is active, interpolate focus between from/to nodes so zoom-out
+        # is the exact inverse of zoom-in (no translation snapping).
+        focus_pos = None
+        try:
+            anim = getattr(scene, "_body_zoom_anim", None)
+            if anim is not None:
+                from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
+                now = int(pygame.time.get_ticks())
+                if dur_ms <= 0:
+                    t = 1.0
+                else:
+                    t = (now - int(start_ms)) / float(dur_ms)
+                    if t < 0.0:
+                        t = 0.0
+                    if t > 1.0:
+                        t = 1.0
+                # Smoothstep
+                t = t * t * (3.0 - 2.0 * t)
+
+                if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
+                    x0, y0 = pos_px[from_focus]
+                    x1, y1 = pos_px[to_focus]
+                    focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
+                elif to_focus and to_focus in pos_px:
+                    focus_pos = pos_px[to_focus]
+                elif from_focus and from_focus in pos_px:
+                    focus_pos = pos_px[from_focus]
+            else:
+                zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+                focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
+
+            setattr(scene, "_body_zoom_focus_pos", focus_pos)
+        except Exception:
+            # Fall back to whatever we had previously.
+            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
+
+
+        # Apply scene-driven "camera zoom" for body graph (must match _hit_test_node()).
+        try:
+            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
+            pan_t = _body_zoom_pan_t(scene, zoom_scale)
+            pos_px = _apply_body_zoom_to_points(
+                pos_px,
+                region_w=float(region.w),
+                region_h=float(region.h),
+                focus_pos=focus_pos,
+                zoom_scale=zoom_scale,
+                pan_t=pan_t,
+            )
+        except Exception:
+            pass
+
+
         node_size = int(max(18, min(56, scale * 0.45)))
         half = node_size // 2
 
@@ -1130,6 +1430,10 @@ class BodyPlanGraphWidget(Widget):
 
         # IMPORTANT: draw in panel coordinates, so the overlay must be panel-sized.
         overlay = pygame.Surface(ctx.surface.get_size(), pygame.SRCALPHA)
+        # Clip all body-graph drawing to the intended region so zoom doesn't spill outside.
+        overlay.set_clip(region)
+
+
 
         # --- edges ---
         nodes = schema.get("nodes") if isinstance(schema, dict) else None
@@ -1283,6 +1587,9 @@ class BodyPlanGraphWidget(Widget):
 
         # If we're in "opaque glyph overlay" mode, InventoryScene will composite this overlay
         # *above* the sprite after it draws the opaque glyph. Otherwise, draw directly.
+
+        overlay.set_clip(None)
+
         try:
             setattr(scene, "_body_overlay_panel_surface", overlay)
         except Exception:
@@ -1308,8 +1615,83 @@ class RightPaneWidget(Widget):
         # Both layers occupy the same rect.
         self.preview.rect = pygame.Rect(self.rect)
         self.body_graph.rect = pygame.Rect(self.rect)
+
+        # IMPORTANT: compute the body-zoom focus position *during layout* so BOTH
+        # the preview glyph and the body overlay use the same focus point this frame.
+        try:
+            scene = ctx.scene
+            owner = getattr(scene, "_preview_entity", None)
+            owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+            if owner is not None:
+                try:
+                    info = describe_entity_for_look(owner) or {}
+                except Exception:
+                    info = {}
+                desc = info.get("description") or getattr(owner, "description", None)
+
+                r = self.body_graph.rect
+                top_reserved = 70
+                bottom_reserved = 80 if desc else 56
+                region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+
+                if region.w > 10 and region.h > 10:
+                    try:
+                        schema = resolve_body_schema(owner)
+                    except Exception:
+                        schema = {"root": None, "nodes": {}}
+
+                    pos_u = _compute_body_positions(schema)
+                    pos_px, _scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+
+                    # Match BodyPlanGraphWidget.draw(): interpolate focus when animating.
+                    focus_pos = None
+                    anim = getattr(scene, "_body_zoom_anim", None)
+                    if anim is not None:
+                        from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
+                        now = int(pygame.time.get_ticks())
+                        if dur_ms <= 0:
+                            t = 1.0
+                        else:
+                            t = (now - int(start_ms)) / float(dur_ms)
+                            if t < 0.0:
+                                t = 0.0
+                            if t > 1.0:
+                                t = 1.0
+                        t = t * t * (3.0 - 2.0 * t)
+
+                        if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
+                            x0, y0 = pos_px[from_focus]
+                            x1, y1 = pos_px[to_focus]
+                            focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
+                        elif to_focus and to_focus in pos_px:
+                            focus_pos = pos_px[to_focus]
+                        elif from_focus and from_focus in pos_px:
+                            focus_pos = pos_px[from_focus]
+                    else:
+                        zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+                        focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
+
+                    setattr(scene, "_body_zoom_focus_pos", focus_pos)
+        except Exception:
+            pass
+
+        # Now do normal child layout.
         self.preview.layout(ctx)
         self.body_graph.layout(ctx)
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        # Keep the "right pane hovered" flag authoritative at the pane level,
+        # not just on the body graph layer.
+        pos = getattr(event, "pos", None)
+        if pos is not None:
+            try:
+                mx, my = int(pos[0]), int(pos[1])
+                ctx.scene._right_panel_hovered = bool(self.rect.collidepoint((mx, my)))
+            except Exception:
+                pass
+
+        return super().handle_event(event, ctx)
+
 
 
 
@@ -1546,6 +1928,19 @@ class InventoryScene(PopupMenuScene):
 
         self.stack_depth = int(stack_depth)
 
+        # ---- Phase 5 foundation: body-graph camera zoom ----
+        self._body_zoom_stack: list[str] = []
+        self._body_zoom_focus_nid: str | None = None
+        self._body_zoom_scale: float = 1.0
+
+        # animation: (from_focus, to_focus, from_scale, to_scale, start_ms, duration_ms)
+        self._body_zoom_anim: tuple[str | None, str | None, float, float, int, int] | None = None
+
+        # set by BodyPlanGraphWidget on double-click
+        self._pending_body_zoom_in: str | None = None
+
+
+
         # If True, we *animate* rotation/flips during the zoom.
         # Default is False: the panel starts already transformed (less distracting).
         self.animate_affine = bool(animate_affine)
@@ -1774,6 +2169,67 @@ class InventoryScene(PopupMenuScene):
         self._drag_target_node_id = None
         self._drag_hint = ""
         return True
+
+    def _body_zoom_in(self, nid: str) -> None:
+        nid = str(nid)
+        now = int(pygame.time.get_ticks())
+
+        from_focus = self._body_zoom_focus_nid
+        from_scale = float(self._body_zoom_scale)
+
+        # Push onto stack and set new focus.
+        self._body_zoom_stack.append(nid)
+        self._body_zoom_focus_nid = nid
+
+        to_focus = nid
+        to_scale = from_scale * 1.6
+
+        self._body_zoom_anim = (from_focus, to_focus, from_scale, to_scale, now, 260)
+
+    def _body_zoom_out(self) -> None:
+        if not self._body_zoom_stack:
+            return
+
+        now = int(pygame.time.get_ticks())
+
+        from_focus = self._body_zoom_focus_nid
+        from_scale = float(self._body_zoom_scale)
+
+        # Pop one level.
+        self._body_zoom_stack.pop()
+        to_focus = self._body_zoom_stack[-1] if self._body_zoom_stack else None
+        self._body_zoom_focus_nid = to_focus
+
+        to_scale = max(1.0, from_scale / 1.6)
+
+        self._body_zoom_anim = (from_focus, to_focus, from_scale, to_scale, now, 260)
+
+    def _body_zoom_tick(self) -> None:
+        anim = self._body_zoom_anim
+        if anim is None:
+            return
+
+        from_focus, to_focus, from_scale, to_scale, start_ms, dur_ms = anim
+        now = int(pygame.time.get_ticks())
+        if dur_ms <= 0:
+            t = 1.0
+        else:
+            t = (now - int(start_ms)) / float(dur_ms)
+            if t < 0.0:
+                t = 0.0
+            if t > 1.0:
+                t = 1.0
+
+        # Smoothstep feels nicer than linear.
+        t = t * t * (3.0 - 2.0 * t)
+
+        self._body_zoom_scale = (from_scale * (1.0 - t)) + (to_scale * t)
+
+        if t >= 1.0:
+            # Snap final, stop anim.
+            self._body_zoom_scale = float(to_scale)
+            self._body_zoom_anim = None
+
 
 
     def _inv_drag_update(self, *, pos: tuple[int, int]) -> None:
@@ -2346,6 +2802,17 @@ class InventoryScene(PopupMenuScene):
         if self._closing:
             return
 
+        # Phase 5: Esc zooms out of body-graph depth first (only if currently zoomed).
+        try:
+            if event.type == pygame.KEYDOWN and getattr(event, "key", None) == pygame.K_ESCAPE:
+                if getattr(self, "_body_zoom_stack", None):
+                    if len(self._body_zoom_stack) > 0:
+                        self._body_zoom_out()
+                        return
+        except Exception:
+            pass
+
+
         # Any keyboard/mouse interaction should cancel a pending delayed click activation.
         if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
             self._pending_click_activate_index = None
@@ -2433,6 +2900,21 @@ class InventoryScene(PopupMenuScene):
                     self._open_container_from_index(int(idx), manager)
             except Exception:
                 pass
+
+        # Phase 5: Widget-triggered double-click on a body node -> zoom in.
+        pending_zoom = getattr(self, "_pending_body_zoom_in", None)
+        if pending_zoom is not None:
+            try:
+                self._pending_body_zoom_in = None
+            except Exception:
+                pass
+            try:
+                self._body_zoom_in(str(pending_zoom))
+            except Exception:
+                pass
+
+
+
         # Widget-triggered click on an equipped body node: open context menu immediately.
         pending_node = getattr(self, "_pending_node_activate", None)
         if pending_node is not None:
@@ -3043,7 +3525,7 @@ class InventoryScene(PopupMenuScene):
             manager.push_scene(
                 UrgentMessageScene(
                     self.game,
-"\n".join(lines),
+                    "\n".join(lines),
                     title=title,
                     choices=["OK"],
                 )
@@ -3274,6 +3756,9 @@ class InventoryScene(PopupMenuScene):
         return px
 
     def update(self, dt_ms: int, manager: "SceneManager") -> None:
+        # Phase 5: advance body-graph zoom animation.
+        self._body_zoom_tick()
+
         self._refresh_rows()
         if self._list:
             self._list.set_items(self._rows)
@@ -3562,8 +4047,25 @@ class InventoryScene(PopupMenuScene):
     # ---------------------------------------------------------------------
 
     def draw_panel(self, panel: pygame.Surface, renderer, manager: "SceneManager") -> None:
-        # Force external glyph overlay mode (panel fades, glyph stays solid).
-        self._external_opaque_glyph = True
+        # External glyph overlay mode (panel fades, glyph stays solid) is only
+        # needed during the diagrammatic open/close animation. Once settled, we
+        # let EntityPreviewWidget draw the glyph so it can participate in body-graph
+        # camera zoom and remain clipped inside the right pane.
+        try:
+            p = float(getattr(self, "_zoom_progress", 0.0) or 0.0)
+        except Exception:
+            p = 0.0
+        # Use the external fully-opaque glyph overlay ONLY while the diagrammatic open/close
+        # animation is running (or while closing). Once settled, let EntityPreviewWidget draw
+        # the glyph so it participates in body-graph camera zoom (scale + pan) and stays clipped.
+        try:
+            p = float(getattr(self, "_zoom_progress", 0.0) or 0.0)
+        except Exception:
+            p = 0.0
+        self._external_opaque_glyph = bool(self._closing or p < 0.999)
+
+
+
 
         super().draw_panel(panel, renderer, manager)
 
@@ -3596,10 +4098,15 @@ class InventoryScene(PopupMenuScene):
                 region_w = max(1, int(self._preview.rect.w) - 28)
                 region_h = max(1, int(self._preview.rect.h) - int(top_reserved) - int(bottom_reserved))
 
-                # Base size of the final glyph cell in logical panel coords.
-                # Use the available glyph region (not the full pane height) so the overlay doesn't
-                # trample the description area.
+                # IMPORTANT:
+                # _zoom_glyph_base_px should represent the *base* glyph-cell size for the preview region
+                # at zoom_scale == 1.0. The body-graph camera zoom is applied elsewhere (preview draw),
+                # so we do NOT bake it in here (otherwise we double-scale and create pop on mode handoff).
                 self._zoom_glyph_base_px = max(12, int(min(region_w, region_h) * 0.50))
+
+                # Keep the same cap family as EntityPreviewWidget (which clamps to 512).
+                self._zoom_glyph_base_px = min(int(self._zoom_glyph_base_px), 2048)
+
 
                 if owner is not None:
                     base_px = int(self._zoom_glyph_base_px)
@@ -3615,8 +4122,30 @@ class InventoryScene(PopupMenuScene):
 
                     # Place the glyph so that its *logical cell center* lands at the center of the
                     # reserved glyph region (excluding header and description footer).
-                    region_cx = float(self._preview.rect.x) + 14.0 + float(region_w) * 0.5
-                    region_cy = float(self._preview.rect.y) + float(top_reserved) + float(region_h) * 0.5
+                    # Base center within the reserved glyph region.
+                    local_cx = float(region_w) * 0.5
+                    local_cy = float(region_h) * 0.5
+
+                    # Phase 5: pan with the same body-graph camera transform as the node skeleton.
+                    try:
+                        zoom_scale = float(getattr(self, "_body_zoom_scale", 1.0) or 1.0)
+                        focus_pos = getattr(self, "_body_zoom_focus_pos", None)
+                        pan_t = _body_zoom_pan_t(self, zoom_scale)
+                        local_cx, local_cy = _apply_body_zoom_to_point(
+                            local_cx,
+                            local_cy,
+                            region_w=float(region_w),
+                            region_h=float(region_h),
+                            focus_pos=focus_pos,
+                            zoom_scale=zoom_scale,
+                            pan_t=pan_t,
+                        )
+                    except Exception:
+                        zoom_scale = 1.0
+
+                    region_cx = float(self._preview.rect.x) + 14.0 + local_cx
+                    region_cy = float(self._preview.rect.y) + float(top_reserved) + local_cy
+
 
                     # Store anchor as the *glyph cell center* in panel coords.
                     # (Render() later positions gcanvas so this anchor lands at the same place.)
@@ -3662,8 +4191,10 @@ class InventoryScene(PopupMenuScene):
         apply_visual_panel(renderer.surface, panel_to_blit, self.window_rect, visual)
 
         # Redraw the glyph as an opaque overlay at the anchor point using the SAME transform.
+        # (Only while the diagrammatic open/close animation is running.)
         owner = self._find_owner_entity()
-        if owner is not None and self._zoom_anchor_panel is not None:
+        if bool(getattr(self, "_external_opaque_glyph", False)) and owner is not None and self._zoom_anchor_panel is not None:
+
             try:
                 glyph_layer = pygame.Surface(self.window_rect.size, pygame.SRCALPHA)
 
@@ -3693,11 +4224,40 @@ class InventoryScene(PopupMenuScene):
                 # not the canvas bounding-box center (which can be offset by effects).
                 gx = int(round(float(ax) - float(ganchor[0])))
                 gy = int(round(float(ay) - float(ganchor[1])))
+
+                # Clip glyph overlay to the preview pane (in window coords) so visual effects
+                # don't bleed into the left list.
+                try:
+                    pr = getattr(self, "_preview", None)
+                    if pr is not None and getattr(pr, "rect", None) is not None:
+                        sx = float(self.window_rect.w) / float(max(1, panel.get_width()))
+                        sy = float(self.window_rect.h) / float(max(1, panel.get_height()))
+                        clip = pygame.Rect(
+                            int(round(float(pr.rect.x) * sx)),
+                            int(round(float(pr.rect.y) * sy)),
+                            int(round(float(pr.rect.w) * sx)),
+                            int(round(float(pr.rect.h) * sy)),
+                        )
+                        glyph_layer.set_clip(clip)
+                except Exception:
+                    pass
+
                 glyph_layer.blit(gcanvas, (gx, gy))
+                glyph_layer.set_clip(None)
+
 
                 # Apply the exact same transform but force alpha to 1.0.
                 hovered_right = bool(getattr(self, "_right_panel_hovered", False))
                 glyph_alpha = 0.72 if hovered_right else 1.0
+                # During diagrammatic open/close, keep the glyph fully opaque regardless of hover.
+                try:
+                    p = float(getattr(self, "_zoom_progress", 0.0) or 0.0)
+                except Exception:
+                    p = 0.0
+                if bool(getattr(self, "_closing", False)) or p < 0.99999:
+                    glyph_alpha = 1.0
+                else:
+                    glyph_alpha = 0.72 if hovered_right else 1.0
 
                 visual_g = VisualProfile(
                     scale_x=visual.scale_x,
