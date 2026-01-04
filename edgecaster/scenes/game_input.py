@@ -51,6 +51,7 @@ DEFAULT_BINDINGS: Dict[str, List[int]] = {
     "pickup": [encode_keybinding(pygame.K_g)],
     "possess_nearest": [encode_keybinding(pygame.K_p)],
     "open_inventory": [encode_keybinding(pygame.K_i)],
+    "open_quest_journal": [encode_keybinding(pygame.K_j)],
     "open_abilities": [],  # reserved for ctrl+A below
     "yawp": [encode_keybinding(pygame.K_y)],
     "wait": [encode_keybinding(pygame.K_KP5)],
@@ -259,6 +260,7 @@ class GameInput:
             "pickup",
             "possess_nearest",
             "open_inventory",
+            "open_quest_journal",
             "yawp",
             "wait",
             "stairs_down",

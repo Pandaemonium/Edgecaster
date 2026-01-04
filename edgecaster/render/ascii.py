@@ -749,6 +749,13 @@ class AsciiRenderer:
         pad_px_x = float(PAD_CELLS) * float(cell_w_tiles) * float(world_scale)
         pad_px_y = float(PAD_CELLS) * float(cell_h_tiles) * float(world_scale)
 
+        # IMPORTANT: sampling and drawing must agree on the same padded origin.
+        # We draw PAD_CELLS worth of extra cells around the viewport to avoid
+        # "island in black" artifacts when panning/zooming. That means the
+        # sampled overmap window must also start at the padded origin.
+        sample_min_wx = float(base_cx) * float(cell_w_tiles)
+        sample_min_wy = float(base_cy) * float(cell_h_tiles)
+
 
         # Cell size in pixels.
         cell_px_w_f = max(1e-6, float(cell_w_tiles) * world_scale)
@@ -767,9 +774,6 @@ class AsciiRenderer:
         if cache is None:
             cache = {}
             self._lod_cell_cache = cache
-
-        base_cx = int(math.floor(snap_min_wx / float(cell_w_tiles)))
-        base_cy = int(math.floor(snap_min_wy / float(cell_h_tiles)))
 
         # Decide whether we must sample this viewport into the per-cell cache.
         #
@@ -822,8 +826,8 @@ class AsciiRenderer:
                     j_max_x=float(p["view_max_jx"]),
                     j_min_y=float(p["view_min_jy"]),
                     j_max_y=float(p["view_max_jy"]),
-                    view_min_wx=float(snap_min_wx),
-                    view_min_wy=float(snap_min_wy),
+                    view_min_wx=float(sample_min_wx),
+                    view_min_wy=float(sample_min_wy),
                     view_span_wx=float(span_wx),
                     view_span_wy=float(span_wy),
                     visual_c=p["visual_c"],
@@ -874,6 +878,23 @@ class AsciiRenderer:
         font_px = max(8, min(256, int(min(cell_px_w, cell_px_h) * 0.90)))
         font = self._get_cached_map_font(font_px)
 
+        # Get player position, world, and zone offset for FOV-based dimming
+        player_pos = None
+        world = None
+        zone_offset_x = 0
+        zone_offset_y = 0
+        fov_radius = 8  # Match the FOV radius from _update_fov
+        try:
+            player = game.actors[game.player_id]
+            player_pos = player.pos
+            world = game._level().world
+            # Get zone coordinates to convert global -> local tile coords
+            zone_x, zone_y, _zone_z = game.zone_coord
+            zone_offset_x = zone_x * zone_w
+            zone_offset_y = zone_y * zone_h
+        except (Exception, KeyError, AttributeError):
+            pass  # No player/world available, render everything at full brightness
+
         for rr in range(rows):
             cy = base_cy + rr
             py_f = map_rect.y + rr * cell_h_tiles * world_scale - offset_px_y - pad_px_y
@@ -894,7 +915,27 @@ class AsciiRenderer:
                 val = cache.get(k)
                 if not val:
                     continue
-                ch, color = val
+                ch, orig_color = val
+
+                # Apply FOV-based dimming using the same tile.visible flags as entities.
+                color = orig_color  # Start with cached color
+                if player_pos is not None and world is not None and cell_w_tiles == 1.0:
+                    global_x = int(cx * cell_w_tiles)
+                    global_y = int(cy * cell_h_tiles)
+                    local_x = global_x - zone_offset_x
+                    local_y = global_y - zone_offset_y
+
+                    if world.in_bounds(local_x, local_y):
+                        tile = world.get_tile(local_x, local_y)
+                        if tile:
+                            if not tile.explored:
+                                continue
+                            if not tile.visible:
+                                r, g, b = orig_color
+                                color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
+                    else:
+                        # Out-of-zone cells should behave like unexplored tiles: render nothing.
+                        continue
 
                 surf = font.render(ch, True, color)
                 gx = px + (cell_px_w - surf.get_width()) // 2

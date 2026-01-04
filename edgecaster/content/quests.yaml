@@ -1,0 +1,35 @@
+# Quest definitions
+# Quests use prototype inheritance system like enemies/entities
+
+- id: quest_base
+  name: "Base Quest"
+  description: "Base quest template"
+  stages: []
+  rewards:
+    xp: 0
+
+- id: find_the_inventor
+  parent: quest_base
+  name: "Find the Inventor"
+  description: "A local guide mentioned an inventor who might be able to help you understand the corruption patterns. They've marked the inventor's workshop on your map."
+
+  related_npcs:
+    - guide_npc
+    - inventor_npc
+
+  # Initial locations are provided when quest is accepted
+  # (The inventor's location will be added via dialogue)
+  initial_locations: []
+
+  stages:
+    - stage: 0
+      objectives:
+        - id: talk_to_inventor
+          description: "Travel to the inventor's workshop and speak with them"
+          type: dialogue
+          target: 1
+          params:
+            target_npc: inventor_npc
+
+  rewards:
+    xp: 100

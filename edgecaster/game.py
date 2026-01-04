@@ -243,6 +243,11 @@ class Game:
         # Simple SFX cache for lightweight sounds
         self._sfx_cache: Dict[str, object] = {}
 
+        # Quest tracking
+        self.active_quests: Dict[str, "Quest"] = {}  # type: ignore[name-defined]
+        self.completed_quests: List[str] = []
+        self.failed_quests: List[str] = []
+
         # create starting zone
         self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
 
@@ -873,6 +878,11 @@ class Game:
         This automatically follows body-swaps by using the current player_id.
         """
         return self.get_inventory(self.player_id)
+
+    @property
+    def messages(self) -> MessageLog:
+        """Convenience accessor for the message log (quest system compatibility)."""
+        return self.log
 
 
 
@@ -3470,6 +3480,16 @@ class Game:
         npc_id = npc.tags.get("npc_id")
         data = npcs.NPC_DEFS.get(npc_id, {})
         lines = data.get("dialogue", [f"{npc.name} waits patiently."])
+
+        # Check for quest triggers
+        if "quest_trigger" in data:
+            quest_proto_id = data["quest_trigger"]
+            # Check if player already has this quest
+            has_quest = any(q.proto_id == quest_proto_id for q in self.active_quests.values())
+            if not has_quest:
+                choices = ["Tell me more", "Not now"]
+                return {"npc_id": npc_id, "name": npc.name, "lines": lines, "choices": choices}
+
         if npc_id in ("hexmage", "cartographer"):
             choices = ["Let's draft", "Maybe later"]
             return {"npc_id": npc_id, "name": npc.name, "lines": lines, "choices": choices}
@@ -3486,6 +3506,53 @@ class Game:
         """Apply the selected reward, return a summary line."""
         if not choice:
             return "You end the conversation."
+
+        # Handle quest triggers
+        if npc_id:
+            data = npcs.NPC_DEFS.get(npc_id, {})
+
+            # Quest acceptance
+            if "quest_trigger" in data and choice.startswith("Tell me"):
+                from edgecaster.systems import quests as quest_system
+
+                quest_proto_id = data["quest_trigger"]
+                quest = quest_system.create_quest_from_proto(quest_proto_id, self._level().current_tick)
+
+                # Add quest location if NPC provides it
+                if "quest_location" in data:
+                    loc = tuple(data["quest_location"])
+                    quest.known_locations.append(loc)
+
+                # Add dialogue to quest history
+                if data.get("dialogue"):
+                    quest.dialogue_history.append(data["dialogue"][-1])
+
+                self.active_quests[quest.id] = quest
+                self.log.add(f"Quest accepted: {quest.name}")
+                self.log.add("Press Q to view your active quests.")
+                return f"Quest accepted: {quest.name}"
+
+            # Quest completion
+            if "quest_complete" in data:
+                from edgecaster.systems import quests as quest_system
+
+                quest_proto_id = data["quest_complete"]
+                # Find active quest with this proto_id
+                for quest in list(self.active_quests.values()):
+                    if quest.proto_id == quest_proto_id:
+                        # Update quest progress
+                        messages = quest_system.update_quest_progress(
+                            self, "dialogue", npc_id=npc_id
+                        )
+                        for msg in messages:
+                            self.log.add(msg)
+
+                        # Add dialogue to history
+                        if data.get("dialogue"):
+                            quest.dialogue_history.append(data["dialogue"][0])
+
+                        return "The inventor greets you warmly."
+
         if npc_id in ("hexmage", "cartographer"):
             if choice.lower().startswith("let"):
                 from edgecaster.scenes.fractal_editor_scene import FractalEditorState

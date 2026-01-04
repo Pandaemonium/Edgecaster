@@ -526,6 +526,7 @@ class DungeonScene(Scene):
         from .main_menu import MainMenuScene
         from .pause_menu_scene import PauseMenuScene
         from .inventory_scene import InventoryScene
+        from .quest_scene import QuestScene
 
         # 0) If an UrgentMessageScene was pushed from inside the game logic,
         #    it will already be on top of the stack. In that case, just yield.
@@ -561,7 +562,13 @@ class DungeonScene(Scene):
             manager.push_scene(InventoryScene(game))
             return
 
-        # 4) Fractal editor requested -> open editor scene
+        # 4) Quest journal requested -> push overlay
+        if getattr(game, "quest_journal_requested", False):
+            game.quest_journal_requested = False
+            manager.push_scene(QuestScene(game))
+            return
+
+        # 5) Fractal editor requested -> open editor scene
         if getattr(game, "fractal_editor_requested", False):
             game.fractal_editor_requested = False
             from .fractal_editor_scene import FractalEditorScene, FractalEditorState
@@ -570,13 +577,13 @@ class DungeonScene(Scene):
             manager.push_scene(FractalEditorScene(state=state, window_rect=None))
             return
 
-        # 5) Pause requested -> push pause menu overlay
+        # 6) Pause requested -> push pause menu overlay
         if getattr(renderer, "pause_requested", False):
             renderer.pause_requested = False
             manager.push_scene(PauseMenuScene())
             return
 
-        # 6) World map requested -> push world map scene (keep game instance)
+        # 7) World map requested -> push world map scene (keep game instance)
         if getattr(game, "map_requested", False):
             game.map_requested = False
             from .world_map_scene import WorldMapScene
@@ -1572,6 +1579,12 @@ class DungeonScene(Scene):
         if kind == "open_inventory":
             if not in_aim_mode:
                 setattr(game, "inventory_requested", True)
+                renderer.quit_requested = True
+            return
+
+        if kind == "open_quest_journal":
+            if not in_aim_mode:
+                setattr(game, "quest_journal_requested", True)
                 renderer.quit_requested = True
             return
 
