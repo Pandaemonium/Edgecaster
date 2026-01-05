@@ -293,7 +293,7 @@ Performance rule:
 • No forced transition to “beautiful but slow” modes
 
 ===============================================================================
-SECTION 10 — CURRENT STATUS & DIRECTION
+SECTION 10 - CURRENT STATUS & DIRECTION
 
 Completed:
 • Continuous local → global zoom
@@ -309,3 +309,28 @@ Guiding principles:
 Keep geometry weird.
 Keep responsibilities clean.
 Refactor surgically.
+
+===============================================================================
+SECTION 11 - MERCHANTS & TRADING
+
+Trade is implemented as a standard PanelScene popup with no renderer-side logic.
+
+Key modules:
+
+edgecaster/systems/trade.py
+ Canonical trade rules (pricing, funds, restock scheduling)
+ Supports staged proposals: UI builds a proposal, then commits atomically on Accept
+
+edgecaster/scenes/merchant_scene.py
+ Merchant UI (buy/sell lists + Accept/Cancel)
+ Esc cancels (discard proposal) and exits; Accept commits and exits
+
+Data-driven content:
+
+edgecaster/content/merchants.yaml + edgecaster/content/merchants.py
+ Merchant definitions (funds, restock interval, stock table, price multipliers)
+
+Adding a merchant NPC:
+ Prefer routing instantiation through the prototype/spawn pipeline (spawn_factory/enemy_factory)
+ NPC metadata lives in edgecaster/content/npcs.py (NPC_DEFS)
+ POI placement for persistent merchants should live in edgecaster/content/pois.yaml

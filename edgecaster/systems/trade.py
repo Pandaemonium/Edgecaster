@@ -18,6 +18,19 @@ class PriceQuote:
     sell_price: int
 
 
+@dataclass(frozen=True)
+class ProposalSummary:
+    buy_total: int
+    sell_total: int
+    net_player: int
+    player_bismuth_before: int
+    player_bismuth_after: int
+    merchant_funds_before: int
+    merchant_funds_after: int
+    ok: bool
+    reason: str = ""
+
+
 def _safe_int(x: Any, default: int = 0) -> int:
     try:
         return int(x)
@@ -118,6 +131,172 @@ def quote_prices(merchant_actor: Any, ent: Any) -> Optional[PriceQuote]:
     buy = max(0, buy)
     sell = max(0, sell)
     return PriceQuote(base_value=base, buy_price=buy, sell_price=sell)
+
+
+def proposal_summary(
+    game: Any,
+    merchant_actor_id: str,
+    buy_item_ids: list[str] | set[str] | tuple[str, ...],
+    sell_item_ids: list[str] | set[str] | tuple[str, ...],
+) -> ProposalSummary:
+    level = game._level()  # type: ignore[attr-defined]
+    merchant = getattr(level, "actors", {}).get(merchant_actor_id)
+    if merchant is None:
+        return ProposalSummary(
+            buy_total=0,
+            sell_total=0,
+            net_player=0,
+            player_bismuth_before=_safe_int(getattr(game, "bismuth", 0), 0),
+            player_bismuth_after=_safe_int(getattr(game, "bismuth", 0), 0),
+            merchant_funds_before=0,
+            merchant_funds_after=0,
+            ok=False,
+            reason="Merchant unavailable.",
+        )
+
+    ensure_merchant_initialized(game, level, merchant)
+
+    buy_ids = {str(x) for x in buy_item_ids if x}
+    sell_ids = {str(x) for x in sell_item_ids if x}
+
+    player_before = _safe_int(getattr(game, "bismuth", 0), 0)
+    merchant_before = merchant_funds(merchant)
+
+    if not buy_ids and not sell_ids:
+        return ProposalSummary(
+            buy_total=0,
+            sell_total=0,
+            net_player=0,
+            player_bismuth_before=player_before,
+            player_bismuth_after=player_before,
+            merchant_funds_before=merchant_before,
+            merchant_funds_after=merchant_before,
+            ok=True,
+        )
+
+    minv = list(game.get_inventory(merchant_actor_id))  # type: ignore[attr-defined]
+    pinv = list(game.player_inventory)  # type: ignore[attr-defined]
+
+    by_id_minv = {getattr(ent, "id", ""): ent for ent in minv}
+    by_id_pinv = {getattr(ent, "id", ""): ent for ent in pinv}
+
+    buy_total = 0
+    sell_total = 0
+    reason: str | None = None
+
+    for ent_id in buy_ids:
+        ent = by_id_minv.get(ent_id)
+        if ent is None:
+            if reason is None:
+                reason = "One or more items are no longer available."
+            continue
+        q = quote_prices(merchant, ent)
+        if q is None or int(q.buy_price) <= 0:
+            if reason is None:
+                reason = "One or more proposed purchases are not for sale."
+            continue
+        buy_total += int(q.buy_price)
+
+    for ent_id in sell_ids:
+        ent = by_id_pinv.get(ent_id)
+        if ent is None:
+            if reason is None:
+                reason = "One or more items are no longer in your inventory."
+            continue
+        q = quote_prices(merchant, ent)
+        if q is None or int(q.sell_price) <= 0:
+            if reason is None:
+                reason = "The merchant isn't interested in one or more items."
+            continue
+        sell_total += int(q.sell_price)
+
+    net_player = int(sell_total - buy_total)
+    player_after = player_before + net_player
+    merchant_after = merchant_before - net_player
+
+    ok = reason is None
+    if ok and player_after < 0:
+        ok = False
+        reason = "You don't have enough bismuth."
+    if ok and merchant_after < 0:
+        ok = False
+        reason = "The merchant can't afford that right now."
+
+    return ProposalSummary(
+        buy_total=int(buy_total),
+        sell_total=int(sell_total),
+        net_player=int(net_player),
+        player_bismuth_before=int(player_before),
+        player_bismuth_after=int(player_after),
+        merchant_funds_before=int(merchant_before),
+        merchant_funds_after=int(merchant_after),
+        ok=bool(ok),
+        reason=str(reason or ""),
+    )
+
+
+def apply_proposal(
+    game: Any,
+    merchant_actor_id: str,
+    buy_item_ids: list[str] | set[str] | tuple[str, ...],
+    sell_item_ids: list[str] | set[str] | tuple[str, ...],
+) -> tuple[bool, str]:
+    summary = proposal_summary(game, merchant_actor_id, buy_item_ids, sell_item_ids)
+    if not (buy_item_ids or sell_item_ids):
+        return True, ""
+    if not summary.ok:
+        return False, summary.reason or "Trade invalid."
+
+    level = game._level()  # type: ignore[attr-defined]
+    merchant = getattr(level, "actors", {}).get(merchant_actor_id)
+    if merchant is None:
+        return False, "Merchant unavailable."
+
+    ensure_merchant_initialized(game, level, merchant)
+
+    buy_ids = {str(x) for x in buy_item_ids if x}
+    sell_ids = {str(x) for x in sell_item_ids if x}
+
+    minv = game.get_inventory(merchant_actor_id)  # type: ignore[attr-defined]
+    pinv = game.player_inventory  # type: ignore[attr-defined]
+
+    buy_items = [ent for ent in list(minv) if getattr(ent, "id", None) in buy_ids]
+    sell_items = [ent for ent in list(pinv) if getattr(ent, "id", None) in sell_ids]
+
+    # Move items atomically: remove from each side, then append to the other.
+    minv[:] = [ent for ent in list(minv) if getattr(ent, "id", None) not in buy_ids]
+    pinv[:] = [ent for ent in list(pinv) if getattr(ent, "id", None) not in sell_ids]
+
+    for ent in buy_items:
+        pinv.append(ent)
+    for ent in sell_items:
+        minv.append(ent)
+
+    # Transfer funds
+    try:
+        game.adjust_currency(int(summary.net_player), log=False)  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            game.bismuth = int(getattr(game, "bismuth", 0)) + int(summary.net_player)
+        except Exception:
+            pass
+
+    set_merchant_funds(merchant, int(summary.merchant_funds_after))
+
+    # Log per-item messages (mirrors old immediate-trade UX, but only after commit).
+    try:
+        for ent in sell_items:
+            q = quote_prices(merchant, ent)
+            payout = int(q.sell_price) if q else 0
+            game.log.add(f"You sell {ent.name} for {payout} bismuth.")  # type: ignore[attr-defined]
+        for ent in buy_items:
+            q = quote_prices(merchant, ent)
+            price = int(q.buy_price) if q else 0
+            game.log.add(f"You buy {ent.name} for {price} bismuth.")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    return True, ""
 
 
 def restock_merchant(game: Any, level: Any, merchant_actor: Any, *, force: bool) -> None:
