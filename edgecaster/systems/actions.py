@@ -127,6 +127,22 @@ class ActionFunc(Protocol):
     def __call__(self, game: Any, actor_id: str, **kwargs: Any) -> None: ...
 
 
+@dataclass(frozen=True)
+class ConfirmPrompt:
+    """A prompt shown before an action executes."""
+
+    title: str
+    body: str
+    choices: list[str]
+    proceed_index: int = 1
+
+
+class ConfirmFunc(Protocol):
+    """Return a ConfirmPrompt if the action should ask the player first."""
+
+    def __call__(self, game: Any, actor_id: str, **kwargs: Any) -> ConfirmPrompt | None: ...
+
+
 @dataclass
 class TargetingSpec:
     kind: str | None = None              # "tile" or "vertex"
@@ -149,6 +165,8 @@ class ActionDef:
     cooldown_ticks: int = 0
     # Targeting metadata (None = immediate, non-targeted action).
     targeting: TargetingSpec | None = None
+    # Optional prompt hook (e.g. confirmations for dangerous actions).
+    confirm: ConfirmFunc | None = None
 
 
 
@@ -287,6 +305,7 @@ def register_action(
     show_in_bar: bool = False,
     cooldown_ticks: int = 0,
     targeting: TargetingSpec | None = None,
+    confirm: ConfirmFunc | None = None,
 ) -> Callable[[ActionFunc], ActionFunc]:
     """
     Decorator to register a function as an Action.
@@ -301,6 +320,7 @@ def register_action(
             show_in_bar=show_in_bar,
             cooldown_ticks=cooldown_ticks,
             targeting=targeting,
+            confirm=confirm,
         )
         return func
 
@@ -331,6 +351,7 @@ def get_action(name: str) -> ActionDef:
                 show_in_bar=base.show_in_bar,
                 cooldown_ticks=base.cooldown_ticks,
                 targeting=base.targeting,
+                confirm=base.confirm,
             )
         return _action_registry[name]
 
@@ -647,7 +668,192 @@ def _action_winter_hue(game: Any, actor_id: str, **kwargs: Any) -> None:
         pattern_colors.apply_winter_hue(game)
 
 
-@register_action("ignite", label="Ignite", speed="fast", show_in_bar=True, cooldown_ticks=50)
+def _confirm_self_damage_ignite(game: Any, actor_id: str, **kwargs: Any) -> ConfirmPrompt | None:
+    """
+    Prompt if Ignite would hit the acting player (directly or indirectly).
+
+    This uses the same coarse tile model as Ignite itself: edges are rasterized
+    into tiles and indirect damage affects 8-neighbors.
+    """
+    if actor_id != getattr(game, "player_id", None):
+        return None
+    if not hasattr(game, "_level"):
+        return None
+
+    try:
+        level = game._level()
+        actor = level.actors.get(actor_id)
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+    except Exception:
+        return None
+
+    if actor is None or pattern is None or anchor is None:
+        return None
+
+    px, py = getattr(actor, "pos", (None, None))
+    if px is None or py is None:
+        return None
+
+    edges = getattr(pattern, "edges", None) or []
+    verts = getattr(pattern, "vertices", None) or []
+    if not edges or not verts:
+        return None
+
+    edge_colors = getattr(pattern, "edge_colors", {}) or {}
+
+    def normalize_edge_key(a: int, b: int) -> tuple[int, int]:
+        return (a, b) if a <= b else (b, a)
+
+    def line_points(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+        points: list[tuple[int, int]] = []
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        x, y = x0, y0
+        while True:
+            points.append((x, y))
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x += sx
+            if e2 <= dx:
+                err += dx
+                y += sy
+        return points
+
+    # Quick bounds reject: if the actor isn't even near the rune bounds,
+    # they can't be affected.
+    try:
+        min_x = min(v.pos[0] + anchor[0] for v in verts)
+        max_x = max(v.pos[0] + anchor[0] for v in verts)
+        min_y = min(v.pos[1] + anchor[1] for v in verts)
+        max_y = max(v.pos[1] + anchor[1] for v in verts)
+        if px < min_x - 2 or px > max_x + 2 or py < min_y - 2 or py > max_y + 2:
+            return None
+    except Exception:
+        # Be conservative if bounds calc fails.
+        pass
+
+    for edge in edges:
+        a = getattr(edge, "a", None)
+        b = getattr(edge, "b", None)
+        if a is None or b is None:
+            continue
+
+        col = edge_colors.get(normalize_edge_key(int(a), int(b)))
+        if col is None and isinstance(getattr(edge, "color", None), (list, tuple)):
+            col = edge.color
+        if not isinstance(col, (list, tuple)) or len(col) < 3:
+            continue
+
+        try:
+            r, g, bl = int(col[0]), int(col[1]), int(col[2])
+        except Exception:
+            continue
+
+        if max(0, r - max(g, bl)) <= 0:
+            continue
+
+        try:
+            va = verts[int(a)].pos
+            vb = verts[int(b)].pos
+        except Exception:
+            continue
+
+        x0 = int(round(va[0] + anchor[0]))
+        y0 = int(round(va[1] + anchor[1]))
+        x1 = int(round(vb[0] + anchor[0]))
+        y1 = int(round(vb[1] + anchor[1]))
+
+        # Direct tiles and their neighbors (indirect) both cause self-damage.
+        for tx, ty in line_points(x0, y0, x1, y1):
+            if max(abs(tx - px), abs(ty - py)) <= 1:
+                return ConfirmPrompt(
+                    title="Confirm Ignite",
+                    body="Ignite will damage you. Proceed?",
+                    choices=["Cancel", "Cast anyway"],
+                    proceed_index=1,
+                )
+
+    return None
+
+
+def _confirm_self_damage_freeze(game: Any, actor_id: str, **kwargs: Any) -> ConfirmPrompt | None:
+    """Prompt if Freeze would deal damage to the acting player."""
+    if actor_id != getattr(game, "player_id", None):
+        return None
+    if not hasattr(game, "_level"):
+        return None
+
+    try:
+        level = game._level()
+        actor = level.actors.get(actor_id)
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+    except Exception:
+        return None
+
+    if actor is None or pattern is None or anchor is None:
+        return None
+
+    px, py = getattr(actor, "pos", (None, None))
+    if px is None or py is None:
+        return None
+
+    verts = getattr(pattern, "vertices", None) or []
+    vcolors = getattr(pattern, "vertex_colors", None) or []
+    if not verts or not vcolors:
+        return None
+
+    bsum = 0.0
+    for i, v in enumerate(verts):
+        try:
+            vx = v.pos[0] + anchor[0]
+            vy = v.pos[1] + anchor[1]
+        except Exception:
+            continue
+        if int(round(vx)) != px or int(round(vy)) != py:
+            continue
+        try:
+            col = vcolors[i]
+            r, g, b = float(col[0]), float(col[1]), float(col[2])
+        except Exception:
+            continue
+        bsum += max(0.0, b - max(r, g))
+
+    if bsum <= 0.0:
+        return None
+
+    dmg_scale = getattr(game, "get_param_value", lambda a, k: 0.1)("freeze", "damage_scale") or 0.1
+    try:
+        dmg_int = int(max(0.0, bsum * float(dmg_scale)))
+    except Exception:
+        dmg_int = 0
+
+    if dmg_int <= 0:
+        return None
+
+    return ConfirmPrompt(
+        title="Confirm Freeze",
+        body=f"Freeze will deal {dmg_int} damage to you. Proceed?",
+        choices=["Cancel", "Cast anyway"],
+        proceed_index=1,
+    )
+
+
+@register_action(
+    "ignite",
+    label="Ignite",
+    speed="fast",
+    show_in_bar=True,
+    cooldown_ticks=50,
+    confirm=_confirm_self_damage_ignite,
+)
 def _action_ignite(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Ignite red edges for 30 ticks with decaying damage.
@@ -665,7 +871,7 @@ def _action_regrow(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_regrow(actor_id)
 
 
-@register_action("freeze", label="Freeze", speed="fast", show_in_bar=True)
+@register_action("freeze", label="Freeze", speed="fast", show_in_bar=True, confirm=_confirm_self_damage_freeze)
 def _action_freeze(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     Deal damage and apply slowing based on pattern blueness across all pattern tiles.

@@ -782,6 +782,9 @@ class Game:
         lvl = self._level()
         action_def = get_action(action_name)
         delay = action_delay(self.cfg, action_def)  # use cfg, not 'config'
+        # Internal hook: allows "are you sure?" prompts to re-invoke the action
+        # without re-prompting or causing recursion.
+        skip_confirm = bool(kwargs.pop("__skip_confirm", False))
 
         # Determine cooldown origin: first item in inventory that grants this ability, else actor.
         origin = None
@@ -805,6 +808,43 @@ class Game:
             if cd > 0:
                 if actor_id == self.player_id:
                     self.log.add("That ability is recharging.")
+                return
+
+        # Optional action-defined confirmation prompt (player only).
+        # This is intentionally general so other actions can add confirmations later.
+        confirm = getattr(action_def, "confirm", None)
+        if (
+            not skip_confirm
+            and callable(confirm)
+            and actor_id == self.player_id
+        ):
+            try:
+                prompt = confirm(self, actor_id, **kwargs)
+            except Exception:
+                prompt = None
+            if prompt is not None:
+                # Snapshot kwargs so the closure can't be affected by later mutation.
+                call_kwargs = dict(kwargs)
+                choices = list(getattr(prompt, "choices", None) or ["Cancel", "Proceed"])
+                proceed_idx = int(getattr(prompt, "proceed_index", 1))
+                proceed_idx = max(0, min(proceed_idx, len(choices) - 1))
+
+                def on_choice(idx: int, game: "Game") -> None:
+                    if idx != proceed_idx:
+                        return
+                    game.queue_actor_action(
+                        actor_id,
+                        action_name,
+                        __skip_confirm=True,
+                        **call_kwargs,
+                    )
+
+                self.set_urgent(
+                    str(getattr(prompt, "body", "")),
+                    title=str(getattr(prompt, "title", "")),
+                    choices=choices,
+                    on_choice_effect=on_choice,
+                )
                 return
 
         # Do the actual action right now.
@@ -3529,7 +3569,7 @@ class Game:
 
                 self.active_quests[quest.id] = quest
                 self.log.add(f"Quest accepted: {quest.name}")
-                self.log.add("Press Q to view your active quests.")
+                self.log.add("Press J to view your journal for active quests.")
                 return f"Quest accepted: {quest.name}"
 
             # Quest completion
