@@ -359,6 +359,159 @@ def _map_positions_to_rect(
     return out, scale
 
 
+def _fit_camera_to_positions(
+    positions: dict[str, tuple[float, float]],
+    target_rect: pygame.Rect,
+    *,
+    margin_frac: float = 0.12,
+) -> tuple[tuple[float, float], float]:
+    """
+    Fit a camera to a set of world-space (x,y) positions.
+
+    Returns:
+      (center_u_x, center_u_y), scale_px_per_unit
+
+    This is like _map_positions_to_rect(), but returns camera parameters instead
+    of already-projected pixels.
+    """
+    if not positions:
+        return (0.0, 0.0), 1.0
+
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+
+    # Avoid zero spans
+    spanx = max(1e-6, float(maxx - minx))
+    spany = max(1e-6, float(maxy - miny))
+
+    inner = target_rect.copy()
+    m = int(round(min(inner.w, inner.h) * float(margin_frac)))
+    inner.inflate_ip(-2 * m, -2 * m)
+    if inner.w <= 0 or inner.h <= 0:
+        inner = target_rect.copy()
+
+    sx = float(inner.w) / spanx
+    sy = float(inner.h) / spany
+    scale = min(sx, sy)
+
+    cx_u = (minx + maxx) * 0.5
+    cy_u = (miny + maxy) * 0.5
+    return (float(cx_u), float(cy_u)), float(scale)
+
+
+def _project_positions_with_camera(
+    positions_u: dict[str, tuple[float, float]],
+    target_rect: pygame.Rect,
+    *,
+    center_u: tuple[float, float],
+    scale: float,
+) -> dict[str, tuple[int, int]]:
+    """
+    Project world-space node positions into pixel coords inside target_rect,
+    using a camera defined by (center_u, scale).
+
+    The returned pixels are in the same coordinate space as target_rect
+    (so if target_rect is (0,0,w,h), pixels are panel-local).
+    """
+    if not positions_u:
+        return {}
+
+    cx_u, cy_u = float(center_u[0]), float(center_u[1])
+    cx_px, cy_px = int(target_rect.centerx), int(target_rect.centery)
+
+    out: dict[str, tuple[int, int]] = {}
+    for nid, (x, y) in positions_u.items():
+        px = int(round(cx_px + (float(x) - cx_u) * float(scale)))
+        py = int(round(cy_px + (float(y) - cy_u) * float(scale)))
+        out[str(nid)] = (px, py)
+    return out
+
+
+def _compute_body_graph_camera(
+    scene: object,
+    positions_u: dict[str, tuple[float, float]],
+    region_rect_local: pygame.Rect,
+    *,
+    margin_frac: float = 0.12,
+) -> tuple[tuple[float, float], float]:
+    """
+    The single source of truth for the body-graph camera.
+
+    Returns:
+      center_u, scale_px_per_unit
+
+    - Base camera is a fit-to-positions camera.
+    - Zoom animation (in/out) interpolates BOTH center and scale together.
+    - When idle, center follows _body_zoom_focus_nid (if any), otherwise base center.
+    """
+    base_center_u, base_scale = _fit_camera_to_positions(positions_u, region_rect_local, margin_frac=margin_frac)
+
+    # Default (idle) camera state
+    focus_nid = getattr(scene, "_body_zoom_focus_nid", None)
+    if focus_nid is not None:
+        focus_nid = str(focus_nid)
+
+    idle_center_u = positions_u.get(focus_nid, base_center_u) if focus_nid else base_center_u
+    idle_zoom_mul = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
+
+    anim = getattr(scene, "_body_zoom_anim", None)
+    if anim is None:
+        return idle_center_u, float(base_scale * idle_zoom_mul)
+
+    try:
+        from_focus, to_focus, from_mul, to_mul, start_ms, dur_ms = anim
+        now = int(pygame.time.get_ticks())
+        if dur_ms <= 0:
+            t = 1.0
+        else:
+            t = (now - int(start_ms)) / float(dur_ms)
+            if t < 0.0:
+                t = 0.0
+            if t > 1.0:
+                t = 1.0
+
+        # smoothstep
+        t = t * t * (3.0 - 2.0 * t)
+
+        # Resolve world-space centers for endpoints
+        def _center_for_focus(focus_id: Any) -> tuple[float, float]:
+            if focus_id is None:
+                return base_center_u
+            fid = str(focus_id)
+            return positions_u.get(fid, base_center_u)
+
+        c0 = _center_for_focus(from_focus)
+        c1 = _center_for_focus(to_focus)
+
+        cx = float(c0[0]) * (1.0 - t) + float(c1[0]) * t
+        cy = float(c0[1]) * (1.0 - t) + float(c1[1]) * t
+        mul = float(from_mul) * (1.0 - t) + float(to_mul) * t
+
+        # Persist the current zoom mul so other code stays coherent
+        try:
+            setattr(scene, "_body_zoom_scale", float(mul))
+        except Exception:
+            pass
+
+        if t >= 1.0:
+            # Snap final and stop anim
+            try:
+                setattr(scene, "_body_zoom_anim", None)
+                setattr(scene, "_body_zoom_focus_nid", str(to_focus) if to_focus is not None else None)
+            except Exception:
+                pass
+            mul = float(to_mul)
+            cx, cy = _center_for_focus(to_focus)
+
+        return (cx, cy), float(base_scale * mul)
+
+    except Exception:
+        # Fail-soft to idle camera
+        return idle_center_u, float(base_scale * idle_zoom_mul)
+
+
 
 def _render_entity_glyph_canvas(
     renderer,
@@ -1256,51 +1409,14 @@ class BodyPlanGraphWidget(Widget):
             schema = {"root": None, "nodes": {}}
 
         pos_u = _compute_body_positions(schema)
-        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
 
-        # Apply scene-driven "camera zoom" for body graph (must match draw()).
-        try:
-            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
+        # Camera is defined in world-space units; projection is the only transform.
+        region_local = pygame.Rect(0, 0, region.w, region.h)
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
-            # If an animation is active, interpolate focus between nodes (prevents snap on zoom-out).
-            anim = getattr(scene, "_body_zoom_anim", None)
-            if anim is not None:
-                from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
-                now = int(pygame.time.get_ticks())
-                if dur_ms <= 0:
-                    t = 1.0
-                else:
-                    t = (now - int(start_ms)) / float(dur_ms)
-                    if t < 0.0:
-                        t = 0.0
-                    if t > 1.0:
-                        t = 1.0
-                t = t * t * (3.0 - 2.0 * t)
+        scale = float(cam_scale)
 
-                if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
-                    x0, y0 = pos_px[from_focus]
-                    x1, y1 = pos_px[to_focus]
-                    focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
-                elif to_focus and to_focus in pos_px:
-                    focus_pos = pos_px[to_focus]
-                elif from_focus and from_focus in pos_px:
-                    focus_pos = pos_px[from_focus]
-            else:
-                zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
-                focus_pos = pos_px.get(zoom_focus) if zoom_focus else focus_pos
-
-            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
-            pan_t = _body_zoom_pan_t(scene, zoom_scale)
-            pos_px = _apply_body_zoom_to_points(
-                pos_px,
-                region_w=float(region.w),
-                region_h=float(region.h),
-                focus_pos=focus_pos,
-                zoom_scale=zoom_scale,
-                pan_t=pan_t,
-            )
-        except Exception:
-            pass
 
 
         node_size = int(max(18, min(56, scale * 0.45)))
@@ -1351,60 +1467,14 @@ class BodyPlanGraphWidget(Widget):
             schema = {"root": None, "nodes": {}}
 
         pos_u = _compute_body_positions(schema)
-        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
 
-        # Determine zoom focus position for the preview glyph underlay.
-        # If a zoom animation is active, interpolate focus between from/to nodes so zoom-out
-        # is the exact inverse of zoom-in (no translation snapping).
-        focus_pos = None
-        try:
-            anim = getattr(scene, "_body_zoom_anim", None)
-            if anim is not None:
-                from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
-                now = int(pygame.time.get_ticks())
-                if dur_ms <= 0:
-                    t = 1.0
-                else:
-                    t = (now - int(start_ms)) / float(dur_ms)
-                    if t < 0.0:
-                        t = 0.0
-                    if t > 1.0:
-                        t = 1.0
-                # Smoothstep
-                t = t * t * (3.0 - 2.0 * t)
+        # Camera is defined in world-space units; projection is the only transform.
+        region_local = pygame.Rect(0, 0, region.w, region.h)
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
-                if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
-                    x0, y0 = pos_px[from_focus]
-                    x1, y1 = pos_px[to_focus]
-                    focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
-                elif to_focus and to_focus in pos_px:
-                    focus_pos = pos_px[to_focus]
-                elif from_focus and from_focus in pos_px:
-                    focus_pos = pos_px[from_focus]
-            else:
-                zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
-                focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
+        scale = float(cam_scale)
 
-            setattr(scene, "_body_zoom_focus_pos", focus_pos)
-        except Exception:
-            # Fall back to whatever we had previously.
-            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
-
-
-        # Apply scene-driven "camera zoom" for body graph (must match _hit_test_node()).
-        try:
-            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
-            pan_t = _body_zoom_pan_t(scene, zoom_scale)
-            pos_px = _apply_body_zoom_to_points(
-                pos_px,
-                region_w=float(region.w),
-                region_h=float(region.h),
-                focus_pos=focus_pos,
-                zoom_scale=zoom_scale,
-                pan_t=pan_t,
-            )
-        except Exception:
-            pass
 
 
         node_size = int(max(18, min(56, scale * 0.45)))
