@@ -1,0 +1,132 @@
+Edgecaster: Dialogue Authoring Guide (DialogueTree)
+===================================================
+
+Edgecaster uses a single, unified dialogue system: DialogueTree.
+All NPC "Talk" interactions route through DialogueTree and the DialoguePopupScene UI.
+
+
+TL;DR
+-----
+- NPC definitions live in `edgecaster/content/npcs.py` (`NPC_DEFS`).
+- NPC dialogue trees are built in `edgecaster/content/dialogues.py`.
+- The data model is in `edgecaster/events.py` (`DialogueTree`, `DialogueNode`, `DialogueChoice`).
+- The UI is `edgecaster/scenes/dialogue_scene.py` (`DialoguePopupScene`).
+- Start any dialogue with `edgecaster/events.start_dialogue(game, tree, start_node=...)`.
+
+
+------------------------------------------------------------
+1) How "Talk" works at runtime
+------------------------------------------------------------
+
+When you press the Talk key in the dungeon:
+- `edgecaster/scenes/dungeon.py` finds an adjacent NPC
+- Builds a `DialogueTree` with:
+  - `edgecaster/content/dialogues.build_npc_dialogue_tree(game, npc)`
+- Opens the popup with:
+  - `edgecaster/events.start_dialogue(game, tree)`
+
+`events.start_dialogue(...)` will open a proper `DialoguePopupScene` window if a
+SceneManager is attached (normal gameplay). If no SceneManager exists (tests /
+headless), it falls back to urgent-popups internally.
+
+
+------------------------------------------------------------
+2) DialogueTree basics
+------------------------------------------------------------
+
+The core types live in `edgecaster/events.py`:
+- `DialogueChoice(text, next_id=None, effect=None)`
+  - `next_id=None` means "end the dialogue"
+  - `effect` is an optional `callable(effect(game))` for side effects
+- `DialogueNode(id, title, body, choices)`
+- `DialogueTree(id, start_id, nodes)`
+
+Minimal two-screen example:
+
+  from edgecaster.events import DialogueTree, DialogueNode, DialogueChoice
+
+  TREE = DialogueTree(
+      id="example",
+      start_id="intro",
+      nodes={
+          "intro": DialogueNode(
+              id="intro",
+              title="Someone",
+              body="Welcome. Do you want the second screen?",
+              choices=[
+                  DialogueChoice("Tell me more.", next_id="details"),
+                  DialogueChoice("Not now.", next_id=None),
+              ],
+          ),
+          "details": DialogueNode(
+              id="details",
+              title="Someone",
+              body="Here is the second screen.",
+              choices=[DialogueChoice("Continue...", next_id=None)],
+          ),
+      },
+  )
+
+
+------------------------------------------------------------
+3) Where NPC dialogue content lives
+------------------------------------------------------------
+
+NPC metadata (including baseline dialogue text) lives in `edgecaster/content/npcs.py`:
+
+  NPC_DEFS = {
+      "guide_npc": {
+          "name": "Local Guide",
+          "dialogue": [
+              "Welcome, traveler!",
+              "There's an inventor nearby...",
+          ],
+          "quest_trigger": "find_the_inventor",
+          "quest_location": [55, 48],
+      }
+  }
+
+The "Talk" system does not display `NPC_DEFS["dialogue"]` directly. Instead,
+`edgecaster/content/dialogues.py` builds a DialogueTree (often dynamically)
+using `NPC_DEFS` plus game state (quests accepted/completed, unlocked generators,
+etc.).
+
+
+------------------------------------------------------------
+4) Adding or extending an NPC dialogue chain
+------------------------------------------------------------
+
+NPC dialogue trees are built in `edgecaster/content/dialogues.py`:
+- `build_npc_dialogue_tree(game, npc) -> DialogueTree`
+
+To add a new bespoke NPC dialogue chain:
+1) Add/update the NPC entry in `edgecaster/content/npcs.py` (`NPC_DEFS`).
+2) Add a `_build_<something>()` helper in `edgecaster/content/dialogues.py`.
+3) Register it in `build_npc_dialogue_tree(...)` by matching `npc_id`.
+
+To add a second (or third, etc.) screen:
+- Add another node to the `nodes={...}` dict.
+- Point a choice's `next_id` at it.
+
+
+------------------------------------------------------------
+5) Writing choice effects (side effects)
+------------------------------------------------------------
+
+Each `DialogueChoice` can run an `effect(game)` callback. Use this to:
+- Grant abilities or generators
+- Open the fractal editor
+- Accept or advance quests
+- Add map markers / reveal POIs
+
+Tip: keep heavy imports inside the effect function to avoid circular imports.
+
+
+------------------------------------------------------------
+6) Tips / gotchas
+------------------------------------------------------------
+
+- Keep node ids stable and simple ("intro", "details", "accept", "end", ...).
+- If dialogue depends on game state, build the tree dynamically at runtime
+  instead of as a global constant.
+- Prefer ASCII-only dialogue if you've hit encoding issues before.

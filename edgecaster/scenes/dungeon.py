@@ -1677,34 +1677,16 @@ class DungeonScene(Scene):
             return
 
         if kind == "talk":
-            convo = game.talk_start() if hasattr(game, "talk_start") else None
-            if convo:
-                title = convo.get("name", "Conversation") if isinstance(convo, dict) else "Conversation"
-                lines = []
-                if isinstance(convo, dict):
-                    lines = convo.get("lines", [])
-                body = "\n".join(lines) if lines else ""
-                choices = convo.get("choices", ["Continue..."]) if isinstance(convo, dict) else ["Continue..."]
-                npc_id = convo.get("npc_id") if isinstance(convo, dict) else None
-
-                def on_choice(idx: int, mgr) -> None:
-                    choice = choices[idx] if 0 <= idx < len(choices) else None
-                    if hasattr(game, "talk_complete"):
-                        summary = game.talk_complete(npc_id, choice)
-                        if summary:
-                            game.log.add(summary)
-
-                manager.push_scene(
-                    UrgentMessageScene(
-                        game,
-                        body or title,
-                        title=title,
-                        choices=choices,
-                        on_choice=on_choice,
-                    )
-                )
-            else:
+            npc = game._adjacent_npc() if hasattr(game, "_adjacent_npc") else None
+            if not npc:
                 game.log.add("No one nearby to talk to.")
+                return
+
+            from edgecaster import events
+            from edgecaster.content.dialogues import build_npc_dialogue_tree
+
+            tree = build_npc_dialogue_tree(game, npc)
+            events.start_dialogue(game, tree)
             return
 
         # ------------------------------------------------------------
