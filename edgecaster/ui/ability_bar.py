@@ -863,18 +863,31 @@ class AbilityBarRenderer:
         vis_slots = bar_state.visible_slots()
         slot_rects = self._layout_bar(bar_rect, len(vis_slots))
 
-        def ellipsize(text: str, max_w: int) -> str:
+        def blit_fit_text(
+            text: str,
+            *,
+            centerx: int,
+            bottom: int,
+            max_w: int,
+        ) -> None:
+            """Render `text` and shrink it (if needed) so it fits max_w.
+
+            We prefer scaling down over truncation so ability names remain readable.
+            """
             if not text or max_w <= 0:
-                return ""
-            if small_font.size(text)[0] <= max_w:
-                return text
-            ell = "..."
-            if small_font.size(ell)[0] > max_w:
-                return ""
-            trimmed = text
-            while trimmed and small_font.size(trimmed + ell)[0] > max_w:
-                trimmed = trimmed[:-1]
-            return trimmed + ell
+                return
+            txt_surf = small_font.render(text, True, fg)
+            w = txt_surf.get_width()
+            if w > max_w:
+                scale = max_w / max(1, w)
+                new_w = max(1, int(txt_surf.get_width() * scale))
+                new_h = max(1, int(txt_surf.get_height() * scale))
+                # Smoothscale is plenty fast at this scale (<= ~10 labels per frame).
+                txt_surf = pygame.transform.smoothscale(txt_surf, (new_w, new_h))
+            txt_rect = txt_surf.get_rect()
+            txt_rect.centerx = centerx
+            txt_rect.bottom = bottom
+            surface.blit(txt_surf, txt_rect)
 
         for slot_i, (slot_view, rect) in enumerate(zip(vis_slots, slot_rects), start=1):
             ability = slot_view.ability
@@ -917,56 +930,58 @@ class AbilityBarRenderer:
                 except Exception:
                     label = "Activate R"
 
-            # Sub-buttons (from ACTION_SUB_BUTTONS metadata) reserve a strip on the
-            # right side of the slot so the main icon doesn't collide with them.
+            # Sub-buttons (from ACTION_SUB_BUTTONS metadata)
             sub_specs = ACTION_SUB_BUTTONS.get(ability.action, [])
             sub_size = 0
-            sub_gap = 4
             if sub_specs:
                 sub_size = min(rect.height - 10, 22)
                 sub_size = max(14, sub_size)
-                # Keep at least some space for the main icon/name; otherwise we let
-                # buttons overlap as a fallback for very narrow slots.
-                reserve_min = 26
-                available_for_sub = max(0, content_rect.w - reserve_min)
-                needed = len(sub_specs) * sub_size + (len(sub_specs) - 1) * sub_gap + 4
-                if needed > available_for_sub:
-                    max_sub = (available_for_sub - 4 - (len(sub_specs) - 1) * sub_gap) // max(1, len(sub_specs))
-                    if max_sub >= 10:
-                        sub_size = int(max_sub)
-                        needed = len(sub_specs) * sub_size + (len(sub_specs) - 1) * sub_gap + 4
-                if needed <= available_for_sub and needed > 0:
-                    content_rect = pygame.Rect(content_rect.x, content_rect.y, max(0, content_rect.w - needed), content_rect.h)
+            sub_gap = 4
 
-            # Page-local hotkey number in the upper-left corner.
+            # Reserve a strip at the bottom for the label.
+            label_h = small_font.get_height()
+            label_y = rect.bottom - label_h - 2
+
+            # Main icon uses the remaining area; allow a wide rect (not square) so
+            # line-based icons can take advantage of horizontal space.
+            icon_top = rect.y + 4
+            icon_left = content_rect.x + 4
+            icon_right = content_rect.right - 4
+            if sub_specs and sub_size > 0:
+                # Prefer shrinking the icon area's width so it doesn't sit under the
+                # +/-/gear buttons. If there isn't enough horizontal room (notably
+                # when the action is also grouped), fall back to pushing the icon
+                # below the button row.
+                reserved_w = len(sub_specs) * sub_size + (len(sub_specs) - 1) * sub_gap + 4
+                candidate_right = content_rect.right - reserved_w - 2
+                min_icon_w = max(28, int(content_rect.w * 0.35))
+                if candidate_right - icon_left >= min_icon_w:
+                    icon_right = candidate_right
+                else:
+                    icon_top += sub_size + sub_gap
+
+            icon_bottom = label_y - 2
+            icon_h = max(0, icon_bottom - icon_top)
+            icon_w = max(0, icon_right - icon_left)
+            icon_area = pygame.Rect(icon_left, icon_top, icon_w, icon_h)
+            if icon_drawer is not None and icon_area.w > 0 and icon_area.h > 0:
+                icon_drawer(surface, icon_area, ability, game)
+            elif icon_area.w > 0 and icon_area.h > 0:
+                pygame.draw.rect(surface, (90, 90, 120), icon_area, 1)
+
+            # Page-local hotkey number in the upper-left corner (drawn after the icon so it's never obscured).
             hotkey_txt = "0" if slot_i == 10 else str(slot_i)
             num_surf = small_font.render(hotkey_txt, True, fg)
             surface.blit(num_surf, (content_rect.x + 4, content_rect.y + 2))
 
-            # Name along the bottom (clamped to slot width).
-            label_h = small_font.get_height()
-            label_y = rect.bottom - label_h - 2
+            # Name along the bottom (shrink-to-fit rather than truncating).
             label_max_w = max(0, content_rect.w - 8)
-            label_txt = ellipsize(label, label_max_w)
-            label_surf = small_font.render(label_txt, True, fg)
-            label_rect = label_surf.get_rect()
-            label_rect.centerx = content_rect.centerx
-            label_rect.y = label_y
-            surface.blit(label_surf, label_rect)
-
-            # Main icon in the middle of the slot (above the name strip).
-            inner_top = rect.y + 4
-            inner_bottom = label_y - 2
-            inner_h = max(0, inner_bottom - inner_top)
-            inner_w = max(0, content_rect.w - 8)
-            icon_size = min(inner_w, inner_h, rect.h - 10)
-            icon_area = pygame.Rect(0, 0, icon_size, icon_size)
-            icon_area.centerx = content_rect.centerx
-            icon_area.centery = inner_top + inner_h // 2
-            if icon_drawer is not None and icon_size > 0:
-                icon_drawer(surface, icon_area, ability, game)
-            elif icon_size > 0:
-                pygame.draw.rect(surface, (90, 90, 120), icon_area, 1)
+            blit_fit_text(
+                label,
+                centerx=content_rect.centerx,
+                bottom=rect.bottom - 2,
+                max_w=label_max_w,
+            )
 
             if sub_specs:
                 cur_x = (arrow_rect.left if arrow_rect is not None else rect.right) - 4
@@ -1034,22 +1049,21 @@ class AbilityBarRenderer:
                     # Popup: icon centered, name along bottom (same style as the main bar).
                     m_label_h = small_font.get_height()
                     m_label_y = m_rect.bottom - m_label_h - 2
-                    m_label_txt = ellipsize(m_label, max(0, m_rect.w - 8))
-                    m_label_surf = small_font.render(m_label_txt, True, fg)
-                    m_label_rect = m_label_surf.get_rect(centerx=m_rect.centerx, y=m_label_y)
-                    surface.blit(m_label_surf, m_label_rect)
+                    blit_fit_text(
+                        m_label,
+                        centerx=m_rect.centerx,
+                        bottom=m_rect.bottom - 2,
+                        max_w=max(0, m_rect.w - 8),
+                    )
 
                     m_inner_top = m_rect.y + 4
                     m_inner_bottom = m_label_y - 2
                     m_inner_h = max(0, m_inner_bottom - m_inner_top)
                     m_inner_w = max(0, m_rect.w - 8)
-                    m_icon_size = min(m_inner_w, m_inner_h, m_rect.h - 10)
-                    m_icon = pygame.Rect(0, 0, m_icon_size, m_icon_size)
-                    m_icon.centerx = m_rect.centerx
-                    m_icon.centery = m_inner_top + m_inner_h // 2
-                    if icon_drawer is not None and m_icon_size > 0:
+                    m_icon = pygame.Rect(m_rect.x + 4, m_inner_top, max(0, m_rect.w - 8), m_inner_h)
+                    if icon_drawer is not None and m_icon.w > 0 and m_icon.h > 0:
                         icon_drawer(surface, m_icon, member, game)
-                    elif m_icon_size > 0:
+                    elif m_icon.w > 0 and m_icon.h > 0:
                         pygame.draw.rect(surface, (90, 90, 120), m_icon, 1)
 
                 ability.group_member_rects = popup_member_rects  # type: ignore[attr-defined]

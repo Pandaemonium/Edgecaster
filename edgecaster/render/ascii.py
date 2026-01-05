@@ -2314,7 +2314,9 @@ class AsciiRenderer:
         action = getattr(ability_or_action, "action", ability_or_action)
         preview = getattr(ability_or_action, "preview_geom", None)
         surf = self._render_action_icon(action, game, (rect.w, rect.h), preview_geom=preview)
-        self.surface.blit(surf, rect.topleft)
+        dx = rect.x + (rect.w - surf.get_width()) // 2
+        dy = rect.y + (rect.h - surf.get_height()) // 2
+        self.surface.blit(surf, (dx, dy))
 
     def _draw_ability_icon_for_bar(
         self,
@@ -2332,7 +2334,9 @@ class AsciiRenderer:
         action = getattr(ability, "action", ability)
         preview = getattr(ability, "preview_geom", None)
         surf = self._render_action_icon(action, game, (rect.w, rect.h), preview_geom=preview)
-        surface.blit(surf, rect.topleft)
+        dx = rect.x + (rect.w - surf.get_width()) // 2
+        dy = rect.y + (rect.h - surf.get_height()) // 2
+        surface.blit(surf, (dx, dy))
 
 
 
@@ -2593,8 +2597,9 @@ class AsciiRenderer:
             pygame.draw.line(surf, (200, 140, 140), (4, h // 2), (w - 4, h // 2), 2)
             pygame.draw.line(surf, (200, 140, 140), (4, h // 2 + 6), (w - 4, h // 2 + 6), 2)
         elif action == "meditate":
-            pygame.draw.circle(surf, (180, 200, 255), (w // 2, h // 2), max(4, w // 3), width=2)
-            pygame.draw.circle(surf, (120, 180, 255), (w // 2, h // 2), max(2, w // 6))
+            base = min(w, h)
+            pygame.draw.circle(surf, (180, 200, 255), (w // 2, h // 2), max(4, base // 3), width=2)
+            pygame.draw.circle(surf, (120, 180, 255), (w // 2, h // 2), max(2, base // 6))
 
         if verts:
             # dotted segments if requested
