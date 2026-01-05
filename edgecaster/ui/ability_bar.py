@@ -76,7 +76,8 @@ class AbilityBarState:
 
     selected_index: int = 0  # index into `slots` (used by the Abilities menu)
     page: int = 0
-    page_size: int = 8
+    # How many slots are shown per page in the bottom bar.
+    page_size: int = 10
     active_action: Optional[str] = None  # active group member action when grouped
 
     expanded_slot_index: Optional[int] = None  # expanded group popup
@@ -725,10 +726,12 @@ class AbilityBarRenderer:
             max(0, bar_rect.h - top_margin - bottom_margin),
         )
 
+        # Spacing between ability slots in the bar.
         gap = 6
         total_gap = gap * (count - 1)
-        slot_w = (inner.w - total_gap) // max(1, count)
-        slot_w = max(40, slot_w)  # don't collapse too hard
+        # Use the computed width even if it's small; forcing a minimum can
+        # overflow the bar when page_size grows (e.g. 10 slots).
+        slot_w = max(1, (inner.w - total_gap) // max(1, count))
         slot_h = inner.h
 
         rects: List[pygame.Rect] = []
@@ -860,6 +863,19 @@ class AbilityBarRenderer:
         vis_slots = bar_state.visible_slots()
         slot_rects = self._layout_bar(bar_rect, len(vis_slots))
 
+        def ellipsize(text: str, max_w: int) -> str:
+            if not text or max_w <= 0:
+                return ""
+            if small_font.size(text)[0] <= max_w:
+                return text
+            ell = "..."
+            if small_font.size(ell)[0] > max_w:
+                return ""
+            trimmed = text
+            while trimmed and small_font.size(trimmed + ell)[0] > max_w:
+                trimmed = trimmed[:-1]
+            return trimmed + ell
+
         for slot_i, (slot_view, rect) in enumerate(zip(vis_slots, slot_rects), start=1):
             ability = slot_view.ability
             is_group = slot_view.kind == "group"
@@ -878,12 +894,19 @@ class AbilityBarRenderer:
             pygame.draw.rect(surface, bg_color, rect)
             pygame.draw.rect(surface, fg, rect, 1)
 
-            # Main icon on the left
-            icon_area = pygame.Rect(rect.x + 3, rect.y + 3, rect.height - 6, rect.height - 6)
-            if icon_drawer is not None:
-                icon_drawer(surface, icon_area, ability, game)
-            else:
-                pygame.draw.rect(surface, (90, 90, 120), icon_area, 1)
+            # Group expand button ("^") occupies the right-most portion of the slot.
+            # Sub-buttons are laid out to the left of this region.
+            arrow_rect = None
+            content_rect = rect
+            if is_group:
+                arrow_w = max(24, int(rect.w * 0.20))
+                arrow_rect = pygame.Rect(rect.right - arrow_w, rect.y, arrow_w, rect.h)
+                content_rect = pygame.Rect(rect.x, rect.y, rect.w - arrow_w, rect.h)
+                ability.group_arrow_rect = arrow_rect  # type: ignore[attr-defined]
+                pygame.draw.rect(surface, (30, 30, 50), arrow_rect)
+                pygame.draw.rect(surface, (90, 90, 120), arrow_rect, 1)
+                arrow_surf = small_font.render("^", True, fg)
+                surface.blit(arrow_surf, arrow_surf.get_rect(center=arrow_rect.center))
 
             # Label (with radius hint for activate_all)
             label = ability.name
@@ -894,32 +917,58 @@ class AbilityBarRenderer:
                 except Exception:
                     label = "Activate R"
 
-            # ALWAYS page-local numbering:
-            label = f"{slot_i}:{label}"
-
-            text = small_font.render(label, True, fg)
-            text_x = icon_area.right + 4
-            text_y = rect.y + (rect.height - text.get_height()) // 2
-            surface.blit(text, (text_x, text_y))
-
-            # Group expand button ("^") occupies the right-most portion of the slot.
-            # Sub-buttons are laid out to the left of this region.
-            arrow_rect = None
-            if is_group:
-                arrow_w = max(24, int(rect.w * 0.20))
-                arrow_rect = pygame.Rect(rect.right - arrow_w, rect.y, arrow_w, rect.h)
-                ability.group_arrow_rect = arrow_rect  # type: ignore[attr-defined]
-                pygame.draw.rect(surface, (30, 30, 50), arrow_rect)
-                pygame.draw.rect(surface, (90, 90, 120), arrow_rect, 1)
-                arrow_surf = small_font.render("^", True, fg)
-                surface.blit(arrow_surf, arrow_surf.get_rect(center=arrow_rect.center))
-
-            # Sub-buttons (from ACTION_SUB_BUTTONS metadata)
+            # Sub-buttons (from ACTION_SUB_BUTTONS metadata) reserve a strip on the
+            # right side of the slot so the main icon doesn't collide with them.
             sub_specs = ACTION_SUB_BUTTONS.get(ability.action, [])
+            sub_size = 0
+            sub_gap = 4
             if sub_specs:
                 sub_size = min(rect.height - 10, 22)
                 sub_size = max(14, sub_size)
-                sub_gap = 4
+                # Keep at least some space for the main icon/name; otherwise we let
+                # buttons overlap as a fallback for very narrow slots.
+                reserve_min = 26
+                available_for_sub = max(0, content_rect.w - reserve_min)
+                needed = len(sub_specs) * sub_size + (len(sub_specs) - 1) * sub_gap + 4
+                if needed > available_for_sub:
+                    max_sub = (available_for_sub - 4 - (len(sub_specs) - 1) * sub_gap) // max(1, len(sub_specs))
+                    if max_sub >= 10:
+                        sub_size = int(max_sub)
+                        needed = len(sub_specs) * sub_size + (len(sub_specs) - 1) * sub_gap + 4
+                if needed <= available_for_sub and needed > 0:
+                    content_rect = pygame.Rect(content_rect.x, content_rect.y, max(0, content_rect.w - needed), content_rect.h)
+
+            # Page-local hotkey number in the upper-left corner.
+            hotkey_txt = "0" if slot_i == 10 else str(slot_i)
+            num_surf = small_font.render(hotkey_txt, True, fg)
+            surface.blit(num_surf, (content_rect.x + 4, content_rect.y + 2))
+
+            # Name along the bottom (clamped to slot width).
+            label_h = small_font.get_height()
+            label_y = rect.bottom - label_h - 2
+            label_max_w = max(0, content_rect.w - 8)
+            label_txt = ellipsize(label, label_max_w)
+            label_surf = small_font.render(label_txt, True, fg)
+            label_rect = label_surf.get_rect()
+            label_rect.centerx = content_rect.centerx
+            label_rect.y = label_y
+            surface.blit(label_surf, label_rect)
+
+            # Main icon in the middle of the slot (above the name strip).
+            inner_top = rect.y + 4
+            inner_bottom = label_y - 2
+            inner_h = max(0, inner_bottom - inner_top)
+            inner_w = max(0, content_rect.w - 8)
+            icon_size = min(inner_w, inner_h, rect.h - 10)
+            icon_area = pygame.Rect(0, 0, icon_size, icon_size)
+            icon_area.centerx = content_rect.centerx
+            icon_area.centery = inner_top + inner_h // 2
+            if icon_drawer is not None and icon_size > 0:
+                icon_drawer(surface, icon_area, ability, game)
+            elif icon_size > 0:
+                pygame.draw.rect(surface, (90, 90, 120), icon_area, 1)
+
+            if sub_specs:
                 cur_x = (arrow_rect.left if arrow_rect is not None else rect.right) - 4
 
                 # Lay out sub-buttons from right to left
@@ -974,12 +1023,6 @@ class AbilityBarRenderer:
                     pygame.draw.rect(surface, m_bg, m_rect)
                     pygame.draw.rect(surface, fg, m_rect, 1)
 
-                    m_icon = pygame.Rect(m_rect.x + 3, m_rect.y + 3, m_rect.height - 6, m_rect.height - 6)
-                    if icon_drawer is not None:
-                        icon_drawer(surface, m_icon, member, game)
-                    else:
-                        pygame.draw.rect(surface, (90, 90, 120), m_icon, 1)
-
                     m_label = member.name
                     if member.action == "activate_all":
                         try:
@@ -988,10 +1031,26 @@ class AbilityBarRenderer:
                         except Exception:
                             m_label = "Activate R"
 
-                    m_text = small_font.render(m_label, True, fg)
-                    m_text_x = m_icon.right + 4
-                    m_text_y = m_rect.y + (m_rect.height - m_text.get_height()) // 2
-                    surface.blit(m_text, (m_text_x, m_text_y))
+                    # Popup: icon centered, name along bottom (same style as the main bar).
+                    m_label_h = small_font.get_height()
+                    m_label_y = m_rect.bottom - m_label_h - 2
+                    m_label_txt = ellipsize(m_label, max(0, m_rect.w - 8))
+                    m_label_surf = small_font.render(m_label_txt, True, fg)
+                    m_label_rect = m_label_surf.get_rect(centerx=m_rect.centerx, y=m_label_y)
+                    surface.blit(m_label_surf, m_label_rect)
+
+                    m_inner_top = m_rect.y + 4
+                    m_inner_bottom = m_label_y - 2
+                    m_inner_h = max(0, m_inner_bottom - m_inner_top)
+                    m_inner_w = max(0, m_rect.w - 8)
+                    m_icon_size = min(m_inner_w, m_inner_h, m_rect.h - 10)
+                    m_icon = pygame.Rect(0, 0, m_icon_size, m_icon_size)
+                    m_icon.centerx = m_rect.centerx
+                    m_icon.centery = m_inner_top + m_inner_h // 2
+                    if icon_drawer is not None and m_icon_size > 0:
+                        icon_drawer(surface, m_icon, member, game)
+                    elif m_icon_size > 0:
+                        pygame.draw.rect(surface, (90, 90, 120), m_icon, 1)
 
                 ability.group_member_rects = popup_member_rects  # type: ignore[attr-defined]
 
