@@ -151,6 +151,66 @@
   tags:
     item_type: koch_knife
 
+# --- SIMPLE EQUIPMENT (STAT MODS) ------------------------------------------
+# These items can be equipped into any slot for now.
+# Stat bonuses are read from `tags.equip_mods` while the item is equipped.
+
+- id: resonant_ring
+  name: Resonant Ring
+  glyph: "o"
+  color: [180, 220, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A ringing band that vibrates with sympathetic resonance."
+  tags:
+    item_type: resonant_ring
+    value_bismuth: 15
+    equip_mods: {res: 1}
+
+- id: sage_cap
+  name: Sage Cap
+  glyph: "^"
+  color: [220, 220, 180]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "When you wear it, the world feels slightly more legible."
+  tags:
+    item_type: sage_cap
+    value_bismuth: 18
+    equip_mods: {int: 1}
+
+- id: fleet_boots
+  name: Fleet Boots
+  glyph: "]"
+  color: [180, 255, 200]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "The soles barely touch the ground."
+  tags:
+    item_type: fleet_boots
+    value_bismuth: 16
+    equip_mods: {agi: 1}
+
+- id: vital_belt
+  name: Vital Belt
+  glyph: "="
+  color: [255, 200, 200]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "Cinches your organs into a more determined configuration."
+  tags:
+    item_type: vital_belt
+    value_bismuth: 14
+    equip_mods: {con: 1}
+
 # --- SIGN / DOOR FEATURES -------------------------------------------
 - id: sign
   name: Sign

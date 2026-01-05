@@ -8,6 +8,7 @@ import pygame
 from .base import PanelScene
 
 from edgecaster.systems import trade
+from edgecaster.systems import equipment as equipment_system
 from edgecaster.ui.widgets import (
     ButtonWidget,
     HBox,
@@ -74,6 +75,19 @@ class MerchantScene(PanelScene):
         self._status: LabelWidget | None = None
 
         self._build_widgets()
+
+    def _sell_id_is_equipped(self, ent_id: str) -> bool:
+        ent_id = str(ent_id)
+        if not ent_id:
+            return False
+        try:
+            pinv = list(getattr(self.game, "player_inventory", []) or [])
+        except Exception:
+            pinv = []
+        for ent in pinv:
+            if str(getattr(ent, "id", "")) == ent_id:
+                return equipment_system.is_equipped(ent)
+        return False
 
     # ------------------------------------------------------------------ #
     # Layout / widgets
@@ -187,16 +201,24 @@ class MerchantScene(PanelScene):
         valid_sell = {str(getattr(ent, "id", "")) for ent in pinv}
         self.pending_sell_ids.intersection_update({x for x in valid_sell if x})
         for i, ent in enumerate(pinv):
+            ent_id = str(getattr(ent, "id", ""))
+            equipped = equipment_system.is_equipped(ent)
+            if equipped and ent_id:
+                # Equipped items can't be sold; don't allow them in the proposal.
+                self.pending_sell_ids.discard(ent_id)
             q = trade.quote_prices(merchant, ent)
             price = int(q.sell_price) if q else 0
             name = str(getattr(ent, "name", "Item"))
-            prefix = "- " if str(getattr(ent, "id", "")) in self.pending_sell_ids else ""
+            if equipped:
+                prefix = "[E] "
+            else:
+                prefix = "- " if ent_id in self.pending_sell_ids else ""
             sell_rows.append(
                 _TradeRow(
                     label=f"{prefix}{name}",
                     value=f"{price}b" if price else "",
                     index=i,
-                    ent_id=str(getattr(ent, "id", "")),
+                    ent_id=ent_id,
                 )
             )
 
@@ -260,6 +282,10 @@ class MerchantScene(PanelScene):
         self.focus = "sell"
         self.sell_index = int(idx)
         if isinstance(item, _TradeRow):
+            if self._sell_id_is_equipped(item.ent_id):
+                if self._status is not None:
+                    self._status.text = "Unequip that item before selling."
+                return
             self._toggle_pending_sell(item.ent_id)
 
     def _activate_focused(self) -> None:
@@ -270,6 +296,10 @@ class MerchantScene(PanelScene):
                 return
             row = self._sell_list.items[int(self.sell_index)]
             if isinstance(row, _TradeRow):
+                if self._sell_id_is_equipped(row.ent_id):
+                    if self._status is not None:
+                        self._status.text = "Unequip that item before selling."
+                    return
                 self._toggle_pending_sell(row.ent_id)
             return
 

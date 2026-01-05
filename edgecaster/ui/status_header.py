@@ -139,7 +139,10 @@ class StatusHeaderWidget(Widget):
         # --- Character stats & vertices under bars ---
         y += bar_h + 12
         if hasattr(game, "character") and game.character:
-            stats = game.character.stats
+            if hasattr(game, "effective_character_stats"):
+                stats = game.effective_character_stats()
+            else:
+                stats = game.character.stats
             line = (
                 f"CON {stats.get('con',0)}  "
                 f"AGI {stats.get('agi',0)}  "

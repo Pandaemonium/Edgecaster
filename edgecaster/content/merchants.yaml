@@ -29,3 +29,15 @@ general_store:
     - proto: destabilizer
       weight: 1
       qty: [1, 1]
+    - proto: resonant_ring
+      weight: 2
+      qty: [1, 1]
+    - proto: sage_cap
+      weight: 2
+      qty: [1, 1]
+    - proto: fleet_boots
+      weight: 2
+      qty: [1, 1]
+    - proto: vital_belt
+      weight: 2
+      qty: [1, 1]

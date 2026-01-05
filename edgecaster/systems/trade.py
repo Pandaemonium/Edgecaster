@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from edgecaster.content import merchants as merchant_content
+from edgecaster.systems import equipment as equipment_system
 
 
 MERCHANT_ID_TAG = "merchant_id"
@@ -202,6 +203,10 @@ def proposal_summary(
         if ent is None:
             if reason is None:
                 reason = "One or more items are no longer in your inventory."
+            continue
+        if equipment_system.is_equipped(ent):
+            if reason is None:
+                reason = "Unequip items before selling them."
             continue
         q = quote_prices(merchant, ent)
         if q is None or int(q.sell_price) <= 0:
@@ -429,6 +434,12 @@ def try_sell(game: Any, merchant_actor_id: str, item_index: int) -> bool:
         return False
 
     ent = pinv[int(item_index)]
+    if equipment_system.is_equipped(ent):
+        try:
+            game.log.add("You must unequip that item before selling it.")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return False
     quote = quote_prices(merchant, ent)
     if quote is None:
         return False

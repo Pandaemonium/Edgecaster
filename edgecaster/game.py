@@ -27,6 +27,7 @@ from edgecaster.content import npcs
 from edgecaster.systems.actions import get_action, action_delay
 from edgecaster.patterns import colors as pattern_colors
 from edgecaster.patterns import motion as pattern_motion
+from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import ai
 from . import lorenz
 import math
@@ -585,12 +586,12 @@ class Game:
 
     def _coherence_limit(self) -> int:
         """How many vertices before coherence drain starts (INT*4)."""
-        intellect = self.character.stats.get("int", 0)
+        intellect = self.effective_character_stats().get("int", 0)
         return intellect * 4
 
     def _strength_limit(self) -> int:
         """How many activated vertices can be driven at once; scales with RES."""
-        res = self.character.stats.get("res", 0)
+        res = self.effective_character_stats().get("res", 0)
         return 40 + res * 40
 
     # --- level-up stat logic ---
@@ -898,6 +899,25 @@ class Game:
             except Exception:
                 pass
         return True
+
+    def effective_character_stats(self, owner_id: str | None = None) -> Dict[str, int]:
+        """Return base CON/AGI/INT/RES with equipped item modifiers applied.
+
+        - Base stats live on `self.character.stats`.
+        - Equipped items are any inventory entities with `tags.equipped_slot`
+          (or legacy `tags.equipped`).
+        - Stat bonuses are declared per item via:
+
+            tags.equip_mods: {con: +1, res: +2, ...}
+        """
+        base = dict(getattr(self.character, "stats", {}) or {})
+        oid = str(owner_id) if owner_id is not None else str(getattr(self, "player_id", ""))
+        try:
+            inv = list(self.get_inventory(oid))
+        except Exception:
+            inv = []
+        mods = equipment_system.collect_equip_mods(inv)
+        return equipment_system.apply_mods(base, mods)
 
 
 
@@ -3355,7 +3375,10 @@ class Game:
     # --- param helpers ---
 
     def _stat_value(self, stat: str) -> int:
-        return int(self.character.stats.get(stat, 0))
+        try:
+            return int(self.effective_character_stats().get(stat, 0))
+        except Exception:
+            return int(getattr(self.character, "stats", {}).get(stat, 0))
 
     def _allowed_index(self, action: str, key: str) -> int:
         spec = self.param_defs[action][key]
@@ -3371,6 +3394,11 @@ class Game:
         idx = self.param_state.get((action, key), 0)
         values = self.param_defs[action][key]["values"]
         idx = max(0, min(idx, len(values) - 1))
+        # Ensure we never use a value beyond the current stat cap.
+        allowed = self._allowed_index(action, key)
+        if allowed < 0:
+            allowed = 0
+        idx = min(idx, allowed)
         return values[idx]
 
     def adjust_param(self, action: str, key: str, delta: int) -> Tuple[bool, str]:
@@ -3380,6 +3408,13 @@ class Game:
         values = spec["values"]
         allowed = self._allowed_index(action, key)
         cur_idx = self.param_state.get((action, key), 0)
+        # If the player's effective stats dropped (e.g. unequipped an item),
+        # clamp the stored index back into range so the UI can still adjust down.
+        if allowed < 0:
+            allowed = 0
+        if cur_idx > allowed:
+            cur_idx = allowed
+            self.param_state[(action, key)] = cur_idx
         new_idx = cur_idx + delta
         new_idx = max(0, min(new_idx, len(values) - 1))
         if new_idx > allowed:
