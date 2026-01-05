@@ -11,6 +11,7 @@ from .urgent_message_scene import UrgentMessageScene
 from .game_input import GameInput, GameCommand
 from edgecaster.systems.abilities import trigger_ability_effect
 from edgecaster.systems.targeting import predict_aim_preview
+from edgecaster.systems.previews import build_action_preview, is_previewable_action
 from edgecaster.patterns import motion as pattern_motion
 from edgecaster.ui.ability_bar import AbilityBarState
 from edgecaster.systems.actions import get_action, describe_entity_for_look
@@ -61,6 +62,7 @@ class DungeonUIState:
     config_action: str | None = None
     config_selection: int = 0
     aim_prediction: object | None = None  # computed preview info for aim overlays
+    action_preview: object | None = None  # action outcome preview (Alt+click)
     push_target: tuple[float, float] | None = None
     push_rotation: float = 0.0
     push_preview: object | None = None
@@ -267,6 +269,14 @@ class DungeonScene(Scene):
 
         # Process any transitions (death, map, inventory, etc.)
         self._process_transitions(game, renderer, manager)
+
+        # Clear any action preview when Alt is released.
+        if self.ui_state.action_preview is not None:
+            try:
+                if (pygame.key.get_mods() & pygame.KMOD_ALT) == 0:
+                    self.ui_state.action_preview = None
+            except Exception:
+                self.ui_state.action_preview = None
 
         # Keep aim preview in sync with any param/hover changes.
         self._refresh_aim_prediction(game)
@@ -1477,6 +1487,7 @@ class DungeonScene(Scene):
                 return
 
             mx, my = renderer._to_surface(cmd.mouse_pos)
+            alt_held = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
 
             # Ability bar interaction is handled via the AbilityBarWidget.
             bar_widget = getattr(renderer, "ability_bar_widget", None)
@@ -1515,6 +1526,10 @@ class DungeonScene(Scene):
                         action = getattr(hit, "group_action", None)
                         if isinstance(action, str) and action:
                             bar.set_active(action)
+                            if alt_held and is_previewable_action(action):
+                                self.ui_state.action_preview = build_action_preview(game, action, game.player_id)
+                                return
+                            self.ui_state.action_preview = None
                             self._begin_action_from_def(game, action)
                         return
 
@@ -1538,6 +1553,11 @@ class DungeonScene(Scene):
 
                     # Main ability click: delegate to Action metadata.
                     if hit.kind == "ability":
+                        action_name = getattr(ability, "action", None)
+                        if alt_held and isinstance(action_name, str) and is_previewable_action(action_name):
+                            self.ui_state.action_preview = build_action_preview(game, action_name, game.player_id)
+                            return
+                        self.ui_state.action_preview = None
                         self._begin_action_from_def(game, ability)
                         return
 

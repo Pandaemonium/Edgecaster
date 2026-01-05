@@ -54,6 +54,9 @@ ascii.py:
 • Draws terrain at multiple levels of detail (LoD)
 • Applies VisualProfiles and VisualEffects at draw time
 • Delegates all camera math and LoD policy elsewhere
+• Draws previews from scene-owned ui_state (aim_prediction, action_preview)
+  - Preview data is computed in edgecaster/systems/targeting.py and edgecaster/systems/previews.py
+  - Renderer stays a pure view layer (no simulation rules)
 
 Renderers NEVER:
 • Read input events
@@ -138,6 +141,24 @@ Pygame Event → GameCommand
 
 Scenes interpret GameCommands.
 Renderers and camera are input-agnostic.
+
+===============================================================================
+SECTION 5.5 — DIALOGUE (NPC + EVENTS)
+
+Dialogue data model (edgecaster/events.py):
+• DialogueTree / DialogueNode / DialogueChoice
+• events.start_dialogue(game, tree, start_node=...) is the one entry point
+  - In normal gameplay this opens DialoguePopupScene via SceneManager
+  - In headless/tests it falls back to urgent popups
+
+Dialogue UI (edgecaster/scenes/dialogue_scene.py):
+• DialoguePopupScene renders a single node at a time and advances via next_id
+
+NPC dialogue authoring:
+• NPC metadata (name/dialogue/etc.) lives in edgecaster/content/npcs.py (NPC_DEFS)
+• NPC Talk builds trees in edgecaster/content/dialogues.py (build_npc_dialogue_tree)
+  - This is the unified path for all NPC conversations (multi-screen supported)
+  - Avoid ad-hoc dialogue handlers (no legacy talk_start/talk_complete); always route through DialogueTree
 
 ===============================================================================
 SECTION 6 — VISUAL TRANSFORM & EFFECT PIPELINE

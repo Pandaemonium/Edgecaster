@@ -1817,6 +1817,158 @@ class AsciiRenderer:
         self.surface.blit(self.edges_surface, (0, 0))
         self.surface.blit(self.verts_surface, (0, 0))
 
+    def draw_action_preview_underlay(self, game: Game) -> None:
+        """Draw a scene-provided action preview under entities (pure view)."""
+        preview = self._ui_attr("action_preview", None)
+        if preview is None:
+            return
+
+        overlay = getattr(self, "_action_preview_surface", None)
+        if overlay is None or overlay.get_size() != (self.width, self.height):
+            overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+            setattr(self, "_action_preview_surface", overlay)
+        overlay.fill((0, 0, 0, 0))
+
+        drew_any = False
+
+        # --- Tile highlights -------------------------------------------------
+        direct = getattr(preview, "direct_tiles", None) or ()
+        indirect = getattr(preview, "indirect_tiles", None) or ()
+        direct_col = getattr(preview, "direct_color", None)
+        indirect_col = getattr(preview, "indirect_color", None)
+        tile_px = max(1, int(round(self.tile)))
+
+        if direct_col or indirect_col:
+            if direct_col is None:
+                direct_col = (255, 255, 255, 90)
+            if indirect_col is None:
+                indirect_col = (255, 255, 255, 45)
+
+            for (tx, ty) in direct:
+                px = int(tx * self.tile + self.origin_x)
+                py = int(ty * self.tile + self.origin_y)
+                pygame.draw.rect(overlay, direct_col, pygame.Rect(px, py, tile_px, tile_px))
+                drew_any = True
+
+            for (tx, ty) in indirect:
+                px = int(tx * self.tile + self.origin_x)
+                py = int(ty * self.tile + self.origin_y)
+                pygame.draw.rect(overlay, indirect_col, pygame.Rect(px, py, tile_px, tile_px))
+                drew_any = True
+
+        # --- Ghost pattern overlay ------------------------------------------
+        pat = getattr(preview, "pattern", None)
+        anchor = getattr(preview, "pattern_anchor", None)
+        if pat is not None and anchor is not None and getattr(pat, "vertices", None):
+            edge_alpha = int(getattr(preview, "pattern_edge_alpha", 150) or 150)
+            edge_alpha = max(20, min(255, edge_alpha))
+
+            base0 = getattr(preview, "pattern_color", None) or self.pattern_color
+            base1 = getattr(preview, "pattern_color_end", None) or self.pattern_color_end
+
+            try:
+                verts = project_vertices(pat, anchor)
+            except Exception:
+                verts = []
+
+            edge_colors = getattr(pat, "edge_colors", {}) or {}
+
+            for e in getattr(pat, "edges", []) or []:
+                try:
+                    a = verts[e.a]
+                    b = verts[e.b]
+                except Exception:
+                    continue
+
+                ax = a[0] * self.tile + self.tile * 0.5 + self.origin_x
+                ay = a[1] * self.tile + self.tile * 0.5 + self.origin_y
+                bx = b[0] * self.tile + self.tile * 0.5 + self.origin_x
+                by = b[1] * self.tile + self.tile * 0.5 + self.origin_y
+                dx = bx - ax
+                dy = by - ay
+                dist = max(1.0, math.hypot(dx, dy))
+                steps = max(4, int(dist / (self.tile * 0.75)))
+
+                edge_key = (min(e.a, e.b), max(e.a, e.b))
+                col = edge_colors.get(edge_key)
+
+                for i in range(steps):
+                    t0 = i / steps
+                    t1 = (i + 1) / steps
+                    x0 = ax + dx * t0
+                    y0 = ay + dy * t0
+                    x1 = ax + dx * t1
+                    y1 = ay + dy * t1
+
+                    seg_col = col
+                    if seg_col and isinstance(seg_col, (list, tuple)) and len(seg_col) == 2 and all(
+                        isinstance(c, (list, tuple)) and len(c) >= 3 for c in seg_col
+                    ):
+                        c0 = tuple(int(v) for v in seg_col[0][:3])
+                        c1 = tuple(int(v) for v in seg_col[1][:3])
+                        seg_col = self._lerp_color(c0, c1, (t0 + t1) * 0.5)
+
+                    if not seg_col:
+                        seg_col = self._lerp_color(base0, base1, (t0 + t1) * 0.5)
+
+                    try:
+                        rgb = tuple(int(v) for v in seg_col[:3])
+                    except Exception:
+                        rgb = base0
+
+                    core_col = (*rgb, edge_alpha)
+                    pygame.draw.line(
+                        overlay,
+                        core_col,
+                        (x0, y0),
+                        (x1, y1),
+                        width=max(1, int(getattr(self, "edge_width_base", 2))),
+                    )
+                    pygame.draw.aaline(overlay, core_col, (x0, y0), (x1, y1))
+                    drew_any = True
+
+        if drew_any:
+            self.surface.blit(overlay, (0, 0))
+
+    def draw_action_preview_overlay(self, _game: Game) -> None:
+        """Draw a scene-provided action preview above entities (pure view)."""
+        preview = self._ui_attr("action_preview", None)
+        if preview is None:
+            return
+
+        texts = getattr(preview, "texts", None) or ()
+        if not texts:
+            return
+
+        # Gentle fade so the user can tell it's a preview.
+        t = pygame.time.get_ticks()
+        phase = (t % 2000) / 2000.0
+        fade = 1.0 - abs(phase * 2 - 1)  # triangle 0..1..0
+        alpha = int(90 + 140 * fade)
+
+        font_px = max(14, int(self.tile * 0.55))
+        font = pygame.font.SysFont("consolas", font_px)
+
+        for item in texts:
+            try:
+                tx, ty = item.pos
+            except Exception:
+                continue
+
+            px = int(tx * self.tile + self.origin_x + self.tile * 0.5)
+            py = int(ty * self.tile + self.origin_y + self.tile * 0.5)
+
+            try:
+                color = tuple(int(v) for v in item.color[:3])
+            except Exception:
+                color = (255, 255, 255)
+
+            surf = font.render(str(item.text), True, color)
+            tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+            tmp.blit(surf, (0, 0))
+            tmp.set_alpha(alpha)
+            self.surface.blit(tmp, (px - surf.get_width() // 2, py - int(self.tile * 0.5) - surf.get_height()))
+
     def draw_aim_overlay(self, game: Game) -> None:
         pred = self._ui_attr("aim_prediction", None)
         aim_action = getattr(pred, "action", None) or self._ui_attr("aim_action", None)
@@ -2379,6 +2531,7 @@ class AsciiRenderer:
         self.draw_lorenz_overlay(game)
 
         self.draw_pattern_overlay(game)
+        self.draw_action_preview_underlay(game)
         self.draw_push_preview(game)
         self.draw_place_overlay(game)
         self.draw_activation_overlay(game)
@@ -2386,6 +2539,7 @@ class AsciiRenderer:
         # Unified entity rendering: items + actors together.
         renderables = game.renderables_current()
         self.draw_entities(game.world, renderables)
+        self.draw_action_preview_overlay(game)
         self.draw_target_cursor(game)
         self.draw_look_overlay(game)
 
