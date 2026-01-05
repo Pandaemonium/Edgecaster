@@ -66,4 +66,16 @@ NPC_DEFS = {
         ],
         "quest_complete": "find_the_inventor",  # Quest to complete on dialogue
     },
+    "merchant": {
+        "name": "Merchant",
+        "factions": ["neutral"],
+        "base_disposition": 5,
+        "description": "A trader with a pack full of strange goods and fewer scruples than teeth.",
+        "dialogue": [
+            "Coins are dead. Bismuth sings.",
+            "Want to trade?",
+        ],
+        # Which entry in content/merchants.yaml to use for stock/prices/restock.
+        "merchant_id": "general_store",
+    },
 }

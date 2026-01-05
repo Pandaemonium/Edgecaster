@@ -209,20 +209,37 @@
   glyph: "&"
   color: [255, 0, 120]
   actions: []
-  base_hp: 999
+  base_hp: 1000
   base_mana: 0
   base_attack: 0
   base_defense: 0
   speed: 0.0
-  faction: hostile
+  faction: neutral
   ai: none
   xp: 0
   parent: demon
   description: A hulking demon chained for training bouts. It regenerates rapidly.
   tags:
     training_dummy: true
+    no_random_spawn: true
 
-
+- id: merchant
+  name: Merchant
+  glyph: "M"
+  color: [210, 230, 255]
+  actions: []
+  base_hp: 10
+  base_mana: 0
+  base_attack: 0
+  base_defense: 0
+  speed: 0.0
+  faction: npc
+  ai: none
+  xp: 0
+  parent: human
+  description: A trader who deals in bismuth and gossip.
+  tags:
+    no_random_spawn: true
 
 
 

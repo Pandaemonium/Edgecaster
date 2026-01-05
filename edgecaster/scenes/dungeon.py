@@ -572,6 +572,18 @@ class DungeonScene(Scene):
             manager.push_scene(InventoryScene(game))
             return
 
+        # 3b) Merchant requested -> push trade overlay
+        merchant_id = getattr(game, "merchant_requested", None)
+        if merchant_id:
+            try:
+                game.merchant_requested = None
+            except Exception:
+                pass
+            from .merchant_scene import MerchantScene
+
+            manager.push_scene(MerchantScene(game, merchant_actor_id=str(merchant_id)))
+            return
+
         # 4) Quest journal requested -> push overlay
         if getattr(game, "quest_journal_requested", False):
             game.quest_journal_requested = False

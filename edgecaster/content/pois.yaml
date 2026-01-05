@@ -25,6 +25,12 @@ starting_zone:
       color: [180, 220, 180]
       offsets: [[3, 2], [4, 2], [2, 3], [3, 3]]
       description: "A friendly local who knows the area well."
+    - npc_id: merchant
+      name: Merchant
+      glyph: "M"
+      color: [210, 230, 255]
+      offsets: [[2, 1], [1, 2], [2, 2], [1, 3], [3, 2]]
+      description: "A trader with a pack full of strange goods."
     - npc_id: caged_demon
       name: Caged Demon
       glyph: "&"

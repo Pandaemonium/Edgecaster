@@ -1625,24 +1625,6 @@ class Game:
         # scatter some test berries on overworld levels
         if coord[2] == 0:  # depth == 0
             self._scatter_test_berries(lvl, count=10)
-            # Place a destabilizer near entry for testing/availability.
-            try:
-                ex, ey = lvl.world.entry
-                offsets = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (0, 2), (-2, 0), (0, -2)]
-                for dx, dy in offsets:
-                    tx, ty = ex + dx, ey + dy
-                    if not lvl.world.in_bounds(tx, ty):
-                        continue
-                    if not lvl.world.is_walkable(tx, ty):
-                        continue
-                    if self._entity_at(lvl, (tx, ty)):
-                        continue
-                    ent = self._spawn_entity_from_template("destabilizer", (tx, ty))
-                    if ent:
-                        lvl.entities[ent.id] = ent
-                        break
-            except Exception:
-                pass
 
         return lvl
 
@@ -1668,12 +1650,18 @@ class Game:
                 continue
 
             faction = entry.get("faction", "hostile")
-            tags = set(entry.get("tags", []) or [])
+            tags_raw = entry.get("tags", None)
+            if isinstance(tags_raw, dict):
+                tags = set(tags_raw.keys())
+            elif isinstance(tags_raw, list):
+                tags = set(tags_raw)
+            else:
+                tags = set()
 
             # Only randomize true enemies
             if faction != "hostile":
                 continue
-            if "player_only" in tags:
+            if "player_only" in tags or "no_random_spawn" in tags or "training_dummy" in tags:
                 continue
 
             enemy_ids.append(tid)
@@ -2004,6 +1992,30 @@ class Game:
                         actor.description = desc
                     actor.regen_per_tick = (1, 10)
                     self._start_regen(level, actor.id, amount=1, interval=10)
+                elif spec.npc_id == "merchant":
+                    actor = enemy_factory.spawn_enemy("merchant", spawn_pos)
+                    actor.faction = "npc"
+                    actor.actions = ()
+                    actor.ai = "idle"
+                    actor.tags = getattr(actor, "tags", {}) or {}
+                    actor.tags["npc_id"] = spec.npc_id
+                    actor.tags["merchant_id"] = npc_def.get("merchant_id", "general_store")
+
+                    # Apply POI overrides for look/feel.
+                    actor.name = name
+                    actor.glyph = glyph
+                    actor.color = color  # type: ignore[assignment]
+                    desc = getattr(spec, "description", None) or npc_def.get("description") or actor.description
+                    if desc:
+                        actor.description = desc
+
+                    # Ensure the merchant has a stock + restock schedule.
+                    try:
+                        from edgecaster.systems import trade as trade_system
+
+                        trade_system.ensure_merchant_initialized(self, level, actor)
+                    except Exception:
+                        pass
                 else:
                     aid = self._new_id()
                     actor = Human(

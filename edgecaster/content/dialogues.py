@@ -355,6 +355,35 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
     )
 
 
+def _build_merchant(_game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTree:
+    title = _npc_name(npc, npc_def)
+    body = _npc_dialogue_body(npc, npc_def)
+
+    merchant_actor_id = str(getattr(npc, "id", ""))
+
+    def open_trade(game: Any) -> None:
+        try:
+            game.merchant_requested = merchant_actor_id
+        except Exception:
+            pass
+
+    return DialogueTree(
+        id=f"npc:{npc_id}",
+        start_id="start",
+        nodes={
+            "start": DialogueNode(
+                id="start",
+                title=title,
+                body=body,
+                choices=[
+                    DialogueChoice(text="Trade.", next_id=None, effect=open_trade),
+                    DialogueChoice(text="Maybe later.", next_id=None),
+                ],
+            )
+        },
+    )
+
+
 def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
     """
     Build a DialogueTree for an NPC actor.
@@ -375,6 +404,8 @@ def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
         return _build_guide(game, npc, npc_id, npc_def)
     if npc_id == "inventor_npc":
         return _build_inventor(game, npc, npc_id, npc_def)
+    if npc_id == "merchant":
+        return _build_merchant(game, npc, npc_id, npc_def)
 
     # Generic fallback: show whatever dialogue lines exist, then end.
     title = _npc_name(npc, npc_def)
@@ -391,4 +422,3 @@ def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
             )
         },
     )
-

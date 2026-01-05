@@ -1,0 +1,31 @@
+general_store:
+  name: General Store
+  # How much the player pays when buying (>= 1.0) / receives when selling (<= 1.0).
+  buy_multiplier: 1.25
+  sell_multiplier: 0.75
+  # Restock cadence (in game ticks on the current level).
+  restock_interval_ticks: 400
+  # Maximum number of items stocked after a restock.
+  max_stock: 12
+  # Merchant wallet is refilled to this amount on each restock.
+  max_funds_bismuth: 80
+  # Weighted random stock table. Each entry spawns `qty` items (inclusive range).
+  stock:
+    - proto: blueberry
+      weight: 6
+      qty: [1, 3]
+    - proto: raspberry
+      weight: 6
+      qty: [1, 3]
+    - proto: strawberry
+      weight: 4
+      qty: [1, 2]
+    - proto: healing_kit
+      weight: 3
+      qty: [1, 1]
+    - proto: koch_knife
+      weight: 2
+      qty: [1, 1]
+    - proto: destabilizer
+      weight: 1
+      qty: [1, 1]
