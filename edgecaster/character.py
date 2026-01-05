@@ -14,6 +14,8 @@ class Character:
     player_class: str | None = None
     seed: int | None = None
     use_random_seed: bool = False
+    # Per-character ability bar layout (ordering + grouping); built lazily by AbilityBarState.
+    ability_layout: dict | None = None
 
 
 def default_character() -> Character:

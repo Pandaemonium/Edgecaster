@@ -1004,9 +1004,30 @@ class DungeonScene(Scene):
         # Ability reordering overlay (when open, swallow most commands)
         # ------------------------------------------------------------
         if getattr(game, "ability_reorder_open", False):
+            # Group editing sub-mode: edit membership for one group.
+            if getattr(bar, "overlay_mode", "order") == "group_edit":
+                # Prefer raw-key handling so this works even if the input layer maps keys oddly.
+                if key == pygame.K_SPACE:
+                    bar.group_edit_toggle_current()
+                    return
+                if key == pygame.K_a:
+                    bar.group_edit_set_active()
+                    return
+                if kind in ("escape", "confirm"):
+                    bar.end_group_edit()
+                    return
+                if kind == "move" and vec is not None:
+                    _, dy = vec
+                    if dy:
+                        bar.group_edit_move_cursor(dy)
+                    return
+                return
+
+            # Slot ordering mode
             if kind == "escape":
                 game.ability_reorder_open = False
                 return
+
             if kind == "confirm":
                 game.ability_reorder_open = False
                 # keep active action aligned with selected item
@@ -1014,6 +1035,15 @@ class DungeonScene(Scene):
                 if sel_act:
                     bar.set_active(sel_act)
                 return
+
+            if key == pygame.K_g:
+                bar.begin_group_edit_for_selected()
+                return
+
+            if key == pygame.K_u:
+                bar.dissolve_selected_group()
+                return
+
             if kind == "move" and vec is not None:
                 dx, dy = vec
                 if dy:
@@ -1034,7 +1064,8 @@ class DungeonScene(Scene):
                 bar.next_page()
                 bar.selected_index = bar.page * bar.page_size
                 return
-            # ignore other commands while reorder UI is active
+
+            # ignore other commands while Abilities menu is active
             return
 
 
@@ -1060,9 +1091,11 @@ class DungeonScene(Scene):
         if kind == "open_abilities":
             game.ability_reorder_open = True
             # select current active ability if possible
-            if bar.active_action and bar.active_action in bar.order:
-                bar.selected_index = bar.order.index(bar.active_action)
-                bar.page = bar.selected_index // bar.page_size
+            if bar.active_action:
+                idx = bar.slot_index_for_action(bar.active_action)
+                if idx is not None:
+                    bar.selected_index = idx
+                    bar.page = bar.selected_index // bar.page_size
             return
 
         # ------------------------------------------------------------
@@ -1278,11 +1311,11 @@ class DungeonScene(Scene):
             else:
                 bar.prev_page()
             start = bar.page * bar.page_size
-            if 0 <= start < len(bar.order):
+            if 0 <= start < len(getattr(bar, "slots", [])):
                 bar.selected_index = start
                 act = bar.action_at_index(start)
                 if act:
-                    bar.active_action = act
+                    bar.set_active(act)
 
         # Page cycling: PgUp/PgDn/Tab switch ability bar pages
         if kind == "ability_page_prev":
@@ -1459,13 +1492,30 @@ class DungeonScene(Scene):
                         return
                     if hit.kind == "open_reorder":
                         game.ability_reorder_open = True
-                        if bar.active_action and bar.active_action in bar.order:
-                            bar.selected_index = bar.order.index(bar.active_action)
-                            bar.page = bar.selected_index // bar.page_size if bar.page_size else 0
+                        if bar.active_action:
+                            idx = bar.slot_index_for_action(bar.active_action)
+                            if idx is not None:
+                                bar.selected_index = idx
+                                bar.page = bar.selected_index // bar.page_size if bar.page_size else 0
                         return
 
                     ability = hit.ability
                     if ability is None:
+                        return
+
+                    # Group interactions
+                    if hit.kind == "group_arrow":
+                        bar.set_active(ability.action)
+                        slot_index = getattr(ability, "_bar_slot_index", None)
+                        if isinstance(slot_index, int):
+                            bar.toggle_group_expanded(slot_index)
+                        return
+
+                    if hit.kind == "group_pick":
+                        action = getattr(hit, "group_action", None)
+                        if isinstance(action, str) and action:
+                            bar.set_active(action)
+                            self._begin_action_from_def(game, action)
                         return
 
                     # Any click on an ability slot selects it.

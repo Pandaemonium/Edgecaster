@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple, TYPE_CHECKING, Callable
+from typing import List, Optional, Dict, Tuple, TYPE_CHECKING, Callable, Any
 
 import pygame
 
@@ -28,70 +28,104 @@ from edgecaster.systems.actions import ACTION_SUB_BUTTONS, SubButtonMeta  # UI m
 
 
 @dataclass
+class AbilityGroup:
+    """A named group of actions with one active member."""
+
+    id: str
+    label: str
+    members: List[str] = field(default_factory=list)
+    active: Optional[str] = None
+
+
+@dataclass
+class AbilitySlot:
+    """One slot in the ability bar: either a single action or a group."""
+
+    kind: str  # "action" | "group"
+    action: Optional[str] = None
+    group_id: Optional[str] = None
+
+
+@dataclass
+class AbilitySlotView:
+    """A resolved slot ready for rendering / hit-testing."""
+
+    slot_index: int  # index in AbilityBarState.slots
+    kind: str  # "action" | "group"
+    ability: Ability
+    group_id: Optional[str] = None
+    group_label: Optional[str] = None
+    group_members: List[Ability] = field(default_factory=list)
+
+
+@dataclass
 class AbilityBarState:
     """
     Pure model/controller for the ability bar.
 
-    Owns:
-    - abilities: full list of Ability objects from systems/abilities
-    - order: current ordering of actions (for reordering UI)
-    - selected_index: index into `order` for the reorder UI
-    - page, page_size: paging for both the bar and the reorder UI
-    - active_action: which action is considered "selected" in gameplay
+    - Tracks the current set of abilities (from systems/abilities).
+    - Maintains a per-character layout of slots + groups.
+    - Provides paging + selection and supports grouping operations.
 
     NOTE: No pygame dependency, no drawing, no input handling.
     """
+
     abilities: List[Ability] = field(default_factory=list)
-    order: List[str] = field(default_factory=list)
-    selected_index: int = 0        # index into `order`
-    page: int = 0                  # which page of the bar is visible
-    page_size: int = 8             # logical page size; renderer may still squeeze more/less visually
-    active_action: Optional[str] = None
+    slots: List[AbilitySlot] = field(default_factory=list)
+    groups: Dict[str, AbilityGroup] = field(default_factory=dict)
+
+    selected_index: int = 0  # index into `slots` (used by the Abilities menu)
+    page: int = 0
+    page_size: int = 8
+    active_action: Optional[str] = None  # active group member action when grouped
+
+    expanded_slot_index: Optional[int] = None  # expanded group popup
+
+    # Abilities menu mode: "order" shows slots list; "group_edit" edits one group's members.
+    overlay_mode: str = "order"
+    group_edit_id: Optional[str] = None
+    group_edit_cursor: int = 0
 
     _signature: Optional[Tuple] = None  # compute_abilities_signature(game)
+    _layout_dirty: bool = False
 
     # ---- core sync ---------------------------------------------------
 
     def sync_from_game(self, game: "Game") -> None:
-        """
-        Ensure the ability list/order match the current Game state.
-
-        Rebuilds when the (generators, illuminator, custom patterns,
-        host-visible actions) signature changes.
-        """
+        """Ensure the ability list and layout match the current Game state."""
         sig = compute_abilities_signature(game)
         if sig != self._signature or not self.abilities:
             self._signature = sig
             self.abilities = build_abilities(game)
-            new_actions = [ab.action for ab in self.abilities]
 
-            # Preserve existing order where possible; append any new actions.
-            if self.order:
-                existing = [a for a in self.order if a in new_actions]
-                for a in new_actions:
-                    if a not in existing:
-                        existing.append(a)
-                self.order = existing
-            else:
-                self.order = list(new_actions)
+        actions = [ab.action for ab in self.abilities]
+        actions_set = set(actions)
 
-            # Ensure active_action is valid; default to first ability if needed.
-            if self.active_action not in self.order:
-                self.active_action = self.order[0] if self.order else None
+        layout = self._read_layout_from_character(game)
+        if not self.slots and layout:
+            self._load_layout(layout, actions_set)
+        if not self.slots:
+            self._build_default_layout(game, actions)
+            self._layout_dirty = True
 
-            self._sync_selection_to_active()
-        else:
-            # Signature hasn't changed, but keep order consistent with abilities
-            existing_actions = {ab.action for ab in self.abilities}
-            self.order = [a for a in self.order if a in existing_actions]
-            for a in [ab.action for ab in self.abilities]:
-                if a not in self.order:
-                    self.order.append(a)
+        self._prune_missing(actions_set)
+        self._add_new_actions(actions)
 
-            if self.active_action not in self.order and self.order:
-                self.active_action = self.order[0]
+        for grp in self.groups.values():
+            grp.members = [a for a in grp.members if a in actions_set]
+            if grp.active not in grp.members:
+                grp.active = grp.members[0] if grp.members else None
 
-            self._sync_selection_bounds()
+        if self.active_action not in actions_set:
+            self.active_action = self._first_active_action(actions_set)
+            self._layout_dirty = True
+
+        self._sync_selection_to_active(actions_set)
+        self._sync_overlay_bounds()
+
+        if self._layout_dirty:
+            self._write_layout_to_character(game)
+            self._layout_dirty = False
 
     def invalidate(self) -> None:
         """Force the next sync_from_game() to rebuild the abilities list."""
@@ -101,128 +135,538 @@ class AbilityBarState:
 
     @property
     def total_pages(self) -> int:
-        if not self.order or self.page_size <= 0:
+        if not self.slots or self.page_size <= 0:
             return 1
-        return max(1, (len(self.order) + self.page_size - 1) // self.page_size)
+        return max(1, (len(self.slots) + self.page_size - 1) // self.page_size)
+
+    def visible_slots(self) -> List[AbilitySlotView]:
+        """Slot views to display on the current page."""
+        if not self.slots:
+            return []
+
+        by_action: Dict[str, Ability] = {ab.action: ab for ab in self.abilities}
+        start = self.page * self.page_size
+        end = start + self.page_size
+        views: List[AbilitySlotView] = []
+
+        for slot_index, slot in enumerate(self.slots[start:end], start=start):
+            if slot.kind == "action" and slot.action:
+                ab = by_action.get(slot.action)
+                if ab is not None:
+                    views.append(AbilitySlotView(slot_index=slot_index, kind="action", ability=ab))
+                continue
+
+            if slot.kind == "group" and slot.group_id:
+                grp = self.groups.get(slot.group_id)
+                if grp is None:
+                    continue
+                members = [by_action[a] for a in grp.members if a in by_action]
+                if not members:
+                    continue
+                active = grp.active if grp.active in by_action else members[0].action
+                grp.active = active
+                views.append(
+                    AbilitySlotView(
+                        slot_index=slot_index,
+                        kind="group",
+                        ability=by_action[active],
+                        group_id=grp.id,
+                        group_label=grp.label,
+                        group_members=members,
+                    )
+                )
+
+        return views
 
     def visible_abilities(self) -> List[Ability]:
-        """
-        Abilities to display on the current page, in the current order.
-        """
-        if not self.order:
-            return []
-        start = self.page * self.page_size
-        end = start + self.page_size
-        slice_actions = self.order[start:end]
-        by_action: Dict[str, Ability] = {ab.action: ab for ab in self.abilities}
-        return [by_action[a] for a in slice_actions if a in by_action]
-
-    def active_index_on_page(self) -> Optional[int]:
-        """
-        Index *within the visible page* for the currently active action, or None.
-        """
-        if not self.active_action or not self.order:
-            return None
-        if self.active_action not in self.order:
-            return None
-        idx = self.order.index(self.active_action)
-        start = self.page * self.page_size
-        end = start + self.page_size
-        if start <= idx < end:
-            return idx - start
-        return None
+        """Compatibility helper used by existing input code."""
+        return [v.ability for v in self.visible_slots()]
 
     def action_at_index(self, index: int) -> Optional[str]:
-        if 0 <= index < len(self.order):
-            return self.order[index]
+        """Return the active action for the slot at index (or None)."""
+        if not (0 <= index < len(self.slots)):
+            return None
+        slot = self.slots[index]
+        if slot.kind == "action":
+            return slot.action
+        if slot.kind == "group" and slot.group_id:
+            grp = self.groups.get(slot.group_id)
+            return grp.active if grp else None
+        return None
+
+    def slot_index_for_action(self, action: str) -> Optional[int]:
+        """Return the slot index that contains this action (directly or in a group)."""
+        if not action:
+            return None
+        for i, slot in enumerate(self.slots):
+            if slot.kind == "action" and slot.action == action:
+                return i
+            if slot.kind == "group" and slot.group_id:
+                grp = self.groups.get(slot.group_id)
+                if grp and action in grp.members:
+                    return i
         return None
 
     # ---- activation / navigation API --------------------------------
 
     def set_active(self, action: str) -> None:
-        """
-        Mark an action as the currently active ability, and sync selection/page.
-        """
-        if action not in self.order:
+        """Mark an action as active (updates group active if grouped)."""
+        idx = self.slot_index_for_action(action)
+        if idx is None:
             return
+        slot = self.slots[idx]
+        if slot.kind == "group" and slot.group_id:
+            grp = self.groups.get(slot.group_id)
+            if grp and action in grp.members:
+                grp.active = action
+                self._layout_dirty = True
         self.active_action = action
-        self._sync_selection_to_active()
-
-    def select_next(self) -> None:
-        if not self.order:
-            return
-        self.selected_index = (self.selected_index + 1) % len(self.order)
-        self.active_action = self.order[self.selected_index]
+        self.selected_index = idx
         self._sync_page_from_selection()
+        self.expanded_slot_index = None
 
-    def select_prev(self) -> None:
-        if not self.order:
+    def toggle_group_expanded(self, slot_index: int) -> None:
+        """Toggle the expanded popup for a group slot."""
+        if not (0 <= slot_index < len(self.slots)):
+            self.expanded_slot_index = None
             return
-        self.selected_index = (self.selected_index - 1) % len(self.order)
-        self.active_action = self.order[self.selected_index]
-        self._sync_page_from_selection()
+        slot = self.slots[slot_index]
+        if slot.kind != "group":
+            self.expanded_slot_index = None
+            return
+        self.expanded_slot_index = None if self.expanded_slot_index == slot_index else slot_index
+
+    def collapse_expanded(self) -> None:
+        self.expanded_slot_index = None
 
     def move_selection(self, delta: int) -> None:
-        """
-        Move the reorder cursor up/down in the order list (used by reorder UI).
-        """
-        if not self.order or not delta:
+        """Move the Abilities menu cursor up/down in the slot list."""
+        if not self.slots or not delta:
             return
-        self.selected_index = max(0, min(len(self.order) - 1, self.selected_index + delta))
+        self.selected_index = max(0, min(len(self.slots) - 1, self.selected_index + delta))
         self._sync_page_from_selection()
 
     def move_selected_item(self, dx: int) -> None:
-        """
-        Swap the selected ability with its neighbor (←/→) in the order list.
-        """
-        if not self.order or dx == 0:
+        """Swap the selected slot with its neighbor in the slot list."""
+        if not self.slots or dx == 0:
             return
         new_idx = self.selected_index + (1 if dx > 0 else -1)
-        if 0 <= new_idx < len(self.order):
-            self.order[self.selected_index], self.order[new_idx] = (
-                self.order[new_idx],
-                self.order[self.selected_index],
-            )
-            self.selected_index = new_idx
-            self._sync_page_from_selection()
+        if not (0 <= new_idx < len(self.slots)):
+            return
+        self.slots[self.selected_index], self.slots[new_idx] = self.slots[new_idx], self.slots[self.selected_index]
+        self.selected_index = new_idx
+        self._layout_dirty = True
+        self._sync_page_from_selection()
 
     def prev_page(self) -> None:
         total = self.total_pages
         if total <= 1:
             return
         self.page = (self.page - 1) % total
+        self.expanded_slot_index = None
 
     def next_page(self) -> None:
         total = self.total_pages
         if total <= 1:
             return
         self.page = (self.page + 1) % total
+        self.expanded_slot_index = None
 
     # ---- internal helpers -------------------------------------------
 
-    def _sync_selection_to_active(self) -> None:
-        if self.active_action in self.order:
-            self.selected_index = self.order.index(self.active_action)
-        else:
-            self.selected_index = min(self.selected_index, max(0, len(self.order) - 1))
+    def _build_default_layout(self, game: "Game", actions: List[str]) -> None:
+        """Create the default grouped layout from the current abilities list."""
+        self.groups = {}
+        self.slots = []
+        self.overlay_mode = "order"
+        self.group_edit_id = None
+        self.group_edit_cursor = 0
+
+        actions_set = set(actions)
+
+        default_groups: Dict[str, Dict[str, Any]] = {
+            "generators": {
+                "label": "Generators",
+                "members": [a for a in actions if a in {"koch", "zigzag", "branch"} or a.startswith("custom")],
+                "active": getattr(getattr(game, "character", None), "generator", None),
+            },
+            "activators": {
+                "label": "Activators",
+                "members": [a for a in actions if a in {"activate_all", "activate_seed"}],
+                "active": "activate_all"
+                if getattr(getattr(game, "character", None), "illuminator", "radius") == "radius"
+                else "activate_seed",
+            },
+            "coloring": {
+                "label": "Coloring",
+                "members": [a for a in actions if a in {"rainbow_edges", "verdant_edges", "winter_hue"}],
+                "active": "rainbow_edges",
+            },
+            "color_activators": {
+                "label": "Color Activators",
+                "members": [a for a in actions if a in {"freeze", "ignite", "regrow"}],
+                "active": "freeze",
+            },
+        }
+
+        for gid, spec in default_groups.items():
+            members = [a for a in spec["members"] if a in actions_set]
+            if not members:
+                continue
+            active = spec.get("active")
+            if active not in members:
+                active = members[0]
+            self.groups[gid] = AbilityGroup(id=gid, label=spec["label"], members=members, active=active)
+
+        def group_for_action(action: str) -> Optional[str]:
+            if (action in {"koch", "zigzag", "branch"} or action.startswith("custom")) and "generators" in self.groups:
+                return "generators"
+            if action in {"activate_all", "activate_seed"} and "activators" in self.groups:
+                return "activators"
+            if action in {"rainbow_edges", "verdant_edges", "winter_hue"} and "coloring" in self.groups:
+                return "coloring"
+            if action in {"freeze", "ignite", "regrow"} and "color_activators" in self.groups:
+                return "color_activators"
+            return None
+
+        added_groups: set[str] = set()
+        for action in actions:
+            gid = group_for_action(action)
+            if gid:
+                if gid not in added_groups:
+                    self.slots.append(AbilitySlot(kind="group", group_id=gid))
+                    added_groups.add(gid)
+                continue
+            self.slots.append(AbilitySlot(kind="action", action=action))
+
+        self.active_action = self._first_active_action(actions_set)
+        self._sync_selection_to_active(actions_set)
+
+    def _prune_missing(self, actions_set: set[str]) -> None:
+        new_slots: List[AbilitySlot] = []
+        for slot in self.slots:
+            if slot.kind == "action":
+                if slot.action and slot.action in actions_set:
+                    new_slots.append(slot)
+                else:
+                    self._layout_dirty = True
+                continue
+            if slot.kind == "group":
+                gid = slot.group_id
+                grp = self.groups.get(gid) if gid else None
+                if not grp:
+                    self._layout_dirty = True
+                    continue
+                grp.members = [a for a in grp.members if a in actions_set]
+                if not grp.members:
+                    self.groups.pop(gid, None)
+                    self._layout_dirty = True
+                    continue
+                new_slots.append(slot)
+                continue
+        self.slots = new_slots
+
+        referenced = {s.group_id for s in self.slots if s.kind == "group" and s.group_id}
+        for gid in list(self.groups.keys()):
+            if gid not in referenced:
+                self.groups.pop(gid, None)
+                self._layout_dirty = True
+
+    def _add_new_actions(self, actions: List[str]) -> None:
+        present: set[str] = set()
+        for slot in self.slots:
+            if slot.kind == "action" and slot.action:
+                present.add(slot.action)
+            elif slot.kind == "group" and slot.group_id:
+                grp = self.groups.get(slot.group_id)
+                if grp:
+                    present.update(grp.members)
+
+        for action in actions:
+            if action in present:
+                continue
+            if (action in {"koch", "zigzag", "branch"} or action.startswith("custom")) and "generators" in self.groups:
+                grp = self.groups["generators"]
+                grp.members.append(action)
+                if grp.active is None:
+                    grp.active = action
+                self._layout_dirty = True
+                continue
+            self.slots.append(AbilitySlot(kind="action", action=action))
+            self._layout_dirty = True
+
+    def _first_active_action(self, actions_set: set[str]) -> Optional[str]:
+        if not self.slots:
+            return None
+        slot = self.slots[0]
+        if slot.kind == "action" and slot.action in actions_set:
+            return slot.action
+        if slot.kind == "group" and slot.group_id:
+            grp = self.groups.get(slot.group_id)
+            if grp and grp.active in actions_set:
+                return grp.active
+            if grp and grp.members:
+                return grp.members[0]
+        return None
+
+    def _sync_selection_to_active(self, actions_set: set[str]) -> None:
+        if self.active_action:
+            idx = self.slot_index_for_action(self.active_action)
+            if idx is not None:
+                self.selected_index = idx
+                self._sync_page_from_selection()
+                return
+        self.selected_index = max(0, min(self.selected_index, max(0, len(self.slots) - 1)))
+        act = self.action_at_index(self.selected_index)
+        if act in actions_set:
+            self.active_action = act
         self._sync_page_from_selection()
 
     def _sync_page_from_selection(self) -> None:
-        if self.page_size > 0 and self.order:
+        if self.page_size > 0 and self.slots:
             self.page = self.selected_index // self.page_size
         else:
             self.page = 0
 
-    def _sync_selection_bounds(self) -> None:
-        if not self.order:
+    def _sync_overlay_bounds(self) -> None:
+        if not self.slots:
             self.selected_index = 0
             self.page = 0
+            self.overlay_mode = "order"
+            self.group_edit_id = None
+            self.group_edit_cursor = 0
+            self.expanded_slot_index = None
             return
-        if self.selected_index >= len(self.order):
-            self.selected_index = len(self.order) - 1
-        if self.selected_index < 0:
-            self.selected_index = 0
-        self._sync_page_from_selection()
+        self.selected_index = max(0, min(len(self.slots) - 1, self.selected_index))
+        self.page = max(0, min(self.total_pages - 1, self.page))
+        if self.overlay_mode not in {"order", "group_edit"}:
+            self.overlay_mode = "order"
+        if self.overlay_mode == "group_edit" and self.group_edit_id not in self.groups:
+            self.overlay_mode = "order"
+            self.group_edit_id = None
+            self.group_edit_cursor = 0
+
+    def _read_layout_from_character(self, game: "Game") -> Optional[dict]:
+        char = getattr(game, "character", None)
+        layout = getattr(char, "ability_layout", None) if char is not None else None
+        if not isinstance(layout, dict):
+            return None
+        if layout.get("version") != 1:
+            return None
+        return layout
+
+    def _load_layout(self, layout: dict, actions_set: set[str]) -> None:
+        self.groups = {}
+        self.slots = []
+
+        groups = layout.get("groups", {}) or {}
+        if isinstance(groups, dict):
+            for gid, g in groups.items():
+                if not isinstance(g, dict):
+                    continue
+                label = str(g.get("label", gid))
+                members = [str(a) for a in (g.get("members") or []) if isinstance(a, str)]
+                active = g.get("active")
+                active = str(active) if isinstance(active, str) else None
+                members = [a for a in members if a in actions_set]
+                if not members:
+                    continue
+                if active not in members:
+                    active = members[0]
+                self.groups[str(gid)] = AbilityGroup(id=str(gid), label=label, members=members, active=active)
+
+        slots = layout.get("slots", []) or []
+        if isinstance(slots, list):
+            for s in slots:
+                if not isinstance(s, dict):
+                    continue
+                kind = s.get("kind")
+                if kind == "action":
+                    act = s.get("action")
+                    if isinstance(act, str) and act in actions_set:
+                        self.slots.append(AbilitySlot(kind="action", action=act))
+                elif kind == "group":
+                    gid = s.get("id")
+                    if isinstance(gid, str) and gid in self.groups:
+                        self.slots.append(AbilitySlot(kind="group", group_id=gid))
+
+    def _write_layout_to_character(self, game: "Game") -> None:
+        char = getattr(game, "character", None)
+        if char is None:
+            return
+        layout = {
+            "version": 1,
+            "slots": [
+                {"kind": "action", "action": s.action}
+                if s.kind == "action"
+                else {"kind": "group", "id": s.group_id}
+                for s in self.slots
+            ],
+            "groups": {
+                gid: {"label": grp.label, "members": list(grp.members), "active": grp.active}
+                for gid, grp in self.groups.items()
+            },
+        }
+        try:
+            char.ability_layout = layout  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    # ---- Abilities menu: grouping -----------------------------------
+
+    def begin_group_edit_for_selected(self) -> None:
+        """Enter group editing for the selected slot (creates a group if needed)."""
+        if not (0 <= self.selected_index < len(self.slots)):
+            return
+        slot = self.slots[self.selected_index]
+
+        if slot.kind == "group" and slot.group_id and slot.group_id in self.groups:
+            self.overlay_mode = "group_edit"
+            self.group_edit_id = slot.group_id
+            self.group_edit_cursor = 0
+            return
+
+        if slot.kind == "action" and slot.action:
+            gid = self._new_custom_group_id()
+            self.groups[gid] = AbilityGroup(
+                id=gid,
+                label=f"Group {gid.split('_')[-1]}",
+                members=[slot.action],
+                active=slot.action,
+            )
+            self.slots[self.selected_index] = AbilitySlot(kind="group", group_id=gid)
+            self.overlay_mode = "group_edit"
+            self.group_edit_id = gid
+            self.group_edit_cursor = 0
+            self._layout_dirty = True
+
+    def end_group_edit(self) -> None:
+        self.overlay_mode = "order"
+        self.group_edit_id = None
+        self.group_edit_cursor = 0
+
+    def dissolve_selected_group(self) -> None:
+        """Ungroup the selected group slot into individual action slots."""
+        if not (0 <= self.selected_index < len(self.slots)):
+            return
+        slot = self.slots[self.selected_index]
+        if slot.kind != "group" or not slot.group_id:
+            return
+        grp = self.groups.get(slot.group_id)
+        if grp is None:
+            return
+
+        members = list(grp.members)
+        self.groups.pop(slot.group_id, None)
+        self.slots[self.selected_index:self.selected_index + 1] = [
+            AbilitySlot(kind="action", action=a) for a in members
+        ]
+        self.expanded_slot_index = None
+        if self.group_edit_id == slot.group_id:
+            self.end_group_edit()
+        self._layout_dirty = True
+
+    def group_edit_move_cursor(self, delta: int) -> None:
+        actions = self._all_actions_in_order()
+        if not actions:
+            self.group_edit_cursor = 0
+            return
+        self.group_edit_cursor = max(0, min(len(actions) - 1, self.group_edit_cursor + delta))
+
+    def group_edit_toggle_current(self) -> None:
+        """Toggle the highlighted action in/out of the editing group."""
+        gid = self.group_edit_id
+        if not gid:
+            return
+        grp = self.groups.get(gid)
+        if grp is None:
+            return
+
+        actions = self._all_actions_in_order()
+        if not actions:
+            return
+        action = actions[self.group_edit_cursor]
+
+        group_slot_idx = self._slot_index_for_group(gid)
+        if group_slot_idx is None:
+            group_slot_idx = self.selected_index
+
+        if action in grp.members:
+            # Prevent removing the final member.
+            if len(grp.members) <= 1:
+                return
+            grp.members = [a for a in grp.members if a != action]
+            if grp.active == action:
+                grp.active = grp.members[0] if grp.members else None
+            # Reinsert as an ungrouped slot directly after the group.
+            if not any(s.kind == "action" and s.action == action for s in self.slots):
+                self.slots.insert(group_slot_idx + 1, AbilitySlot(kind="action", action=action))
+        else:
+            # Remove from any other group, and remove any standalone slot.
+            self._remove_action_from_other_groups(action, keep_group_id=gid)
+            self.slots = [s for s in self.slots if not (s.kind == "action" and s.action == action)]
+            grp.members.append(action)
+            if grp.active is None:
+                grp.active = action
+
+        # Keep selection anchored on the group slot even if indices shift.
+        new_group_idx = self._slot_index_for_group(gid)
+        if new_group_idx is not None:
+            self.selected_index = new_group_idx
+            self._sync_page_from_selection()
+
+        self._layout_dirty = True
+
+    def group_edit_set_active(self) -> None:
+        """Set the group's active member to the highlighted action (if present)."""
+        gid = self.group_edit_id
+        if not gid:
+            return
+        grp = self.groups.get(gid)
+        if grp is None:
+            return
+        actions = self._all_actions_in_order()
+        if not actions:
+            return
+        action = actions[self.group_edit_cursor]
+        if action in grp.members:
+            grp.active = action
+            self.active_action = action
+            self._layout_dirty = True
+
+    def _slot_index_for_group(self, gid: str) -> Optional[int]:
+        for i, slot in enumerate(self.slots):
+            if slot.kind == "group" and slot.group_id == gid:
+                return i
+        return None
+
+    def _remove_action_from_other_groups(self, action: str, *, keep_group_id: Optional[str] = None) -> None:
+        """Ensure actions are in at most one group by removing from other groups."""
+        for gid, grp in list(self.groups.items()):
+            if keep_group_id and gid == keep_group_id:
+                continue
+            if action not in grp.members:
+                continue
+            grp.members = [a for a in grp.members if a != action]
+            if grp.active == action:
+                grp.active = grp.members[0] if grp.members else None
+            if not grp.members:
+                # Remove empty group and its slot.
+                self.groups.pop(gid, None)
+                self.slots = [s for s in self.slots if not (s.kind == "group" and s.group_id == gid)]
+            self._layout_dirty = True
+
+    def _new_custom_group_id(self) -> str:
+        i = 1
+        while True:
+            gid = f"custom_group_{i}"
+            if gid not in self.groups:
+                return gid
+            i += 1
+
+    def _all_actions_in_order(self) -> List[str]:
+        # Use the host action order from systems/abilities.
+        return [ab.action for ab in self.abilities]
 
 
 # ---------------------------------------------------------------------
@@ -333,13 +777,18 @@ class AbilityBarRenderer:
 
         for ab in bar_state.abilities:
             # We deliberately only clear the attributes we own.
-            for attr in ("rect", "plus_rect", "minus_rect", "gear_rect"):
+            for attr in ("rect", "plus_rect", "minus_rect", "gear_rect", "group_arrow_rect"):
                 if hasattr(ab, attr):
                     setattr(ab, attr, None)
 
-            # Reset sub-button mapping per frame
-            # (even if it didn't exist before, this is safe)
+            # Reset per-frame hit-test maps (safe even if newly created).
             ab.sub_button_rects = {}  # type: ignore[attr-defined]
+            ab.group_member_rects = {}  # type: ignore[attr-defined]
+
+            # Slot/group metadata (renderer-owned, for click routing)
+            ab._bar_slot_index = None  # type: ignore[attr-defined]
+            ab._bar_slot_kind = None  # type: ignore[attr-defined]
+            ab._bar_group_id = None  # type: ignore[attr-defined]
 
 
         # --- draw bar background --------------------------------------
@@ -407,11 +856,19 @@ class AbilityBarRenderer:
         self.page_prev_rects.append(up_rect_r.inflate(6, 6))
         self.page_next_rects.append(down_rect_r.inflate(6, 6))
 
-        # --- visible abilities ----------------------------------------
-        vis = bar_state.visible_abilities()
-        slot_rects = self._layout_bar(bar_rect, len(vis))
+        # --- visible slots --------------------------------------------
+        vis_slots = bar_state.visible_slots()
+        slot_rects = self._layout_bar(bar_rect, len(vis_slots))
 
-        for slot_i, (ability, rect) in enumerate(zip(vis, slot_rects), start=1):
+        for slot_i, (slot_view, rect) in enumerate(zip(vis_slots, slot_rects), start=1):
+            ability = slot_view.ability
+            is_group = slot_view.kind == "group"
+
+            # Attach slot metadata for hit-testing/click routing
+            ability._bar_slot_index = slot_view.slot_index  # type: ignore[attr-defined]
+            ability._bar_slot_kind = slot_view.kind  # type: ignore[attr-defined]
+            ability._bar_group_id = slot_view.group_id  # type: ignore[attr-defined]
+
             # Attach the main rect for hit-testing
             ability.rect = rect
 
@@ -445,12 +902,17 @@ class AbilityBarRenderer:
             text_y = rect.y + (rect.height - text.get_height()) // 2
             surface.blit(text, (text_x, text_y))
 
-            # (rest of sub-button code unchanged)
-
-            text = small_font.render(label, True, fg)
-            text_x = icon_area.right + 4
-            text_y = rect.y + (rect.height - text.get_height()) // 2
-            surface.blit(text, (text_x, text_y))
+            # Group expand button ("^") occupies the right-most portion of the slot.
+            # Sub-buttons are laid out to the left of this region.
+            arrow_rect = None
+            if is_group:
+                arrow_w = max(24, int(rect.w * 0.20))
+                arrow_rect = pygame.Rect(rect.right - arrow_w, rect.y, arrow_w, rect.h)
+                ability.group_arrow_rect = arrow_rect  # type: ignore[attr-defined]
+                pygame.draw.rect(surface, (30, 30, 50), arrow_rect)
+                pygame.draw.rect(surface, (90, 90, 120), arrow_rect, 1)
+                arrow_surf = small_font.render("^", True, fg)
+                surface.blit(arrow_surf, arrow_surf.get_rect(center=arrow_rect.center))
 
             # Sub-buttons (from ACTION_SUB_BUTTONS metadata)
             sub_specs = ACTION_SUB_BUTTONS.get(ability.action, [])
@@ -458,7 +920,7 @@ class AbilityBarRenderer:
                 sub_size = min(rect.height - 10, 22)
                 sub_size = max(14, sub_size)
                 sub_gap = 4
-                cur_x = rect.right - 4
+                cur_x = (arrow_rect.left if arrow_rect is not None else rect.right) - 4
 
                 # Lay out sub-buttons from right to left
                 for spec in reversed(sub_specs):
@@ -494,6 +956,44 @@ class AbilityBarRenderer:
                         ability.gear_rect = sub_rect  # type: ignore[attr-defined]
 
                     cur_x -= sub_gap
+
+            # Expanded group popup (stack members vertically above the slot)
+            if is_group and bar_state.expanded_slot_index == slot_view.slot_index:
+                popup_member_rects: Dict[str, pygame.Rect] = {}
+                popup_h = rect.h
+                # Display in the group's member order; first item sits directly above the slot.
+                for i, member in enumerate(slot_view.group_members):
+                    y = rect.y - (i + 1) * popup_h
+                    if y + popup_h < 0:
+                        break
+                    m_rect = pygame.Rect(rect.x, y, rect.w, popup_h)
+                    popup_member_rects[member.action] = m_rect
+
+                    m_active = member.action == ability.action
+                    m_bg = (45, 35, 55) if m_active else (20, 20, 30)
+                    pygame.draw.rect(surface, m_bg, m_rect)
+                    pygame.draw.rect(surface, fg, m_rect, 1)
+
+                    m_icon = pygame.Rect(m_rect.x + 3, m_rect.y + 3, m_rect.height - 6, m_rect.height - 6)
+                    if icon_drawer is not None:
+                        icon_drawer(surface, m_icon, member, game)
+                    else:
+                        pygame.draw.rect(surface, (90, 90, 120), m_icon, 1)
+
+                    m_label = member.name
+                    if member.action == "activate_all":
+                        try:
+                            radius = game.get_param_value("activate_all", "radius")
+                            m_label = f"Activate R ({radius})"
+                        except Exception:
+                            m_label = "Activate R"
+
+                    m_text = small_font.render(m_label, True, fg)
+                    m_text_x = m_icon.right + 4
+                    m_text_y = m_rect.y + (m_rect.height - m_text.get_height()) // 2
+                    surface.blit(m_text, (m_text_x, m_text_y))
+
+                ability.group_member_rects = popup_member_rects  # type: ignore[attr-defined]
 
         # After drawing the base bar, optionally paint the reorder overlay on top.
         if getattr(game, "ability_reorder_open", False):
@@ -535,12 +1035,17 @@ class AbilityBarRenderer:
         pygame.draw.rect(surface, (10, 10, 25), panel)
         pygame.draw.rect(surface, (200, 200, 240), panel, 2)
 
-        # Title
-        title_surf = small_font.render("Ability order", True, (255, 255, 210))
+        # Title + instructions
+        title = "Abilities"
+        if bar_state.overlay_mode == "group_edit" and bar_state.group_edit_id in bar_state.groups:
+            title = f"Edit group: {bar_state.groups[bar_state.group_edit_id].label}"
+        title_surf = small_font.render(title, True, (255, 255, 210))
         surface.blit(title_surf, (panel.x + 10, panel.y + 8))
 
-        # Instructions
-        instructions = "↑/↓ move, ←/→ swap, ENTER confirm, ESC cancel"
+        if bar_state.overlay_mode == "group_edit":
+            instructions = "Up/Down select, Space toggle, A set active, Enter/Esc back"
+        else:
+            instructions = "Up/Down select, Left/Right move, G group/edit, U ungroup, Enter close, Esc close"
         instr_surf = small_font.render(instructions, True, (180, 180, 210))
         surface.blit(instr_surf, (panel.x + 10, panel.bottom - instr_surf.get_height() - 8))
 
@@ -549,22 +1054,86 @@ class AbilityBarRenderer:
         line_h = small_font.get_height() + 4
         max_rows = max(1, (panel.bottom - 8 - instr_surf.get_height() - 8 - list_top) // line_h)
 
-        # All abilities in current order
-        actions = bar_state.order
         abilities_by_action: Dict[str, Ability] = {ab.action: ab for ab in bar_state.abilities}
 
-        start_idx = 0
-        if bar_state.selected_index >= max_rows:
-            # Simple vertical scrolling so the cursor is always visible
-            start_idx = bar_state.selected_index - max_rows + 1
+        if bar_state.overlay_mode == "group_edit" and bar_state.group_edit_id in bar_state.groups:
+            gid = bar_state.group_edit_id
+            grp = bar_state.groups[gid]
 
-        for row, idx in enumerate(range(start_idx, min(len(actions), start_idx + max_rows))):
-            action_name = actions[idx]
-            ab = abilities_by_action.get(action_name)
-            label = ab.name if ab else action_name
-            label = f"{idx + 1}. {label}"
+            # Precompute where actions currently live (for helpful hints).
+            action_to_group: Dict[str, str] = {}
+            for ogid, og in bar_state.groups.items():
+                for a in og.members:
+                    action_to_group[a] = ogid
 
-            is_selected = (idx == bar_state.selected_index)
+            actions = [ab.action for ab in bar_state.abilities]
+            cursor = bar_state.group_edit_cursor
+            start_idx = max(0, cursor - max_rows + 1) if cursor >= max_rows else 0
+
+            for row, idx in enumerate(range(start_idx, min(len(actions), start_idx + max_rows))):
+                action_name = actions[idx]
+                ab = abilities_by_action.get(action_name)
+                name = ab.name if ab else action_name
+
+                in_group = action_name in grp.members
+                is_active = (action_name == grp.active)
+                prefix = "[x]" if in_group else "[ ]"
+
+                hint = ""
+                other_gid = action_to_group.get(action_name)
+                if other_gid and other_gid != gid and not in_group:
+                    hint = f" (in {bar_state.groups.get(other_gid, AbilityGroup(other_gid, other_gid)).label})"
+
+                suffix = " (active)" if is_active else ""
+                label = f"{idx + 1}. {prefix} {name}{suffix}{hint}"
+
+                is_selected = (idx == cursor)
+                col = (255, 225, 160) if is_selected else (210, 210, 230)
+                text = small_font.render(label, True, col)
+                y = list_top + row * line_h
+                x = panel.x + 24
+                surface.blit(text, (x, y))
+
+                if is_selected:
+                    tri_y = y + text.get_height() // 2
+                    pygame.draw.polygon(
+                        surface,
+                        col,
+                        [
+                            (panel.x + 10, tri_y),
+                            (panel.x + 18, tri_y - 5),
+                            (panel.x + 18, tri_y + 5),
+                        ],
+                    )
+
+            return
+
+        # Slot ordering mode (groups + single actions)
+        slots = bar_state.slots
+        cursor = bar_state.selected_index
+        start_idx = max(0, cursor - max_rows + 1) if cursor >= max_rows else 0
+
+        for row, idx in enumerate(range(start_idx, min(len(slots), start_idx + max_rows))):
+            slot = slots[idx]
+            label_txt = ""
+
+            if slot.kind == "action":
+                action_name = slot.action or ""
+                ab = abilities_by_action.get(action_name)
+                label_txt = ab.name if ab else action_name
+            elif slot.kind == "group":
+                grp = bar_state.groups.get(slot.group_id or "")
+                if grp is None:
+                    label_txt = "[group]"
+                else:
+                    active_action = grp.active or (grp.members[0] if grp.members else "")
+                    ab = abilities_by_action.get(active_action)
+                    active_name = ab.name if ab else active_action
+                    label_txt = f"[{grp.label}] {active_name} ({len(grp.members)})"
+
+            label = f"{idx + 1}. {label_txt}"
+
+            is_selected = (idx == cursor)
             col = (255, 225, 160) if is_selected else (210, 210, 230)
             text = small_font.render(label, True, col)
             y = list_top + row * line_h
@@ -572,7 +1141,6 @@ class AbilityBarRenderer:
             surface.blit(text, (x, y))
 
             if is_selected:
-                # Simple pointer triangle
                 tri_y = y + text.get_height() // 2
                 pygame.draw.polygon(
                     surface,
@@ -599,12 +1167,15 @@ class AbilityBarHit:
     kind:
       - "ability": clicked an ability slot (main body)
       - "sub_button": clicked a sub-button (plus/minus/gear/etc.)
+      - "group_arrow": clicked the "^" expand region on a grouped slot
+      - "group_pick": clicked a member in an expanded group popup
       - "page_prev" / "page_next": clicked any of the paging arrows
       - "open_reorder": clicked the left "Abilities" label/button
     """
     kind: str
     ability: Optional[Ability] = None
     sub_meta: Optional[SubButtonMeta] = None
+    group_action: Optional[str] = None
 
 
 class AbilityBarWidget:
@@ -681,11 +1252,24 @@ class AbilityBarWidget:
             if r.collidepoint((x, y)):
                 return AbilityBarHit(kind="page_next")
 
-        # Ability slots + sub-buttons
-        for ability in bar_state.visible_abilities():
+        # Expanded group popup takes precedence (it can overlap the dungeon view).
+        for slot_view in bar_state.visible_slots():
+            ability = slot_view.ability
+            member_rects = getattr(ability, "group_member_rects", None) or {}
+            for action, rect in member_rects.items():
+                if rect and rect.collidepoint((x, y)):
+                    return AbilityBarHit(kind="group_pick", ability=ability, group_action=action)
+
+        # Ability slots + sub-buttons + group arrow
+        for slot_view in bar_state.visible_slots():
+            ability = slot_view.ability
             rect = getattr(ability, "rect", None)
             if rect is None or not rect.collidepoint((x, y)):
                 continue
+
+            arrow_rect = getattr(ability, "group_arrow_rect", None)
+            if arrow_rect is not None and arrow_rect.collidepoint((x, y)):
+                return AbilityBarHit(kind="group_arrow", ability=ability)
 
             mapping = getattr(ability, "sub_button_rects", None) or {}
             for sub_id, sub_rect in mapping.items():
@@ -698,5 +1282,9 @@ class AbilityBarWidget:
                     return AbilityBarHit(kind="sub_button", ability=ability, sub_meta=meta)
 
             return AbilityBarHit(kind="ability", ability=ability)
+
+        # If a group popup is open, clicking elsewhere collapses it.
+        if bar_state.expanded_slot_index is not None:
+            bar_state.collapse_expanded()
 
         return None
