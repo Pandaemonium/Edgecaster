@@ -211,14 +211,17 @@ def _resolve_body_view_for_zoom_path(owner: object | None, zoom_stack: list[str]
         except Exception:
             nx, ny = 0.0, 0.0
 
-        # Node size controls how large the embedded chart is (default 1.0).
+        # Node "size" controls *how far we zoom in* when entering this node.
+        # Larger size => deeper zoom => embedded chart is smaller in parent/world units.
         props = node.get("props") if isinstance(node.get("props"), dict) else {}
         try:
-            nscale = float(props.get("size", 1.0) or 1.0)
+            size = float(props.get("size", 1.0) or 1.0)
         except Exception:
-            nscale = 1.0
-        if nscale <= 0.0:
-            nscale = 1.0
+            size = 1.0
+        if size <= 0.0:
+            size = 1.0
+
+        nscale = 1.0 / size
 
         # Update accumulated embedding: child chart origin is at parent node position.
         offset_x += scale * nx
@@ -240,6 +243,84 @@ def _resolve_body_view_for_zoom_path(owner: object | None, zoom_stack: list[str]
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
 
     return schema, (float(offset_x), float(offset_y)), float(scale)
+
+
+def _resolve_body_view_chain_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> list[tuple[dict, tuple[float, float], float]]:
+    """Resolve a chain of embedded schemas along the zoom path.
+
+    Returns a list of (schema, embed_offset_u, embed_scale_u) from root -> active.
+    Each entry is already embedded into the same world-space chart as the root.
+
+    This is intentionally *render-only* plumbing for Phase 2 (ghost layers).
+    Camera fitting and interaction should still be computed from the active schema only.
+    """
+    try:
+        schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
+    except Exception:
+        schema = {"root": None, "nodes": {}}
+
+    if not isinstance(schema, dict):
+        schema = {"root": None, "nodes": {}}
+    if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
+        schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+
+    offset_x = 0.0
+    offset_y = 0.0
+    scale = 1.0
+
+    chain: list[tuple[dict, tuple[float, float], float]] = [(schema, (offset_x, offset_y), scale)]
+
+    zs = list(zoom_stack) if zoom_stack else []
+    for nid in zs:
+        nid = str(nid)
+        nodes = schema.get("nodes", {}) or {}
+        node = nodes.get(nid)
+        if not isinstance(node, dict):
+            break
+
+        # Local position of the *embedding node* in the current chart.
+        layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+        try:
+            nx = float(layout.get("x", 0.0) or 0.0)
+            ny = float(layout.get("y", 0.0) or 0.0)
+        except Exception:
+            nx, ny = 0.0, 0.0
+
+        # Node "size" controls *how far we zoom in* when entering this node.
+        # Larger size => deeper zoom => embedded chart is smaller in parent/world units.
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        try:
+            size = float(props.get("size", 1.0) or 1.0)
+        except Exception:
+            size = 1.0
+        if size <= 0.0:
+            size = 1.0
+
+        nscale = 1.0 / size
+
+        # Update accumulated embedding: child chart origin is at parent node position.
+        offset_x += scale * nx
+        offset_y += scale * ny
+        scale *= nscale
+
+        proto = node.get("proto")
+        if not proto:
+            break
+
+        try:
+            schema = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+            break
+
+        if not isinstance(schema, dict):
+            schema = {"root": None, "nodes": {}}
+        if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
+            schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+
+        chain.append((schema, (float(offset_x), float(offset_y)), float(scale)))
+
+    return chain
 
 
 def _embed_positions(pos_local_u: dict[str, tuple[float, float]], offset_u: tuple[float, float], scale: float) -> dict[str, tuple[float, float]]:
@@ -1248,7 +1329,7 @@ class EntityPreviewWidget(Widget):
                 if root_scale is None or float(root_scale) <= 1e-6:
                     root_scale = float(base_scale) if float(base_scale) > 1e-6 else 1.0
 
-                zoom_mul = float(root_scale) / float(cam_scale)
+                zoom_mul = float(cam_scale) / float(root_scale)
             except Exception:
                 zoom_mul = 1.0
 
@@ -1347,7 +1428,333 @@ class BodyPlanGraphWidget(Widget):
         self._last_click_nid: str | None = None
         self._last_click_ms: int = 0
 
+    # ----------------------------
+    # Rendering
+    # ----------------------------
 
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
+            return
+
+        scene = ctx.scene
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            try:
+                setattr(scene, "_body_overlay_panel_surface", None)
+            except Exception:
+                pass
+            return
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        # Reserve a region that mostly covers the glyph area, not the header/footer text.
+        r = self.rect
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+        if region.w <= 10 or region.h <= 10:
+            try:
+                setattr(scene, "_body_overlay_panel_surface", None)
+            except Exception:
+                pass
+            return
+
+        # Chain (root -> ... -> active). Active schema is last.
+        try:
+            chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []))
+            if not chain:
+                chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+        except Exception:
+            chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+
+        schema, embed_off_u, embed_scale_u = chain[-1]
+
+        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+
+        # Camera: active schema only (ghosts excluded by design).
+        region_local = pygame.Rect(0, 0, region.w, region.h)
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+
+        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+        scale = float(cam_scale)
+        node_size = int(max(18, min(56, scale * 0.45)))
+        half = node_size // 2
+
+        hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
+        alpha = 150 if hovered_right else 70
+
+        drag_active = bool(getattr(scene, "_drag_active", False))
+        drag_kind = getattr(scene, "_drag_target_kind", None) if drag_active else None
+        drag_node = getattr(scene, "_drag_target_node_id", None) if drag_active else None
+
+        fg = getattr(scene, "fg", (230, 230, 230))
+        hilite = getattr(scene, "hilite", (255, 255, 100))
+
+        def _half_mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float = 0.7) -> tuple[int, int, int]:
+            def ch(i: int) -> int:
+                v = int(a[i] + (b[i] - a[i]) * t)
+                return 0 if v < 0 else 255 if v > 255 else v
+            return (ch(0), ch(1), ch(2))
+
+        half_yellow = _half_mix(tuple(fg[:3]), tuple(hilite[:3]), 0.7)
+
+        # Panel-sized overlay (IMPORTANT: panel coords, not region-local coords).
+        overlay = pygame.Surface(ctx.surface.get_size(), pygame.SRCALPHA)
+        overlay.set_clip(region)
+
+        # ----------------------------
+        # Ghost layers: parents only
+        # ----------------------------
+        if len(chain) > 1:
+            def _ghost_alpha(base_alpha: int, dist: int) -> int:
+                try:
+                    a = float(base_alpha) * (0.55 ** max(1, int(dist)))
+                    return int(max(10, min(255, a)))
+                except Exception:
+                    return int(max(10, min(255, base_alpha // 3)))
+
+            for i, (g_schema, g_off_u, g_scale_u) in enumerate(chain[:-1]):
+                dist = (len(chain) - 1) - i  # +1, +2, ...
+                g_alpha = _ghost_alpha(alpha, dist)
+                if g_alpha < 12:
+                    continue
+
+                g_pos_u = _embed_positions(_compute_body_positions(g_schema), g_off_u, g_scale_u)
+                g_pos_px = _project_positions_with_camera(
+                    g_pos_u, region_local, center_u=cam_center_u, scale=cam_scale
+                )
+
+                g_nodes = g_schema.get("nodes") if isinstance(g_schema, dict) else None
+                if isinstance(g_nodes, dict):
+                    line_col = (*fg, int(g_alpha * 0.65))
+                    for nid, spec in g_nodes.items():
+                        a = g_pos_px.get(str(nid))
+                        if a is None:
+                            continue
+                        for ch in _children_of(spec if isinstance(spec, dict) else {}):
+                            b = g_pos_px.get(str(ch))
+                            if b is None:
+                                continue
+                            ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                            bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                            pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 1)
+
+                fill = (*fg, int(g_alpha * 0.07))
+                border = (*fg, int(g_alpha * 0.55))
+                for nid, p in g_pos_px.items():
+                    if p is None:
+                        continue
+                    cx, cy = int(p[0] + region.x), int(p[1] + region.y)
+                    pygame.draw.rect(overlay, fill, pygame.Rect(cx - half, cy - half, node_size, node_size), 0, 2)
+                    pygame.draw.rect(overlay, border, pygame.Rect(cx - half, cy - half, node_size, node_size), 1, 2)
+
+        # ----------------------------
+        # Active edges
+        # ----------------------------
+        nodes = schema.get("nodes") if isinstance(schema, dict) else None
+        if isinstance(nodes, dict):
+            line_col = (*fg, int(alpha * 0.85))
+            for nid, spec in nodes.items():
+                a = pos_px.get(str(nid))
+                if a is None:
+                    continue
+                for ch in _children_of(spec if isinstance(spec, dict) else {}):
+                    b = pos_px.get(str(ch))
+                    if b is None:
+                        continue
+                    ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                    bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                    pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 2)
+
+        node_fill = (*fg, int(alpha * 0.10))
+        node_border = (*fg, int(alpha * 0.85))
+        hi_border = (*hilite, int(alpha * 1.0))
+        half_border = (*half_yellow, int(alpha * 0.98))
+
+        label_col = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(alpha * 0.95))
+        label_hi = (int(hilite[0]), int(hilite[1]), int(hilite[2]), int(alpha * 0.98))
+        label_half = (int(half_yellow[0]), int(half_yellow[1]), int(half_yellow[2]), int(alpha * 0.97))
+
+        hovered_nid = self.hovered_nid
+
+        try:
+            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)), bold=True)
+            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)), bold=True)
+            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)), bold=False)
+        except Exception:
+            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)))
+            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)))
+            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)))
+
+        owner_id = str(getattr(owner, "id", ""))
+
+        def _equipped_for(nid: str):
+            if hasattr(scene, "game") and hasattr(scene.game, "get_equipped_in_slot"):
+                try:
+                    return scene.game.get_equipped_in_slot(owner_id, str(nid))
+                except Exception:
+                    return None
+            try:
+                inv = scene.game.get_inventory(owner_id)
+            except Exception:
+                inv = None
+            if inv:
+                for it in inv:
+                    tags = getattr(it, "tags", {}) or {}
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(nid):
+                        return it
+            return None
+
+        for nid, (px, py) in pos_px.items():
+            # region-local clip test
+            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
+                continue
+
+            is_hover = (hovered_nid is not None and str(nid) == hovered_nid)
+            is_target = (drag_kind == "body_node" and drag_node is not None and str(nid) == str(drag_node))
+            is_hot = bool(is_hover or is_target)
+
+            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
+            pygame.draw.rect(overlay, node_fill, sq)
+
+            border_col = hi_border if is_hover else (half_border if is_target else node_border)
+            pygame.draw.rect(overlay, border_col, sq, 3 if is_hover else 2)
+
+            eq = _equipped_for(str(nid))
+
+            # label above
+            try:
+                label = _display_body_node_label(str(nid))
+                ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+                lx = sq.centerx - ls.get_width() // 2
+                ly = sq.top - ls.get_height() - 3
+                overlay.blit(ls, (lx, ly))
+            except Exception:
+                pass
+
+            # equipped glyph
+            if eq is not None:
+                try:
+                    r2 = ctx.renderer
+                    base_px = int(node_size * 0.86)
+
+                    eff_scene = []
+                    try:
+                        eff_scene = list(getattr(scene, "scene_effects", []) or [])
+                    except Exception:
+                        eff_scene = []
+
+                    gcanvas, anchor = _render_entity_glyph_canvas_with_anchor(
+                        r2,
+                        eq,
+                        font=glyph_font,
+                        base_px=base_px,
+                        scene_effects=eff_scene,
+                    )
+                    gx = int(round(sq.centerx - float(anchor[0])))
+                    gy = int(round(sq.centery - float(anchor[1])))
+
+                    if is_hot:
+                        glyph_alpha = 245
+                    else:
+                        glyph_alpha = 120 if hovered_right else 85
+
+                    tmp = gcanvas.convert_alpha()
+                    tmp.set_alpha(int(glyph_alpha))
+                    overlay.blit(tmp, (gx, gy))
+                except Exception:
+                    pass
+
+            # equipped item label below
+            try:
+                if eq is not None:
+                    item_name = str(getattr(eq, "name", None) or "Item")
+                    ns = item_font.render(item_name, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                    ns.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+                    nx = sq.centerx - ns.get_width() // 2
+                    ny = sq.bottom + 3
+                    overlay.blit(ns, (nx, ny))
+            except Exception:
+                pass
+
+        overlay.set_clip(None)
+
+        # Cache for InventoryScene.render() to composite above opaque glyph when needed.
+        try:
+            setattr(scene, "_body_overlay_panel_surface", overlay)
+        except Exception:
+            pass
+
+        # If we're not in external glyph overlay mode, draw immediately.
+        if not bool(getattr(scene, "_external_opaque_glyph", False)):
+            ctx.surface.blit(overlay, (0, 0))
+
+        super().draw(ctx)
+
+    # ----------------------------
+    # Hit testing (no drawing)
+    # ----------------------------
+
+    def _hit_test_node(self, mp: tuple[int, int], ctx: WidgetContext) -> str | None:
+        scene = ctx.scene
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            return None
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        r = self.rect
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+        if region.w <= 10 or region.h <= 10:
+            return None
+
+        try:
+            chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []))
+            if not chain:
+                chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+        except Exception:
+            chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+
+        schema, embed_off_u, embed_scale_u = chain[-1]
+        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+
+        region_local = pygame.Rect(0, 0, region.w, region.h)
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+        node_size = int(max(18, min(56, float(cam_scale) * 0.45)))
+        half = node_size // 2
+
+        mx, my = int(mp[0]), int(mp[1])
+
+        for nid, (px, py) in pos_px.items():
+            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
+            if sq.collidepoint((mx, my)):
+                return str(nid)
+
+        return None
+
+    # ----------------------------
+    # Event handling (unchanged)
+    # ----------------------------
 
     def handle_event(self, event, ctx: WidgetContext) -> bool:
         if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
@@ -1398,10 +1805,8 @@ class BodyPlanGraphWidget(Widget):
             except Exception:
                 pass
 
-            # If we have a pending press, maybe promote it into a drag.
             if self._press_nid is not None and not bool(getattr(scene, "_drag_active", False)):
                 if _begin_drag_if_ready((mx, my)):
-                    # update drag ghost immediately
                     cb2 = getattr(scene, "_inv_drag_update", None)
                     if callable(cb2):
                         try:
@@ -1411,7 +1816,6 @@ class BodyPlanGraphWidget(Widget):
                     self.hovered_nid = self._hit_test_node((mx, my), ctx)
                     return True
 
-            # If an actual drag is active, keep ghost updated in panel-local coords.
             if bool(getattr(scene, "_drag_active", False)):
                 cb = getattr(scene, "_inv_drag_update", None)
                 if callable(cb):
@@ -1434,7 +1838,6 @@ class BodyPlanGraphWidget(Widget):
             if getattr(event, "button", None) == 1 and self.rect.collidepoint((mx, my)):
                 nid = self._hit_test_node((mx, my), ctx)
                 if nid:
-                    # Record press; DO NOT start drag yet.
                     self._press_nid = str(nid)
                     self._press_pos = (mx, my)
                     self._press_ms = int(pygame.time.get_ticks())
@@ -1450,8 +1853,6 @@ class BodyPlanGraphWidget(Widget):
 
             if getattr(event, "button", None) == 1:
                 was_dragging = bool(getattr(scene, "_drag_active", False))
-
-                # If a drag is active, end it and consume.
                 if was_dragging:
                     cb = getattr(scene, "_inv_drag_end", None)
                     if callable(cb):
@@ -1459,35 +1860,28 @@ class BodyPlanGraphWidget(Widget):
                             cb(pos=(mx, my))
                         except Exception:
                             pass
-
-                    # Same reasoning: ensure any underlying capture/pressed bookkeeping is released.
                     try:
                         super().handle_event(event, ctx)
                     except Exception:
                         pass
-
                     _cancel_press()
                     return True
 
-
-                # No drag active: if we had a press and release on an equipped node -> activate.
                 press_nid = self._press_nid
                 _cancel_press()
 
                 if press_nid and self.rect.collidepoint((mx, my)):
-                    # Optional: require release on the same node; feels better.
                     release_nid = self._hit_test_node((mx, my), ctx)
                     if release_nid and str(release_nid) == str(press_nid):
                         now_ms = int(pygame.time.get_ticks())
 
-                        # Double-click -> request zoom-in on this node (even if empty).
+                        # double-click
                         try:
                             if (
                                 self._last_click_nid is not None
                                 and str(self._last_click_nid) == str(release_nid)
                                 and (now_ms - int(self._last_click_ms)) <= 320
                             ):
-                                # Only allow zoom-in if this node has a proto in the *currently viewed* schema.
                                 try:
                                     owner = getattr(scene, "_preview_entity", None)
                                     owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
@@ -1512,19 +1906,11 @@ class BodyPlanGraphWidget(Widget):
                                                 sub = {"root": None, "nodes": {}}
                                             sub_nodes = sub.get("nodes") if isinstance(sub, dict) else None
                                             if isinstance(sub_nodes, dict):
-                                                # Only allow zoom if the resolved child schema is *meaningfully*
-                                                # different from the current view schema. This prevents "phantom"
-                                                # zoom pushes for leaf nodes (or for prototypes that resolve to the
-                                                # same inherited schema).
                                                 cur_nodes = (schema0.get("nodes", {}) or {}) if isinstance(schema0, dict) else {}
-                                                # Treat schemas that contain only a single root node as non-zoomable.
                                                 meaningful = len(sub_nodes) > 1
-                                                # Also avoid no-op zooms into an identical topology.
                                                 if meaningful and isinstance(cur_nodes, dict):
                                                     meaningful = set(sub_nodes.keys()) != set(cur_nodes.keys())
                                                 can_zoom = bool(meaningful)
-                                            else:
-                                                can_zoom = False
                                 if can_zoom:
                                     setattr(scene, "_pending_body_zoom_in", str(release_nid))
                                 self._last_click_nid = None
@@ -1533,11 +1919,9 @@ class BodyPlanGraphWidget(Widget):
                         except Exception:
                             pass
 
-                        # Not a double-click: record click for next time.
                         self._last_click_nid = str(release_nid)
                         self._last_click_ms = now_ms
 
-                        # Single-click: only activate if something is equipped there.
                         eq = (
                             scene._equipped_entity_for_slot(str(press_nid))
                             if hasattr(scene, "_equipped_entity_for_slot")
@@ -1550,302 +1934,10 @@ class BodyPlanGraphWidget(Widget):
                                 pass
                             return True
 
-
             return False
 
         return False
 
-
-    def _hit_test_node(self, mp: tuple[int, int], ctx: WidgetContext) -> str | None:
-        scene = ctx.scene
-
-        owner = getattr(scene, "_preview_entity", None)
-        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
-        if owner is None:
-            return None
-
-        try:
-            info = describe_entity_for_look(owner) or {}
-        except Exception:
-            info = {}
-
-        desc = info.get("description") or getattr(owner, "description", None)
-
-        # Reserve a region that mostly covers the glyph area, not the header/footer text.
-        r = self.rect
-        top_reserved = 70
-        bottom_reserved = 80 if desc else 56
-        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
-
-        if region.w <= 10 or region.h <= 10:
-            return None
-
-        try:
-            schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
-                owner, getattr(scene, "_body_zoom_stack", [])
-            )
-        except Exception:
-            schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
-
-        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
-        # Camera is defined in world-space units; projection is the only transform.
-        region_local = pygame.Rect(0, 0, region.w, region.h)
-        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
-        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
-
-        scale = float(cam_scale)
-
-
-
-        node_size = int(max(18, min(56, scale * 0.45)))
-        half = node_size // 2
-
-        mx, my = mp
-        # Convert mp (panel) into region-local coords for the hit-test.
-        lx = mx - region.x
-        ly = my - region.y
-
-        for nid, (px, py) in pos_px.items():
-            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
-                continue
-            sq_local = pygame.Rect(int(px - half), int(py - half), int(node_size), int(node_size))
-            if sq_local.collidepoint((lx, ly)):
-                return str(nid)
-
-        return None
-
-    def draw(self, ctx: WidgetContext) -> None:
-        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
-            return
-
-        scene = ctx.scene
-
-        owner = getattr(scene, "_preview_entity", None)
-        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
-        if owner is None:
-            return
-
-        try:
-            info = describe_entity_for_look(owner) or {}
-        except Exception:
-            info = {}
-
-        desc = info.get("description") or getattr(owner, "description", None)
-
-        r = self.rect
-        top_reserved = 70
-        bottom_reserved = 80 if desc else 56
-        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
-        if region.w <= 10 or region.h <= 10:
-            return
-
-        try:
-            schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
-                owner, getattr(scene, "_body_zoom_stack", [])
-            )
-        except Exception:
-            schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
-
-        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
-        # Camera is defined in world-space units; projection is the only transform.
-        region_local = pygame.Rect(0, 0, region.w, region.h)
-        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
-        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
-
-        scale = float(cam_scale)
-
-
-
-        node_size = int(max(18, min(56, scale * 0.45)))
-        half = node_size // 2
-
-        hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
-        alpha = 150 if hovered_right else 70
-
-        drag_active = bool(getattr(scene, "_drag_active", False))
-        drag_kind = getattr(scene, "_drag_target_kind", None) if drag_active else None
-        drag_node = getattr(scene, "_drag_target_node_id", None) if drag_active else None
-
-        fg = getattr(scene, "fg", (230, 230, 230))
-        hilite = getattr(scene, "hilite", (255, 255, 100))
-
-        def _half_mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float = 0.7) -> tuple[int, int, int]:
-            def ch(i: int) -> int:
-                v = int(a[i] + (b[i] - a[i]) * t)
-                return 0 if v < 0 else 255 if v > 255 else v
-            return (ch(0), ch(1), ch(2))
-
-        half_yellow = _half_mix(tuple(fg[:3]), tuple(hilite[:3]), 0.7)
-
-        # IMPORTANT: draw in panel coordinates, so the overlay must be panel-sized.
-        overlay = pygame.Surface(ctx.surface.get_size(), pygame.SRCALPHA)
-        # Clip all body-graph drawing to the intended region so zoom doesn't spill outside.
-        overlay.set_clip(region)
-
-
-
-        # --- edges ---
-        nodes = schema.get("nodes") if isinstance(schema, dict) else None
-        if isinstance(nodes, dict):
-            line_col = (*fg, int(alpha * 0.85))
-            for nid, spec in nodes.items():
-                a = pos_px.get(nid)
-                if a is None:
-                    continue
-                for ch in _children_of(spec if isinstance(spec, dict) else {}):
-                    b = pos_px.get(ch)
-                    if b is None:
-                        continue
-                    ax, ay = int(a[0] + region.x), int(a[1] + region.y)
-                    bx, by = int(b[0] + region.x), int(b[1] + region.y)
-                    pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 2)
-
-        node_fill = (*fg, int(alpha * 0.10))
-        node_border = (*fg, int(alpha * 0.85))
-        hi_border = (*hilite, int(alpha * 1.0))
-        half_border = (*half_yellow, int(alpha * 0.98))
-
-        label_col = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(alpha * 0.95))
-        label_hi = (int(hilite[0]), int(hilite[1]), int(hilite[2]), int(alpha * 0.98))
-        label_half = (int(half_yellow[0]), int(half_yellow[1]), int(half_yellow[2]), int(alpha * 0.97))
-
-        hovered_nid = self.hovered_nid
-
-        # Fonts: decouple glyph rendering from labels so the glyph can be big.
-        try:
-            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)), bold=True)
-            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)), bold=True)
-            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)), bold=False)
-        except Exception:
-            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)))
-            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)))
-            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)))
-
-        owner_id = str(getattr(owner, "id", ""))
-
-        def _equipped_for(nid: str):
-            if hasattr(scene, "game") and hasattr(scene.game, "get_equipped_in_slot"):
-                try:
-                    return scene.game.get_equipped_in_slot(owner_id, str(nid))
-                except Exception:
-                    return None
-            try:
-                inv = scene.game.get_inventory(owner_id)
-            except Exception:
-                inv = None
-            if inv:
-                for it in inv:
-                    tags = getattr(it, "tags", {}) or {}
-                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(nid):
-                        return it
-            return None
-
-        for nid, (px, py) in pos_px.items():
-            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
-                continue
-
-            is_hover = (hovered_nid is not None and str(nid) == hovered_nid)
-            is_target = (drag_kind == "body_node" and drag_node is not None and str(nid) == str(drag_node))
-            is_hot = bool(is_hover or is_target)
-
-            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
-            pygame.draw.rect(overlay, node_fill, sq)
-
-            border_col = hi_border if is_hover else (half_border if is_target else node_border)
-            pygame.draw.rect(overlay, border_col, sq, 3 if is_hover else 2)
-
-            eq = _equipped_for(str(nid))
-
-            # --- Subpart label ABOVE the node ---
-            try:
-                label = _display_body_node_label(str(nid))
-                ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
-                ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
-                lx = sq.centerx - ls.get_width() // 2
-                ly = sq.top - ls.get_height() - 3
-                overlay.blit(ls, (lx, ly))
-            except Exception:
-                pass
-
-            # --- Equipped glyph (with color + effects) inside the square ---
-            if eq is not None:
-                try:
-                    r2 = ctx.renderer
-                    # Make the *logical* base cell big; overlays may expand beyond.
-                    base_px = int(node_size * 0.86)
-
-                    eff_scene = []
-                    try:
-                        eff_scene = list(getattr(scene, "scene_effects", []) or [])
-                    except Exception:
-                        eff_scene = []
-
-                    gcanvas, anchor = _render_entity_glyph_canvas_with_anchor(
-                        r2,
-                        eq,
-                        font=glyph_font,
-                        base_px=base_px,
-                        scene_effects=eff_scene,
-                    )
-                    # Place so that the glyph-cell center (anchor) is centered in the node square.
-                    gx = int(round(sq.centerx - float(anchor[0])))
-                    gy = int(round(sq.centery - float(anchor[1])))
-
-                    # Opacity tuning:
-                    # - idle: fairly faded
-                    # - hover/target: near-opaque so effects (fire/smoke/etc.) still pop
-                    if is_hot:
-                        glyph_alpha = 245
-                    else:
-                        glyph_alpha = 120 if hovered_right else 85
-
-                    tmp = gcanvas.convert_alpha()
-                    tmp.set_alpha(int(glyph_alpha))
-                    overlay.blit(tmp, (gx, gy))
-
-                except Exception:
-                    # Fallback: at least draw a big glyph
-                    try:
-                        glyph = str(getattr(eq, "glyph", "?"))[:1]
-                        gsurf = glyph_font.render(glyph, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
-                        if is_hot:
-                            glyph_alpha = 245
-                        else:
-                            glyph_alpha = 120 if hovered_right else 85
-
-                        gsurf.set_alpha(int(glyph_alpha))
-                        gx = sq.centerx - gsurf.get_width() // 2
-                        gy = sq.centery - gsurf.get_height() // 2
-                        overlay.blit(gsurf, (gx, gy))
-
-                    except Exception:
-                        pass
-
-            # --- Equipped item label BELOW the node (if any) ---
-            try:
-                if eq is not None:
-                    item_name = str(getattr(eq, "name", None) or "Item")
-                    ns = item_font.render(item_name, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
-                    ns.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
-                    nx = sq.centerx - ns.get_width() // 2
-                    ny = sq.bottom + 3
-                    overlay.blit(ns, (nx, ny))
-            except Exception:
-                pass
-
-
-        # If we're in "opaque glyph overlay" mode, InventoryScene will composite this overlay
-        # *above* the sprite after it draws the opaque glyph. Otherwise, draw directly.
-
-        overlay.set_clip(None)
-
-        try:
-            setattr(scene, "_body_overlay_panel_surface", overlay)
-        except Exception:
-            pass
-
-        if not bool(getattr(scene, "_external_opaque_glyph", False)):
-            ctx.surface.blit(overlay, (0, 0))
 
 
 
