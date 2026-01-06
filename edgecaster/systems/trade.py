@@ -406,6 +406,13 @@ def try_buy(game: Any, merchant_actor_id: str, item_index: int) -> bool:
     # Move item
     ent = minv.pop(int(item_index))
     game.player_inventory.append(ent)  # type: ignore[attr-defined]
+    # Item-granted actions can appear/disappear when inventory contents change.
+    try:
+        if hasattr(game, "refresh_actor_actions"):
+            game.refresh_actor_actions(getattr(game, "player_id", ""))  # type: ignore[attr-defined]
+            game.refresh_actor_actions(merchant_actor_id)  # type: ignore[arg-type]
+    except Exception:
+        pass
 
     # Transfer funds
     try:
@@ -463,6 +470,13 @@ def try_sell(game: Any, merchant_actor_id: str, item_index: int) -> bool:
     # Move item
     ent = pinv.pop(int(item_index))
     game.get_inventory(merchant_actor_id).append(ent)  # type: ignore[attr-defined]
+    # Item-granted actions can appear/disappear when inventory contents change.
+    try:
+        if hasattr(game, "refresh_actor_actions"):
+            game.refresh_actor_actions(getattr(game, "player_id", ""))  # type: ignore[attr-defined]
+            game.refresh_actor_actions(merchant_actor_id)  # type: ignore[arg-type]
+    except Exception:
+        pass
 
     # Transfer funds
     try:

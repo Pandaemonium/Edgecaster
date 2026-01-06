@@ -29,6 +29,7 @@ from edgecaster.patterns import colors as pattern_colors
 from edgecaster.patterns import motion as pattern_motion
 from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import reputation as reputation_system
+from edgecaster.systems import item_grants
 from edgecaster.systems import ai
 from . import lorenz
 import math
@@ -423,6 +424,34 @@ class Game:
                 "A Platonic bag that appears to contain, among other things, itself."
             )
 
+        # --- Starting wands -------------------------------------------------
+        # Wands grant actions only while equipped, and have per-item charges.
+        # Start the player with two different random wands so the system is easy to test.
+        try:
+            wand_defs = [
+                ("wand_koch", "koch"),
+                ("wand_branch", "branch"),
+                ("wand_zigzag", "zigzag"),
+                ("wand_activate_n", "activate_seed"),
+            ]
+            intrinsic_set = {str(x) for x in (getattr(player, "actions", ()) or []) if x}
+
+            # Prefer wands that grant something the player doesn't already have intrinsically.
+            candidates = [wid for wid, act in wand_defs if act not in intrinsic_set]
+            pool = candidates if len(candidates) >= 2 else [wid for wid, _ in wand_defs]
+
+            first = self.rng.choice(pool)
+            pool2 = [x for x in pool if x != first]
+            second = self.rng.choice(pool2) if pool2 else first
+            for wid in (first, second):
+                try:
+                    wand = self._spawn_entity_from_template(wid, player.pos)
+                    self.player_inventory.append(wand)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         # DEBUG: spawn a few Inventory entities near the starting position so we
         # can pick them up and test nested containers / recursion.
         self.debug_spawn_inventory_near_player()
@@ -810,7 +839,8 @@ class Game:
         # without re-prompting or causing recursion.
         skip_confirm = bool(kwargs.pop("__skip_confirm", False))
 
-        # Determine cooldown origin: first item in inventory that grants this ability, else actor.
+        # Determine cooldown origin: prefer the item currently granting the action (held/equipped),
+        # otherwise fall back to the actor itself.
         origin = None
         actor = None
         try:
@@ -818,11 +848,23 @@ class Game:
         except Exception:
             actor = None
         if actor is not None:
-            inv = self.inventories.get(actor_id, [])
-            for item in inv:
-                if getattr(item, "tags", {}).get("grants_ability") == action_name:
-                    origin = item
-                    break
+            # If the action is intrinsic to the actor (built-in kit or permanently learned),
+            # prefer the actor as the origin so item-granted versions (e.g. wands) don't
+            # accidentally consume charges or apply item cooldowns for an ability you
+            # already know.
+            tags = getattr(actor, "tags", {}) or {}
+            intrinsic = tags.get("intrinsic_actions")
+            if not isinstance(intrinsic, list):
+                intrinsic = list(getattr(actor, "actions", ()) or [])
+                tags["intrinsic_actions"] = list(intrinsic)
+                try:
+                    actor.tags = tags
+                except Exception:
+                    pass
+            intrinsic_set = {str(x) for x in intrinsic if x}
+            if str(action_name) not in intrinsic_set:
+                inv = self.inventories.get(actor_id, [])
+                origin = item_grants.find_grant_origin(inv, action_name)
         if origin is None and actor is not None:
             origin = actor
 
@@ -833,6 +875,30 @@ class Game:
                 if actor_id == self.player_id:
                     self.log.add("That ability is recharging.")
                 return
+
+        # Charges gate (for item-granted actions like wands).
+        #
+        # Charges live on the item instance so they persist across owners.
+        charge_item = None
+        try:
+            if actor is not None and origin is not None and origin is not actor:
+                inv = self.inventories.get(actor_id, [])
+                if origin in inv:
+                    charge_item = origin
+        except Exception:
+            charge_item = None
+
+        if charge_item is not None:
+            tags = getattr(charge_item, "tags", None) or {}
+            if "charges" in tags:
+                try:
+                    charges_left = int(tags.get("charges", 0))
+                except Exception:
+                    charges_left = 0
+                if charges_left <= 0:
+                    if actor_id == self.player_id:
+                        self.log.add("That item is out of charges.")
+                    return
 
         # Optional action-defined confirmation prompt (player only).
         # This is intentionally general so other actions can add confirmations later.
@@ -874,6 +940,31 @@ class Game:
         # Do the actual action right now.
         action_def.func(self, actor_id, **kwargs)
 
+        # Consume a charge if this action comes from a charged item.
+        if charge_item is not None:
+            tags = getattr(charge_item, "tags", None) or {}
+            if "charges" in tags:
+                try:
+                    charges_left = int(tags.get("charges", 0))
+                except Exception:
+                    charges_left = 0
+                before = charges_left
+                charges_left = max(0, charges_left - 1)
+                tags["charges"] = charges_left
+                if "max_charges" not in tags:
+                    raw_max = tags.get("charges_max")
+                    try:
+                        tags["max_charges"] = int(raw_max) if raw_max is not None else int(before)
+                    except Exception:
+                        tags["max_charges"] = int(before)
+                try:
+                    charge_item.tags = tags
+                except Exception:
+                    pass
+                if charges_left == 0 and actor_id == self.player_id:
+                    name = getattr(charge_item, "name", None) or "item"
+                    self.log.add(f"The {name.lower()} is spent.")
+
         # Apply cooldown if defined
         if origin is not None and action_def.cooldown_ticks > 0:
             try:
@@ -910,18 +1001,77 @@ class Game:
         if player is None:
             return False
 
-        current = list(getattr(player, "actions", ()) or [])
-        if action_name in current:
+        tags = getattr(player, "tags", {}) or {}
+        intrinsic = tags.get("intrinsic_actions")
+        if not isinstance(intrinsic, list):
+            intrinsic = list(getattr(player, "actions", ()) or [])
+        if action_name in intrinsic:
             return False
-        current.append(action_name)
-        player.actions = tuple(current)
+        intrinsic.append(action_name)
+        tags["intrinsic_actions"] = list(intrinsic)
+        try:
+            player.tags = tags
+        except Exception:
+            pass
+        self.refresh_actor_actions(player.id)
+        return True
 
-        if hasattr(self, "ability_bar_state"):
+    def refresh_actor_actions(self, actor_id: str) -> None:
+        """Recompute an actor's actions from intrinsic + item-granted actions.
+
+        Intrinsic actions are stored on the actor as `tags.intrinsic_actions` and are
+        initialized lazily from the actor's current actions.
+
+        Item-granted actions come from inventory items:
+        - Held grants: item is in the actor's inventory (e.g. destabilizer)
+        - Equipped grants: item is equipped (e.g. future wands)
+        """
+        actor_id = str(actor_id)
+        try:
+            lvl = self._level()
+            actor = lvl.actors.get(actor_id)
+        except Exception:
+            actor = None
+        if actor is None:
+            return
+
+        tags = getattr(actor, "tags", {}) or {}
+        intrinsic = tags.get("intrinsic_actions")
+        if not isinstance(intrinsic, list):
+            intrinsic = list(getattr(actor, "actions", ()) or [])
+            tags["intrinsic_actions"] = list(intrinsic)
+            try:
+                actor.tags = tags
+            except Exception:
+                pass
+
+        try:
+            inv = list(self.get_inventory(actor_id))
+        except Exception:
+            inv = []
+        granted = item_grants.collect_active_granted_actions(inv)
+
+        merged: List[str] = []
+        seen: set[str] = set()
+        for name in list(intrinsic) + list(granted):
+            if not name:
+                continue
+            n = str(name)
+            if n in seen:
+                continue
+            seen.add(n)
+            merged.append(n)
+
+        try:
+            actor.actions = tuple(merged)
+        except Exception:
+            pass
+
+        if actor_id == str(getattr(self, "player_id", "")) and hasattr(self, "ability_bar_state"):
             try:
                 self.ability_bar_state.invalidate()
             except Exception:
                 pass
-        return True
 
     def effective_character_stats(self, owner_id: str | None = None) -> Dict[str, int]:
         """Return base CON/AGI/INT/RES with equipped item modifiers applied.
@@ -2001,12 +2151,45 @@ class Game:
             raise KeyError(f"Unknown prototype id {template_id!r}")
 
         eid = self._new_id()
-        return spawn_factory.build_entity_from_spec(
+        ent = spawn_factory.build_entity_from_spec(
             spec=spec,
             eid=eid,
             pos=pos,
             overrides=overrides,  # tags merge handled inside builder
         )
+
+        # Initialize per-instance item charges.
+        #
+        # This is a general mechanism used by "consumable" item-granted actions like
+        # wands (equip-grants) or future items. Charges are stored on the item entity
+        # itself so they persist if the item changes owners.
+        try:
+            tags = getattr(ent, "tags", None) or {}
+            # Backward compatibility: if YAML specified charges explicitly, keep it,
+            # but still ensure we have a max_charges value for UI/inspection later.
+            if "charges" not in tags:
+                raw_min = tags.get("charges_min")
+                raw_max = tags.get("charges_max")
+                if raw_min is not None or raw_max is not None:
+                    lo = int(raw_min if raw_min is not None else raw_max)
+                    hi = int(raw_max if raw_max is not None else raw_min)
+                    if hi < lo:
+                        lo, hi = hi, lo
+                    lo = max(0, lo)
+                    hi = max(0, hi)
+                    charges = int(self.rng.randint(lo, hi))
+                    tags["charges"] = charges
+                    tags.setdefault("max_charges", charges)
+            else:
+                try:
+                    tags.setdefault("max_charges", int(tags.get("charges")))
+                except Exception:
+                    pass
+            ent.tags = tags
+        except Exception:
+            pass
+
+        return ent
 
 
 
@@ -3310,12 +3493,19 @@ class Game:
         article = "an" if name and name[0].lower() in "aeiou" else "a"
         self.log.add(f"You pick up {article} {name.lower()}.")
 
-        # Grant abilities tagged on the item (general hook)
-        grants = ent.tags.get("grants_ability") if hasattr(ent, "tags") else None
+        # Item-granted actions (held/equipped) are computed from inventory state,
+        # so they appear/disappear automatically when the item is moved.
+        try:
+            grants = item_grants.get_item_grants(ent)
+        except Exception:
+            grants = []
         if grants:
-            added = self.grant_ability(grants)
-            if added:
-                self.log.add(f"You learned how to {grants.replace('_', ' ')}.")
+            self.refresh_actor_actions(self.player_id)
+            for action, mode in grants:
+                if mode != "held":
+                    continue
+                # Held-grants are temporary, so avoid "learned" language here.
+                self.log.add(f"You can {action.replace('_', ' ')} while holding it.")
     def drop_inventory_item(self, index: int) -> None:
         """Drop an item from the inventory onto the player's current tile."""
         inv = self.player_inventory
@@ -3327,6 +3517,13 @@ class Game:
             return
         player = level.actors[self.player_id]
 
+        ent = inv[index]
+        # If the item was equipped, unequip it first so it stops granting stats/actions.
+        try:
+            if equipment_system.is_equipped(ent):
+                self.unequip_item(self.player_id, str(getattr(ent, "id", "")))
+        except Exception:
+            pass
         ent = inv.pop(index)
 
         # Place the entity at the player's current position in the world.
@@ -3336,6 +3533,7 @@ class Game:
         name = getattr(ent, "name", None) or "item"
         article = "an" if name and name[0].lower() in "aeiou" else "a"
         self.log.add(f"You drop {article} {name.lower()}.")
+        self.refresh_actor_actions(self.player_id)
 
 
     def eat_item_from_inventory(self, owner_id: str, index: int) -> None:
@@ -3437,6 +3635,17 @@ class Game:
             )
             return
 
+        # If the item is equipped, unequip it before transferring inventories.
+        # "Equipped" is a relationship to the current owner; it should not travel.
+        try:
+            if equipment_system.is_equipped(ent):
+                tags = getattr(ent, "tags", {}) or {}
+                tags.pop("equipped_slot", None)
+                tags.pop("equipped", None)
+                ent.tags = tags
+        except Exception:
+            pass
+
         # Normal case: actually move the item.
         ent = src_inv.pop(index)
         dst_inv = self.get_inventory(dest_owner_id)
@@ -3465,12 +3674,16 @@ class Game:
                     if dest_ent is not None:
                         break
 
-            if dest_ent is not None:
-                dest_name = getattr(dest_ent, "name", None)
-                if dest_name:
-                    dest_label = dest_name
+        if dest_ent is not None:
+            dest_name = getattr(dest_ent, "name", None)
+            if dest_name:
+                dest_label = dest_name
 
         self.log.add(f"You put {article} {name.lower()} into {dest_label}.")
+
+        # Item-granted actions can appear/disappear for either inventory owner.
+        self.refresh_actor_actions(src_owner_id)
+        self.refresh_actor_actions(dest_owner_id)
 
 
     # ---------------------------------------------------------------------
@@ -3500,6 +3713,7 @@ class Game:
             setattr(ent, "tags", tags)
         except Exception:
             pass
+        self.refresh_actor_actions(str(owner_id))
 
     def unequip_item(self, owner_id: str, item_id: str) -> None:
         """Clear equipped tags from the given inventory item if present."""
@@ -3515,6 +3729,7 @@ class Game:
                 setattr(ent, "tags", tags)
             except Exception:
                 pass
+            self.refresh_actor_actions(str(owner_id))
             return
 
     def equip_item_to_slot(self, owner_id: str, item_id: str, slot_id: str) -> None:
@@ -3540,6 +3755,7 @@ class Game:
                 setattr(ent, "tags", tags)
             except Exception:
                 pass
+            self.refresh_actor_actions(oid)
             return
 
 
@@ -3933,6 +4149,9 @@ class Game:
 
         # Switch control to the new body
         self.player_id = target.id
+
+        # Recompute available actions for the new host (e.g. equipped/held item-grants).
+        self.refresh_actor_actions(self.player_id)
 
         # Recompute FOV from the new perspective
         level.need_fov = True

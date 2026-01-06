@@ -211,6 +211,74 @@
     value_bismuth: 14
     equip_mods: {con: 1}
 
+# --- WANDS (EQUIP GRANTS + CHARGES) -----------------------------------------
+# Wands are normal items that grant an activated ability while equipped.
+# Charges are initialized at spawn-time from charges_min/charges_max.
+
+- id: wand_koch
+  name: Wand of Koch
+  glyph: "!"
+  color: [170, 210, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A thin rod etched with sharp recursive angles."
+  tags:
+    item_type: wand_koch
+    value_bismuth: 40
+    equip_grants_abilities: ["koch"]
+    charges_min: 3
+    charges_max: 5
+
+- id: wand_branch
+  name: Wand of Branching
+  glyph: "!"
+  color: [180, 255, 200]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "It hums with the promise of bifurcation."
+  tags:
+    item_type: wand_branch
+    value_bismuth: 40
+    equip_grants_abilities: ["branch"]
+    charges_min: 3
+    charges_max: 5
+
+- id: wand_zigzag
+  name: Wand of Zigzag
+  glyph: "!"
+  color: [255, 220, 180]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A wand that can't decide which way to go."
+  tags:
+    item_type: wand_zigzag
+    value_bismuth: 40
+    equip_grants_abilities: ["zigzag"]
+    charges_min: 3
+    charges_max: 5
+
+- id: wand_activate_n
+  name: Wand of Neighbors
+  glyph: "!"
+  color: [220, 200, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A wand that seeks adjacency."
+  tags:
+    item_type: wand_activate_n
+    value_bismuth: 45
+    equip_grants_abilities: ["activate_seed"]
+    charges_min: 3
+    charges_max: 5
+
 # --- SIGN / DOOR FEATURES -------------------------------------------
 - id: sign
   name: Sign
