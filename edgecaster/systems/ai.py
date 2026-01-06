@@ -6,6 +6,8 @@ Current behaviors are thin stubs documenting intent. They all fall back to a sim
 
 from typing import Any, Dict, Tuple
 
+from edgecaster.systems import reputation as reputation_system
+
 
 def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     """
@@ -53,6 +55,14 @@ def _generic_walk_toward(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return ("wait", {})
 
     player = level.actors[player_id]
+
+    # Reputation-driven hostility: don't chase/bump-attack the player unless hostile.
+    try:
+        if not reputation_system.is_hostile(game, actor, player):
+            return ("wait", {}) if "wait" in available else (available[0], {})
+    except Exception:
+        pass
+
     px, py = player.pos
     ax, ay = actor.pos
     dx = px - ax

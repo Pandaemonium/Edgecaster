@@ -463,7 +463,59 @@ class WorldMapScene(Scene):
 
             surf.blit(surface_to_draw, (ox, oy))
 
-            # ... (marker drawing remains the same) ...
+            # --- Markers ----------------------------------------------------
+            # Player position + discovered/rumored POIs.
+            try:
+                cfg = self.game.cfg
+                zone_w = int(getattr(cfg, "world_width", 1) or 1)
+                zone_h = int(getattr(cfg, "world_height", 1) or 1)
+
+                discovered = set(getattr(self.game, "discovered_pois", set()) or set())
+                rumored = set(getattr(self.game, "rumored_pois", set()) or set())
+                show_pois = discovered | rumored
+
+                # Player marker (always visible).
+                try:
+                    pwx, pwy = self._player_world_pos()
+                    ppx, ppy = viewport.world_to_pixel(float(pwx), float(pwy))
+                    if 0 <= ppx < map_w and 0 <= ppy < map_h:
+                        pygame.draw.circle(surf, (240, 240, 255), (ox + ppx, oy + ppy), 3)
+                except Exception:
+                    pass
+
+                poi_locs = getattr(self.game, "poi_locations", {}) or {}
+
+                for pid in show_pois:
+                    coord = poi_locs.get(pid)
+                    if not coord:
+                        continue
+                    zx, zy, zz = coord
+                    if int(zz) != 0:
+                        continue
+
+                    wx = int(zx) * zone_w + zone_w // 2
+                    wy = int(zy) * zone_h + zone_h // 2
+                    px, py = viewport.world_to_pixel(float(wx), float(wy))
+                    if not (0 <= px < map_w and 0 <= py < map_h):
+                        continue
+
+                    is_rumor = (pid in rumored) and (pid not in discovered)
+
+                    if str(pid).startswith("legendary_lair_"):
+                        color = (255, 90, 90) if not is_rumor else (140, 70, 70)
+                        pygame.draw.circle(surf, color, (ox + px, oy + py), 2)
+                    elif str(pid).startswith("rune_anchor_"):
+                        color = (120, 200, 255) if not is_rumor else (80, 130, 170)
+                        pygame.draw.line(surf, color, (ox + px - 2, oy + py), (ox + px + 2, oy + py), 1)
+                        pygame.draw.line(surf, color, (ox + px, oy + py - 2), (ox + px, oy + py + 2), 1)
+                    elif str(pid) == "lab":
+                        color = (200, 200, 255) if not is_rumor else (120, 120, 160)
+                        pygame.draw.circle(surf, color, (ox + px, oy + py), 2)
+                    else:
+                        color = (220, 220, 220) if not is_rumor else (110, 110, 140)
+                        pygame.draw.circle(surf, color, (ox + px, oy + py), 2)
+            except Exception:
+                pass
 
             title = renderer.big_label("World Map")
             surf.blit(title, (ox, oy - 36))

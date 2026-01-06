@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict
 from edgecaster import config
 
@@ -16,6 +16,8 @@ class Character:
     use_random_seed: bool = False
     # Per-character ability bar layout (ordering + grouping); built lazily by AbilityBarState.
     ability_layout: dict | None = None
+    # Per-character reputation with each faction (faction_id -> score).
+    reputation: Dict[str, int] = field(default_factory=dict)
 
 
 def default_character() -> Character:

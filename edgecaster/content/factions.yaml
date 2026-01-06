@@ -1,0 +1,54 @@
+# Faction definitions (data-driven).
+#
+# Each faction has:
+# - opinions: how this faction feels about other factions (and itself)
+# - hostile_below: default hostility threshold (standing < hostile_below => hostile)
+# - rep deltas: how much the player's reputation with *this faction* changes
+#   when killing/helping an entity that this faction likes or dislikes.
+#
+# Standing tiers (used for "likes/dislikes" semantics, not hostility):
+#   <= -250: hated
+#   <= -125: disliked
+#   -124..124: neutral
+#   >= 125: liked
+#   >= 250: loved
+
+player:
+  name: Player
+  description: "The wandering locus of recursion."
+  opinions:
+    player: 250
+  hostile_below: -999999
+
+neutral:
+  name: Neutral
+  description: "Unaligned locals, animals, and other non-hostile beings."
+  opinions:
+    neutral: 250
+  hostile_below: -999999
+  kill_rep_delta: 2
+  help_rep_delta: 2
+
+edgecasters:
+  name: Edgecasters
+  description: "Pattern-weavers who resist the corruption."
+  opinions:
+    edgecasters: 250
+    hostile: -250
+  hostile_below: -125
+  kill_rep_delta: 6
+  help_rep_delta: 4
+
+hostile:
+  name: Hostiles
+  description: "A coarse umbrella faction for creatures that attack by default."
+  opinions:
+    hostile: 250
+    player: -250
+    edgecasters: -250
+    neutral: -125
+  # Hostile until the target is at least "liked".
+  hostile_below: 125
+  kill_rep_delta: 6
+  help_rep_delta: 4
+

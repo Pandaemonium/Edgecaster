@@ -28,6 +28,7 @@ from edgecaster.systems.actions import get_action, action_delay
 from edgecaster.patterns import colors as pattern_colors
 from edgecaster.patterns import motion as pattern_motion
 from edgecaster.systems import equipment as equipment_system
+from edgecaster.systems import reputation as reputation_system
 from edgecaster.systems import ai
 from . import lorenz
 import math
@@ -152,6 +153,11 @@ class Game:
 
         # character info
         self.character: Character = character or default_character()
+
+        # Factions/Reputation: per-character standing with each faction.
+        # This is used for AI hostility checks and future quest/merchant logic.
+        if not isinstance(getattr(self.character, "reputation", None), dict):
+            self.character.reputation = {}
         # Currency: bismuth wallet
         self.bismuth: int = 0
 
@@ -249,8 +255,19 @@ class Game:
         self.completed_quests: List[str] = []
         self.failed_quests: List[str] = []
 
+        # POI discovery/rumors:
+        # - discovered POIs are visible on the world map
+        # - rumored POIs are visible but "unconfirmed" until you enter their zone
+        self.discovered_pois: set[str] = set()
+        self.rumored_pois: set[str] = set()
+
         # create starting zone
         self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
+        # Starting zone is immediately discovered.
+        try:
+            self._discover_pois_for_level(self.levels[self.zone_coord])
+        except Exception:
+            pass
 
         # --- Strange Attractor / Lorenz aura state (game-time, not renderer-time) ---
         self.lorenz_points: List[Tuple[float, float, float]] = []
@@ -441,6 +458,12 @@ class Game:
                 npcs=lab_poi.npcs,
                 structures=lab_poi.structures,
             )
+
+        # Lab is a known rumor from the start of the run.
+        self.add_poi_rumor("lab", log=False)
+
+        # Generate a batch of legendary lairs for this run (hidden until discovered/rumored).
+        self._init_legendaries(count=50)
         # Known POI markers (zone coords) for world map rendering / hints (after lab injected)
         self.poi_locations: Dict[str, Tuple[int, int, int]] = {
             pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()
@@ -1446,6 +1469,203 @@ class Game:
                 return pid
             i += 1
 
+    def _alloc_legendary_lair_poi_id(self) -> str:
+        """Return a unique POI id for a newly-generated legendary lair."""
+        i = 0
+        while True:
+            pid = f"legendary_lair_{i:03d}"
+            if pid not in poi_content.POIS:
+                return pid
+            i += 1
+
+    def _init_legendaries(self, count: int = 50) -> None:
+        """Generate a set of named legendary creatures and inject their lair POIs.
+
+        Phase 1:
+        - Legends are stronger versions of existing hostile templates.
+        - Each gets its own lair POI on the overworld (depth 0).
+        - Lair markers are hidden on the world map until discovered/rumored
+          (handled by the POI discovery system).
+        """
+        if getattr(self, "legendary_registry", None) is not None:
+            return
+
+        self.legendary_registry: Dict[str, dict] = {}
+
+        try:
+            base_templates = list(self._enemy_template_ids())
+        except Exception:
+            base_templates = []
+        if not base_templates:
+            return
+
+        # Avoid placing lairs on top of existing POIs.
+        reserved_coords = {tuple(poi.coord) for poi in poi_content.POIS.values()}
+        reserved_coords.add(tuple(getattr(self, "zone_coord", (0, 0, 0))))
+
+        # Simple name generator (can be replaced with a richer content system later).
+        names = [
+            "Akhraz",
+            "Velis",
+            "Khor",
+            "Sable",
+            "Orun",
+            "Nym",
+            "Kesh",
+            "Mora",
+            "Zarith",
+            "Iolan",
+            "Riven",
+            "Seph",
+            "Vox",
+            "Cael",
+            "Thorn",
+            "Ash",
+            "Nyx",
+            "Rook",
+            "Iris",
+            "Maven",
+        ]
+        used_names: set[str] = set()
+
+        screens = int(getattr(self.cfg, "world_map_screens", 1) or 1)
+        screens = max(1, screens)
+
+        created = 0
+        attempts = 0
+        max_attempts = max(5000, int(count) * 500)
+        while created < int(count) and attempts < max_attempts:
+            attempts += 1
+            zx = int(self.rng.randrange(0, screens))
+            zy = int(self.rng.randrange(0, screens))
+            coord = (zx, zy, 0)
+            if coord in reserved_coords:
+                continue
+
+            base_proto = str(self.rng.choice(base_templates))
+            try:
+                base_spec = prototypes.resolve_proto(base_proto) or {}
+                base_name = str(base_spec.get("name") or base_proto)
+            except Exception:
+                base_name = base_proto
+
+            # Unique-ish legendary name.
+            raw = str(self.rng.choice(names))
+            full_name = f"{raw}, Legendary {base_name}"
+            if full_name in used_names:
+                full_name = f"{raw} {created + 1}, Legendary {base_name}"
+            used_names.add(full_name)
+
+            # A simple power boost (HP only for now; combat scaling is still primitive).
+            hp_mult = float(self.rng.uniform(3.0, 6.0))
+
+            reserved_coords.add(coord)
+            poi_id = self._alloc_legendary_lair_poi_id()
+            legendary_id = f"legendary_{created:03d}"
+
+            try:
+                poi_content.POIS[poi_id] = poi_content.POI(
+                    id=poi_id,
+                    coord=coord,
+                    npcs=[],
+                    structures=[
+                        {
+                            "kind": "legendary_lair",
+                            "legendary_id": legendary_id,
+                            "template_id": base_proto,
+                            "name": full_name,
+                            "hp_mult": hp_mult,
+                        }
+                    ],
+                )
+            except Exception:
+                continue
+
+            self.legendary_registry[legendary_id] = {
+                "poi_id": poi_id,
+                "coord": coord,
+                "template_id": base_proto,
+                "name": full_name,
+                "hp_mult": hp_mult,
+            }
+            created += 1
+
+    def add_poi_rumor(self, poi_id: str, *, log: bool = True) -> None:
+        """Mark a POI as rumored so it appears on the world map before discovery."""
+        poi_id = str(poi_id)
+        if not hasattr(self, "rumored_pois"):
+            self.rumored_pois = set()
+        if not hasattr(self, "discovered_pois"):
+            self.discovered_pois = set()
+        if poi_id in self.discovered_pois:
+            return
+        self.rumored_pois.add(poi_id)
+
+        if not log:
+            return
+        poi = poi_content.POIS.get(poi_id)
+        if poi:
+            zx, zy, _ = poi.coord
+            self.log.add(f"You hear rumors of {poi_id.replace('_', ' ')} at ({zx}, {zy}).")
+        else:
+            self.log.add(f"You hear rumors of {poi_id.replace('_', ' ')}.")
+
+    def get_nearest_legendary_lairs(
+        self,
+        n: int = 5,
+        *,
+        from_coord: Optional[Tuple[int, int, int]] = None,
+    ) -> List[Tuple[str, Tuple[int, int, int]]]:
+        """Return the N nearest legendary lair POIs (by overworld zone distance)."""
+        try:
+            n = int(n)
+        except Exception:
+            n = 5
+        if n <= 0:
+            return []
+
+        origin = from_coord or getattr(self, "zone_coord", (0, 0, 0))
+        try:
+            ox, oy = int(origin[0]), int(origin[1])
+        except Exception:
+            ox, oy = 0, 0
+
+        locations = getattr(self, "poi_locations", None)
+        if not locations:
+            try:
+                locations = {pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()}
+            except Exception:
+                locations = {}
+
+        scored: List[Tuple[int, str, Tuple[int, int, int]]] = []
+        for pid, coord in (locations or {}).items():
+            pid_s = str(pid)
+            if not pid_s.startswith("legendary_lair_"):
+                continue
+            try:
+                zx, zy, zz = int(coord[0]), int(coord[1]), int(coord[2])
+            except Exception:
+                continue
+            d2 = (zx - ox) * (zx - ox) + (zy - oy) * (zy - oy)
+            scored.append((d2, pid_s, (zx, zy, zz)))
+
+        scored.sort(key=lambda t: (t[0], t[1]))
+        return [(pid, coord) for _, pid, coord in scored[:n]]
+
+    def _discover_pois_for_level(self, level: LevelState) -> None:
+        """Record POIs attached to this level as discovered (reveals markers)."""
+        if not hasattr(self, "discovered_pois"):
+            self.discovered_pois = set()
+        if not hasattr(self, "rumored_pois"):
+            self.rumored_pois = set()
+
+        poi_ids = getattr(level.world, "poi_ids", None)
+        if not poi_ids:
+            return
+        for pid in list(poi_ids):
+            self.discovered_pois.add(str(pid))
+            self.rumored_pois.discard(str(pid))
+
     def add_corruption_anchor(
         self,
         jx: float,
@@ -1956,6 +2176,42 @@ class Game:
                             level.entities[ent.id] = ent
                         except Exception:
                             pass
+                elif struct.get("kind") == "legendary_lair":
+                    base_proto = str(struct.get("template_id") or struct.get("proto_id") or "imp")
+                    legend_name = struct.get("name")
+                    try:
+                        hp_mult = float(struct.get("hp_mult", 3.0) or 3.0)
+                    except Exception:
+                        hp_mult = 3.0
+
+                    # Put the legendary near the center of its lair (or nearest walkable).
+                    center = (level.world.width // 2, level.world.height // 2)
+                    spot = nearest_walkable(center)
+                    if spot:
+                        actor = enemy_factory.spawn_enemy(base_proto, spot)
+                        if legend_name:
+                            actor.name = str(legend_name)
+                        actor.tags = getattr(actor, "tags", {}) or {}
+                        actor.tags["legendary"] = True
+                        if "legendary_id" in struct:
+                            actor.tags["legendary_id"] = struct.get("legendary_id")
+                        actor.tags["lair_poi_id"] = pid
+                        try:
+                            base_hp = int(getattr(actor.stats, "max_hp", 1) or 1)
+                            boosted = max(base_hp + 1, int(round(base_hp * hp_mult)))
+                            actor.stats.max_hp = boosted
+                            actor.stats.hp = boosted
+                        except Exception:
+                            pass
+
+                        level.actors[actor.id] = actor
+                        level.entities[actor.id] = actor
+                        # Schedule AI for this legendary (same as normal enemies).
+                        self._schedule(
+                            level,
+                            self.cfg.action_time_fast,
+                            lambda aid=actor.id, lvl=level: self._monster_act(lvl, aid),
+                        )
             # Extra: drop some starting bismuth piles in the starting zone.
             if pid == "starting_zone":
                 world = level.world
@@ -2728,7 +2984,7 @@ class Game:
 
             if actor.stats.hp <= 0:
                 self.log.add(f"{actor.name} dies.")
-                self._kill_actor(level, actor)
+                self._kill_actor(level, actor, killer_id=self.player_id, killer_is_player=True)
 
 
 
@@ -2847,6 +3103,12 @@ class Game:
         player = self._player() if hasattr(self, "_player") else None
         if player:
             player.stats.coherence = player.stats.max_coherence
+
+        # POI discovery: entering a zone reveals its POI markers on the world map.
+        try:
+            self._discover_pois_for_level(lvl)
+        except Exception:
+            pass
         return self.levels[coord]
 
     def get_zone_for_render(self, coord: Tuple[int, int, int]) -> LevelState:
@@ -3691,6 +3953,10 @@ class Game:
 
     # --- movement & combat ---
 
+    def is_hostile(self, attacker: Actor, target: Actor) -> bool:
+        """Reputation-driven hostility check used by movement + AI."""
+        return reputation_system.is_hostile(self, attacker, target)
+
     def _handle_move_or_attack(self, level: LevelState, id: str, dx: int, dy: int) -> None:
         actor = level.actors.get(id)
         if actor is None or not actor.alive:
@@ -3708,8 +3974,13 @@ class Game:
 
         # stair use is explicit, so only move/attack here
         target = self._actor_at(level, (nx, ny))
-        if target and target.id != id and target.faction != actor.faction:
-            self._attack(level, actor, target)
+        if target and target.id != id:
+            if self.is_hostile(actor, target) or self.is_hostile(target, actor):
+                self._attack(level, actor, target)
+                return
+            # Friendly/neutral actors block movement.
+            if id == self.player_id:
+                self.log.add(f"You bump into {target.name}.")
             return
 
         # treat blocking entities as solid, like walls
@@ -3780,7 +4051,12 @@ class Game:
                             level.entities[ent.id] = ent
                         except Exception:
                             pass
-                self._kill_actor(level, defender)
+                self._kill_actor(
+                    level,
+                    defender,
+                    killer_id=attacker.id,
+                    killer_is_player=(attacker.id == self.player_id),
+                )
 
 
 
@@ -4002,7 +4278,7 @@ class Game:
             else:
                 self.log.add(f"{actor.name} shudders from the destabilization.")
                 if actor.stats.hp <= 0:
-                    self._kill_actor(level, actor)
+                    self._kill_actor(level, actor, killer_id=actor_id)
 
     def act_ignite(self, actor_id: str) -> None:
         """
@@ -4013,6 +4289,8 @@ class Game:
         pattern = getattr(level, "pattern", None)
         if actor is None or pattern is None or not pattern.edges:
             return
+
+        caster_is_player = actor_id == self.player_id
 
         # High mana cost gate
         cost = 30
@@ -4149,7 +4427,12 @@ class Game:
                         obj.stats.hp -= dmg_int
                         obj.stats.clamp()
                         if obj.stats.hp <= 0 and tid != self.player_id:
-                            self._kill_actor(level, obj)
+                            self._kill_actor(
+                                level,
+                                obj,
+                                killer_id=actor_id,
+                                killer_is_player=caster_is_player,
+                            )
                     except Exception:
                         pass
 
@@ -4321,6 +4604,8 @@ class Game:
         if actor is None or pattern is None or anchor is None or not pattern.vertices:
             return
 
+        caster_is_player = actor_id == self.player_id
+
         # High mana cost gate (no cooldown)
         cost = 35
         try:
@@ -4383,7 +4668,12 @@ class Game:
                         else:
                             self.log.add(f"{target.name} is frozen for {dmg_int} damage.")
                             if target.stats.hp <= 0:
-                                self._kill_actor(level, target)
+                                self._kill_actor(
+                                    level,
+                                    target,
+                                    killer_id=actor_id,
+                                    killer_is_player=caster_is_player,
+                                )
                 tags = getattr(target, "tags", {}) or {}
                 current = float(tags.get("frozen_slow", 1.0))
                 if slow_mult > current:
@@ -4781,7 +5071,7 @@ class Game:
             self.log.add(f"Your rune sears {actor.name} for {dmg}.")
             if actor.stats.hp <= 0:
                 self.log.add(f"{actor.name} is annihilated.")
-                self._kill_actor(level, actor)
+                self._kill_actor(level, actor, killer_id=self.player_id, killer_is_player=True)
 
         if hits == 0:
             self.log.add("Your rune fizzles; no foes in its reach.")
@@ -4839,7 +5129,7 @@ class Game:
                 self.log.add(f"Your focus bites {target_actor.name} for {per_vertex}.")
                 if target_actor.stats.hp <= 0:
                     self.log.add(f"{target_actor.name} crumbles.")
-                    self._on_enemy_killed(target_actor)
+                    self._kill_actor(level, target_actor, killer_id=self.player_id, killer_is_player=True)
         if hits == 0:
             self.log.add("Your focus fizzles; no foes in reach.")
 
@@ -4854,10 +5144,24 @@ class Game:
         xp_gain = enemy.tags.get("xp", self.cfg.xp_per_imp) if enemy.tags else self.cfg.xp_per_imp
         self._grant_xp(xp_gain)
 
-    def _kill_actor(self, level: LevelState, actor: Actor) -> None:
+    def _kill_actor(
+        self,
+        level: LevelState,
+        actor: Actor,
+        *,
+        killer_id: Optional[str] = None,
+        killer_is_player: bool = False,
+    ) -> None:
         """Handle removing a dead actor from the world and awarding XP once."""
         # Award XP (handles faction check + duplicate protection)
         self._on_enemy_killed(actor)
+
+        # Reputation: only the player currently tracks dynamic reputation.
+        if killer_is_player or (killer_id == self.player_id):
+            try:
+                reputation_system.apply_rep_event(self, actor, event="kill")
+            except Exception:
+                pass
 
         # Use the canonical id (actor_id is a property alias if you made Actor→Entity)
         aid = actor.id

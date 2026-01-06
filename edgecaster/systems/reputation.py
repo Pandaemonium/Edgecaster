@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, Tuple
+
+from edgecaster.content.factions import FACTIONS
+
+
+HATED: int = -250
+DISLIKED: int = -125
+LIKED: int = 125
+LOVED: int = 250
+
+
+def rep_tier(score: int) -> str:
+    """Convert a numeric reputation/opinion score into a tier label."""
+    try:
+        s = int(score)
+    except Exception:
+        s = 0
+    if s <= HATED:
+        return "hated"
+    if s <= DISLIKED:
+        return "disliked"
+    if s >= LOVED:
+        return "loved"
+    if s >= LIKED:
+        return "liked"
+    return "neutral"
+
+
+def actor_factions(actor: Any) -> Tuple[str, ...]:
+    """Return this actor's faction memberships (affiliations) as ids."""
+    aff = getattr(actor, "affiliations", None)
+    if isinstance(aff, (list, tuple)) and len(aff) > 0:
+        return tuple(str(x) for x in aff if x)
+
+    # Legacy: fall back to Actor.faction.
+    f = str(getattr(actor, "faction", "") or "")
+    if not f:
+        return tuple()
+
+    # Some older code uses faction="npc" as a role rather than a membership.
+    if f == "npc":
+        return ("neutral",)
+    return (f,)
+
+
+def _opinion_reduce(values: Iterable[int]) -> int:
+    vals = [int(v) for v in values]
+    if not vals:
+        return 0
+    # If any faction relation is negative, treat the *most negative* as dominant.
+    if any(v < 0 for v in vals):
+        return min(vals)
+    # Otherwise, treat the most positive as dominant.
+    if any(v > 0 for v in vals):
+        return max(vals)
+    return 0
+
+
+def faction_opinion_toward_factions(observer_faction_id: str, target_factions: Iterable[str]) -> int:
+    """How a faction feels about a set of target faction ids."""
+    observer_faction_id = str(observer_faction_id)
+    fdef = FACTIONS.get(observer_faction_id)
+    if fdef is None:
+        return 0
+
+    opinions = getattr(fdef, "opinions", None) or {}
+    vals = []
+    for tf in target_factions:
+        tf = str(tf)
+        try:
+            vals.append(int(opinions.get(tf, 0)))
+        except Exception:
+            vals.append(0)
+    return _opinion_reduce(vals)
+
+
+def faction_opinion_toward_actor(observer_faction_id: str, actor: Any) -> int:
+    """How a faction feels about a specific actor."""
+    return faction_opinion_toward_factions(observer_faction_id, actor_factions(actor))
+
+
+def player_reputation(game: Any) -> Dict[str, int]:
+    char = getattr(game, "character", None)
+    rep = getattr(char, "reputation", None) if char is not None else None
+    if not isinstance(rep, dict):
+        rep = {}
+        if char is not None:
+            try:
+                char.reputation = rep
+            except Exception:
+                pass
+    return rep
+
+
+def standing_with_faction(game: Any, entity: Any, faction_id: str) -> int:
+    """Return the perceived standing of `entity` with `faction_id`."""
+    faction_id = str(faction_id)
+
+    # Player uses dynamic reputation.
+    try:
+        if getattr(entity, "id", None) == getattr(game, "player_id", None):
+            return int(player_reputation(game).get(faction_id, 0))
+    except Exception:
+        pass
+
+    # Everyone else uses static faction opinions as their baseline standing.
+    return int(faction_opinion_toward_actor(faction_id, entity))
+
+
+def hostility_threshold(attacker: Any, faction_id: str) -> int:
+    """Return the hostility threshold used by attacker for this faction."""
+    faction_id = str(faction_id)
+    tags = getattr(attacker, "tags", None) or {}
+    if isinstance(tags, dict):
+        by_f = tags.get("hostile_below_by_faction")
+        if isinstance(by_f, dict) and faction_id in by_f:
+            try:
+                return int(by_f[faction_id])
+            except Exception:
+                pass
+        if "hostile_below" in tags:
+            try:
+                return int(tags["hostile_below"])
+            except Exception:
+                pass
+
+    fdef = FACTIONS.get(faction_id)
+    if fdef is not None:
+        try:
+            return int(getattr(fdef, "hostile_below", 125))
+        except Exception:
+            return 125
+    return 125
+
+
+def is_hostile(game: Any, attacker: Any, target: Any) -> bool:
+    """True if `attacker` should treat `target` as hostile right now."""
+    if attacker is None or target is None:
+        return False
+    if getattr(attacker, "id", None) == getattr(target, "id", None):
+        return False
+
+    factions = actor_factions(attacker)
+    if not factions:
+        return False
+
+    for fid in factions:
+        thr = hostility_threshold(attacker, fid)
+        standing = standing_with_faction(game, target, fid)
+        if standing < thr:
+            return True
+
+    return False
+
+
+def adjust_player_reputation(game: Any, faction_id: str, delta: int) -> None:
+    faction_id = str(faction_id)
+    try:
+        dv = int(delta)
+    except Exception:
+        return
+    if dv == 0:
+        return
+
+    rep = player_reputation(game)
+    rep[faction_id] = int(rep.get(faction_id, 0)) + dv
+
+
+def apply_rep_event(game: Any, target_actor: Any, *, event: str) -> None:
+    """Apply player reputation changes from an event involving `target_actor`.
+
+    `event` is currently one of:
+    - "kill": target_actor was killed by the player (directly or indirectly)
+    - "help": player helped target_actor (quests/dialogue can call this later)
+    """
+    if target_actor is None:
+        return
+    event = str(event)
+    if event not in ("kill", "help"):
+        return
+
+    # Adjust reputation with every known faction based on how that faction
+    # feels about the target actor.
+    for fid, fdef in FACTIONS.items():
+        opinion = faction_opinion_toward_actor(fid, target_actor)
+        tier = rep_tier(opinion)
+        if tier == "neutral":
+            continue
+
+        if event == "kill":
+            mag = int(getattr(fdef, "kill_rep_delta", 5) or 5)
+            if tier in ("liked", "loved"):
+                adjust_player_reputation(game, fid, -mag)
+            else:
+                adjust_player_reputation(game, fid, +mag)
+        else:
+            mag = int(getattr(fdef, "help_rep_delta", 5) or 5)
+            if tier in ("liked", "loved"):
+                adjust_player_reputation(game, fid, +mag)
+            else:
+                adjust_player_reputation(game, fid, -mag)
+

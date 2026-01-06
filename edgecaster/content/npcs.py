@@ -66,6 +66,16 @@ NPC_DEFS = {
         ],
         "quest_complete": "find_the_inventor",  # Quest to complete on dialogue
     },
+    "lair_informant": {
+        "name": "Lair Informant",
+        "factions": ["neutral"],
+        "base_disposition": 5,
+        "description": "A well-connected rumor-monger with a keen eye for danger.",
+        "dialogue": [
+            "Legends leave footprints in the recursion.",
+            "Ask, and I'll mark the nearest lairs on your map.",
+        ],
+    },
     "merchant": {
         "name": "Merchant",
         "factions": ["neutral"],

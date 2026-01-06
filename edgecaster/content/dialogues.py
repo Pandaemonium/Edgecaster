@@ -384,6 +384,86 @@ def _build_merchant(_game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogu
     )
 
 
+def _build_lair_informant(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTree:
+    title = _npc_name(npc, npc_def)
+    base_body = _npc_dialogue_body(npc, npc_def)
+
+    try:
+        lairs = list(getattr(game, "get_nearest_legendary_lairs")(5))
+    except Exception:
+        lairs = []
+
+    poi_to_name: dict[str, str] = {}
+    try:
+        registry = getattr(game, "legendary_registry", None) or {}
+        for rec in registry.values():
+            pid = rec.get("poi_id")
+            name = rec.get("name")
+            if pid and name:
+                poi_to_name[str(pid)] = str(name)
+    except Exception:
+        poi_to_name = {}
+
+    if not lairs:
+        lairs_body = "I haven't heard any lair rumors worth repeating."
+    else:
+        lines = ["I know of these nearby lairs:"]
+        for pid, coord in lairs:
+            name = poi_to_name.get(pid) or pid.replace("_", " ")
+            zx, zy, _ = coord
+            lines.append(f"- {name} at ({zx}, {zy})")
+        lines.append("")
+        lines.append("I've marked them on your map.")
+        lairs_body = "\n".join(lines)
+
+    def mark_lairs(game_obj: Any) -> None:
+        if not lairs:
+            return
+        try:
+            before = set(getattr(game_obj, "rumored_pois", set()) or set())
+        except Exception:
+            before = set()
+        for pid, _ in lairs:
+            try:
+                game_obj.add_poi_rumor(pid, log=False)
+            except Exception:
+                continue
+        try:
+            after = set(getattr(game_obj, "rumored_pois", set()) or set())
+            newly_added = len(after - before)
+        except Exception:
+            newly_added = 0
+        try:
+            if newly_added > 0:
+                game_obj.log.add("You mark several lairs on your map.")
+            else:
+                game_obj.log.add("Those lairs are already marked on your map.")
+        except Exception:
+            pass
+
+    return DialogueTree(
+        id=f"npc:{npc_id}",
+        start_id="start",
+        nodes={
+            "start": DialogueNode(
+                id="start",
+                title=title,
+                body=base_body,
+                choices=[
+                    DialogueChoice(text="Show me the nearest lairs.", next_id="lairs", effect=mark_lairs),
+                    DialogueChoice(text="Maybe later.", next_id=None),
+                ],
+            ),
+            "lairs": DialogueNode(
+                id="lairs",
+                title=title,
+                body=lairs_body,
+                choices=[DialogueChoice(text="Thanks.", next_id=None)],
+            ),
+        },
+    )
+
+
 def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
     """
     Build a DialogueTree for an NPC actor.
@@ -406,6 +486,8 @@ def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
         return _build_inventor(game, npc, npc_id, npc_def)
     if npc_id == "merchant":
         return _build_merchant(game, npc, npc_id, npc_def)
+    if npc_id == "lair_informant":
+        return _build_lair_informant(game, npc, npc_id, npc_def)
 
     # Generic fallback: show whatever dialogue lines exist, then end.
     title = _npc_name(npc, npc_def)
