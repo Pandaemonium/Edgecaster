@@ -377,6 +377,7 @@ class Game:
             actions.append("push_pattern")
             actions.append("corruption_cone")
             actions.append("place_rune_anchor")
+            actions.append("lightning")
 
         # For now, all other classes keep only move/wait (empty ability bar).
         player.actions = tuple(actions)

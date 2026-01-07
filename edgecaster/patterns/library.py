@@ -177,4 +177,15 @@ def action_preview_geometry(action: str, game: Any = None, overrides: Dict[str, 
         segs = [(0, 1), (1, 2), (2, 3)]
         return {"verts": verts, "segs": segs, "green_levels": True}
 
+    if action == "lightning":
+        # A jagged bolt shape.
+        verts = [
+            (0.55, 0.10),
+            (0.40, 0.48),
+            (0.62, 0.48),
+            (0.38, 0.92),
+        ]
+        segs = [(0, 1), (1, 2), (2, 3)]
+        return {"verts": verts, "segs": segs, "strong": [1]}
+
     return None

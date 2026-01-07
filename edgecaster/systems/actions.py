@@ -1033,6 +1033,251 @@ def _action_freeze(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_freeze(actor_id)
 
 
+@register_action("lightning", label="Lightning", speed="fast", show_in_bar=True, cooldown_ticks=80)
+def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Strike all creatures touching the squares occupied by the current pattern.
+
+    - High mana cost, long cooldown.
+    - Rolls 2d20 total damage.
+    - Distributes damage evenly (rounding up) across all hit creatures.
+    """
+    if not hasattr(game, "_level"):
+        return
+
+    try:
+        level = game._level()
+    except Exception:
+        return
+
+    actor = None
+    try:
+        actor = getattr(level, "actors", {}).get(actor_id)
+    except Exception:
+        actor = None
+
+    if actor is None:
+        return
+
+    # Mana gate (intrinsic ability)
+    mana_cost = 50
+    try:
+        if getattr(actor, "stats", None) is None:
+            return
+        if actor.stats.mana < mana_cost:
+            if actor_id == getattr(game, "player_id", None):
+                game.log.add("Not enough mana to call lightning.")
+            return
+        actor.stats.mana -= mana_cost
+        actor.stats.clamp()
+    except Exception:
+        # If stats/mana aren't available, fail silently for now.
+        return
+
+    pattern = getattr(level, "pattern", None)
+    anchor = getattr(level, "pattern_anchor", None)
+    if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
+        if actor_id == getattr(game, "player_id", None):
+            try:
+                game.log.add("No pattern to conduct lightning.")
+            except Exception:
+                pass
+        return
+
+    try:
+        from edgecaster.patterns.activation import project_vertices
+    except Exception:
+        return
+
+    try:
+        verts_world = project_vertices(pattern, anchor)
+    except Exception:
+        verts_world = []
+
+    if not verts_world:
+        return
+
+    # Basic activation glow (reuses existing post-activation overlay).
+    try:
+        level.activation_points = list(verts_world)
+        ttl = int(getattr(getattr(game, "cfg", None), "pattern_overlay_ttl", 30))
+        level.activation_ttl = max(ttl, 1)
+    except Exception:
+        pass
+
+    def line_points(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+        """Bresenham line (integer grid points)."""
+        points: list[tuple[int, int]] = []
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        x, y = x0, y0
+        while True:
+            points.append((x, y))
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x += sx
+            if e2 <= dx:
+                err += dx
+                y += sy
+        return points
+
+    # Tiles touched by the pattern (edges + vertices).
+    touched: set[tuple[int, int]] = set()
+    for vx, vy in verts_world:
+        touched.add((int(round(float(vx))), int(round(float(vy)))))
+
+    for e in getattr(pattern, "edges", []) or []:
+        try:
+            a = verts_world[int(e.a)]
+            b = verts_world[int(e.b)]
+        except Exception:
+            continue
+        touched.update(
+            line_points(
+                int(round(float(a[0]))),
+                int(round(float(a[1]))),
+                int(round(float(b[0]))),
+                int(round(float(b[1]))),
+            )
+        )
+
+    if not touched:
+        return
+
+    # Pick all living actors whose tile is touched by the pattern.
+    targets = []
+    for target in list(getattr(level, "actors", {}).values()):
+        try:
+            if getattr(target, "id", None) == actor_id:
+                continue
+            if not getattr(target, "alive", True):
+                continue
+            tx, ty = getattr(target, "pos", (None, None))
+            if tx is None or ty is None:
+                continue
+            if (int(tx), int(ty)) in touched:
+                targets.append(target)
+        except Exception:
+            continue
+
+    # Roll 2d20 total damage.
+    rng = getattr(game, "rng", None)
+    try:
+        import random
+
+        if rng is None:
+            rng = random.Random()
+    except Exception:
+        pass
+
+    # Store a time-based VFX state for the renderer (pure visuals).
+    #
+    # This is intentionally keyed off real-time (monotonic clock) so the bolt
+    # animation can play even while the game is waiting for player input.
+    try:
+        seed = int(rng.randint(0, 2**31 - 1))
+    except Exception:
+        seed = int(time.time() * 1000) & 0x7FFFFFFF
+
+    try:
+        caster_pos = getattr(actor, "pos", (None, None))
+        caster_tile = (int(caster_pos[0]), int(caster_pos[1]))
+    except Exception:
+        caster_tile = None
+
+    try:
+        anchor_tile = (int(anchor[0]), int(anchor[1])) if anchor is not None else None
+    except Exception:
+        anchor_tile = None
+
+    start_tile = None
+    try:
+        if caster_tile is not None and caster_tile in touched:
+            start_tile = caster_tile
+        elif anchor_tile is not None and anchor_tile in touched:
+            start_tile = anchor_tile
+        else:
+            start_tile = next(iter(touched))
+    except Exception:
+        start_tile = None
+
+    try:
+        level.lightning_state = {
+            "t0": float(time.monotonic()),
+            # Very fast, punchy bolt.
+            "duration_s": 0.26,
+            "flash_s": 0.08,
+            "seed": seed,
+            # Snapshot the footprint so the effect doesn't jump if the rune moves/edits.
+            "mask_tiles": sorted(touched, key=lambda p: (p[1], p[0])),
+            "start_tile": start_tile,
+            "target_tiles": [
+                (int(getattr(t, "pos", (0, 0))[0]), int(getattr(t, "pos", (0, 0))[1]))
+                for t in targets
+            ],
+        }
+    except Exception:
+        pass
+
+    try:
+        total = int(rng.randint(1, 20)) + int(rng.randint(1, 20))
+    except Exception:
+        total = 20
+
+    if not targets:
+        if actor_id == getattr(game, "player_id", None):
+            try:
+                game.log.add("Lightning crackles, but finds no creatures.")
+            except Exception:
+                pass
+        return
+
+    import math as _math
+
+    per = int(_math.ceil(total / max(1, len(targets))))
+    caster_is_player = actor_id == getattr(game, "player_id", None)
+
+    if caster_is_player:
+        try:
+            game.log.add(f"Lightning forks into {len(targets)} bolts ({per} each).")
+        except Exception:
+            pass
+
+    for target in targets:
+        try:
+            stats = getattr(target, "stats", None)
+            if stats is None or not hasattr(stats, "hp"):
+                continue
+            stats.hp -= per
+            if hasattr(stats, "clamp"):
+                stats.clamp()
+        except Exception:
+            continue
+
+        if caster_is_player:
+            try:
+                game.log.add(f"Lightning strikes {getattr(target, 'name', 'something')} for {per}.")
+            except Exception:
+                pass
+
+        try:
+            if int(getattr(target.stats, "hp", 0)) <= 0 and hasattr(game, "_kill_actor"):
+                game._kill_actor(
+                    level,
+                    target,
+                    killer_id=actor_id,
+                    killer_is_player=caster_is_player,
+                )
+        except Exception:
+            pass
+
+
 @register_action("corruption_cone", label="Corruption Cone", speed="fast", show_in_bar=True)
 def _action_corruption_cone(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Create a localized cone of corruption centered on the actor."""

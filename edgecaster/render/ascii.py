@@ -2611,6 +2611,276 @@ class AsciiRenderer:
         self.surface.blit(overlay, (0, 0))
         self.surface.blit(glow, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
 
+    def draw_lightning_overlay(self, game: Game) -> None:
+        """Visual overlay for Lightning (pure VFX; no rules/simulation here)."""
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+
+        state = getattr(level, "lightning_state", None)
+        if not state:
+            return
+
+        try:
+            t0 = float(state.get("t0", 0.0))
+            duration = float(state.get("duration_s", 0.26) or 0.26)
+            flash_s = float(state.get("flash_s", 0.08) or 0.08)
+        except Exception:
+            setattr(level, "lightning_state", None)
+            return
+
+        now = float(time.monotonic())
+        if duration <= 1e-6:
+            setattr(level, "lightning_state", None)
+            return
+
+        u = (now - t0) / duration
+        if u >= 1.0:
+            setattr(level, "lightning_state", None)
+            return
+
+        try:
+            seed = int(state.get("seed", 0))
+        except Exception:
+            seed = 0
+
+        mask_tiles = state.get("mask_tiles") or []
+        if not mask_tiles:
+            setattr(level, "lightning_state", None)
+            return
+
+        # Cache mask set and generated paths so the effect is stable frame-to-frame.
+        mask_set = state.get("_mask_set")
+        if mask_set is None:
+            try:
+                mask_set = {tuple(p) for p in mask_tiles}
+            except Exception:
+                mask_set = set()
+            state["_mask_set"] = mask_set
+
+        paths_world = state.get("_paths_world")
+        if not paths_world:
+            rng = random.Random(seed & 0xFFFFFFFF)
+            mask_list = [tuple(p) for p in mask_tiles]
+
+            _NEI8 = [
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ]
+
+            start_tile = state.get("start_tile")
+            start = None
+            try:
+                if start_tile is not None:
+                    sx, sy = int(start_tile[0]), int(start_tile[1])
+                    if (sx, sy) in mask_set:
+                        start = (sx, sy)
+            except Exception:
+                start = None
+            if start is None:
+                try:
+                    start = rng.choice(mask_list)
+                except Exception:
+                    start = mask_list[0]
+
+            def biased_walk(
+                start_xy: tuple[int, int],
+                *,
+                steps: int = 260,
+                step_stride: int = 2,
+                turn_bias: float = 0.82,
+            ) -> list[tuple[float, float]]:
+                x, y = start_xy
+                pts: list[tuple[float, float]] = [(x + 0.5, y + 0.5)]
+                dx, dy = rng.choice(_NEI8)
+                steps = int(max(12, steps))
+                step_stride = int(max(1, step_stride))
+
+                for _ in range(steps):
+                    cand: list[tuple[int, int]] = []
+                    weights: list[float] = []
+                    for ndx, ndy in _NEI8:
+                        nx, ny = x + ndx, y + ndy
+                        if (nx, ny) not in mask_set:
+                            continue
+                        dot = ndx * dx + ndy * dy
+                        wgt = 1.0
+                        if dot > 0:
+                            wgt *= 1.0 + 2.0 * turn_bias
+                        elif dot == 0:
+                            wgt *= 1.0 + 0.6 * (1.0 - turn_bias)
+                        else:
+                            wgt *= 1.0 + 0.2 * (1.0 - turn_bias)
+                        cand.append((ndx, ndy))
+                        weights.append(wgt)
+                    if not cand:
+                        break
+
+                    ndx, ndy = rng.choices(cand, weights=weights, k=1)[0]
+                    dx, dy = ndx, ndy
+
+                    nx, ny = x, y
+                    ok = True
+                    for _s in range(step_stride):
+                        tx, ty = nx + dx, ny + dy
+                        if (tx, ty) in mask_set:
+                            nx, ny = tx, ty
+                        else:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+
+                    x, y = nx, ny
+                    jitter = 0.15
+                    pts.append(
+                        (
+                            x + 0.5 + rng.uniform(-jitter, jitter),
+                            y + 0.5 + rng.uniform(-jitter, jitter),
+                        )
+                    )
+
+                # Light simplification: drop near-duplicate points.
+                out = [pts[0]]
+                for px, py in pts[1:]:
+                    ox, oy = out[-1]
+                    ddx = px - ox
+                    ddy = py - oy
+                    if ddx * ddx + ddy * ddy >= 0.25:
+                        out.append((px, py))
+                return out
+
+            main = biased_walk(start, steps=260, step_stride=2, turn_bias=0.82)
+            paths_world = [main]
+
+            # Branches: spawn from random points along the main path.
+            branch_count = 3
+            for _ in range(branch_count):
+                if len(main) < 20:
+                    break
+                idx = rng.randint(8, max(8, len(main) - 8))
+                bx = int(main[idx][0])
+                by = int(main[idx][1])
+                if (bx, by) not in mask_set:
+                    continue
+                branch = biased_walk(
+                    (bx, by),
+                    steps=rng.randint(60, 140),
+                    step_stride=2,
+                    turn_bias=0.70,
+                )
+                paths_world.append(branch)
+
+            state["_paths_world"] = paths_world
+
+        # Compute a tight bounding box around the rune footprint (in tile coords).
+        tile_bbox = state.get("_tile_bbox")
+        if tile_bbox is None:
+            xs = [int(p[0]) for p in mask_tiles]
+            ys = [int(p[1]) for p in mask_tiles]
+            if not xs or not ys:
+                return
+            tile_bbox = (min(xs), min(ys), max(xs), max(ys))
+            state["_tile_bbox"] = tile_bbox
+
+        min_x, min_y, max_x, max_y = tile_bbox
+        pad_px = int(max(10, self.tile * 2.0))
+        left = int(min_x * self.tile + self.origin_x) - pad_px
+        top = int(min_y * self.tile + self.origin_y) - pad_px
+        width = int((max_x - min_x + 1) * self.tile) + pad_px * 2
+        height = int((max_y - min_y + 1) * self.tile) + pad_px * 2
+
+        screen_rect = pygame.Rect(0, 0, self.width, self.height)
+        fx_rect = pygame.Rect(left, top, width, height).clip(screen_rect)
+        if fx_rect.w <= 1 or fx_rect.h <= 1:
+            return
+
+        # Local surface for bolt rendering + bloom.
+        bolt = pygame.Surface((fx_rect.w, fx_rect.h), pygame.SRCALPHA)
+
+        def to_local_px(wx: float, wy: float) -> tuple[int, int]:
+            px = wx * self.tile + self.origin_x - fx_rect.x
+            py = wy * self.tile + self.origin_y - fx_rect.y
+            return (int(px), int(py))
+
+        # Reveal fraction (feels like it "runs along" the rune).
+        reveal = min(1.0, max(0.0, u) * 1.35)
+
+        # Flicker + fast decay envelope.
+        phase = (seed & 0xFFFF) / 65536.0 * math.tau
+        flick = 0.75 + 0.25 * math.sin(60.0 * (now - t0) + phase)
+        intensity = math.exp(-5.0 * max(0.0, u)) * flick
+        max_alpha = 240
+        alpha = int(max(0, min(255, max_alpha * intensity)))
+        if alpha <= 0:
+            return
+
+        core_width = max(2, int(self.tile * 0.12))
+        glow_width = max(core_width + 4, int(self.tile * 0.55))
+        color = (255, 255, 255)
+
+        def draw_polyline(points_world: list[tuple[float, float]]) -> None:
+            if len(points_world) < 2:
+                return
+            pts = [to_local_px(x, y) for (x, y) in points_world]
+            n = max(2, int(len(pts) * reveal))
+            pts = pts[:n]
+            if len(pts) < 2:
+                return
+            pygame.draw.lines(bolt, (*color, int(alpha * 0.22)), False, pts, glow_width)
+            pygame.draw.lines(bolt, (*color, alpha), False, pts, core_width)
+            # Add a few aaliners for extra crispness.
+            for a, b in zip(pts, pts[1:]):
+                pygame.draw.aaline(bolt, (*color, alpha), a, b)
+
+        for path in paths_world:
+            draw_polyline(path)
+
+        # Bloom: downsample + smoothscale (cheap blur).
+        def blur_surface(surf: pygame.Surface, downsample: int = 5) -> pygame.Surface:
+            w, h = surf.get_size()
+            ds = max(1, int(downsample))
+            small = pygame.transform.smoothscale(surf, (max(1, w // ds), max(1, h // ds)))
+            return pygame.transform.smoothscale(small, (w, h))
+
+        bloom = blur_surface(bolt, downsample=5)
+        bloom.set_alpha(int(alpha * 0.55))
+
+        # Optional early flash: briefly lights the whole rune footprint.
+        if flash_s > 1e-6 and (now - t0) < flash_s:
+            flash_u = 1.0 - ((now - t0) / flash_s)
+            flash_a = int(110 * max(0.0, min(1.0, flash_u)))
+            if flash_a > 0:
+                flash = pygame.Surface((fx_rect.w, fx_rect.h), pygame.SRCALPHA)
+                for tx, ty in mask_tiles:
+                    rx = int(tx * self.tile + self.origin_x - fx_rect.x)
+                    ry = int(ty * self.tile + self.origin_y - fx_rect.y)
+                    pygame.draw.rect(flash, (255, 255, 255, flash_a), pygame.Rect(rx, ry, self.tile, self.tile))
+                self.surface.blit(flash, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
+
+        # Composite additively onto the main surface.
+        self.surface.blit(bloom, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
+        self.surface.blit(bolt, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
+
+        # Extra punch: starbursts on struck targets.
+        target_tiles = state.get("target_tiles") or []
+        if target_tiles:
+            star_radius = max(10, int(self.tile * 1.1))
+            star = self._get_starburst_sprite(star_radius, spikes=8, color=(220, 240, 255))
+            star_a = int(255 * min(1.0, intensity * 1.4))
+            if star_a > 0:
+                for tx, ty in target_tiles:
+                    cx, cy = to_local_px(tx + 0.5, ty + 0.5)
+                    sprite = star.copy()
+                    sprite.set_alpha(star_a)
+                    self.surface.blit(sprite, sprite.get_rect(center=(fx_rect.x + cx, fx_rect.y + cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
+
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
         """Simple word-wrap that fits text within max_width."""
         words = text.split()
@@ -2715,6 +2985,7 @@ class AsciiRenderer:
 
         self.draw_pattern_overlay(game)
         self.draw_sparkle_overlay(game)
+        self.draw_lightning_overlay(game)
         self.draw_action_preview_underlay(game)
         self.draw_push_preview(game)
         self.draw_place_overlay(game)
