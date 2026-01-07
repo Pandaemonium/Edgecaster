@@ -27,7 +27,11 @@ def _body_zoom_pan_t(obj: object, zoom_scale: float) -> float:
         if anim is None:
             return float(idle_pan)
 
-        _from_focus, _to_focus, from_s, to_s, start_ms, dur_ms = anim
+        # Phase 1.5: camera-state anim no longer encodes focus ids.
+        # Keep focus_pos stable (or None) to avoid coupling focus UI to camera animation.
+        zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+        focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
+        setattr(scene, "_body_zoom_focus_pos", focus_pos)
         now = int(pygame.time.get_ticks())
         if int(dur_ms) <= 0:
             t = 1.0
@@ -133,6 +137,218 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Small helpers: smooth animation
 # ---------------------------------------------------------------------------
+
+def _resolve_body_schema_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> dict:
+    """
+    Resolve the *currently viewed* body schema, following the scene's zoom path.
+
+    Minimal schema switching step:
+      - Start at resolve_body_schema(owner)
+      - For each nid in zoom_stack, follow that node's "proto" to the next schema
+      - Render ONLY the final schema (no ghost layers / fades yet)
+
+    Fail-soft: if any hop is missing or invalid, stop descending.
+    """
+    try:
+        schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
+    except Exception:
+        schema = {"root": None, "nodes": {}}
+
+    zs = list(zoom_stack) if zoom_stack else []
+    for nid in zs:
+        nid = str(nid)
+        nodes = schema.get("nodes", {}) or {}
+        node = nodes.get(nid)
+        if not isinstance(node, dict):
+            break
+        proto = node.get("proto")
+        if not proto:
+            break
+        try:
+            schema = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+            break
+
+    if not isinstance(schema, dict):
+        schema = {"root": None, "nodes": {}}
+    if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
+        schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+    return schema
+
+def _resolve_body_view_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> tuple[dict, tuple[float, float], float]:
+    """Resolve (schema, embed_offset_u, embed_scale) for the current zoom path.
+
+    IMPORTANT invariant:
+      - Each schema is defined in its own local coordinates.
+      - Descending into a node's sub-schema *embeds* that child's coordinate chart
+        at the parent node's local position, scaled by that node's props.size (default 1).
+
+    This function accumulates those embedding transforms so the final schema can be
+    rendered in the same absolute world-space as the root schema.
+    """
+    try:
+        schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
+    except Exception:
+        schema = {"root": None, "nodes": {}}
+
+    offset_x, offset_y = 0.0, 0.0
+    scale = 1.0
+
+    zs = list(zoom_stack) if zoom_stack else []
+    for nid in zs:
+        nid = str(nid)
+        nodes = schema.get("nodes", {}) or {}
+        node = nodes.get(nid)
+        if not isinstance(node, dict):
+            break
+
+        # Local position of the *embedding node* in the current chart.
+        layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+        try:
+            nx = float(layout.get("x", 0.0) or 0.0)
+            ny = float(layout.get("y", 0.0) or 0.0)
+        except Exception:
+            nx, ny = 0.0, 0.0
+
+        # Node "size" controls *how far we zoom in* when entering this node.
+        # Larger size => deeper zoom => embedded chart is smaller in parent/world units.
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        try:
+            size = float(props.get("size", 1.0) or 1.0)
+        except Exception:
+            size = 1.0
+        if size <= 0.0:
+            size = 1.0
+
+        nscale = size
+
+        # Update accumulated embedding: child chart origin is at parent node position.
+        offset_x += scale * nx
+        offset_y += scale * ny
+        scale *= nscale
+
+        proto = node.get("proto")
+        if not proto:
+            break
+        try:
+            schema = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+            break
+
+    if not isinstance(schema, dict):
+        schema = {"root": None, "nodes": {}}
+    if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
+        schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+
+    return schema, (float(offset_x), float(offset_y)), float(scale)
+
+
+def _resolve_body_view_chain_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> list[tuple[dict, tuple[float, float], float]]:
+    """Resolve a chain of embedded schemas along the zoom path.
+
+    Returns a list of (schema, embed_offset_u, embed_scale_u) from root -> active.
+    Each entry is already embedded into the same world-space chart as the root.
+
+    This is intentionally *render-only* plumbing for Phase 2 (ghost layers).
+    Camera fitting and interaction should still be computed from the active schema only.
+    """
+    try:
+        schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
+    except Exception:
+        schema = {"root": None, "nodes": {}}
+
+    if not isinstance(schema, dict):
+        schema = {"root": None, "nodes": {}}
+    if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
+        schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+
+    offset_x = 0.0
+    offset_y = 0.0
+    scale = 1.0
+
+    chain: list[tuple[dict, tuple[float, float], float]] = [(schema, (offset_x, offset_y), scale)]
+
+    zs = list(zoom_stack) if zoom_stack else []
+    for nid in zs:
+        nid = str(nid)
+        nodes = schema.get("nodes", {}) or {}
+        node = nodes.get(nid)
+        if not isinstance(node, dict):
+            break
+
+        # Local position of the *embedding node* in the current chart.
+        layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+        try:
+            nx = float(layout.get("x", 0.0) or 0.0)
+            ny = float(layout.get("y", 0.0) or 0.0)
+        except Exception:
+            nx, ny = 0.0, 0.0
+
+        # Node "size" controls *how far we zoom in* when entering this node.
+        # Larger size => deeper zoom => embedded chart is smaller in parent/world units.
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        try:
+            size = float(props.get("size", 1.0) or 1.0)
+        except Exception:
+            size = 1.0
+        if size <= 0.0:
+            size = 1.0
+
+        nscale = size
+
+        # Update accumulated embedding: child chart origin is at parent node position.
+        offset_x += scale * nx
+        offset_y += scale * ny
+        scale *= nscale
+
+        proto = node.get("proto")
+        if not proto:
+            break
+
+        try:
+            schema = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+        except Exception:
+            schema = {"root": None, "nodes": {}}
+            break
+
+        if not isinstance(schema, dict):
+            schema = {"root": None, "nodes": {}}
+        if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
+            schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+
+        chain.append((schema, (float(offset_x), float(offset_y)), float(scale)))
+
+    return chain
+
+
+def _embed_positions(pos_local_u: dict[str, tuple[float, float]], offset_u: tuple[float, float], scale: float) -> dict[str, tuple[float, float]]:
+    ox, oy = float(offset_u[0]), float(offset_u[1])
+    s = float(scale)
+    out: dict[str, tuple[float, float]] = {}
+    for k, (x, y) in (pos_local_u or {}).items():
+        out[str(k)] = (ox + s * float(x), oy + s * float(y))
+    return out
+
+
+def _project_point_with_camera(
+    point_u: tuple[float, float],
+    region_rect_local: pygame.Rect,
+    *,
+    center_u: tuple[float, float],
+    scale: float,
+) -> tuple[float, float]:
+    """Project a single world-space point into region-local pixel coordinates."""
+    x_u, y_u = float(point_u[0]), float(point_u[1])
+    cx_u, cy_u = float(center_u[0]), float(center_u[1])
+    px = (x_u - cx_u) * float(scale) + (float(region_rect_local.w) * 0.5)
+    py = (y_u - cy_u) * float(scale) + (float(region_rect_local.h) * 0.5)
+    return (px, py)
+
+
+
+
 
 def _clamp01(x: float) -> float:
     return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
@@ -357,6 +573,141 @@ def _map_positions_to_rect(
         out[nid] = (px, py)
 
     return out, scale
+
+
+def _fit_camera_to_positions(
+    positions: dict[str, tuple[float, float]],
+    target_rect: pygame.Rect,
+    *,
+    margin_frac: float = 0.12,
+) -> tuple[tuple[float, float], float]:
+    """
+    Fit a camera to a set of world-space (x,y) positions.
+
+    Returns:
+      (center_u_x, center_u_y), scale_px_per_unit
+
+    This is like _map_positions_to_rect(), but returns camera parameters instead
+    of already-projected pixels.
+    """
+    if not positions:
+        return (0.0, 0.0), 1.0
+
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+
+    # Avoid zero spans
+    spanx = max(1e-6, float(maxx - minx))
+    spany = max(1e-6, float(maxy - miny))
+
+    inner = target_rect.copy()
+    m = int(round(min(inner.w, inner.h) * float(margin_frac)))
+    inner.inflate_ip(-2 * m, -2 * m)
+    if inner.w <= 0 or inner.h <= 0:
+        inner = target_rect.copy()
+
+    sx = float(inner.w) / spanx
+    sy = float(inner.h) / spany
+    scale = min(sx, sy)
+
+    cx_u = (minx + maxx) * 0.5
+    cy_u = (miny + maxy) * 0.5
+    return (float(cx_u), float(cy_u)), float(scale)
+
+
+def _project_positions_with_camera(
+    positions_u: dict[str, tuple[float, float]],
+    target_rect: pygame.Rect,
+    *,
+    center_u: tuple[float, float],
+    scale: float,
+) -> dict[str, tuple[int, int]]:
+    """
+    Project world-space node positions into pixel coords inside target_rect,
+    using a camera defined by (center_u, scale).
+
+    The returned pixels are in the same coordinate space as target_rect
+    (so if target_rect is (0,0,w,h), pixels are panel-local).
+    """
+    if not positions_u:
+        return {}
+
+    cx_u, cy_u = float(center_u[0]), float(center_u[1])
+    cx_px, cy_px = int(target_rect.centerx), int(target_rect.centery)
+
+    out: dict[str, tuple[int, int]] = {}
+    for nid, (x, y) in positions_u.items():
+        px = int(round(cx_px + (float(x) - cx_u) * float(scale)))
+        py = int(round(cy_px + (float(y) - cy_u) * float(scale)))
+        out[str(nid)] = (px, py)
+    return out
+
+
+def _compute_body_graph_camera(
+    scene: object,
+    positions_u: dict[str, tuple[float, float]],
+    region_rect_local: pygame.Rect,
+    *,
+    margin_frac: float = 0.12,
+) -> tuple[tuple[float, float], float]:
+    """
+    The single source of truth for the body-graph camera.
+
+    Returns:
+      center_u, scale_px_per_unit
+
+    - Base camera is a fit-to-positions camera (computed from active schema only).
+    - Optional Phase 1.5 animation interpolates BOTH center and scale together,
+      between two fully-defined camera states captured at the zoom event.
+    """
+    base_center_u, base_scale = _fit_camera_to_positions(
+        positions_u, region_rect_local, margin_frac=margin_frac
+    )
+
+    anim = getattr(scene, "_body_zoom_anim", None)
+    if anim is None:
+        return base_center_u, float(base_scale)
+
+    try:
+        from_center_u, from_scale, to_center_u, to_scale, start_ms, dur_ms = anim
+        now = int(pygame.time.get_ticks())
+
+        if dur_ms <= 0:
+            t = 1.0
+        else:
+            t = (now - int(start_ms)) / float(dur_ms)
+            if t < 0.0:
+                t = 0.0
+            if t > 1.0:
+                t = 1.0
+
+        # Smoothstep
+        t = t * t * (3.0 - 2.0 * t)
+
+        cx = float(from_center_u[0]) * (1.0 - t) + float(to_center_u[0]) * t
+        cy = float(from_center_u[1]) * (1.0 - t) + float(to_center_u[1]) * t
+        sc = float(from_scale) * (1.0 - t) + float(to_scale) * t
+
+        # When done, snap-clean to target and clear the anim.
+        if t >= 0.999:
+            try:
+                setattr(scene, "_body_zoom_anim", None)
+            except Exception:
+                pass
+            return (float(to_center_u[0]), float(to_center_u[1])), float(to_scale)
+
+        return (cx, cy), float(sc)
+
+    except Exception:
+        # Fail-soft to base camera
+        try:
+            setattr(scene, "_body_zoom_anim", None)
+        except Exception:
+            pass
+        return base_center_u, float(base_scale)
+
 
 
 
@@ -933,39 +1284,60 @@ class EntityPreviewWidget(Widget):
             region_h = max(1, int(r.h) - int(top_reserved) - int(bottom_reserved))
             region = pygame.Rect(14, top_reserved, region_w, region_h)
 
-            # Compute body node positions so we can anchor the glyph to the schema root.
+            # Resolve the currently viewed schema and its embedding transform in absolute world-space.
             try:
-                schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
+                schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
+                    owner, getattr(scene, "_body_zoom_stack", [])
+                )
             except Exception:
-                schema = {"root": None, "nodes": {}}
+                schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
 
-            pos_u = _compute_body_positions(schema)
-            pos_px, _scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+            pos_local_u = _compute_body_positions(schema)
+            pos_u = _embed_positions(pos_local_u, embed_off_u, embed_scale_u)
 
-            # Apply the same camera zoom transform used by BodyPlanGraphWidget.
-            # Use the *animated/interpolated* focus_pos (not the discrete node id),
-            # otherwise zoom-out will snap/teleport when focus changes.
-            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
-            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
+            # Unify preview + overlay: use the SAME world-space camera as BodyPlanGraphWidget.
+            region_local = pygame.Rect(0, 0, region.w, region.h)
+            _base_center_u, base_scale = _fit_camera_to_positions(pos_u, region_local, margin_frac=0.12)
+            cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, margin_frac=0.12)
 
-            pan_t = _body_zoom_pan_t(scene, zoom_scale)
-            pos_px = _apply_body_zoom_to_points(
-                pos_px,
-                region_w=float(region.w),
-                region_h=float(region.h),
-                focus_pos=focus_pos,
-                zoom_scale=zoom_scale,
-                pan_t=pan_t,
-            )
+            # Cache last camera so zoom-in/out can animate cleanly without widget wiring.
+            try:
+                setattr(scene, "_last_body_cam_center_u", tuple(cam_center_u))
+                setattr(scene, "_last_body_cam_scale", float(cam_scale))
+                setattr(scene, "_last_body_cam_region", (int(region.w), int(region.h)))
+                setattr(scene, "_last_body_cam_base_scale", float(base_scale))
+            except Exception:
+                pass
+
+            pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+            # Derive a multiplicative zoom factor for glyph sizing.
+            #
+            # IMPORTANT: comparing cam_scale to *this layer's* base_scale will cancel out,
+            # because both are computed from the same filtered pos_u. So instead, we compare
+            # against a persistent "root" reference scale captured at stack depth 0.
+            zoom_mul = 1.0
+            try:
+                stack = getattr(scene, "_body_zoom_stack", []) or []
+                root_scale = getattr(scene, "_body_zoom_root_cam_scale", None)
+
+                # Update the root reference whenever we're at the top level.
+                if len(stack) == 0:
+                    root_scale = float(cam_scale)
+                    setattr(scene, "_body_zoom_root_cam_scale", root_scale)
+
+                if root_scale is None or float(root_scale) <= 1e-6:
+                    root_scale = float(base_scale) if float(base_scale) > 1e-6 else 1.0
+
+                zoom_mul = float(cam_scale) / float(root_scale)
+            except Exception:
+                zoom_mul = 1.0
 
 
-            # Anchor the glyph at the (zoomed) root node position if available; otherwise the region center.
-            root_id = schema.get("root") if isinstance(schema, dict) else None
-            root_id = str(root_id) if root_id is not None else None
-            anchor = pos_px.get(root_id) if root_id else None
-            if anchor is None:
-                anchor = (region.w * 0.5, region.h * 0.5)
 
+
+            # Anchor the glyph to the *root entity frame* (world origin), not to the currently viewed sub-schema.
+            anchor = _project_point_with_camera((0.0, 0.0), region_local, center_u=cam_center_u, scale=cam_scale)
             # Use the scene-derived base glyph size so the "external opaque glyph" overlay and
             # the in-widget glyph match exactly at the moment we switch modes.
             base_px = int(getattr(scene, "_zoom_glyph_base_px", 0) or 0)
@@ -973,7 +1345,7 @@ class EntityPreviewWidget(Widget):
                 base_px = max(12, int(min(region.w, region.h) * 0.50))
 
             # Apply body-graph camera zoom here (this is the intended place for it).
-            glyph_px = int(max(10, min(2048, float(base_px) * max(0.25, min(6.0, zoom_scale)))))
+            glyph_px = int(max(10, min(2048, float(base_px) * max(0.25, min(6.0, zoom_mul)))))
 
 
             font = self._get_font(glyph_px)
@@ -1056,7 +1428,333 @@ class BodyPlanGraphWidget(Widget):
         self._last_click_nid: str | None = None
         self._last_click_ms: int = 0
 
+    # ----------------------------
+    # Rendering
+    # ----------------------------
 
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
+            return
+
+        scene = ctx.scene
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            try:
+                setattr(scene, "_body_overlay_panel_surface", None)
+            except Exception:
+                pass
+            return
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        # Reserve a region that mostly covers the glyph area, not the header/footer text.
+        r = self.rect
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+        if region.w <= 10 or region.h <= 10:
+            try:
+                setattr(scene, "_body_overlay_panel_surface", None)
+            except Exception:
+                pass
+            return
+
+        # Chain (root -> ... -> active). Active schema is last.
+        try:
+            chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []))
+            if not chain:
+                chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+        except Exception:
+            chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+
+        schema, embed_off_u, embed_scale_u = chain[-1]
+
+        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+
+        # Camera: active schema only (ghosts excluded by design).
+        region_local = pygame.Rect(0, 0, region.w, region.h)
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+
+        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+        scale = float(cam_scale)
+        node_size = int(max(18, min(56, scale * 0.45)))
+        half = node_size // 2
+
+        hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
+        alpha = 150 if hovered_right else 70
+
+        drag_active = bool(getattr(scene, "_drag_active", False))
+        drag_kind = getattr(scene, "_drag_target_kind", None) if drag_active else None
+        drag_node = getattr(scene, "_drag_target_node_id", None) if drag_active else None
+
+        fg = getattr(scene, "fg", (230, 230, 230))
+        hilite = getattr(scene, "hilite", (255, 255, 100))
+
+        def _half_mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float = 0.7) -> tuple[int, int, int]:
+            def ch(i: int) -> int:
+                v = int(a[i] + (b[i] - a[i]) * t)
+                return 0 if v < 0 else 255 if v > 255 else v
+            return (ch(0), ch(1), ch(2))
+
+        half_yellow = _half_mix(tuple(fg[:3]), tuple(hilite[:3]), 0.7)
+
+        # Panel-sized overlay (IMPORTANT: panel coords, not region-local coords).
+        overlay = pygame.Surface(ctx.surface.get_size(), pygame.SRCALPHA)
+        overlay.set_clip(region)
+
+        # ----------------------------
+        # Ghost layers: parents only
+        # ----------------------------
+        if len(chain) > 1:
+            def _ghost_alpha(base_alpha: int, dist: int) -> int:
+                try:
+                    a = float(base_alpha) * (0.55 ** max(1, int(dist)))
+                    return int(max(10, min(255, a)))
+                except Exception:
+                    return int(max(10, min(255, base_alpha // 3)))
+
+            for i, (g_schema, g_off_u, g_scale_u) in enumerate(chain[:-1]):
+                dist = (len(chain) - 1) - i  # +1, +2, ...
+                g_alpha = _ghost_alpha(alpha, dist)
+                if g_alpha < 12:
+                    continue
+
+                g_pos_u = _embed_positions(_compute_body_positions(g_schema), g_off_u, g_scale_u)
+                g_pos_px = _project_positions_with_camera(
+                    g_pos_u, region_local, center_u=cam_center_u, scale=cam_scale
+                )
+
+                g_nodes = g_schema.get("nodes") if isinstance(g_schema, dict) else None
+                if isinstance(g_nodes, dict):
+                    line_col = (*fg, int(g_alpha * 0.65))
+                    for nid, spec in g_nodes.items():
+                        a = g_pos_px.get(str(nid))
+                        if a is None:
+                            continue
+                        for ch in _children_of(spec if isinstance(spec, dict) else {}):
+                            b = g_pos_px.get(str(ch))
+                            if b is None:
+                                continue
+                            ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                            bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                            pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 1)
+
+                fill = (*fg, int(g_alpha * 0.07))
+                border = (*fg, int(g_alpha * 0.55))
+                for nid, p in g_pos_px.items():
+                    if p is None:
+                        continue
+                    cx, cy = int(p[0] + region.x), int(p[1] + region.y)
+                    pygame.draw.rect(overlay, fill, pygame.Rect(cx - half, cy - half, node_size, node_size), 0, 2)
+                    pygame.draw.rect(overlay, border, pygame.Rect(cx - half, cy - half, node_size, node_size), 1, 2)
+
+        # ----------------------------
+        # Active edges
+        # ----------------------------
+        nodes = schema.get("nodes") if isinstance(schema, dict) else None
+        if isinstance(nodes, dict):
+            line_col = (*fg, int(alpha * 0.85))
+            for nid, spec in nodes.items():
+                a = pos_px.get(str(nid))
+                if a is None:
+                    continue
+                for ch in _children_of(spec if isinstance(spec, dict) else {}):
+                    b = pos_px.get(str(ch))
+                    if b is None:
+                        continue
+                    ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                    bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                    pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 2)
+
+        node_fill = (*fg, int(alpha * 0.10))
+        node_border = (*fg, int(alpha * 0.85))
+        hi_border = (*hilite, int(alpha * 1.0))
+        half_border = (*half_yellow, int(alpha * 0.98))
+
+        label_col = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(alpha * 0.95))
+        label_hi = (int(hilite[0]), int(hilite[1]), int(hilite[2]), int(alpha * 0.98))
+        label_half = (int(half_yellow[0]), int(half_yellow[1]), int(half_yellow[2]), int(alpha * 0.97))
+
+        hovered_nid = self.hovered_nid
+
+        try:
+            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)), bold=True)
+            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)), bold=True)
+            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)), bold=False)
+        except Exception:
+            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)))
+            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)))
+            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)))
+
+        owner_id = str(getattr(owner, "id", ""))
+
+        def _equipped_for(nid: str):
+            if hasattr(scene, "game") and hasattr(scene.game, "get_equipped_in_slot"):
+                try:
+                    return scene.game.get_equipped_in_slot(owner_id, str(nid))
+                except Exception:
+                    return None
+            try:
+                inv = scene.game.get_inventory(owner_id)
+            except Exception:
+                inv = None
+            if inv:
+                for it in inv:
+                    tags = getattr(it, "tags", {}) or {}
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(nid):
+                        return it
+            return None
+
+        for nid, (px, py) in pos_px.items():
+            # region-local clip test
+            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
+                continue
+
+            is_hover = (hovered_nid is not None and str(nid) == hovered_nid)
+            is_target = (drag_kind == "body_node" and drag_node is not None and str(nid) == str(drag_node))
+            is_hot = bool(is_hover or is_target)
+
+            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
+            pygame.draw.rect(overlay, node_fill, sq)
+
+            border_col = hi_border if is_hover else (half_border if is_target else node_border)
+            pygame.draw.rect(overlay, border_col, sq, 3 if is_hover else 2)
+
+            eq = _equipped_for(str(nid))
+
+            # label above
+            try:
+                label = _display_body_node_label(str(nid))
+                ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+                lx = sq.centerx - ls.get_width() // 2
+                ly = sq.top - ls.get_height() - 3
+                overlay.blit(ls, (lx, ly))
+            except Exception:
+                pass
+
+            # equipped glyph
+            if eq is not None:
+                try:
+                    r2 = ctx.renderer
+                    base_px = int(node_size * 0.86)
+
+                    eff_scene = []
+                    try:
+                        eff_scene = list(getattr(scene, "scene_effects", []) or [])
+                    except Exception:
+                        eff_scene = []
+
+                    gcanvas, anchor = _render_entity_glyph_canvas_with_anchor(
+                        r2,
+                        eq,
+                        font=glyph_font,
+                        base_px=base_px,
+                        scene_effects=eff_scene,
+                    )
+                    gx = int(round(sq.centerx - float(anchor[0])))
+                    gy = int(round(sq.centery - float(anchor[1])))
+
+                    if is_hot:
+                        glyph_alpha = 245
+                    else:
+                        glyph_alpha = 120 if hovered_right else 85
+
+                    tmp = gcanvas.convert_alpha()
+                    tmp.set_alpha(int(glyph_alpha))
+                    overlay.blit(tmp, (gx, gy))
+                except Exception:
+                    pass
+
+            # equipped item label below
+            try:
+                if eq is not None:
+                    item_name = str(getattr(eq, "name", None) or "Item")
+                    ns = item_font.render(item_name, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
+                    ns.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
+                    nx = sq.centerx - ns.get_width() // 2
+                    ny = sq.bottom + 3
+                    overlay.blit(ns, (nx, ny))
+            except Exception:
+                pass
+
+        overlay.set_clip(None)
+
+        # Cache for InventoryScene.render() to composite above opaque glyph when needed.
+        try:
+            setattr(scene, "_body_overlay_panel_surface", overlay)
+        except Exception:
+            pass
+
+        # If we're not in external glyph overlay mode, draw immediately.
+        if not bool(getattr(scene, "_external_opaque_glyph", False)):
+            ctx.surface.blit(overlay, (0, 0))
+
+        super().draw(ctx)
+
+    # ----------------------------
+    # Hit testing (no drawing)
+    # ----------------------------
+
+    def _hit_test_node(self, mp: tuple[int, int], ctx: WidgetContext) -> str | None:
+        scene = ctx.scene
+
+        owner = getattr(scene, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+        if owner is None:
+            return None
+
+        try:
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+
+        r = self.rect
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+        if region.w <= 10 or region.h <= 10:
+            return None
+
+        try:
+            chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []))
+            if not chain:
+                chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+        except Exception:
+            chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+
+        schema, embed_off_u, embed_scale_u = chain[-1]
+        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+
+        region_local = pygame.Rect(0, 0, region.w, region.h)
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+        node_size = int(max(18, min(56, float(cam_scale) * 0.45)))
+        half = node_size // 2
+
+        mx, my = int(mp[0]), int(mp[1])
+
+        for nid, (px, py) in pos_px.items():
+            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
+            if sq.collidepoint((mx, my)):
+                return str(nid)
+
+        return None
+
+    # ----------------------------
+    # Event handling (unchanged)
+    # ----------------------------
 
     def handle_event(self, event, ctx: WidgetContext) -> bool:
         if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
@@ -1107,10 +1805,8 @@ class BodyPlanGraphWidget(Widget):
             except Exception:
                 pass
 
-            # If we have a pending press, maybe promote it into a drag.
             if self._press_nid is not None and not bool(getattr(scene, "_drag_active", False)):
                 if _begin_drag_if_ready((mx, my)):
-                    # update drag ghost immediately
                     cb2 = getattr(scene, "_inv_drag_update", None)
                     if callable(cb2):
                         try:
@@ -1120,7 +1816,6 @@ class BodyPlanGraphWidget(Widget):
                     self.hovered_nid = self._hit_test_node((mx, my), ctx)
                     return True
 
-            # If an actual drag is active, keep ghost updated in panel-local coords.
             if bool(getattr(scene, "_drag_active", False)):
                 cb = getattr(scene, "_inv_drag_update", None)
                 if callable(cb):
@@ -1143,7 +1838,6 @@ class BodyPlanGraphWidget(Widget):
             if getattr(event, "button", None) == 1 and self.rect.collidepoint((mx, my)):
                 nid = self._hit_test_node((mx, my), ctx)
                 if nid:
-                    # Record press; DO NOT start drag yet.
                     self._press_nid = str(nid)
                     self._press_pos = (mx, my)
                     self._press_ms = int(pygame.time.get_ticks())
@@ -1159,8 +1853,6 @@ class BodyPlanGraphWidget(Widget):
 
             if getattr(event, "button", None) == 1:
                 was_dragging = bool(getattr(scene, "_drag_active", False))
-
-                # If a drag is active, end it and consume.
                 if was_dragging:
                     cb = getattr(scene, "_inv_drag_end", None)
                     if callable(cb):
@@ -1168,46 +1860,68 @@ class BodyPlanGraphWidget(Widget):
                             cb(pos=(mx, my))
                         except Exception:
                             pass
-
-                    # Same reasoning: ensure any underlying capture/pressed bookkeeping is released.
                     try:
                         super().handle_event(event, ctx)
                     except Exception:
                         pass
-
                     _cancel_press()
                     return True
 
-
-                # No drag active: if we had a press and release on an equipped node -> activate.
                 press_nid = self._press_nid
                 _cancel_press()
 
                 if press_nid and self.rect.collidepoint((mx, my)):
-                    # Optional: require release on the same node; feels better.
                     release_nid = self._hit_test_node((mx, my), ctx)
                     if release_nid and str(release_nid) == str(press_nid):
                         now_ms = int(pygame.time.get_ticks())
 
-                        # Double-click -> request zoom-in on this node (even if empty).
+                        # double-click
                         try:
                             if (
                                 self._last_click_nid is not None
                                 and str(self._last_click_nid) == str(release_nid)
                                 and (now_ms - int(self._last_click_ms)) <= 320
                             ):
-                                setattr(scene, "_pending_body_zoom_in", str(release_nid))
+                                try:
+                                    owner = getattr(scene, "_preview_entity", None)
+                                    owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
+                                except Exception:
+                                    owner = None
+
+                                can_zoom = False
+                                if owner is not None:
+                                    try:
+                                        schema0, _off0, _s0 = _resolve_body_view_for_zoom_path(
+                                            owner, getattr(scene, "_body_zoom_stack", [])
+                                        )
+                                    except Exception:
+                                        schema0 = {"root": None, "nodes": {}}
+                                    node = (schema0.get("nodes", {}) or {}).get(str(release_nid))
+                                    if isinstance(node, dict):
+                                        proto = node.get("proto")
+                                        if proto:
+                                            try:
+                                                sub = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+                                            except Exception:
+                                                sub = {"root": None, "nodes": {}}
+                                            sub_nodes = sub.get("nodes") if isinstance(sub, dict) else None
+                                            if isinstance(sub_nodes, dict):
+                                                cur_nodes = (schema0.get("nodes", {}) or {}) if isinstance(schema0, dict) else {}
+                                                meaningful = len(sub_nodes) > 1
+                                                if meaningful and isinstance(cur_nodes, dict):
+                                                    meaningful = set(sub_nodes.keys()) != set(cur_nodes.keys())
+                                                can_zoom = bool(meaningful)
+                                if can_zoom:
+                                    setattr(scene, "_pending_body_zoom_in", str(release_nid))
                                 self._last_click_nid = None
                                 self._last_click_ms = 0
                                 return True
                         except Exception:
                             pass
 
-                        # Not a double-click: record click for next time.
                         self._last_click_nid = str(release_nid)
                         self._last_click_ms = now_ms
 
-                        # Single-click: only activate if something is equipped there.
                         eq = (
                             scene._equipped_entity_for_slot(str(press_nid))
                             if hasattr(scene, "_equipped_entity_for_slot")
@@ -1220,383 +1934,10 @@ class BodyPlanGraphWidget(Widget):
                                 pass
                             return True
 
-
             return False
 
         return False
 
-
-    def _hit_test_node(self, mp: tuple[int, int], ctx: WidgetContext) -> str | None:
-        scene = ctx.scene
-
-        owner = getattr(scene, "_preview_entity", None)
-        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
-        if owner is None:
-            return None
-
-        try:
-            info = describe_entity_for_look(owner) or {}
-        except Exception:
-            info = {}
-
-        desc = info.get("description") or getattr(owner, "description", None)
-
-        # Reserve a region that mostly covers the glyph area, not the header/footer text.
-        r = self.rect
-        top_reserved = 70
-        bottom_reserved = 80 if desc else 56
-        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
-
-        if region.w <= 10 or region.h <= 10:
-            return None
-
-        try:
-            schema = resolve_body_schema(owner)
-        except Exception:
-            schema = {"root": None, "nodes": {}}
-
-        pos_u = _compute_body_positions(schema)
-        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
-
-        # Apply scene-driven "camera zoom" for body graph (must match draw()).
-        try:
-            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
-
-            # If an animation is active, interpolate focus between nodes (prevents snap on zoom-out).
-            anim = getattr(scene, "_body_zoom_anim", None)
-            if anim is not None:
-                from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
-                now = int(pygame.time.get_ticks())
-                if dur_ms <= 0:
-                    t = 1.0
-                else:
-                    t = (now - int(start_ms)) / float(dur_ms)
-                    if t < 0.0:
-                        t = 0.0
-                    if t > 1.0:
-                        t = 1.0
-                t = t * t * (3.0 - 2.0 * t)
-
-                if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
-                    x0, y0 = pos_px[from_focus]
-                    x1, y1 = pos_px[to_focus]
-                    focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
-                elif to_focus and to_focus in pos_px:
-                    focus_pos = pos_px[to_focus]
-                elif from_focus and from_focus in pos_px:
-                    focus_pos = pos_px[from_focus]
-            else:
-                zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
-                focus_pos = pos_px.get(zoom_focus) if zoom_focus else focus_pos
-
-            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
-            pan_t = _body_zoom_pan_t(scene, zoom_scale)
-            pos_px = _apply_body_zoom_to_points(
-                pos_px,
-                region_w=float(region.w),
-                region_h=float(region.h),
-                focus_pos=focus_pos,
-                zoom_scale=zoom_scale,
-                pan_t=pan_t,
-            )
-        except Exception:
-            pass
-
-
-        node_size = int(max(18, min(56, scale * 0.45)))
-        half = node_size // 2
-
-        mx, my = mp
-        # Convert mp (panel) into region-local coords for the hit-test.
-        lx = mx - region.x
-        ly = my - region.y
-
-        for nid, (px, py) in pos_px.items():
-            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
-                continue
-            sq_local = pygame.Rect(int(px - half), int(py - half), int(node_size), int(node_size))
-            if sq_local.collidepoint((lx, ly)):
-                return str(nid)
-
-        return None
-
-    def draw(self, ctx: WidgetContext) -> None:
-        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
-            return
-
-        scene = ctx.scene
-
-        owner = getattr(scene, "_preview_entity", None)
-        owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
-        if owner is None:
-            return
-
-        try:
-            info = describe_entity_for_look(owner) or {}
-        except Exception:
-            info = {}
-
-        desc = info.get("description") or getattr(owner, "description", None)
-
-        r = self.rect
-        top_reserved = 70
-        bottom_reserved = 80 if desc else 56
-        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
-        if region.w <= 10 or region.h <= 10:
-            return
-
-        try:
-            schema = resolve_body_schema(owner)
-        except Exception:
-            schema = {"root": None, "nodes": {}}
-
-        pos_u = _compute_body_positions(schema)
-        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
-
-        # Determine zoom focus position for the preview glyph underlay.
-        # If a zoom animation is active, interpolate focus between from/to nodes so zoom-out
-        # is the exact inverse of zoom-in (no translation snapping).
-        focus_pos = None
-        try:
-            anim = getattr(scene, "_body_zoom_anim", None)
-            if anim is not None:
-                from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
-                now = int(pygame.time.get_ticks())
-                if dur_ms <= 0:
-                    t = 1.0
-                else:
-                    t = (now - int(start_ms)) / float(dur_ms)
-                    if t < 0.0:
-                        t = 0.0
-                    if t > 1.0:
-                        t = 1.0
-                # Smoothstep
-                t = t * t * (3.0 - 2.0 * t)
-
-                if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
-                    x0, y0 = pos_px[from_focus]
-                    x1, y1 = pos_px[to_focus]
-                    focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
-                elif to_focus and to_focus in pos_px:
-                    focus_pos = pos_px[to_focus]
-                elif from_focus and from_focus in pos_px:
-                    focus_pos = pos_px[from_focus]
-            else:
-                zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
-                focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
-
-            setattr(scene, "_body_zoom_focus_pos", focus_pos)
-        except Exception:
-            # Fall back to whatever we had previously.
-            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
-
-
-        # Apply scene-driven "camera zoom" for body graph (must match _hit_test_node()).
-        try:
-            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
-            pan_t = _body_zoom_pan_t(scene, zoom_scale)
-            pos_px = _apply_body_zoom_to_points(
-                pos_px,
-                region_w=float(region.w),
-                region_h=float(region.h),
-                focus_pos=focus_pos,
-                zoom_scale=zoom_scale,
-                pan_t=pan_t,
-            )
-        except Exception:
-            pass
-
-
-        node_size = int(max(18, min(56, scale * 0.45)))
-        half = node_size // 2
-
-        hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
-        alpha = 150 if hovered_right else 70
-
-        drag_active = bool(getattr(scene, "_drag_active", False))
-        drag_kind = getattr(scene, "_drag_target_kind", None) if drag_active else None
-        drag_node = getattr(scene, "_drag_target_node_id", None) if drag_active else None
-
-        fg = getattr(scene, "fg", (230, 230, 230))
-        hilite = getattr(scene, "hilite", (255, 255, 100))
-
-        def _half_mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float = 0.7) -> tuple[int, int, int]:
-            def ch(i: int) -> int:
-                v = int(a[i] + (b[i] - a[i]) * t)
-                return 0 if v < 0 else 255 if v > 255 else v
-            return (ch(0), ch(1), ch(2))
-
-        half_yellow = _half_mix(tuple(fg[:3]), tuple(hilite[:3]), 0.7)
-
-        # IMPORTANT: draw in panel coordinates, so the overlay must be panel-sized.
-        overlay = pygame.Surface(ctx.surface.get_size(), pygame.SRCALPHA)
-        # Clip all body-graph drawing to the intended region so zoom doesn't spill outside.
-        overlay.set_clip(region)
-
-
-
-        # --- edges ---
-        nodes = schema.get("nodes") if isinstance(schema, dict) else None
-        if isinstance(nodes, dict):
-            line_col = (*fg, int(alpha * 0.85))
-            for nid, spec in nodes.items():
-                a = pos_px.get(nid)
-                if a is None:
-                    continue
-                for ch in _children_of(spec if isinstance(spec, dict) else {}):
-                    b = pos_px.get(ch)
-                    if b is None:
-                        continue
-                    ax, ay = int(a[0] + region.x), int(a[1] + region.y)
-                    bx, by = int(b[0] + region.x), int(b[1] + region.y)
-                    pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 2)
-
-        node_fill = (*fg, int(alpha * 0.10))
-        node_border = (*fg, int(alpha * 0.85))
-        hi_border = (*hilite, int(alpha * 1.0))
-        half_border = (*half_yellow, int(alpha * 0.98))
-
-        label_col = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(alpha * 0.95))
-        label_hi = (int(hilite[0]), int(hilite[1]), int(hilite[2]), int(alpha * 0.98))
-        label_half = (int(half_yellow[0]), int(half_yellow[1]), int(half_yellow[2]), int(alpha * 0.97))
-
-        hovered_nid = self.hovered_nid
-
-        # Fonts: decouple glyph rendering from labels so the glyph can be big.
-        try:
-            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)), bold=True)
-            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)), bold=True)
-            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)), bold=False)
-        except Exception:
-            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)))
-            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)))
-            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)))
-
-        owner_id = str(getattr(owner, "id", ""))
-
-        def _equipped_for(nid: str):
-            if hasattr(scene, "game") and hasattr(scene.game, "get_equipped_in_slot"):
-                try:
-                    return scene.game.get_equipped_in_slot(owner_id, str(nid))
-                except Exception:
-                    return None
-            try:
-                inv = scene.game.get_inventory(owner_id)
-            except Exception:
-                inv = None
-            if inv:
-                for it in inv:
-                    tags = getattr(it, "tags", {}) or {}
-                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(nid):
-                        return it
-            return None
-
-        for nid, (px, py) in pos_px.items():
-            if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
-                continue
-
-            is_hover = (hovered_nid is not None and str(nid) == hovered_nid)
-            is_target = (drag_kind == "body_node" and drag_node is not None and str(nid) == str(drag_node))
-            is_hot = bool(is_hover or is_target)
-
-            sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
-            pygame.draw.rect(overlay, node_fill, sq)
-
-            border_col = hi_border if is_hover else (half_border if is_target else node_border)
-            pygame.draw.rect(overlay, border_col, sq, 3 if is_hover else 2)
-
-            eq = _equipped_for(str(nid))
-
-            # --- Subpart label ABOVE the node ---
-            try:
-                label = _display_body_node_label(str(nid))
-                ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
-                ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
-                lx = sq.centerx - ls.get_width() // 2
-                ly = sq.top - ls.get_height() - 3
-                overlay.blit(ls, (lx, ly))
-            except Exception:
-                pass
-
-            # --- Equipped glyph (with color + effects) inside the square ---
-            if eq is not None:
-                try:
-                    r2 = ctx.renderer
-                    # Make the *logical* base cell big; overlays may expand beyond.
-                    base_px = int(node_size * 0.86)
-
-                    eff_scene = []
-                    try:
-                        eff_scene = list(getattr(scene, "scene_effects", []) or [])
-                    except Exception:
-                        eff_scene = []
-
-                    gcanvas, anchor = _render_entity_glyph_canvas_with_anchor(
-                        r2,
-                        eq,
-                        font=glyph_font,
-                        base_px=base_px,
-                        scene_effects=eff_scene,
-                    )
-                    # Place so that the glyph-cell center (anchor) is centered in the node square.
-                    gx = int(round(sq.centerx - float(anchor[0])))
-                    gy = int(round(sq.centery - float(anchor[1])))
-
-                    # Opacity tuning:
-                    # - idle: fairly faded
-                    # - hover/target: near-opaque so effects (fire/smoke/etc.) still pop
-                    if is_hot:
-                        glyph_alpha = 245
-                    else:
-                        glyph_alpha = 120 if hovered_right else 85
-
-                    tmp = gcanvas.convert_alpha()
-                    tmp.set_alpha(int(glyph_alpha))
-                    overlay.blit(tmp, (gx, gy))
-
-                except Exception:
-                    # Fallback: at least draw a big glyph
-                    try:
-                        glyph = str(getattr(eq, "glyph", "?"))[:1]
-                        gsurf = glyph_font.render(glyph, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
-                        if is_hot:
-                            glyph_alpha = 245
-                        else:
-                            glyph_alpha = 120 if hovered_right else 85
-
-                        gsurf.set_alpha(int(glyph_alpha))
-                        gx = sq.centerx - gsurf.get_width() // 2
-                        gy = sq.centery - gsurf.get_height() // 2
-                        overlay.blit(gsurf, (gx, gy))
-
-                    except Exception:
-                        pass
-
-            # --- Equipped item label BELOW the node (if any) ---
-            try:
-                if eq is not None:
-                    item_name = str(getattr(eq, "name", None) or "Item")
-                    ns = item_font.render(item_name, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
-                    ns.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
-                    nx = sq.centerx - ns.get_width() // 2
-                    ny = sq.bottom + 3
-                    overlay.blit(ns, (nx, ny))
-            except Exception:
-                pass
-
-
-        # If we're in "opaque glyph overlay" mode, InventoryScene will composite this overlay
-        # *above* the sprite after it draws the opaque glyph. Otherwise, draw directly.
-
-        overlay.set_clip(None)
-
-        try:
-            setattr(scene, "_body_overlay_panel_surface", overlay)
-        except Exception:
-            pass
-
-        if not bool(getattr(scene, "_external_opaque_glyph", False)):
-            ctx.surface.blit(overlay, (0, 0))
 
 
 
@@ -1636,18 +1977,27 @@ class RightPaneWidget(Widget):
 
                 if region.w > 10 and region.h > 10:
                     try:
-                        schema = resolve_body_schema(owner)
+                        schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
+                            owner, getattr(scene, "_body_zoom_stack", [])
+                        )
                     except Exception:
-                        schema = {"root": None, "nodes": {}}
+                        schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
 
-                    pos_u = _compute_body_positions(schema)
-                    pos_px, _scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+                    pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+                    # Unify preview + overlay: use the SAME world-space camera as BodyPlanGraphWidget.
+                    region_local = pygame.Rect(0, 0, region.w, region.h)
+                    cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+                    pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
                     # Match BodyPlanGraphWidget.draw(): interpolate focus when animating.
                     focus_pos = None
                     anim = getattr(scene, "_body_zoom_anim", None)
                     if anim is not None:
-                        from_focus, to_focus, _from_s, _to_s, start_ms, dur_ms = anim
+                        # Phase 1.5: camera-state anim no longer encodes focus ids.
+                        # Keep focus_pos stable (or None) to avoid coupling focus UI to camera animation.
+                        zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+                        focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
+                        setattr(scene, "_body_zoom_focus_pos", focus_pos)
                         now = int(pygame.time.get_ticks())
                         if dur_ms <= 0:
                             t = 1.0
@@ -1933,8 +2283,21 @@ class InventoryScene(PopupMenuScene):
         self._body_zoom_focus_nid: str | None = None
         self._body_zoom_scale: float = 1.0
 
-        # animation: (from_focus, to_focus, from_scale, to_scale, start_ms, duration_ms)
-        self._body_zoom_anim: tuple[str | None, str | None, float, float, int, int] | None = None
+        # Phase 1.5: camera-state interpolation (pan + scale) ONLY.
+        # (from_center_u, from_scale, to_center_u, to_scale, start_ms, duration_ms)
+        self._body_zoom_anim: tuple[
+            tuple[float, float],
+            float,
+            tuple[float, float],
+            float,
+            int,
+            int,
+        ] | None = None
+
+        # Toggle + timing
+        self._body_zoom_anim_enabled: bool = True
+        self._body_zoom_anim_duration_ms: int = 220
+
 
         # set by BodyPlanGraphWidget on double-click
         self._pending_body_zoom_in: str | None = None
@@ -2171,64 +2534,147 @@ class InventoryScene(PopupMenuScene):
         return True
 
     def _body_zoom_in(self, nid: str) -> None:
+        """
+        Phase 1.5: schema-switch zoom step + optional camera-state animation.
+
+        IMPORTANT: animation interpolates between two fully-defined camera states.
+        No anatomy or LoD logic is allowed in the animation itself.
+        """
         nid = str(nid)
-        now = int(pygame.time.get_ticks())
 
-        from_focus = self._body_zoom_focus_nid
-        from_scale = float(self._body_zoom_scale)
+        # Helper: obtain the current preview owner (matches widget logic).
+        owner = getattr(self, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(self, "_find_owner_entity", lambda: None)()
 
-        # Push onto stack and set new focus.
-        self._body_zoom_stack.append(nid)
-        self._body_zoom_focus_nid = nid
-
-        to_focus = nid
-        to_scale = from_scale * 1.6
-
-        self._body_zoom_anim = (from_focus, to_focus, from_scale, to_scale, now, 260)
-
-    def _body_zoom_out(self) -> None:
-        if not self._body_zoom_stack:
+        # If animation disabled or no region info yet, keep Phase 1 snap behavior.
+        if not bool(getattr(self, "_body_zoom_anim_enabled", True)):
+            self._body_zoom_stack.append(nid)
+            self._body_zoom_focus_nid = None
+            self._body_zoom_scale = 1.0
+            self._body_zoom_anim = None
             return
 
-        now = int(pygame.time.get_ticks())
+        region_wh = getattr(self, "_last_body_cam_region", None)
+        if not (isinstance(region_wh, tuple) and len(region_wh) == 2):
+            self._body_zoom_stack.append(nid)
+            self._body_zoom_focus_nid = None
+            self._body_zoom_scale = 1.0
+            self._body_zoom_anim = None
+            return
 
-        from_focus = self._body_zoom_focus_nid
-        from_scale = float(self._body_zoom_scale)
+        rw, rh = int(region_wh[0]), int(region_wh[1])
+        if rw <= 0 or rh <= 0:
+            self._body_zoom_stack.append(nid)
+            self._body_zoom_focus_nid = None
+            self._body_zoom_scale = 1.0
+            self._body_zoom_anim = None
+            return
 
-        # Pop one level.
+        region_local = pygame.Rect(0, 0, rw, rh)
+
+        def _camera_for_stack(stack: list[str]) -> tuple[tuple[float, float], float]:
+            try:
+                schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, stack)
+            except Exception:
+                schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
+            pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+            center_u, scale = _fit_camera_to_positions(pos_u, region_local, margin_frac=0.12)
+            return (float(center_u[0]), float(center_u[1])), float(scale)
+
+        # From-state: prefer last cached camera (what we were actually using on-screen).
+        from_center_u = getattr(self, "_last_body_cam_center_u", None)
+        from_scale = getattr(self, "_last_body_cam_scale", None)
+        if (
+            not (isinstance(from_center_u, tuple) and len(from_center_u) == 2)
+            or not isinstance(from_scale, (int, float))
+        ):
+            from_center_u, from_scale = _camera_for_stack(list(getattr(self, "_body_zoom_stack", []) or []))
+
+        # Apply the schema switch immediately (Phase 1 behavior), but animate the camera.
+        self._body_zoom_stack.append(nid)
+        self._body_zoom_focus_nid = None
+        self._body_zoom_scale = 1.0
+
+        to_center_u, to_scale = _camera_for_stack(list(getattr(self, "_body_zoom_stack", []) or []))
+
+        dur_ms = int(getattr(self, "_body_zoom_anim_duration_ms", 220) or 220)
+        start_ms = int(pygame.time.get_ticks())
+        self._body_zoom_anim = (tuple(from_center_u), float(from_scale), tuple(to_center_u), float(to_scale), start_ms, dur_ms)
+
+
+    def _body_zoom_out(self) -> None:
+        if not getattr(self, "_body_zoom_stack", None):
+            return
+
+        owner = getattr(self, "_preview_entity", None)
+        owner = owner() if callable(owner) else getattr(self, "_find_owner_entity", lambda: None)()
+
+        if not bool(getattr(self, "_body_zoom_anim_enabled", True)):
+            self._body_zoom_stack.pop()
+            self._body_zoom_focus_nid = None
+            self._body_zoom_scale = 1.0
+            self._body_zoom_anim = None
+            return
+
+        region_wh = getattr(self, "_last_body_cam_region", None)
+        if not (isinstance(region_wh, tuple) and len(region_wh) == 2):
+            self._body_zoom_stack.pop()
+            self._body_zoom_focus_nid = None
+            self._body_zoom_scale = 1.0
+            self._body_zoom_anim = None
+            return
+
+        rw, rh = int(region_wh[0]), int(region_wh[1])
+        if rw <= 0 or rh <= 0:
+            self._body_zoom_stack.pop()
+            self._body_zoom_focus_nid = None
+            self._body_zoom_scale = 1.0
+            self._body_zoom_anim = None
+            return
+
+        region_local = pygame.Rect(0, 0, rw, rh)
+
+        def _camera_for_stack(stack: list[str]) -> tuple[tuple[float, float], float]:
+            try:
+                schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, stack)
+            except Exception:
+                schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
+            pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+            center_u, scale = _fit_camera_to_positions(pos_u, region_local, margin_frac=0.12)
+            return (float(center_u[0]), float(center_u[1])), float(scale)
+
+        from_center_u = getattr(self, "_last_body_cam_center_u", None)
+        from_scale = getattr(self, "_last_body_cam_scale", None)
+        if (
+            not (isinstance(from_center_u, tuple) and len(from_center_u) == 2)
+            or not isinstance(from_scale, (int, float))
+        ):
+            from_center_u, from_scale = _camera_for_stack(list(getattr(self, "_body_zoom_stack", []) or []))
+
+        # Pop one level (schema switch), then animate toward the new fit camera.
         self._body_zoom_stack.pop()
-        to_focus = self._body_zoom_stack[-1] if self._body_zoom_stack else None
-        self._body_zoom_focus_nid = to_focus
+        self._body_zoom_focus_nid = None
+        self._body_zoom_scale = 1.0
 
-        to_scale = max(1.0, from_scale / 1.6)
+        to_center_u, to_scale = _camera_for_stack(list(getattr(self, "_body_zoom_stack", []) or []))
 
-        self._body_zoom_anim = (from_focus, to_focus, from_scale, to_scale, now, 260)
+        dur_ms = int(getattr(self, "_body_zoom_anim_duration_ms", 220) or 220)
+        start_ms = int(pygame.time.get_ticks())
+        self._body_zoom_anim = (tuple(from_center_u), float(from_scale), tuple(to_center_u), float(to_scale), start_ms, dur_ms)
+
 
     def _body_zoom_tick(self) -> None:
         anim = self._body_zoom_anim
         if anim is None:
             return
-
-        from_focus, to_focus, from_scale, to_scale, start_ms, dur_ms = anim
-        now = int(pygame.time.get_ticks())
-        if dur_ms <= 0:
-            t = 1.0
-        else:
-            t = (now - int(start_ms)) / float(dur_ms)
-            if t < 0.0:
-                t = 0.0
-            if t > 1.0:
-                t = 1.0
-
-        # Smoothstep feels nicer than linear.
-        t = t * t * (3.0 - 2.0 * t)
-
-        self._body_zoom_scale = (from_scale * (1.0 - t)) + (to_scale * t)
-
-        if t >= 1.0:
-            # Snap final, stop anim.
-            self._body_zoom_scale = float(to_scale)
+        try:
+            _from_c, _from_s, _to_c, _to_s, start_ms, dur_ms = anim
+            now = int(pygame.time.get_ticks())
+            if dur_ms <= 0 or (now - int(start_ms)) >= int(dur_ms) + 5:
+                self._body_zoom_anim = None
+        except Exception:
             self._body_zoom_anim = None
+
 
 
 
@@ -2966,7 +3412,7 @@ class InventoryScene(PopupMenuScene):
         if owner is None:
             return []
         try:
-            schema = resolve_body_schema(owner) or {}
+            schema = _resolve_body_schema_for_zoom_path(owner, getattr(self, "_body_zoom_stack", [])) or {}
         except Exception:
             schema = {}
         nodes = schema.get("nodes", {}) or {}
@@ -3028,10 +3474,12 @@ class InventoryScene(PopupMenuScene):
         if owner is None:
             return (None, None)
         try:
-            schema = resolve_body_schema(owner) or {"root": None, "nodes": {}}
+            schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
+                owner, getattr(self, "_body_zoom_stack", [])
+            )
         except Exception:
-            schema = {"root": None, "nodes": {}}
-        pos_u = _compute_body_positions(schema)
+            schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
+        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
         pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
         nid = str(node_id)
         if nid not in pos_px:

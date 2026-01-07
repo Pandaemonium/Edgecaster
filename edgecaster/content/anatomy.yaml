@@ -2,28 +2,183 @@
   name: Body
   parent: entity
   description: A central mass or torso-like core.
-
 - id: head
   name: Head
   parent: entity
   description: A head, home to senses and teeth-to-be.
-
 - id: tail
   name: Tail
   parent: entity
   description: A tail, used for balance, signaling, or simply existing.
-
 - id: limb
   name: Limb
   parent: entity
   description: A generic limb.
-
 - id: arm
   name: Arm
   parent: limb
   description: A limb suited for grasping.
-
+  body:
+    root: shoulder
+    nodes:
+      shoulder:
+        proto: shoulder
+        children:
+        - upper_arm
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 1.05
+      upper_arm:
+        proto: upper_arm
+        children:
+        - elbow
+        layout:
+          x: -0.42
+          y: 0.95
+        props:
+          size: 0.9
+      elbow:
+        proto: elbow
+        children:
+        - forearm
+        layout:
+          x: -0.62
+          y: 2.2
+        props:
+          size: 0.62
+      forearm:
+        proto: forearm
+        children:
+        - hand
+        layout:
+          x: -0.34
+          y: 3.15
+        props:
+          size: 0.78
+      hand:
+        proto: hand
+        children: []
+        layout:
+          x: -0.1
+          y: 3.55
+        props:
+          size: 0.35
 - id: leg
   name: Leg
   parent: limb
   description: A limb suited for support and locomotion.
+- id: hand
+  name: Hand
+  parent: limb
+  description: A grasping extremity with a palm and digits.
+  body:
+    root: wrist
+    nodes:
+      wrist:
+        proto: wrist
+        children:
+        - palm
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 0.36
+      palm:
+        proto: palm
+        children:
+        - thumb
+        - index
+        - middle
+        - ring
+        - pinky
+        layout:
+          x: 0.0
+          y: 0.82
+        props:
+          size: 0.46
+      thumb:
+        proto: thumb_finger
+        children: []
+        layout:
+          x: -0.95
+          y: 0.88
+        props:
+          size: 0.26
+      index:
+        proto: index_finger
+        children: []
+        layout:
+          x: -0.42
+          y: 1.55
+        props:
+          size: 0.24
+      middle:
+        proto: middle_finger
+        children: []
+        layout:
+          x: -0.05
+          y: 1.72
+        props:
+          size: 0.25
+      ring:
+        proto: ring_finger
+        children: []
+        layout:
+          x: 0.26
+          y: 1.58
+        props:
+          size: 0.23
+      pinky:
+        proto: pinky_finger
+        children: []
+        layout:
+          x: 0.58
+          y: 1.38
+        props:
+          size: 0.21
+- id: shoulder
+  name: Shoulder
+  parent: arm
+  description: The shoulder joint; attachment point of an arm.
+- id: upper_arm
+  name: Upper Arm
+  parent: arm
+  description: The upper arm segment between shoulder and elbow.
+- id: elbow
+  name: Elbow
+  parent: arm
+  description: The elbow joint.
+- id: forearm
+  name: Forearm
+  parent: arm
+  description: The forearm segment between elbow and wrist.
+- id: wrist
+  name: Wrist
+  parent: hand
+  description: The wrist joint; attachment point of a hand.
+- id: palm
+  name: Palm
+  parent: hand
+  description: The palm of a hand.i
+- id: thumb_finger
+  name: Thumb
+  parent: hand
+  description: A thumb.
+- id: index_finger
+  name: Index Finger
+  parent: hand
+  description: An index finger.
+- id: middle_finger
+  name: Middle Finger
+  parent: hand
+  description: A middle finger.
+- id: ring_finger
+  name: Ring Finger
+  parent: hand
+  description: A ring finger.
+- id: pinky_finger
+  name: Pinky Finger
+  parent: hand
+  description: A pinky finger.
