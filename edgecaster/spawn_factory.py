@@ -6,6 +6,7 @@ import copy
 
 from edgecaster.state.entities import Entity
 from edgecaster.state.actors import Actor, Stats
+from edgecaster.prototypes import bake_instance_body_schema
 
 
 def _as_color(x: Any, default: Tuple[int, int, int] = (255, 255, 255)) -> Tuple[int, int, int]:
@@ -93,6 +94,17 @@ def build_entity_from_spec(
             ent.description = desc
         except Exception:
             pass
+
+
+    # Birth-time bilateral symmetry baking:
+    # If this entity has mirrored nodes (e.g. arm_m), rewrite their layouts/props and proto
+    # references so zooming into them resolves mirrored sub-schemas without inventory_scene
+    # needing to do any mirror math.
+    try:
+        if getattr(ent, "proto_id", None):
+            ent.body_schema = bake_instance_body_schema(str(ent.proto_id))
+    except Exception:
+        pass
 
     return ent
 
@@ -194,5 +206,13 @@ def build_actor_from_spec(
             actor.description = desc
         except Exception:
             pass
+
+
+    # Birth-time bilateral symmetry baking (see build_entity_from_spec for details).
+    try:
+        if getattr(actor, "proto_id", None):
+            actor.body_schema = bake_instance_body_schema(str(actor.proto_id))
+    except Exception:
+        pass
 
     return actor

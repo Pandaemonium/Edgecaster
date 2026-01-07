@@ -5,6 +5,172 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import copy
 import yaml
+# ---------------------------------------------------------------------------
+# Mirroring helpers (birth-time bilateral symmetry)
+# ---------------------------------------------------------------------------
+
+_MIRROR_SUFFIX = "__m"
+
+
+def is_mirrored_proto_id(pid: str) -> bool:
+    return isinstance(pid, str) and pid.endswith(_MIRROR_SUFFIX)
+
+
+def base_proto_id(pid: str) -> str:
+    return pid[: -len(_MIRROR_SUFFIX)] if is_mirrored_proto_id(pid) else pid
+
+
+def mirrored_proto_id(pid: str) -> str:
+    if not isinstance(pid, str) or not pid:
+        return pid
+    return pid if is_mirrored_proto_id(pid) else (pid + _MIRROR_SUFFIX)
+
+
+def _negate_x(layout: Any) -> Any:
+    """Fail-soft negate of layout.x if possible."""
+    if not isinstance(layout, dict):
+        return layout
+    x = layout.get("x")
+    if isinstance(x, (int, float)):
+        layout = dict(layout)
+        layout["x"] = -x
+    return layout
+
+
+def mirror_body_schema(schema: dict) -> dict:
+    """
+    Deep-copy a body schema, mirror all node layouts across the Y-axis (x -> -x),
+    mark nodes as mirrored, and rewrite node protos to their mirrored equivalents.
+
+    This produces a schema suitable for resolving mirrored subtrees at zoom-time
+    without inventory_scene needing to do any mirror math.
+    """
+    schema = copy.deepcopy(schema or {})
+    schema = _ensure_schema_shape(schema)
+    nodes = _node_dict(schema)
+
+    for nid, node in list(nodes.items()):
+        if not isinstance(node, dict):
+            continue
+
+        # Mirror coordinates
+        if "layout" in node:
+            node["layout"] = _negate_x(node.get("layout"))
+
+        # Mark mirrored
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        props = dict(props)
+        props["mirrored"] = True
+        node["props"] = props
+
+        # Rewrite proto id to mirrored proto id (so deeper zoom keeps mirroring)
+        proto = node.get("proto")
+        if isinstance(proto, str) and proto:
+            node["proto"] = mirrored_proto_id(proto)
+
+        nodes[nid] = node
+
+    schema["nodes"] = nodes
+    return _validate_body_schema(schema)
+
+
+def bake_instance_body_schema(pid: str) -> dict:
+    """
+    Resolve and 'bake' a *root* body schema for a concrete instance:
+      - mirrored nodes (id suffix _m or props.mirrored) get their layout/size copied
+        from their non-mirrored counterpart with x negated
+      - mirrored nodes have their proto rewritten to a mirrored proto id (pid + '__m')
+      - if a mirrored node is missing proto, copy it from the base node (then mirror it)
+
+    This does NOT change the global prototype bucket; it's meant to be stored on a
+    runtime Entity/Actor instance (e.g., obj.body_schema) so later mutations
+    (missing eye, amputations) are possible.
+    """
+    base_pid = base_proto_id(pid)
+    schema = _resolve_body_schema_unmirrored(base_pid)
+    schema = copy.deepcopy(schema)
+    schema = _ensure_schema_shape(schema)
+    nodes = _node_dict(schema)
+
+    # First pass: normalize node dicts and ensure mirrored flag is explicit
+    for nid, node in list(nodes.items()):
+        if not isinstance(node, dict):
+            continue
+
+        nid_str = str(nid)
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        is_m = bool(nid_str.endswith("_m") or props.get("mirrored"))
+
+        if is_m:
+            props = dict(props)
+            props["mirrored"] = True
+            node = dict(node)
+            node["props"] = props
+
+            # Only mirrored nodes should redirect to mirrored protos
+            proto = node.get("proto")
+            if isinstance(proto, str) and proto:
+                node["proto"] = mirrored_proto_id(proto)
+
+        nodes[nid] = node
+
+    # Second pass: copy layout/size/proto from counterpart when possible
+    for nid, node in list(nodes.items()):
+        if not isinstance(node, dict):
+            continue
+
+        nid_str = str(nid)
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        is_m = bool(nid_str.endswith("_m") or props.get("mirrored"))
+        if not is_m:
+            continue
+
+        base_nid = nid_str[:-2] if nid_str.endswith("_m") else None
+        if not base_nid or base_nid not in nodes:
+            continue
+
+        base_node = nodes.get(base_nid)
+        if not isinstance(base_node, dict):
+            continue
+
+        # ---- props.size ----
+        bn_props = base_node.get("props") if isinstance(base_node.get("props"), dict) else {}
+        n_props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        size = bn_props.get("size")
+        if isinstance(size, (int, float)):
+            if not isinstance(n_props.get("size"), (int, float)) or n_props.get("size") != size:
+                n_props = dict(n_props)
+                n_props["size"] = size
+                node["props"] = n_props
+
+        # ---- layout (x mirrored) ----
+        bn_layout = base_node.get("layout") if isinstance(base_node.get("layout"), dict) else {}
+        n_layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+
+        # copy y if missing
+        if "y" in bn_layout and "y" not in n_layout:
+            n_layout = dict(n_layout)
+            n_layout["y"] = bn_layout.get("y")
+
+        # always mirror x from base if base has x
+        if "x" in bn_layout and isinstance(bn_layout.get("x"), (int, float)):
+            n_layout = dict(n_layout)
+            n_layout["x"] = -float(bn_layout.get("x"))
+        if n_layout is not node.get("layout"):
+            node["layout"] = n_layout
+
+        # ---- proto (critical for zoom!) ----
+        proto = node.get("proto")
+        if not (isinstance(proto, str) and proto):
+            base_proto = base_node.get("proto")
+            if isinstance(base_proto, str) and base_proto:
+                node["proto"] = mirrored_proto_id(base_proto)
+
+        nodes[nid] = node
+
+    return _validate_body_schema(schema)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -572,18 +738,13 @@ def _validate_body_schema(schema: dict) -> dict:
     return schema
 
 
-def resolve_body_schema(proto_or_obj: Any) -> dict:
-    """
-    Resolve the attachment-body schema for a prototype id OR a runtime entity object.
 
-    If given an object, we extract a proto id using _proto_id_from_obj() and only
-    accept ids that exist in the master bucket.
-    """
+def _resolve_body_schema_unmirrored(pid: str) -> dict:
+    """Internal: resolve a body schema for a *non-mirrored* prototype id."""
     if not _LOADED:
         load_master_bucket()
 
-    pid = _proto_id_from_obj(proto_or_obj)
-    if not pid:
+    if not pid or pid not in _RAW_PROTO_INDEX:
         # Fail-soft: unknown prototype -> empty schema
         return {"root": None, "nodes": {}}
 
@@ -610,6 +771,112 @@ def resolve_body_schema(proto_or_obj: Any) -> dict:
     schema = _validate_body_schema(schema)
     _RESOLVED_BODY_CACHE[pid] = schema
     return schema
+
+MIRROR_PROTO_SUFFIX = "__m"
+
+def is_mirrored_proto_id(pid: str) -> bool:
+    return isinstance(pid, str) and pid.endswith(MIRROR_PROTO_SUFFIX)
+
+def base_proto_id(pid: str) -> str:
+    if is_mirrored_proto_id(pid):
+        return pid[: -len(MIRROR_PROTO_SUFFIX)]
+    return pid
+
+def mirrored_proto_id(pid: str) -> str:
+    pid = base_proto_id(pid)
+    return f"{pid}{MIRROR_PROTO_SUFFIX}"
+
+def mirror_body_schema(schema: dict) -> dict:
+    """
+    Return a deep-copied mirrored version of a body schema:
+      - layout.x -> -layout.x for all nodes
+      - mark props.mirrored = True
+      - rewrite node.proto to mirrored proto ids so mirroring propagates downward
+    """
+    import copy
+    out = copy.deepcopy(_ensure_schema_shape(schema))
+    nodes = out.get("nodes", {}) or {}
+    if not isinstance(nodes, dict):
+        out["nodes"] = {}
+        return out
+
+    for nid, node in list(nodes.items()):
+        if not isinstance(node, dict):
+            continue
+
+        # props.mirrored = True
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        props = dict(props)
+        props["mirrored"] = True
+        node["props"] = props
+
+        # layout.x flip
+        layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+        if isinstance(layout.get("x"), (int, float)):
+            layout = dict(layout)
+            layout["x"] = -float(layout["x"])
+            node["layout"] = layout
+
+        # proto rewrite -> mirrored proto id
+        proto = node.get("proto")
+        if isinstance(proto, str) and proto:
+            node["proto"] = mirrored_proto_id(proto)
+
+        nodes[nid] = node
+
+    out["nodes"] = nodes
+    return out
+
+
+
+def resolve_body_schema(proto_or_obj: Any) -> dict:
+    """
+    Resolve the attachment-body schema for:
+      - a prototype id string, OR
+      - a runtime entity object with .proto_id, OR
+      - a runtime entity object with an instance override .body_schema.
+
+    Mirrored prototype ids are supported via the suffix '__m' and are derived
+    deterministically from the base prototype body schema.
+    """
+    if not _LOADED:
+        load_master_bucket()
+    # Allow synthetic mirrored proto ids like "arm__m" even though they are not in the master bucket.
+    if isinstance(proto_or_obj, str):
+        pid0 = _coerce_id(proto_or_obj)
+        if pid0 and is_mirrored_proto_id(pid0):
+            if pid0 in _RESOLVED_BODY_CACHE:
+                return _RESOLVED_BODY_CACHE[pid0]
+            base = base_proto_id(pid0)
+            base_schema = resolve_body_schema(base)  # base MUST exist in bucket
+            mirrored = mirror_body_schema(base_schema)
+            _RESOLVED_BODY_CACHE[pid0] = mirrored
+            return mirrored
+
+    # Instance override: if an object already carries a baked schema, use it.
+    try:
+        inst_schema = getattr(proto_or_obj, "body_schema", None)
+        if isinstance(inst_schema, dict) and inst_schema.get("nodes") is not None:
+            return _validate_body_schema(inst_schema)
+    except Exception:
+        pass
+
+    pid = _proto_id_from_obj(proto_or_obj)
+    if not pid:
+        return {"root": None, "nodes": {}}
+
+    # Mirrored pid handling
+    if is_mirrored_proto_id(pid):
+        if pid in _RESOLVED_BODY_CACHE:
+            return _RESOLVED_BODY_CACHE[pid]
+        base_pid = base_proto_id(pid)
+        base_schema = _resolve_body_schema_unmirrored(base_pid)
+        mirrored_schema = mirror_body_schema(base_schema)
+        _RESOLVED_BODY_CACHE[pid] = mirrored_schema
+        return mirrored_schema
+
+    return _resolve_body_schema_unmirrored(pid)
+
 
 
 

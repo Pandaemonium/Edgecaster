@@ -178,7 +178,6 @@
   - op: replace_node
     node: arm_m
     layout:
-      x: 1.55
       y: -1
     props:
       size: 1

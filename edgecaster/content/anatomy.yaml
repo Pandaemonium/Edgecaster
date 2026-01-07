@@ -35,7 +35,7 @@
         children:
         - elbow
         layout:
-          x: 0.42
+          x: -0.42
           y: 0.95
         props:
           size: 0.9
@@ -44,7 +44,7 @@
         children:
         - forearm
         layout:
-          x: 0.62
+          x: -0.62
           y: 2.2
         props:
           size: 0.62
@@ -53,7 +53,7 @@
         children:
         - hand
         layout:
-          x: 0.34
+          x: -0.34
           y: 3.15
         props:
           size: 0.78
@@ -61,7 +61,7 @@
         proto: hand
         children: []
         layout:
-          x: 0.1
+          x: -0.1
           y: 3.55
         props:
           size: 0.35
@@ -162,7 +162,7 @@
   name: Palm
   parent: hand
   description: The palm of a hand.i
-- id: thumb
+- id: thumb_finger
   name: Thumb
   parent: hand
   description: A thumb.
