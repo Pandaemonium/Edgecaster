@@ -221,7 +221,7 @@ def _resolve_body_view_for_zoom_path(owner: object | None, zoom_stack: list[str]
         if size <= 0.0:
             size = 1.0
 
-        nscale = 1.0 / size
+        nscale = size
 
         # Update accumulated embedding: child chart origin is at parent node position.
         offset_x += scale * nx
@@ -296,7 +296,7 @@ def _resolve_body_view_chain_for_zoom_path(owner: object | None, zoom_stack: lis
         if size <= 0.0:
             size = 1.0
 
-        nscale = 1.0 / size
+        nscale = size
 
         # Update accumulated embedding: child chart origin is at parent node position.
         offset_x += scale * nx

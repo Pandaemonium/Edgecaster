@@ -26,17 +26,17 @@
         children:
         - upper_arm
         layout:
-          x: 0
-          y: 0
+          x: 0.0
+          y: 0.0
         props:
-          size: 1.0
+          size: 1.05
       upper_arm:
         proto: upper_arm
         children:
         - elbow
         layout:
-          x: 0
-          y: 1
+          x: 0.42
+          y: 0.95
         props:
           size: 0.9
       elbow:
@@ -44,27 +44,27 @@
         children:
         - forearm
         layout:
-          x: 0
-          y: 2
+          x: 0.62
+          y: 2.2
         props:
-          size: 0.8
+          size: 0.62
       forearm:
         proto: forearm
         children:
         - hand
         layout:
-          x: 0
-          y: 3
+          x: 0.34
+          y: 3.15
         props:
-          size: 0.9
+          size: 0.78
       hand:
         proto: hand
         children: []
         layout:
-          x: 0
-          y: 4
+          x: 0.1
+          y: 3.55
         props:
-          size: 1.0
+          size: 0.35
 - id: leg
   name: Leg
   parent: limb
@@ -72,7 +72,7 @@
 - id: hand
   name: Hand
   parent: limb
-  description: A grasping extremity; a palm plus fingers.
+  description: A grasping extremity with a palm and digits.
   body:
     root: wrist
     nodes:
@@ -81,10 +81,10 @@
         children:
         - palm
         layout:
-          x: 0
-          y: 0
+          x: 0.0
+          y: 0.0
         props:
-          size: 0.7
+          size: 0.36
       palm:
         proto: palm
         children:
@@ -94,50 +94,50 @@
         - ring
         - pinky
         layout:
-          x: 0
-          y: 1
+          x: 0.0
+          y: 0.82
         props:
-          size: 1.0
+          size: 0.46
       thumb:
-        proto: thumb
+        proto: thumb_finger
         children: []
         layout:
-          x: -1.1
-          y: 1.6
+          x: -0.95
+          y: 0.88
         props:
-          size: 0.6
+          size: 0.26
       index:
         proto: index_finger
         children: []
         layout:
-          x: -0.5
-          y: 2.0
+          x: -0.42
+          y: 1.55
         props:
-          size: 0.55
+          size: 0.24
       middle:
         proto: middle_finger
         children: []
         layout:
-          x: 0.0
-          y: 2.1
+          x: -0.05
+          y: 1.72
         props:
-          size: 0.6
+          size: 0.25
       ring:
         proto: ring_finger
         children: []
         layout:
-          x: 0.5
-          y: 2.0
+          x: 0.26
+          y: 1.58
         props:
-          size: 0.55
+          size: 0.23
       pinky:
         proto: pinky_finger
         children: []
         layout:
-          x: 1.0
-          y: 1.9
+          x: 0.58
+          y: 1.38
         props:
-          size: 0.5
+          size: 0.21
 - id: shoulder
   name: Shoulder
   parent: arm
@@ -161,7 +161,7 @@
 - id: palm
   name: Palm
   parent: hand
-  description: The palm of a hand.
+  description: The palm of a hand.i
 - id: thumb
   name: Thumb
   parent: hand
