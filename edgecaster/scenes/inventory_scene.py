@@ -1166,6 +1166,24 @@ class InventoryListWidget(ListWidget):
                 x += glyph_canvas.get_width() + int(font.size("  ")[0] * 0.5)
 
                 name = getattr(ent, "name", None) or "(unnamed item)"
+                # Show remaining charges for charged items (e.g. wands).
+                tags = getattr(ent, "tags", None) or {}
+                if "charges" in tags:
+                    try:
+                        cur = int(tags.get("charges", 0))
+                    except Exception:
+                        cur = 0
+                    raw_max = tags.get("max_charges")
+                    if raw_max is None:
+                        raw_max = tags.get("charges_max")
+                    try:
+                        maxc = int(raw_max) if raw_max is not None else None
+                    except Exception:
+                        maxc = None
+                    if maxc is not None:
+                        name = f"{name} ({cur}/{maxc} charges)"
+                    else:
+                        name = f"{name} ({cur} charges)"
                 name_col = half_sel if drag_mark else (sel if selected else fg)
                 name_surf = font.render(str(name), True, name_col)
                 ctx.surface.blit(name_surf, (x, y))

@@ -838,6 +838,7 @@ class Game:
         # Internal hook: allows "are you sure?" prompts to re-invoke the action
         # without re-prompting or causing recursion.
         skip_confirm = bool(kwargs.pop("__skip_confirm", False))
+        skip_wand_confirm = bool(kwargs.pop("__skip_wand_confirm", False))
 
         # Determine cooldown origin: prefer the item currently granting the action (held/equipped),
         # otherwise fall back to the actor itself.
@@ -880,6 +881,7 @@ class Game:
         #
         # Charges live on the item instance so they persist across owners.
         charge_item = None
+        charges_left: int | None = None
         try:
             if actor is not None and origin is not None and origin is not actor:
                 inv = self.inventories.get(actor_id, [])
@@ -900,6 +902,45 @@ class Game:
                         self.log.add("That item is out of charges.")
                     return
 
+        # Wand confirmation (player only): confirm before consuming a wand charge.
+        if (
+            not skip_wand_confirm
+            and actor_id == self.player_id
+            and charge_item is not None
+            and charges_left is not None
+        ):
+            is_wand_use = False
+            try:
+                for act, mode in item_grants.get_item_grants(charge_item):
+                    if act == str(action_name) and mode == item_grants.GRANT_MODE_EQUIPPED:
+                        is_wand_use = True
+                        break
+            except Exception:
+                is_wand_use = False
+
+            if is_wand_use:
+                item_name = getattr(charge_item, "name", None) or "wand"
+                body = f"This will use your {item_name} ({charges_left} charges remaining.) Confirm?"
+                call_kwargs = dict(kwargs)
+
+                def on_choice(idx: int, game: "Game") -> None:
+                    if idx != 1:
+                        return
+                    game.queue_actor_action(
+                        actor_id,
+                        action_name,
+                        __skip_wand_confirm=True,
+                        **call_kwargs,
+                    )
+
+                self.set_urgent(
+                    body,
+                    title="Confirm",
+                    choices=["Cancel", "Confirm"],
+                    on_choice_effect=on_choice,
+                )
+                return
+
         # Optional action-defined confirmation prompt (player only).
         # This is intentionally general so other actions can add confirmations later.
         confirm = getattr(action_def, "confirm", None)
@@ -915,6 +956,8 @@ class Game:
             if prompt is not None:
                 # Snapshot kwargs so the closure can't be affected by later mutation.
                 call_kwargs = dict(kwargs)
+                if skip_wand_confirm:
+                    call_kwargs["__skip_wand_confirm"] = True
                 choices = list(getattr(prompt, "choices", None) or ["Cancel", "Proceed"])
                 proceed_idx = int(getattr(prompt, "proceed_index", 1))
                 proceed_idx = max(0, min(proceed_idx, len(choices) - 1))
@@ -961,9 +1004,17 @@ class Game:
                     charge_item.tags = tags
                 except Exception:
                     pass
-                if charges_left == 0 and actor_id == self.player_id:
-                    name = getattr(charge_item, "name", None) or "item"
-                    self.log.add(f"The {name.lower()} is spent.")
+                if charges_left == 0:
+                    # Auto-unequip spent items (e.g. wands). This keeps the UI/state
+                    # consistent and prevents "equipped but unusable" cases.
+                    try:
+                        if equipment_system.is_equipped(charge_item):
+                            self.unequip_item(str(actor_id), str(getattr(charge_item, "id", "")))
+                    except Exception:
+                        pass
+                    if actor_id == self.player_id:
+                        name = getattr(charge_item, "name", None) or "item"
+                        self.log.add(f"The {name.lower()} is spent.")
 
         # Apply cooldown if defined
         if origin is not None and action_def.cooldown_ticks > 0:
