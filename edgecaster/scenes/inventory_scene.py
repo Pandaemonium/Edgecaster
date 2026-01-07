@@ -374,11 +374,38 @@ def _safe_float(v: Any) -> Optional[float]:
     except Exception:
         return None
 
-def _display_body_node_label(nid: str) -> str:
+def _display_body_node_label(nid: str, node_spec: dict | None = None) -> str:
+    """
+    UI label for a body node.
+
+    Prefer a human-readable name if present on the node spec (e.g. "Upper Arm",
+    "Index Finger"). Fall back to the raw id with underscores prettified.
+    """
     s = str(nid)
-    if s.endswith("_m"):
-        return f"mirrored {s[:-2]}"
-    return s
+    is_mirrored = s.endswith("_m")
+    base_id = s[:-2] if is_mirrored else s
+
+    # Prefer name from the node spec (if the schema provides it).
+    label = None
+    if isinstance(node_spec, dict):
+        for k in ("name", "Name", "display_name", "label"):
+            v = node_spec.get(k)
+            if isinstance(v, str) and v.strip():
+                label = v.strip()
+                break
+
+    # Fallback: prettify the id
+    if not label:
+        label = base_id.replace("_", " ")
+
+    if is_mirrored:
+        # "mirrored upper arm" (lowercase first char of label if it's Title Case)
+        if label:
+            label = label[0].lower() + label[1:]
+        return f"mirrored {label}"
+
+    return label
+
 
 
 
@@ -1322,7 +1349,7 @@ class EntityPreviewWidget(Widget):
                 root_scale = getattr(scene, "_body_zoom_root_cam_scale", None)
 
                 # Update the root reference whenever we're at the top level.
-                if len(stack) == 0:
+                if len(stack) == 0 and getattr(scene, "_body_zoom_anim", None) is None:
                     root_scale = float(cam_scale)
                     setattr(scene, "_body_zoom_root_cam_scale", root_scale)
 
@@ -1597,11 +1624,18 @@ class BodyPlanGraphWidget(Widget):
         owner_id = str(getattr(owner, "id", ""))
 
         def _equipped_for(nid: str):
+            # IMPORTANT: equip slots must be unique per *instance*, not per proto-id.
+            # Use the current zoom stack + local nid as a stable path key.
+            stack = [str(x) for x in (getattr(scene, "_body_zoom_stack", []) or [])]
+            slot_id = "/".join(stack + [str(nid)]) if stack else str(nid)
+
             if hasattr(scene, "game") and hasattr(scene.game, "get_equipped_in_slot"):
                 try:
-                    return scene.game.get_equipped_in_slot(owner_id, str(nid))
+                    return scene.game.get_equipped_in_slot(owner_id, slot_id)
                 except Exception:
                     return None
+
+            # Fallback: scan inventory tags
             try:
                 inv = scene.game.get_inventory(owner_id)
             except Exception:
@@ -1609,9 +1643,10 @@ class BodyPlanGraphWidget(Widget):
             if inv:
                 for it in inv:
                     tags = getattr(it, "tags", {}) or {}
-                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(nid):
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == slot_id:
                         return it
             return None
+
 
         for nid, (px, py) in pos_px.items():
             # region-local clip test
@@ -1632,7 +1667,7 @@ class BodyPlanGraphWidget(Widget):
 
             # label above
             try:
-                label = _display_body_node_label(str(nid))
+                label = _display_body_node_label(str(nid), nodes.get(str(nid)))
                 ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
                 ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
                 lx = sq.centerx - ls.get_width() // 2
@@ -1922,11 +1957,13 @@ class BodyPlanGraphWidget(Widget):
                         self._last_click_nid = str(release_nid)
                         self._last_click_ms = now_ms
 
-                        eq = (
-                            scene._equipped_entity_for_slot(str(press_nid))
-                            if hasattr(scene, "_equipped_entity_for_slot")
-                            else None
-                        )
+                        if hasattr(scene, "_equipped_entity_for_slot"):
+                            stack = [str(x) for x in (getattr(scene, "_body_zoom_stack", []) or [])]
+                            slot_id = "/".join(stack + [str(press_nid)]) if stack else str(press_nid)
+                            eq = scene._equipped_entity_for_slot(slot_id)
+                        else:
+                            eq = None
+
                         if eq is not None:
                             try:
                                 setattr(scene, "_pending_node_activate", str(press_nid))
@@ -2310,6 +2347,7 @@ class InventoryScene(PopupMenuScene):
 
         # Depth-based “CRT recursion” scaling that actually scales rendered text.
         self._depth_visual_scale = float(self.DEPTH_SCALE ** max(0, self.stack_depth))
+        self._body_zoom_anim_duration_ms = 800
 
         self._zoom_elapsed = 0
         self._zoom_progress = 0.0
@@ -2492,11 +2530,12 @@ class InventoryScene(PopupMenuScene):
             return False
 
         owner_id = str(getattr(owner, "id", self._owner_id()))
+        slot_id = self._canonical_body_slot_id(str(node_id))
 
         ent = None
         if hasattr(self.game, "get_equipped_in_slot"):
             try:
-                ent = self.game.get_equipped_in_slot(owner_id, str(node_id))
+                ent = self.game.get_equipped_in_slot(owner_id, slot_id)
             except Exception:
                 ent = None
         if ent is None:
@@ -2505,7 +2544,7 @@ class InventoryScene(PopupMenuScene):
                 inv = self.game.get_inventory(owner_id)
                 for it in inv:
                     tags = getattr(it, "tags", {}) or {}
-                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(node_id):
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == slot_id:
                         ent = it
                         break
             except Exception:
@@ -2603,6 +2642,9 @@ class InventoryScene(PopupMenuScene):
 
 
     def _body_zoom_out(self) -> None:
+
+
+
         if not getattr(self, "_body_zoom_stack", None):
             return
 
@@ -2895,7 +2937,7 @@ class InventoryScene(PopupMenuScene):
             nid = getattr(self._body_graph, "hovered_nid", None)
             if nid:
                 self._drag_target_kind = "body_node"
-                self._drag_target_node_id = str(nid)
+                self._drag_target_node_id = self._canonical_body_slot_id(str(nid))
                 sn = getattr(self._drag_ent, "name", None) or "Item"
                 dn = _display_body_node_label(str(nid))
                 self._drag_hint = f"Equip {sn} to {dn}"
@@ -3370,7 +3412,9 @@ class InventoryScene(PopupMenuScene):
                 pass
             try:
                 node_id = str(pending_node)
-                eq = self._equipped_entity_for_slot(node_id)
+                slot_id = self._canonical_body_slot_id(node_id)
+
+                eq = self._equipped_entity_for_slot(slot_id)
                 if eq is not None:
                     src_px, src_sz = self._node_glyph_screen_info(node_id, manager)
                     self._open_entity_context_menu(
@@ -3378,8 +3422,9 @@ class InventoryScene(PopupMenuScene):
                         manager,
                         source_px=src_px,
                         source_glyph_px=src_sz,
-                        equipped_slot_id=node_id,
+                        equipped_slot_id=slot_id,
                     )
+
             except Exception:
                 pass
 
@@ -3396,6 +3441,24 @@ class InventoryScene(PopupMenuScene):
     # ---------------------------------------------------------------------
     # Context menus / equip helpers
     # ---------------------------------------------------------------------
+
+
+    def _canonical_body_slot_id(self, node_or_slot_id: str) -> str:
+        """
+        Convert a *local* node id (e.g. 'wrist', 'fingernail') into a unique, stable
+        equip-slot id by prefixing the current zoom stack, e.g.:
+            ['arm', 'hand', 'finger2'] + 'fingernail' -> 'arm/hand/finger2/fingernail'
+
+        If the caller already passed a full slot path (contains '/'), leave it alone.
+        """
+        s = str(node_or_slot_id or "")
+        if not s:
+            return s
+        if "/" in s:
+            return s
+        stack = [str(x) for x in (getattr(self, "_body_zoom_stack", []) or [])]
+        return "/".join(stack + [s]) if stack else s
+
 
     def _body_slot_targets(self) -> list[tuple[str, str]]:
         """Return [(node_id, display_label), ...] for the current owner's body schema."""
@@ -3418,9 +3481,13 @@ class InventoryScene(PopupMenuScene):
         nodes = schema.get("nodes", {}) or {}
         out: list[tuple[str, str]] = []
         try:
+            stack = getattr(self, "_body_zoom_stack", []) or []
             for nid in nodes.keys():
                 sn = str(nid)
-                out.append((sn, _display_body_node_label(sn)))
+                # Unique slot id = zoom_path + local nid
+                slot_id = "/".join([str(x) for x in list(stack) + [sn]]) if stack else sn
+                out.append((slot_id, _display_body_node_label(sn)))
+
         except Exception:
             return []
         return out

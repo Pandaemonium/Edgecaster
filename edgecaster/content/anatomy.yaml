@@ -105,7 +105,7 @@
           x: -0.95
           y: 0.88
         props:
-          size: 0.26
+          size: 0.16
       index:
         proto: index_finger
         children: []
@@ -113,7 +113,7 @@
           x: -0.42
           y: 1.55
         props:
-          size: 0.24
+          size: 0.12
       middle:
         proto: middle_finger
         children: []
@@ -121,7 +121,7 @@
           x: -0.05
           y: 1.72
         props:
-          size: 0.25
+          size: 0.14
       ring:
         proto: ring_finger
         children: []
@@ -129,7 +129,7 @@
           x: 0.26
           y: 1.58
         props:
-          size: 0.23
+          size: 0.12
       pinky:
         proto: pinky_finger
         children: []
@@ -137,7 +137,7 @@
           x: 0.58
           y: 1.38
         props:
-          size: 0.21
+          size: 0.11
 - id: shoulder
   name: Shoulder
   parent: arm
@@ -161,24 +161,75 @@
 - id: palm
   name: Palm
   parent: hand
-  description: The palm of a hand.i
+  description: The palm of a hand.
+- id: knuckle
+  name: Knuckle
+  parent: finger
+  description: A joint segment of a finger.
+- id: fingernail
+  name: Fingernail
+  parent: finger
+  description: A fingernail at the tip of a finger.
+- id: finger
+  name: Finger
+  parent: hand
+  description: A generic digit with three knuckles and a fingernail.
+  body:
+    root: knuckle_1
+    nodes:
+      knuckle_1:
+        proto: knuckle
+        children:
+        - knuckle_2
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 0.28
+      knuckle_2:
+        proto: knuckle
+        children:
+        - knuckle_3
+        layout:
+          x: 0.0
+          y: 0.82
+        props:
+          size: 0.23
+      knuckle_3:
+        proto: knuckle
+        children:
+        - nail
+        layout:
+          x: 0.0
+          y: 1.52
+        props:
+          size: 0.19
+      nail:
+        proto: fingernail
+        children: []
+        layout:
+          x: 0.0
+          y: 2.05
+        props:
+          size: 0.14
+
 - id: thumb_finger
   name: Thumb
-  parent: hand
+  parent: finger
   description: A thumb.
 - id: index_finger
   name: Index Finger
-  parent: hand
+  parent: finger
   description: An index finger.
 - id: middle_finger
   name: Middle Finger
-  parent: hand
+  parent: finger
   description: A middle finger.
 - id: ring_finger
   name: Ring Finger
-  parent: hand
+  parent: finger
   description: A ring finger.
 - id: pinky_finger
   name: Pinky Finger
-  parent: hand
+  parent: finger
   description: A pinky finger.

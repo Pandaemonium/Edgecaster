@@ -5,73 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import copy
 import yaml
-# ---------------------------------------------------------------------------
-# Mirroring helpers (birth-time bilateral symmetry)
-# ---------------------------------------------------------------------------
 
-_MIRROR_SUFFIX = "__m"
-
-
-def is_mirrored_proto_id(pid: str) -> bool:
-    return isinstance(pid, str) and pid.endswith(_MIRROR_SUFFIX)
-
-
-def base_proto_id(pid: str) -> str:
-    return pid[: -len(_MIRROR_SUFFIX)] if is_mirrored_proto_id(pid) else pid
-
-
-def mirrored_proto_id(pid: str) -> str:
-    if not isinstance(pid, str) or not pid:
-        return pid
-    return pid if is_mirrored_proto_id(pid) else (pid + _MIRROR_SUFFIX)
-
-
-def _negate_x(layout: Any) -> Any:
-    """Fail-soft negate of layout.x if possible."""
-    if not isinstance(layout, dict):
-        return layout
-    x = layout.get("x")
-    if isinstance(x, (int, float)):
-        layout = dict(layout)
-        layout["x"] = -x
-    return layout
-
-
-def mirror_body_schema(schema: dict) -> dict:
-    """
-    Deep-copy a body schema, mirror all node layouts across the Y-axis (x -> -x),
-    mark nodes as mirrored, and rewrite node protos to their mirrored equivalents.
-
-    This produces a schema suitable for resolving mirrored subtrees at zoom-time
-    without inventory_scene needing to do any mirror math.
-    """
-    schema = copy.deepcopy(schema or {})
-    schema = _ensure_schema_shape(schema)
-    nodes = _node_dict(schema)
-
-    for nid, node in list(nodes.items()):
-        if not isinstance(node, dict):
-            continue
-
-        # Mirror coordinates
-        if "layout" in node:
-            node["layout"] = _negate_x(node.get("layout"))
-
-        # Mark mirrored
-        props = node.get("props") if isinstance(node.get("props"), dict) else {}
-        props = dict(props)
-        props["mirrored"] = True
-        node["props"] = props
-
-        # Rewrite proto id to mirrored proto id (so deeper zoom keeps mirroring)
-        proto = node.get("proto")
-        if isinstance(proto, str) and proto:
-            node["proto"] = mirrored_proto_id(proto)
-
-        nodes[nid] = node
-
-    schema["nodes"] = nodes
-    return _validate_body_schema(schema)
 
 
 def bake_instance_body_schema(pid: str) -> dict:
@@ -788,44 +722,71 @@ def mirrored_proto_id(pid: str) -> str:
 
 def mirror_body_schema(schema: dict) -> dict:
     """
-    Return a deep-copied mirrored version of a body schema:
-      - layout.x -> -layout.x for all nodes
-      - mark props.mirrored = True
-      - rewrite node.proto to mirrored proto ids so mirroring propagates downward
+    Produce a fully mirrored copy of a body schema.
+
+    Semantics:
+    - Every node becomes ontologically distinct:
+        id -> id_m
+    - layout.x is negated
+    - layout.y and size are inherited unchanged
+    - props.mirrored = True is set
+    - proto ids are rewritten to mirrored proto ids (__m)
+
+    This guarantees mirrored body parts have unique slot ids
+    (e.g. wrist vs wrist_m) and never collide at equip time.
     """
-    import copy
-    out = copy.deepcopy(_ensure_schema_shape(schema))
-    nodes = out.get("nodes", {}) or {}
-    if not isinstance(nodes, dict):
-        out["nodes"] = {}
-        return out
+    if not schema:
+        return schema
 
-    for nid, node in list(nodes.items()):
-        if not isinstance(node, dict):
-            continue
+    # Map old node ids -> mirrored node ids
+    id_map: dict[str, str] = {}
+    for nid in schema.get("nodes", {}):
+        if nid.endswith("_m"):
+            id_map[nid] = nid
+        else:
+            id_map[nid] = f"{nid}_m"
 
-        # props.mirrored = True
-        props = node.get("props") if isinstance(node.get("props"), dict) else {}
-        props = dict(props)
+    mirrored_nodes: dict[str, dict] = {}
+
+    for old_nid, node in schema.get("nodes", {}).items():
+        new_nid = id_map[old_nid]
+
+        new_node = dict(node)
+
+        # Mirror layout
+        layout = dict(node.get("layout", {}) or {})
+        if "x" in layout:
+            layout["x"] = -layout["x"]
+        new_node["layout"] = layout
+
+        # Mark as mirrored
+        props = dict(node.get("props", {}) or {})
         props["mirrored"] = True
-        node["props"] = props
+        new_node["props"] = props
 
-        # layout.x flip
-        layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
-        if isinstance(layout.get("x"), (int, float)):
-            layout = dict(layout)
-            layout["x"] = -float(layout["x"])
-            node["layout"] = layout
-
-        # proto rewrite -> mirrored proto id
+        # Rewrite proto id to mirrored proto
         proto = node.get("proto")
-        if isinstance(proto, str) and proto:
-            node["proto"] = mirrored_proto_id(proto)
+        if proto:
+            new_node["proto"] = mirrored_proto_id(proto)
 
-        nodes[nid] = node
+        # Rewrite children ids
+        children = node.get("children", [])
+        if children:
+            new_node["children"] = [id_map[c] for c in children]
+        else:
+            new_node["children"] = []
 
-    out["nodes"] = nodes
-    return out
+        mirrored_nodes[new_nid] = new_node
+
+    # Rewrite root
+    root = schema.get("root")
+    new_root = id_map.get(root, root)
+
+    return {
+        **schema,
+        "root": new_root,
+        "nodes": mirrored_nodes,
+    }
 
 
 
