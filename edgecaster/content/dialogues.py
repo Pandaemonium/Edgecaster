@@ -363,6 +363,24 @@ def _build_merchant(_game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogu
 
     def open_trade(game: Any) -> None:
         try:
+            # Optional: some merchants (e.g. the starting-zone "dev" merchant)
+            # refresh their stock each time you open trade.
+            lvl = game._level()
+            merchant = getattr(lvl, "actors", {}).get(merchant_actor_id)
+            if merchant is not None:
+                try:
+                    from edgecaster.systems import trade as trade_system
+
+                    tags = getattr(merchant, "tags", None) or {}
+                    needs_refresh = bool(tags.get("merchant_refresh_on_talk") or tags.get("merchant_all_items"))
+                    already_init = bool(tags.get("merchant_initialized"))
+                    trade_system.ensure_merchant_initialized(game, lvl, merchant)
+                    # Avoid double-restocking on first interaction: ensure_merchant_initialized
+                    # performs the initial force-restock already.
+                    if needs_refresh and already_init:
+                        trade_system.restock_merchant(game, lvl, merchant, force=True)
+                except Exception:
+                    pass
             game.merchant_requested = merchant_actor_id
         except Exception:
             pass

@@ -241,6 +241,10 @@ class GameInput:
         if key == pygame.K_a and getattr(event, "mod", 0) & pygame.KMOD_CTRL:
             return [GameCommand("open_abilities", raw_key=key)]
 
+        # Ctrl+W: dev "Wish" prompt (without stealing plain 'w' movement)
+        if key == pygame.K_w and getattr(event, "mod", 0) & pygame.KMOD_CTRL:
+            return [GameCommand("wish_prompt", raw_key=key)]
+
         # --- Ability hotkeys (1–10; '0' => 10) ---
         if pygame.K_1 <= key <= pygame.K_9:
             hk = key - pygame.K_0

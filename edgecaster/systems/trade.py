@@ -11,6 +11,10 @@ MERCHANT_ID_TAG = "merchant_id"
 MERCHANT_FUNDS_TAG = "merchant_funds_bismuth"
 MERCHANT_INITIALIZED_TAG = "merchant_initialized"
 
+# Dev/test-only: if set on the merchant actor, restock will populate one of every
+# item prototype in the game (leaf items only).
+MERCHANT_ALL_ITEMS_TAG = "merchant_all_items"
+
 
 @dataclass(frozen=True)
 class PriceQuote:
@@ -317,6 +321,14 @@ def restock_merchant(game: Any, level: Any, merchant_actor: Any, *, force: bool)
     if force:
         inv.clear()
 
+    tags = getattr(merchant_actor, "tags", None) or {}
+    if tags.get(MERCHANT_ALL_ITEMS_TAG):
+        # Avoid expensive "all items" rebuilds on periodic restock ticks; we only
+        # refresh on explicit interactions (force=True).
+        if not force:
+            return
+        return _restock_merchant_all_items(game, merchant_actor, inv)
+
     max_stock = int(mdef.max_stock)
     if max_stock <= 0:
         return
@@ -368,6 +380,52 @@ def restock_merchant(game: Any, level: Any, merchant_actor: Any, *, force: bool)
             except Exception:
                 continue
             inv.append(item)
+
+
+def _restock_merchant_all_items(game: Any, merchant_actor: Any, inv: Any) -> None:
+    """Populate inventory with one of every leaf item prototype."""
+    try:
+        from edgecaster import prototypes
+    except Exception:
+        return
+
+    bucket = prototypes.get_master_bucket()
+
+    # Exclude non-leaf prototypes (authoring templates) for a cleaner stock list.
+    parents: set[str] = set()
+    for raw in bucket.values():
+        try:
+            parent = raw.get("parent")
+        except Exception:
+            parent = None
+        if isinstance(parent, str) and parent:
+            parents.add(parent)
+
+    entries: list[tuple[str, str]] = []
+    for pid in list(bucket.keys()):
+        if pid in parents:
+            continue
+        try:
+            spec = prototypes.resolve_proto(pid)
+        except Exception:
+            continue
+        if str(spec.get("kind") or "") != "item":
+            continue
+        name = str(spec.get("name") or pid)
+        entries.append((name.casefold(), str(pid)))
+
+    entries.sort()
+
+    pos = getattr(merchant_actor, "pos", (0, 0))
+    for _, pid in entries:
+        try:
+            item = game._spawn_entity_from_template(  # type: ignore[attr-defined]
+                str(pid),
+                pos=pos,
+            )
+        except Exception:
+            continue
+        inv.append(item)
 
 
 def try_buy(game: Any, merchant_actor_id: str, item_index: int) -> bool:

@@ -90,8 +90,10 @@ def build_item_depot(world: World, rng, entry: Tuple[int, int]) -> dict:
     """
     Carve an item depot to the left of entry. Returns metadata for placement.
     """
-    w = rng.randint(5, 8)
-    h = rng.randint(5, 8)
+    # Make the depot fairly large so it feels like a real stockroom and provides
+    # plenty of item variety for testing/early-game progression.
+    w = rng.randint(8, 12)
+    h = rng.randint(8, 12)
     ex, ey = entry
     x = max(1, ex - w - 4)
     y = max(1, min(world.height - h - 2, ey - h // 2))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any, Callable, Dict, Literal, Protocol
 
 # Optional: pattern colors (only imported when used to avoid extra deps elsewhere)
@@ -869,6 +870,156 @@ def _action_regrow(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_regrow"):
         game.act_regrow(actor_id)
+
+
+@register_action("sparkle", label="Sparkle", speed="fast", show_in_bar=True)
+def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Sparkle a pseudo-random subset of pattern vertices and deal damage on-hit.
+
+    - No targeting: affects the whole pattern.
+    - Does not damage the caster.
+    - Damage stacks per vertex that hits the same tile.
+    - Charges (from the wand) are the only limiter.
+    """
+    if not hasattr(game, "_level"):
+        return
+    try:
+        level = game._level()
+    except Exception:
+        return
+
+    # Project vertices into world space.
+    try:
+        if hasattr(game, "projected_vertices"):
+            verts_world = list(game.projected_vertices())
+        else:
+            verts_world = []
+    except Exception:
+        verts_world = []
+
+    if not verts_world:
+        if actor_id == getattr(game, "player_id", None):
+            try:
+                game.log.add("No pattern to sparkle.")
+            except Exception:
+                pass
+        return
+
+    rng = getattr(game, "rng", None)
+    if rng is None:
+        import random
+
+        rng = random.Random()
+
+    # Choose a pseudo-random subset of vertices to "sparkle".
+    # Tunable: keep probability low so large patterns don't always fully light.
+    select_prob = 0.35
+    selected = [v for v in verts_world if float(rng.random()) < select_prob]
+    if not selected:
+        try:
+            idx = int(rng.randint(0, len(verts_world) - 1))
+        except Exception:
+            idx = 0
+        selected = [verts_world[idx]]
+
+    # Store a time-based VFX state for the renderer (pure visuals).
+    #
+    # This is intentionally keyed off real-time (monotonic clock) so the
+    # "firecracker / sequin" effect animates even when the game is waiting
+    # for player input (i.e., no game-tick advancement).
+    try:
+        seed = int(rng.randint(0, 2**31 - 1))
+    except Exception:
+        seed = int(time.time() * 1000) & 0x7FFFFFFF
+
+    try:
+        edges = [(int(e.a), int(e.b)) for e in getattr(getattr(level, "pattern", None), "edges", []) or []]
+    except Exception:
+        edges = []
+
+    try:
+        level.sparkle_state = {
+            "t0": float(time.monotonic()),
+            "duration_s": 1.0,
+            "seed": seed,
+            # Snapshot the geometry at cast time so the effect doesn't jump if the
+            # player immediately edits the rune after casting.
+            "verts": [(float(x), float(y)) for (x, y) in verts_world],
+            "edges": edges,
+        }
+    except Exception:
+        pass
+
+    # Count how many sparkles hit each tile.
+    tile_hits: dict[tuple[int, int], int] = {}
+    for vx, vy in selected:
+        tx = int(round(float(vx)))
+        ty = int(round(float(vy)))
+        tile_hits[(tx, ty)] = tile_hits.get((tx, ty), 0) + 1
+
+    damage_per_hit = 1
+    caster_is_player = actor_id == getattr(game, "player_id", None)
+
+    # Apply damage to *any* entity with HP (actors, NPCs, objects), except the caster.
+    # We iterate over a snapshot to avoid mutation while killing actors.
+    combined: dict[str, Any] = dict(getattr(level, "actors", {}) or {})
+    for eid, ent in dict(getattr(level, "entities", {}) or {}).items():
+        if eid not in combined:
+            combined[eid] = ent
+
+    hit_any = False
+    for tid, obj in combined.items():
+        if tid == actor_id:
+            continue
+        pos = getattr(obj, "pos", None)
+        if not pos:
+            continue
+        tx = int(round(float(pos[0])))
+        ty = int(round(float(pos[1])))
+        hits = int(tile_hits.get((tx, ty), 0))
+        if hits <= 0:
+            continue
+
+        dmg = hits * damage_per_hit
+        stats = getattr(obj, "stats", None)
+        if stats is None or not hasattr(stats, "hp"):
+            continue
+
+        try:
+            stats.hp -= dmg
+            if hasattr(stats, "clamp"):
+                stats.clamp()
+        except Exception:
+            continue
+
+        hit_any = True
+        if caster_is_player:
+            try:
+                name = getattr(obj, "name", None) or "something"
+                game.log.add(f"Sparkles strike {name} for {dmg}.")
+            except Exception:
+                pass
+
+        # Only actors have removal + death logic.
+        if tid in getattr(level, "actors", {}):
+            try:
+                if int(getattr(stats, "hp", 0)) <= 0:
+                    if hasattr(game, "_kill_actor"):
+                        game._kill_actor(
+                            level,
+                            obj,
+                            killer_id=actor_id,
+                            killer_is_player=caster_is_player,
+                        )
+            except Exception:
+                pass
+
+    if caster_is_player and not hit_any:
+        try:
+            game.log.add("The wand crackles, but finds no targets.")
+        except Exception:
+            pass
 
 
 @register_action("freeze", label="Freeze", speed="fast", show_in_bar=True, confirm=_confirm_self_damage_freeze)

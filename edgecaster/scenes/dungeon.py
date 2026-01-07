@@ -1120,6 +1120,15 @@ class DungeonScene(Scene):
                     bar.page = bar.selected_index // bar.page_size
             return
 
+        if kind == "wish_prompt":
+            try:
+                from .wish_scene import WishScene
+
+                manager.push_scene(WishScene(game))
+            except Exception:
+                pass
+            return
+
         # ------------------------------------------------------------
         # 2) Config overlay (always takes precedence while open)
         # ------------------------------------------------------------

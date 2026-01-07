@@ -279,6 +279,22 @@
     charges_min: 3
     charges_max: 5
 
+- id: wand_sparkle
+  name: Wand of Sparkle
+  glyph: "!"
+  color: [255, 245, 180]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A glassy rod that twinkles with cruel, star-like light."
+  tags:
+    item_type: wand_sparkle
+    value_bismuth: 55
+    equip_grants_abilities: ["sparkle"]
+    charges_min: 3
+    charges_max: 5
+
 # --- SIGN / DOOR FEATURES -------------------------------------------
 - id: sign
   name: Sign

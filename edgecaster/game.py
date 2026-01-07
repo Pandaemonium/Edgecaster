@@ -19,6 +19,7 @@ from edgecaster.enemies import factory as enemy_factory
 
 
 from edgecaster import mapgen
+from edgecaster import mapgen_sites
 from edgecaster.content import pois as poi_content
 from edgecaster.patterns.activation import project_vertices, damage_from_vertices
 from edgecaster.patterns import builder
@@ -433,6 +434,7 @@ class Game:
                 ("wand_branch", "branch"),
                 ("wand_zigzag", "zigzag"),
                 ("wand_activate_n", "activate_seed"),
+                ("wand_sparkle", "sparkle"),
             ]
             intrinsic_set = {str(x) for x in (getattr(player, "actions", ()) or []) if x}
 
@@ -1978,6 +1980,8 @@ class Game:
         # Determine any POIs that hit this coord (used for lab/structures).
         poi_hits = [pid for pid, poi in poi_content.POIS.items() if tuple(poi.coord) == tuple(coord)]
         is_lab_zone = False
+        is_lair_zone = False
+        lair_layout = "multi_room"
         for pid in poi_hits:
             poi = poi_content.POIS.get(pid)
             if not poi:
@@ -1986,12 +1990,22 @@ class Game:
                 if struct.get("kind") == "lab":
                     is_lab_zone = True
                     break
+                if struct.get("kind") == "legendary_lair":
+                    is_lair_zone = True
+                    lair_layout = str(struct.get("layout") or lair_layout)
             if is_lab_zone:
+                break
+            if is_lair_zone:
+                # Only one lair layout exists today, but keep this selector so
+                # adding arena/maze/fortress variants doesn't touch glue code.
                 break
 
         if depth == 0 and is_lab_zone:
             mapgen.generate_lab(world, self.rng)
             lab_state = LabState()
+        elif depth == 0 and is_lair_zone:
+            mapgen_sites.generate_legendary_lair(world, self.rng, layout=lair_layout)
+            lab_state = None
         elif depth == 0:
             self._ensure_overmap_ready()
             jx_slice = jy_slice = None
@@ -2018,6 +2032,14 @@ class Game:
                 jx_slice=jx_slice,
                 jy_slice=jy_slice,
             )
+            # Default fast-travel spawn is the middle of the bottom edge so arriving
+            # in a new overworld zone feels directional. The starting zone is the
+            # exception: it should spawn in the center.
+            if up_pos is None and "starting_zone" not in poi_hits:
+                ex = world.width // 2
+                ey = max(0, world.height - 2)
+                if world.in_bounds(ex, ey) and world.is_walkable(ex, ey):
+                    world.entry = (ex, ey)
             lab_state = None
         else:
             mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
@@ -2065,7 +2087,9 @@ class Game:
 
         # scatter some test berries on overworld levels
         if coord[2] == 0:  # depth == 0
-            self._scatter_test_berries(lvl, count=10)
+            # Don't scatter berries in lairs (they manage their own content).
+            if not getattr(world, "is_lair", False):
+                self._scatter_test_berries(lvl, count=10)
 
         return lvl
 
@@ -2390,7 +2414,21 @@ class Game:
                             pass
                     # Place items in interior
                     interior = depot_info.get("interior") or []
-                    item_ids = ["blueberry", "raspberry", "strawberry", "destabilizer", "debug_inventory", "healing_kit", "koch_knife"]
+                    item_ids = [
+                        "blueberry",
+                        "raspberry",
+                        "strawberry",
+                        "destabilizer",
+                        "debug_inventory",
+                        "healing_kit",
+                        "koch_knife",
+                        # Wands (equip-grant + charges)
+                        "wand_koch",
+                        "wand_branch",
+                        "wand_zigzag",
+                        "wand_activate_n",
+                        "wand_sparkle",
+                    ]
                     for pos in interior:
                         try:
                             template_id = self.rng.choice(item_ids)
@@ -2418,8 +2456,16 @@ class Game:
                     except Exception:
                         hp_mult = 3.0
 
-                    # Put the legendary near the center of its lair (or nearest walkable).
-                    center = (level.world.width // 2, level.world.height // 2)
+                    # Put the legendary at the lair's suggested boss position, falling
+                    # back to the zone center if the lair generator didn't provide one.
+                    boss_hint = None
+                    try:
+                        li = getattr(level.world, "lair_info", None)
+                        if isinstance(li, dict):
+                            boss_hint = li.get("boss_pos")
+                    except Exception:
+                        boss_hint = None
+                    center = boss_hint if boss_hint else (level.world.width // 2, level.world.height // 2)
                     spot = nearest_walkable(center)
                     if spot:
                         actor = enemy_factory.spawn_enemy(base_proto, spot)
@@ -2446,6 +2492,39 @@ class Game:
                             self.cfg.action_time_fast,
                             lambda aid=actor.id, lvl=level: self._monster_act(lvl, aid),
                         )
+
+                        # Spawn a few minions of the same base creature near the boss.
+                        try:
+                            minions = int(self.rng.randint(3, 5))
+                        except Exception:
+                            minions = 3
+                        spawned = 0
+                        attempts = 0
+                        while spawned < minions and attempts < 200:
+                            attempts += 1
+                            dx = int(self.rng.randint(-6, 6))
+                            dy = int(self.rng.randint(-4, 4))
+                            if dx == 0 and dy == 0:
+                                continue
+                            tx = int(spot[0] + dx)
+                            ty = int(spot[1] + dy)
+                            if not level.world.in_bounds(tx, ty):
+                                continue
+                            if not level.world.is_walkable(tx, ty):
+                                continue
+                            if self._actor_at(level, (tx, ty)):
+                                continue
+                            if self._blocking_entity_at(level, (tx, ty)):
+                                continue
+                            mob = enemy_factory.spawn_enemy(base_proto, (tx, ty))
+                            level.actors[mob.id] = mob
+                            level.entities[mob.id] = mob
+                            self._schedule(
+                                level,
+                                self.cfg.action_time_fast,
+                                lambda aid=mob.id, lvl=level: self._monster_act(lvl, aid),
+                            )
+                            spawned += 1
             # Extra: drop some starting bismuth piles in the starting zone.
             if pid == "starting_zone":
                 world = level.world
@@ -2510,6 +2589,11 @@ class Game:
                     actor.tags = getattr(actor, "tags", {}) or {}
                     actor.tags["npc_id"] = spec.npc_id
                     actor.tags["merchant_id"] = npc_def.get("merchant_id", "general_store")
+                    # Dev convenience: the starting-zone merchant stocks one of every
+                    # item prototype and refreshes each time you talk to them.
+                    if pid == "starting_zone":
+                        actor.tags["merchant_all_items"] = True
+                        actor.tags["merchant_refresh_on_talk"] = True
 
                     # Apply POI overrides for look/feel.
                     actor.name = name
@@ -2792,7 +2876,7 @@ class Game:
             return
         player = level.actors[self.player_id]
 
-        # Functional adjectives → effect name(s) (from visual_effects.py registry).
+        # Functional adjectives -> effect name(s) (from visual_effects.py registry).
         # NOTE: "mirrored" resolves to either mirror_x or mirror_y per spawn.
         functional_map: dict[str, list[str]] = {
             "clockwise": ["clockwise"],
@@ -3109,7 +3193,7 @@ class Game:
 
         We mirror the renderer's projection:
         - Take (x, z) from each Lorenz point
-        - Rotate in the (x, z) plane by 30°
+        - Rotate in the (x, z) plane by 30 deg
         - Subtract a fixed 'natural' Lorenz center between the wings
         - Scale to tile offsets, clamp to a radius
         - Map to world tiles around lorenz_center_x/lorenz_center_y
@@ -3324,7 +3408,15 @@ class Game:
     def _get_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]] = None) -> LevelState:
         if coord not in self.levels:
             self.levels[coord] = self._make_zone(coord, up_pos=up_pos)
-            self._spawn_enemies(self.levels[coord], count=4)
+            # Default random spawns for most zones, but skip special "site" zones
+            # like labs and lairs (they control their own populations).
+            try:
+                w = self.levels[coord].world
+                is_special = bool(getattr(w, "is_lab", False) or getattr(w, "is_lair", False))
+            except Exception:
+                is_special = False
+            if not is_special:
+                self._spawn_enemies(self.levels[coord], count=4)
         # entering any zone clears pattern and resets coherence
         lvl = self.levels[coord]
         lvl.pattern = builder.Pattern()
@@ -5414,6 +5506,83 @@ class Game:
         xp_gain = enemy.tags.get("xp", self.cfg.xp_per_imp) if enemy.tags else self.cfg.xp_per_imp
         self._grant_xp(xp_gain)
 
+    def _spawn_legendary_reward(self, level: LevelState, pos: Tuple[int, int], actor: Actor) -> None:
+        """Drop a guaranteed reward when a legendary creature dies.
+
+        This is intentionally centralized here (not in the renderer or POI code)
+        so we can later add other special kill rewards without scattering logic.
+        """
+        tags = getattr(actor, "tags", {}) or {}
+        if not tags.get("legendary"):
+            return
+
+        legendary_id = tags.get("legendary_id")
+        if legendary_id:
+            try:
+                reg = getattr(self, "legendary_registry", None)
+                if isinstance(reg, dict):
+                    rec = reg.get(str(legendary_id))
+                    if isinstance(rec, dict):
+                        if rec.get("reward_spawned"):
+                            return
+                        rec["reward_spawned"] = True
+            except Exception:
+                pass
+
+        world = level.world
+        px, py = int(pos[0]), int(pos[1])
+        reward_pos: Optional[Tuple[int, int]] = None
+        for r in range(0, 6):
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    x = px + dx
+                    y = py + dy
+                    if not world.in_bounds(x, y):
+                        continue
+                    if not world.is_walkable(x, y):
+                        continue
+                    if self._actor_at(level, (x, y)):
+                        continue
+                    if self._entity_at(level, (x, y)):
+                        continue
+                    reward_pos = (x, y)
+                    break
+                if reward_pos is not None:
+                    break
+            if reward_pos is not None:
+                break
+        if reward_pos is None:
+            return
+
+        roll = float(self.rng.random()) if getattr(self, "rng", None) else 0.0
+
+        # Reward pool: bismuth, a wand, or a stat-boosting item.
+        if roll < 0.40:
+            try:
+                amt = int(self.rng.randint(40, 140))
+            except Exception:
+                amt = 60
+            ent = self._spawn_entity_from_template(
+                "bismuth_pile",
+                reward_pos,
+                overrides={"tags": {"amount": amt}},
+            )
+            level.entities[ent.id] = ent
+            self.log.add(f"A bismuth hoard spills out ({amt}).")
+            return
+
+        if roll < 0.70:
+            wand_id = self.rng.choice(["wand_koch", "wand_branch", "wand_zigzag", "wand_activate_n", "wand_sparkle"])
+            ent = self._spawn_entity_from_template(wand_id, reward_pos)
+            level.entities[ent.id] = ent
+            self.log.add(f"You find a {ent.name}.")
+            return
+
+        item_id = self.rng.choice(["resonant_ring", "sage_cap", "fleet_boots", "vital_belt"])
+        ent = self._spawn_entity_from_template(item_id, reward_pos)
+        level.entities[ent.id] = ent
+        self.log.add(f"You find a {ent.name}.")
+
     def _kill_actor(
         self,
         level: LevelState,
@@ -5433,7 +5602,13 @@ class Game:
             except Exception:
                 pass
 
-        # Use the canonical id (actor_id is a property alias if you made Actor→Entity)
+        # Use the canonical id (actor_id is a property alias if you made Actor->Entity)
+        # Capture pre-removal data for reward spawning.
+        try:
+            actor_pos = tuple(getattr(actor, "pos", (None, None)))
+        except Exception:
+            actor_pos = (None, None)
+
         aid = actor.id
 
         # Remove from actors dict
@@ -5443,6 +5618,13 @@ class Game:
         # Remove from entities dict (so it stops being rendered)
         if aid in level.entities:
             del level.entities[aid]
+
+        # Guaranteed legendary loot drop (after removal so the tile is unoccupied).
+        try:
+            if actor_pos and actor_pos[0] is not None and actor_pos[1] is not None:
+                self._spawn_legendary_reward(level, (int(actor_pos[0]), int(actor_pos[1])), actor)
+        except Exception:
+            pass
 
 
     def _update_fov(self, level: LevelState, radius: int = 8) -> None:

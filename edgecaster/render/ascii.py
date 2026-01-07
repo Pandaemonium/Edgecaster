@@ -2,6 +2,7 @@
 import pygame
 import math
 import random
+import time
 from pathlib import Path
 from typing import Tuple, List, Dict
 from edgecaster.render.overmap_lod import OvermapLodRenderer, choose_lod_blend
@@ -2428,6 +2429,131 @@ class AsciiRenderer:
 
         self.surface.blit(overlay, (0, 0))
 
+    def draw_sparkle_overlay(self, game: Game) -> None:
+        """
+        Visual overlay for Sparkle:
+        - Pattern edges briefly black out and fade back in (~1s).
+        - Vertices crackle with bright "sequin"/"firecracker" sparkles.
+
+        This is intentionally render-time based (monotonic clock) so it animates
+        even while waiting for player input.
+        """
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+
+        state = getattr(level, "sparkle_state", None)
+        if not state:
+            return
+
+        try:
+            t0 = float(state.get("t0", 0.0))
+            duration = float(state.get("duration_s", 1.0) or 1.0)
+        except Exception:
+            setattr(level, "sparkle_state", None)
+            return
+
+        now = float(time.monotonic())
+        if duration <= 1e-6:
+            setattr(level, "sparkle_state", None)
+            return
+
+        t = (now - t0) / duration
+        if t >= 1.0:
+            setattr(level, "sparkle_state", None)
+            return
+
+        overlay = getattr(self, "_sparkle_overlay_surface", None)
+        if overlay is None or overlay.get_size() != (self.width, self.height):
+            overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+            setattr(self, "_sparkle_overlay_surface", overlay)
+        overlay.fill((0, 0, 0, 0))
+
+        verts = state.get("verts") or []
+        edges = state.get("edges") or []
+
+        # Fallback for older states: derive geometry from the current pattern.
+        if (not verts) and game.pattern.vertices and game.pattern_anchor is not None:
+            try:
+                verts = project_vertices(game.pattern, game.pattern_anchor)
+                edges = [(int(e.a), int(e.b)) for e in game.pattern.edges]
+            except Exception:
+                verts = []
+                edges = []
+
+        if not verts:
+            return
+
+        # Edge blackout fades out over time (ease-out).
+        fade = max(0.0, min(1.0, t))
+        blackout_alpha = int(255 * (1.0 - fade) ** 1.7)
+        blackout_alpha = max(0, min(255, blackout_alpha))
+
+        if blackout_alpha > 0 and edges:
+            col = (0, 0, 0, blackout_alpha)
+            width = max(1, int(self.edge_width_base + 2))
+            for a_idx, b_idx in edges:
+                if a_idx < 0 or b_idx < 0 or a_idx >= len(verts) or b_idx >= len(verts):
+                    continue
+                ax, ay = verts[a_idx]
+                bx, by = verts[b_idx]
+                x0 = ax * self.tile + self.tile * 0.5 + self.origin_x
+                y0 = ay * self.tile + self.tile * 0.5 + self.origin_y
+                x1 = bx * self.tile + self.tile * 0.5 + self.origin_x
+                y1 = by * self.tile + self.tile * 0.5 + self.origin_y
+                pygame.draw.line(overlay, col, (x0, y0), (x1, y1), width=width)
+                pygame.draw.aaline(overlay, col, (x0, y0), (x1, y1))
+
+        # Crackling sparkles: time-quantized for stability and performance.
+        try:
+            seed = int(state.get("seed", 0))
+        except Exception:
+            seed = 0
+        frame = int((now - t0) / 0.045)  # ~22 Hz
+        rng = random.Random((seed ^ (frame * 0x9E3779B1)) & 0xFFFFFFFF)
+
+        # More sparkles early, fewer as it settles.
+        settle = (1.0 - fade) ** 0.5
+        max_sparkles = 90
+        base_sparkles = max(14, min(max_sparkles, len(verts) // 18))
+        sparkle_count = max(8, int(base_sparkles * (0.35 + 0.65 * settle)))
+
+        # Radius scales with zoom/tile size, but keep readable.
+        base_r = max(1, int(self.tile * 0.08))
+        jitter = max(0, int(self.tile * 0.10))
+
+        palette = [
+            (255, 255, 235),
+            (255, 240, 200),
+            (255, 220, 170),
+            (235, 245, 255),
+        ]
+
+        for _ in range(min(sparkle_count, 200)):
+            idx = rng.randrange(0, len(verts))
+            vx, vy = verts[idx]
+            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            if jitter:
+                px += rng.randint(-jitter, jitter)
+                py += rng.randint(-jitter, jitter)
+
+            # Firecracker: mostly small flashes with occasional larger "pops".
+            pop = rng.random()
+            r = base_r + (1 if pop > 0.85 else 0) + (1 if pop > 0.96 else 0)
+            a = int((70 + 185 * (pop ** 0.35)) * (0.25 + 0.75 * settle))
+            a = max(0, min(255, a))
+
+            rgb = rng.choice(palette)
+            pygame.draw.circle(overlay, (*rgb, a), (px, py), r)
+            if r >= 2 and a >= 120:
+                # Tiny cross "sequin" glint.
+                glint = (*rgb, int(a * 0.85))
+                pygame.draw.aaline(overlay, glint, (px - r, py), (px + r, py))
+                pygame.draw.aaline(overlay, glint, (px, py - r), (px, py + r))
+
+        self.surface.blit(overlay, (0, 0))
+
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
         """Simple word-wrap that fits text within max_width."""
         words = text.split()
@@ -2531,6 +2657,7 @@ class AsciiRenderer:
         self.draw_lorenz_overlay(game)
 
         self.draw_pattern_overlay(game)
+        self.draw_sparkle_overlay(game)
         self.draw_action_preview_underlay(game)
         self.draw_push_preview(game)
         self.draw_place_overlay(game)

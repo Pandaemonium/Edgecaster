@@ -1,0 +1,393 @@
+## Site & Structure Generation Strategy (Cities, Lairs, Landmarks)
+
+This document outlines a coherent, scalable strategy for adding "sites" to Edgecaster:
+cities, lairs, ruins, shrines, dwarf stations/rails, special groves, etc.
+
+It is written for collaborators and future you: it describes what invariants we want
+and how to add new content without creating one-off generator spaghetti.
+
+Related docs:
+- `vision_documents/map_generation_strategy.txt` (Julia/corruption, world<->local coherence, LoD/zoom).
+- `vision_documents/architecture.txt` (module ownership, renderer purity, camera).
+
+-------------------------------------------------------------------------------
+
+## Goals
+
+1. Meaning-first generation: decide why a place exists (biome/resources/factions/corruption/routes),
+   then realize geometry.
+2. Macro->micro layering:
+   - global scalar fields -> biomes/semantics -> site placement -> local realization.
+3. On-demand generation:
+   - do not build the whole world up-front; generate local site maps when entered.
+4. Determinism + save deltas:
+   - same run seed => same site placement/layout, unless changed by player actions.
+5. One system for many site types:
+   - cities, lairs, ruins, etc. should be implemented as new site generators,
+     not as special cases sprinkled around `game.py`.
+6. Debuggable PCG:
+   - we must be able to explain "why did this city spawn here?" and "why is this road here?"
+     via overlays/logging.
+
+Non-goals (v1):
+- Deep simulation (economy, farmland, population dynamics).
+- Perfect realism (we'll accept stylized "roguelike readable" geometry).
+
+-------------------------------------------------------------------------------
+
+## Key Invariants (don't break without intent)
+
+1. World map <-> local zones are tied
+   - A world tile coordinate corresponds deterministically to Julia-plane coordinates,
+     and local generation uses the same mapping and corruption parameters.
+
+2. Sites are data first
+   - Site placement produces a stable `SiteSpec` (id/type/coord/seed/tags).
+   - Local map geometry is derived from `SiteSpec` + world fields, and can be regenerated
+     unless there are saved deltas.
+
+3. Spawn consistency
+   - Any new entities/items/NPCs created as part of sites should be instantiated via the
+     prototype bucket and spawn_factory (no ad-hoc constructors in scene code).
+
+4. Renderer stays pure
+   - Rendering draws *what the logic layer decided*, including overlays/markers, but does not
+     compute site logic or simulate outcomes.
+
+-------------------------------------------------------------------------------
+
+## Terminology
+
+**Field**: A scalar/vector function over world coordinates (e.g. elevation, moisture, corruption, faction influence).
+
+**Site**: A mid-scale named thing anchored to a world coordinate. Examples: city, lair, ruin, shrine, mine entrance.
+
+**POI**: The current YAML-driven "point of interest" system. POIs are a good storage format for handcrafted sites,
+and can also be used as a serialization target for procedurally placed sites.
+
+**Local realization**: The concrete tile map + entities + encounters generated when you enter a site.
+
+-------------------------------------------------------------------------------
+
+## Architecture Proposal: "Sites" as a First-Class System
+
+### 1) Data model (logic-side)
+
+Create/maintain a run-time registry of sites:
+
+- `SiteSpec` (stable placement record)
+  - `id`: string (stable)
+  - `kind`: `"city" | "lair" | "ruin" | ..."`
+  - `coord`: `(zx, zy, depth)` (overworld depth 0 initially)
+  - `seed`: int (derived from world seed + coord + kind)
+  - `tags`: dict (size tier, faction, biome, etc.)
+  - `visibility`: `"hidden" | "rumored" | "discovered"`
+
+- `SiteState` (mutable run state; optional v1)
+  - discovered flag, "cleared" flag, who owns it, etc.
+
+Where it lives:
+- Prefer `edgecaster/state/world.py` or a dedicated `edgecaster/state/sites.py` (logic-only).
+- Avoid storing site logic in the renderer or scene modules.
+
+### 2) One unified spawn path
+
+All site content should be spawned through:
+- `edgecaster/prototypes.py` (prototype resolution)
+- `edgecaster/spawn_factory.py` (entity/actor construction)
+
+This keeps "what gets spawned" data-driven and consistent with other systems
+(merchants, POIs, enemies, items, etc.).
+
+### 3) Integrate with the existing POI system
+
+The YAML POI system is already a good pattern:
+- content-defined POIs (hand-authored)
+- runtime-injected POIs (e.g. lab is injected by picking a coord)
+
+Strategy:
+- Keep **hand-authored POIs** in `edgecaster/content/pois.yaml`.
+- For procedurally placed sites, generate `SiteSpec`s at run start (or lazily),
+  and expose them to mapgen via a lightweight adapter:
+  - either inject into POI registry at runtime (as done with the lab),
+  - or extend mapgen/apply_pois to also consider the `SiteRegistry` list.
+
+Important: do not create two parallel placement systems that drift.
+If something is "a site on the overworld", it should appear via the same marker/discovery rules
+and be enterable via the same transition flow.
+
+-------------------------------------------------------------------------------
+
+## Layered Generation: Macro -> Micro
+
+### Layer A: Global scalar fields (the "DNA")
+
+We want a small number of canonical world fields that most systems depend on:
+- elevation / roughness (or)
+- moisture
+- temperature
+- vegetation potential (derived)
+- corruption (already exists; distortion field in the Julia iterator)
+- faction influence maps (later; diffusion-like)
+- danger tier / difficulty band (later)
+
+Best practice:
+- Add a single "world_fields" API:
+  - `sample(wx, wy) -> dict`
+  - `sample_grid(bounds) -> arrays`
+So every generator (trees, cities, spawns, roads) uses the same values.
+
+### Layer B: Biomes & semantics
+
+Biomes should be derived from the canonical fields and centralized (already trending toward `biome.py`).
+Biomes provide:
+- glyph/color defaults (visuals)
+- spawn table hints (gameplay)
+- suitability inputs for sites (placement)
+
+### Layer C: Site placement (meaning first)
+
+Rather than "sprinkling houses everywhere," place *sites* first:
+
+1. Build a suitability map per site type:
+   - Cities: low slope, moderate moisture, near rivers/coast (if modeled), low corruption.
+   - Lairs: high corruption peaks, remote biomes, high danger.
+   - Spriggan groves: high vegetation potential + low civ influence.
+   - Bird aeries: high elevation + ridge lines.
+   - Dwarf holds: high rock/roughness + ore nodes + underground connectivity.
+
+2. Sample placements with spacing:
+   - Poisson disk / blue noise (preferred) OR greedy "pick best, reject near" (v1).
+   - Weighted sampling by suitability (probability proportional to suitability).
+
+3. After placement, create networks:
+   - roads (surface) connect settlements/landmarks with pathfinding over a cost field
+   - rails/tunnels (underground) connect dwarf nodes (graph -> realized locally)
+
+Outputs of Layer C should be *only* `SiteSpec` records and network graphs,
+not local tile geometry.
+
+### Layer D: Local realization (geometry second)
+
+When entering a zone with a site:
+1. Generate the base local overworld map (existing Julia/biome mapgen).
+2. Apply POIs/sites:
+   - stamp site geometry (walls, buildings, lair entrance, props)
+   - spawn site-specific NPCs/entities via prototypes/spawn_factory
+3. Run a validation pass:
+   - ensure player spawn is valid
+   - ensure entrances/exits are reachable (if applicable)
+   - ensure doors have a path to the street, etc.
+
+This preserves the invariant that "the world is the world" and sites decorate/modify it,
+rather than replacing it with a separate terrain dataset.
+
+-------------------------------------------------------------------------------
+
+## Discovery, Rumors, and World Map Markers
+
+We already have the pattern that sites should not always be visible on the world map:
+- lairs are hidden until discovered/rumored
+- labs can be rumored
+
+Strategy:
+- Every `SiteSpec` has `visibility`:
+  - `hidden`: no marker and no coordinate given to the player
+  - `rumored`: marker visible, but exact details not necessarily known
+  - `discovered`: marker visible and exact details known
+- Discovery sources:
+  - explicit discovery (walk into the zone)
+  - rumor (NPC dialogue, books, events)
+  - map items (future)
+
+Implementation note:
+- The world map renderer should draw markers based on a stable registry (POIs + Sites),
+  filtering by `visibility`. It should not hardcode marker lists in the renderer.
+
+-------------------------------------------------------------------------------
+
+## Network Generation (Roads, Rivers, Rails)
+
+### Roads (surface)
+
+Best practice: treat roads as shortest paths over a cost field.
+- Cost high on steep slope, swamps, dense forest (if modeled)
+- Cost low on plains/valleys
+
+Algorithm options:
+- v1: A* on the local overworld tile grid between endpoints (sites)
+- v2: build a site graph (MST + a few loops) then route each edge
+
+Then "realize" roads locally:
+- stamp road tiles in local zones along the path segment crossing that zone
+- widen/thicken, add junction logic, add bridges/ford logic later
+
+### Rivers
+
+If you add elevation as a true scalar field:
+- pick sources at high elevation
+- follow gradients downhill (or approximate)
+- merge streams and carve a main trunk
+
+Rivers are great for "meaning-first": towns near crossings, deltas, etc.
+
+### Dwarf rails / underground connectivity
+
+Do not generate every tunnel as tiles globally.
+Instead:
+- build an underground graph:
+  - nodes: dwarf holds, mines, deep stations, junction caverns
+  - edges: rail segments (constraints: avoid magma, prefer stable rock)
+- when a zone is entered, realize only the local segment(s) of edges crossing it
+
+This yields a learnable system (players can reason about "the rail network")
+without heavy upfront generation.
+
+-------------------------------------------------------------------------------
+
+## Structure Generation (Buildings, Ruins, Lairs)
+
+Avoid complex generative systems early. The "roguelike sweet spot" is:
+
+1. Prefabs (stamps)
+   - small room footprints, door/wall patterns, shrine layouts, lair arenas
+   - content-defined with parameters
+
+2. Simple grammars
+   - "village block -> lots -> building shells"
+   - "lair -> entry tunnel -> arena -> treasure room"
+
+3. Validation pass
+   - reachable doors, no sealed rooms (unless intentional)
+   - required exits exist
+
+Recommended v1 approach for cities:
+- pick a road spine (1-2 main roads)
+- define lots along roads
+- stamp simple rectangular buildings with a door facing road
+- add a few "special" buildings (merchant, inn, temple) by tagging lots
+
+For lairs:
+- mostly open arenas + a few chokepoints
+- keep readability high (lairs should telegraph danger)
+
+For ruins:
+- stamp broken walls with gaps + small loot pockets
+
+Wave Function Collapse and L-systems are cool, but postpone them until:
+- we have strong debug tooling
+- we have stable prefab palette definitions
+
+-------------------------------------------------------------------------------
+
+## Spawns and Factions (How the world explains itself)
+
+Sites should be "owned" or "influenced" by factions, even if v1 is simple.
+The important part is that the data model supports it:
+- `SiteSpec.tags["factions"] = ["dwarves", "spriggans"]`
+- local generator can use that to choose:
+  - NPC types
+  - props
+  - enemy tables
+
+Reputation and hostility should not be hardcoded per creature.
+Instead:
+- actors belong to factions (one or more)
+- hostility is derived from (actor faction thresholds) + reputation values
+
+The big win: the same placement rules that created a site explain its population.
+
+-------------------------------------------------------------------------------
+
+## Persistence ("Save deltas", not whole worlds)
+
+We want determinism and on-demand generation, but we also want player impact.
+
+Strategy:
+- Base world and base site layouts are deterministic.
+- We store only deltas:
+  - destroyed walls/doors
+  - built structures (later)
+  - looted containers
+  - killed uniques/legendaries
+  - placed anchors (corruption system already wants this)
+
+This keeps saves small and preserves the ability to regenerate content if needed.
+
+-------------------------------------------------------------------------------
+
+## Debug Tooling (Required for PCG to be maintainable)
+
+Add overlay toggles for:
+- elevation / slope / moisture / temperature
+- corruption field (already present on ALT world map)
+- city suitability maps (0-1 heatmap)
+- faction influence maps
+- site markers colored by type/faction/visibility
+- road/rail graphs and per-tile path costs
+
+Add regeneration controls:
+- "regen this zone" (re-run mapgen for the zone without committing)
+- "lock this layer seed" / "reroll props only"
+
+Without this tooling, iteration becomes guesswork and the system will drift.
+
+-------------------------------------------------------------------------------
+
+## Suggested Module Layout (keep responsibilities separated)
+
+This is deliberately similar to the mapgen/corruption separation:
+
+- `edgecaster/world_fields.py`
+  - canonical sampling interface (wrap Julia metrics + derived fields)
+
+- `edgecaster/systems/sites.py`
+  - Site registry, discovery/rumor state, seed derivation, visibility
+
+- `edgecaster/systems/site_placement.py`
+  - suitability maps + placement algorithms (pure functions where possible)
+
+- `edgecaster/mapgen_sites.py` (or part of `edgecaster/mapgen.py`)
+  - "realize site into local zone": stamps tiles and spawns entities
+
+- `edgecaster/content/sites.yaml` (optional)
+  - site type defs and prefab references, similar to merchants/npcs/pois
+
+Keep scene code as wiring only:
+- scene decides when to enter a site / show markers / show overlays
+- game systems decide what sites exist and what they contain
+
+-------------------------------------------------------------------------------
+
+## Implementation Roadmap (PR-sized steps)
+
+This is the recommended order to implement "cities/structures/lairs" without going wide:
+
+1. Site registry + visibility
+   - `SiteSpec` list exists; markers show on world map for rumored/discovered sites.
+
+2. One site type end-to-end (CityStub)
+   - a city marker exists; entering the zone stamps a small structure + NPCs.
+
+3. Validation pass + debug overlays
+   - city local generator produces a loggable/inspectable layout.
+
+4. City v1 geometry
+   - roads + lots + rectangular buildings + doors.
+
+5. Lairs v1
+   - lair entrance + arena + legendary spawn.
+
+6. Networks
+   - simple roads between cities; later dwarf rails underground as a graph.
+
+7. Expand site library
+   - ruins, shrines, groves, mines, train stations.
+
+At each step, require:
+- determinism from seed
+- visibility/discovery rules
+- validation
+- debug overlay
+
+This prevents rework later and keeps the world coherent as the content set grows.
