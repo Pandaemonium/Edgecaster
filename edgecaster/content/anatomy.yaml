@@ -2,6 +2,84 @@
   name: Body
   parent: entity
   description: A central mass or torso-like core.
+  body:
+    root: torso
+    links:
+    - - torso
+      - head
+    - - torso
+      - arm
+    - - torso
+      - arm_m
+    - - hips
+      - leg
+    - - hips
+      - leg_m
+    nodes:
+      torso:
+        proto: torso
+        children:
+        - chest
+        - back
+        - abdomen
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 1.05
+      chest:
+        proto: chest
+        children: []
+        layout:
+          x: -0.6
+          y: 0.6
+        props:
+          size: 0.85
+      back:
+        proto: back
+        children: []
+        layout:
+          x: 0.6
+          y: -0.6
+        props:
+          size: 0.85
+      abdomen:
+        proto: abdomen
+        children:
+        - hips
+        layout:
+          x: 0.0
+          y: 0.7
+        props:
+          size: 0.95
+      hips:
+        proto: hips
+        children: []
+        layout:
+          x: 0.0
+          y: 1.4
+        props:
+          size: 0.9
+- id: torso
+  name: Torso
+  parent: body
+  description: The central trunk of the body.
+- id: chest
+  name: Chest
+  parent: torso
+  description: The front upper torso.
+- id: back
+  name: Back
+  parent: torso
+  description: The rear upper torso.
+- id: abdomen
+  name: Abdomen
+  parent: torso
+  description: The lower front torso.
+- id: hips
+  name: Hips
+  parent: torso
+  description: The pelvic region connecting trunk to legs.
 - id: head
   name: Head
   parent: entity
@@ -212,7 +290,6 @@
           y: 2.05
         props:
           size: 0.14
-
 - id: thumb_finger
   name: Thumb
   parent: finger

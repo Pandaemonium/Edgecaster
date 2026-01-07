@@ -374,13 +374,41 @@ def _safe_float(v: Any) -> Optional[float]:
     except Exception:
         return None
 
-def _display_body_node_label(nid: str, node_spec: dict | None = None) -> str:
+def _display_body_node_label(
+    nid: str,
+    node_spec: dict | None = None,
+    *,
+    cur_nodes: dict | None = None,
+) -> str:
     """
     UI label for a body node.
 
-    Prefer a human-readable name if present on the node spec (e.g. "Upper Arm",
-    "Index Finger"). Fall back to the raw id with underscores prettified.
+    Append '*' ONLY if this node has a meaningful sub-schema (i.e. proto resolves to
+    a schema that actually differs from the current schema), not merely because we're
+    inside some zoomed subtree.
     """
+    has_children = False
+    if isinstance(node_spec, dict):
+        proto = node_spec.get("proto")
+        if proto:
+            try:
+                sub = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+            except Exception:
+                sub = {"root": None, "nodes": {}}
+
+            sub_nodes = sub.get("nodes") if isinstance(sub, dict) else None
+            meaningful = bool(isinstance(sub_nodes, dict) and len(sub_nodes) > 1)
+
+            # If we know the current schema's nodes, suppress '*' when proto doesn't
+            # actually change the node set (common with inherited/alias protos).
+            if meaningful and isinstance(cur_nodes, dict) and isinstance(sub_nodes, dict):
+                try:
+                    meaningful = {str(k) for k in sub_nodes.keys()} != {str(k) for k in cur_nodes.keys()}
+                except Exception:
+                    pass
+
+            has_children = bool(meaningful)
+
     s = str(nid)
     is_mirrored = s.endswith("_m")
     base_id = s[:-2] if is_mirrored else s
@@ -398,13 +426,16 @@ def _display_body_node_label(nid: str, node_spec: dict | None = None) -> str:
     if not label:
         label = base_id.replace("_", " ")
 
+    if has_children:
+        label = f"{label}*"
+
     if is_mirrored:
-        # "mirrored upper arm" (lowercase first char of label if it's Title Case)
         if label:
             label = label[0].lower() + label[1:]
         return f"mirrored {label}"
 
     return label
+
 
 
 
@@ -1511,6 +1542,10 @@ class BodyPlanGraphWidget(Widget):
 
         pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
+        # Combined position map (active + any ghost layers).
+        # Used for rendering optional cross-layer links (e.g. torso -> head ghost).
+        all_pos_px: dict[str, tuple[float, float]] = dict(pos_px)
+
         scale = float(cam_scale)
         node_size = int(max(18, min(56, scale * 0.45)))
         half = node_size // 2
@@ -1548,21 +1583,36 @@ class BodyPlanGraphWidget(Widget):
                 except Exception:
                     return int(max(10, min(255, base_alpha // 3)))
 
+            zoom_stack = [str(x) for x in (getattr(scene, "_body_zoom_stack", []) or [])]
             for i, (g_schema, g_off_u, g_scale_u) in enumerate(chain[:-1]):
                 dist = (len(chain) - 1) - i  # +1, +2, ...
                 g_alpha = _ghost_alpha(alpha, dist)
                 if g_alpha < 12:
                     continue
 
+                # IMPORTANT: don't draw ghost edges *out of* the node we zoomed through
+                # at this layer (that node is being "replaced" by the active subgraph).
+                zs = list(getattr(scene, "_body_zoom_stack", []) or [])
+                skip_from_nid = str(zs[i]) if i < len(zs) else None
+
+
                 g_pos_u = _embed_positions(_compute_body_positions(g_schema), g_off_u, g_scale_u)
                 g_pos_px = _project_positions_with_camera(
                     g_pos_u, region_local, center_u=cam_center_u, scale=cam_scale
                 )
 
+                # Merge ghost node positions into combined map (do not clobber active positions).
+                for _nid, _p in (g_pos_px or {}).items():
+                    if _nid not in all_pos_px and _p is not None:
+                        all_pos_px[_nid] = _p
+
                 g_nodes = g_schema.get("nodes") if isinstance(g_schema, dict) else None
                 if isinstance(g_nodes, dict):
                     line_col = (*fg, int(g_alpha * 0.65))
                     for nid, spec in g_nodes.items():
+                        if skip_from_nid is not None and str(nid) == skip_from_nid:
+                            continue  # suppress outgoing ghost edges from the embedding node
+
                         a = g_pos_px.get(str(nid))
                         if a is None:
                             continue
@@ -1600,6 +1650,31 @@ class BodyPlanGraphWidget(Widget):
                     ax, ay = int(a[0] + region.x), int(a[1] + region.y)
                     bx, by = int(b[0] + region.x), int(b[1] + region.y)
                     pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 2)
+
+        # Optional extra links (schema-level). These are render-only edges that may
+        # connect nodes across layers, e.g. torso -> head (ghost) or hips -> leg (ghost).
+        links = schema.get("links") if isinstance(schema, dict) else None
+        if isinstance(links, list) and links:
+            link_col = (*fg, int(alpha * 0.70))
+            for ln in links:
+                a_id = None
+                b_id = None
+                if isinstance(ln, (list, tuple)) and len(ln) >= 2:
+                    a_id, b_id = str(ln[0]), str(ln[1])
+                elif isinstance(ln, dict):
+                    a_id = ln.get("from", ln.get("a"))
+                    b_id = ln.get("to", ln.get("b"))
+                    a_id = str(a_id) if a_id is not None else None
+                    b_id = str(b_id) if b_id is not None else None
+                if not a_id or not b_id:
+                    continue
+                a = all_pos_px.get(a_id)
+                b = all_pos_px.get(b_id)
+                if a is None or b is None:
+                    continue
+                ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                pygame.draw.line(overlay, link_col, (ax, ay), (bx, by), 1)
 
         node_fill = (*fg, int(alpha * 0.10))
         node_border = (*fg, int(alpha * 0.85))
@@ -1667,7 +1742,7 @@ class BodyPlanGraphWidget(Widget):
 
             # label above
             try:
-                label = _display_body_node_label(str(nid), nodes.get(str(nid)))
+                label = _display_body_node_label(str(nid), nodes.get(str(nid)), cur_nodes=nodes)
                 ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
                 ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
                 lx = sq.centerx - ls.get_width() // 2

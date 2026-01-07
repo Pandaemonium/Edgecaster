@@ -431,23 +431,33 @@ def _ancestry_chain(proto_id: str) -> List[str]:
 
 def _ensure_schema_shape(schema: Any) -> dict:
     """
-    Ensure schema is dict with keys: root(str), nodes(dict).
+    Ensure schema is dict with keys: root(str), nodes(dict), links(list).
     Fail-soft: returns empty schema if malformed.
+
+    NOTE: 'links' are *render-only* edges and may legitimately reference nodes
+    not present in this schema (e.g. cross-layer ghost connections).
     """
     if not isinstance(schema, dict):
-        return {"root": None, "nodes": {}}
+        return {"root": None, "nodes": {}, "links": []}
 
     root = schema.get("root")
     nodes = schema.get("nodes")
+    links = schema.get("links")
 
     if not isinstance(nodes, dict):
         nodes = {}
 
+    # links can be list of [a,b] pairs or dicts {from,to}; keep as-is, deep copied.
+    if not isinstance(links, list):
+        links = []
+
     out = {
         "root": root if isinstance(root, str) else None,
         "nodes": copy.deepcopy(nodes),
+        "links": copy.deepcopy(links),
     }
     return out
+
 
 
 def _node_dict(schema: dict) -> Dict[str, dict]:
@@ -781,11 +791,34 @@ def mirror_body_schema(schema: dict) -> dict:
     # Rewrite root
     root = schema.get("root")
     new_root = id_map.get(root, root)
+    # Rewrite links (if any). Only rewrite endpoints that are node ids in this schema.
+    new_links = []
+    links = schema.get("links")
+    if isinstance(links, list):
+        for ln in links:
+            if isinstance(ln, (list, tuple)) and len(ln) >= 2:
+                a, b = str(ln[0]), str(ln[1])
+                new_links.append([id_map.get(a, a), id_map.get(b, b)])
+            elif isinstance(ln, dict):
+                a = ln.get("from", ln.get("a"))
+                b = ln.get("to", ln.get("b"))
+                if a is None or b is None:
+                    continue
+                a, b = str(a), str(b)
+                new_ln = dict(ln)
+                if "from" in new_ln or "to" in new_ln:
+                    new_ln["from"] = id_map.get(a, a)
+                    new_ln["to"] = id_map.get(b, b)
+                else:
+                    new_ln["a"] = id_map.get(a, a)
+                    new_ln["b"] = id_map.get(b, b)
+                new_links.append(new_ln)
 
     return {
         **schema,
         "root": new_root,
         "nodes": mirrored_nodes,
+        "links": new_links if new_links else copy.deepcopy(schema.get("links", [])),
     }
 
 
