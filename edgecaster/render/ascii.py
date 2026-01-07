@@ -2644,149 +2644,64 @@ class AsciiRenderer:
         except Exception:
             seed = 0
 
-        mask_tiles = state.get("mask_tiles") or []
-        if not mask_tiles:
+        verts = state.get("verts") or []
+        edges = state.get("edges") or []
+        if not verts or not edges:
             setattr(level, "lightning_state", None)
             return
 
-        # Cache mask set and generated paths so the effect is stable frame-to-frame.
-        mask_set = state.get("_mask_set")
-        if mask_set is None:
-            try:
-                mask_set = {tuple(p) for p in mask_tiles}
-            except Exception:
-                mask_set = set()
-            state["_mask_set"] = mask_set
-
-        paths_world = state.get("_paths_world")
+        # Cache generated edge-constrained paths so the effect stays thin and stable.
+        paths_world = state.get("_edge_paths_world")
         if not paths_world:
             rng = random.Random(seed & 0xFFFFFFFF)
-            mask_list = [tuple(p) for p in mask_tiles]
 
-            _NEI8 = [
-                (-1, -1),
-                (0, -1),
-                (1, -1),
-                (-1, 0),
-                (1, 0),
-                (-1, 1),
-                (0, 1),
-                (1, 1),
-            ]
+            def edge_polyline(a: tuple[float, float], b: tuple[float, float]) -> list[tuple[float, float]]:
+                """Return a tiny jagged polyline that stays close to the edge segment."""
+                ax, ay = a
+                bx, by = b
+                dx = bx - ax
+                dy = by - ay
+                length = math.hypot(dx, dy)
+                if length <= 1e-6:
+                    return [(ax, ay), (bx, by)]
 
-            start_tile = state.get("start_tile")
-            start = None
-            try:
-                if start_tile is not None:
-                    sx, sy = int(start_tile[0]), int(start_tile[1])
-                    if (sx, sy) in mask_set:
-                        start = (sx, sy)
-            except Exception:
-                start = None
-            if start is None:
-                try:
-                    start = rng.choice(mask_list)
-                except Exception:
-                    start = mask_list[0]
+                # Perpendicular unit vector (for a small jitter that keeps the bolt on-edge).
+                px = -dy / length
+                py = dx / length
 
-            def biased_walk(
-                start_xy: tuple[int, int],
-                *,
-                steps: int = 260,
-                step_stride: int = 2,
-                turn_bias: float = 0.82,
-            ) -> list[tuple[float, float]]:
-                x, y = start_xy
-                pts: list[tuple[float, float]] = [(x + 0.5, y + 0.5)]
-                dx, dy = rng.choice(_NEI8)
-                steps = int(max(12, steps))
-                step_stride = int(max(1, step_stride))
+                # TUNING: segments per edge (higher => more jagged).
+                steps = int(max(4, min(18, length * 9.0)))
+                out: list[tuple[float, float]] = [(ax, ay)]
 
-                for _ in range(steps):
-                    cand: list[tuple[int, int]] = []
-                    weights: list[float] = []
-                    for ndx, ndy in _NEI8:
-                        nx, ny = x + ndx, y + ndy
-                        if (nx, ny) not in mask_set:
-                            continue
-                        dot = ndx * dx + ndy * dy
-                        wgt = 1.0
-                        if dot > 0:
-                            wgt *= 1.0 + 2.0 * turn_bias
-                        elif dot == 0:
-                            wgt *= 1.0 + 0.6 * (1.0 - turn_bias)
-                        else:
-                            wgt *= 1.0 + 0.2 * (1.0 - turn_bias)
-                        cand.append((ndx, ndy))
-                        weights.append(wgt)
-                    if not cand:
-                        break
+                for i in range(1, steps):
+                    t = i / float(steps)
+                    base_x = ax + dx * t
+                    base_y = ay + dy * t
 
-                    ndx, ndy = rng.choices(cand, weights=weights, k=1)[0]
-                    dx, dy = ndx, ndy
+                    # TUNING: jaggedness amplitude in TILE units (keep small to stay on-edge).
+                    amp = 0.06 * (0.35 + 0.65 * (1.0 - abs(2.0 * t - 1.0)))
+                    offset = rng.uniform(-amp, amp)
+                    out.append((base_x + px * offset, base_y + py * offset))
 
-                    nx, ny = x, y
-                    ok = True
-                    for _s in range(step_stride):
-                        tx, ty = nx + dx, ny + dy
-                        if (tx, ty) in mask_set:
-                            nx, ny = tx, ty
-                        else:
-                            ok = False
-                            break
-                    if not ok:
-                        continue
-
-                    x, y = nx, ny
-                    jitter = 0.15
-                    pts.append(
-                        (
-                            x + 0.5 + rng.uniform(-jitter, jitter),
-                            y + 0.5 + rng.uniform(-jitter, jitter),
-                        )
-                    )
-
-                # Light simplification: drop near-duplicate points.
-                out = [pts[0]]
-                for px, py in pts[1:]:
-                    ox, oy = out[-1]
-                    ddx = px - ox
-                    ddy = py - oy
-                    if ddx * ddx + ddy * ddy >= 0.25:
-                        out.append((px, py))
+                out.append((bx, by))
                 return out
 
-            main = biased_walk(start, steps=260, step_stride=2, turn_bias=0.82)
-            paths_world = [main]
-
-            # Branches: spawn from random points along the main path.
-            branch_count = 3
-            for _ in range(branch_count):
-                if len(main) < 20:
-                    break
-                idx = rng.randint(8, max(8, len(main) - 8))
-                bx = int(main[idx][0])
-                by = int(main[idx][1])
-                if (bx, by) not in mask_set:
+            paths_world = []
+            for a_idx, b_idx in edges:
+                if a_idx < 0 or b_idx < 0 or a_idx >= len(verts) or b_idx >= len(verts):
                     continue
-                branch = biased_walk(
-                    (bx, by),
-                    steps=rng.randint(60, 140),
-                    step_stride=2,
-                    turn_bias=0.70,
-                )
-                paths_world.append(branch)
+                paths_world.append(edge_polyline(verts[a_idx], verts[b_idx]))
 
-            state["_paths_world"] = paths_world
+            state["_edge_paths_world"] = paths_world
 
         # Compute a tight bounding box around the rune footprint (in tile coords).
         tile_bbox = state.get("_tile_bbox")
         if tile_bbox is None:
-            xs = [int(p[0]) for p in mask_tiles]
-            ys = [int(p[1]) for p in mask_tiles]
+            xs = [float(v[0]) for v in verts]
+            ys = [float(v[1]) for v in verts]
             if not xs or not ys:
                 return
-            tile_bbox = (min(xs), min(ys), max(xs), max(ys))
+            tile_bbox = (math.floor(min(xs)), math.floor(min(ys)), math.ceil(max(xs)), math.ceil(max(ys)))
             state["_tile_bbox"] = tile_bbox
 
         min_x, min_y, max_x, max_y = tile_bbox
@@ -2805,14 +2720,15 @@ class AsciiRenderer:
         bolt = pygame.Surface((fx_rect.w, fx_rect.h), pygame.SRCALPHA)
 
         def to_local_px(wx: float, wy: float) -> tuple[int, int]:
-            px = wx * self.tile + self.origin_x - fx_rect.x
-            py = wy * self.tile + self.origin_y - fx_rect.y
+            # World-space (tile units) -> local pixel coords (centered on tile centers).
+            px = wx * self.tile + self.origin_x + self.tile * 0.5 - fx_rect.x
+            py = wy * self.tile + self.origin_y + self.tile * 0.5 - fx_rect.y
             return (int(px), int(py))
 
-        # Reveal fraction (feels like it "runs along" the rune).
+        # TUNING: reveal speed (how quickly the bolt "runs" along the path).
         reveal = min(1.0, max(0.0, u) * 1.35)
 
-        # Flicker + fast decay envelope.
+        # TUNING: flicker frequency + decay curve.
         phase = (seed & 0xFFFF) / 65536.0 * math.tau
         flick = 0.75 + 0.25 * math.sin(60.0 * (now - t0) + phase)
         intensity = math.exp(-5.0 * max(0.0, u)) * flick
@@ -2821,8 +2737,9 @@ class AsciiRenderer:
         if alpha <= 0:
             return
 
-        core_width = max(2, int(self.tile * 0.12))
-        glow_width = max(core_width + 4, int(self.tile * 0.55))
+        # TUNING: bolt thickness (in pixels). Keep these small so lightning hugs rune edges.
+        core_width = 1
+        glow_width = 2
         color = (255, 255, 255)
 
         def draw_polyline(points_world: list[tuple[float, float]]) -> None:
@@ -2833,7 +2750,7 @@ class AsciiRenderer:
             pts = pts[:n]
             if len(pts) < 2:
                 return
-            pygame.draw.lines(bolt, (*color, int(alpha * 0.22)), False, pts, glow_width)
+            pygame.draw.lines(bolt, (*color, int(alpha * 0.12)), False, pts, glow_width)
             pygame.draw.lines(bolt, (*color, alpha), False, pts, core_width)
             # Add a few aaliners for extra crispness.
             for a, b in zip(pts, pts[1:]):
@@ -2842,27 +2759,27 @@ class AsciiRenderer:
         for path in paths_world:
             draw_polyline(path)
 
-        # Bloom: downsample + smoothscale (cheap blur).
+        # TUNING: bloom (blur) size/intensity. Smaller downsample => tighter bloom.
         def blur_surface(surf: pygame.Surface, downsample: int = 5) -> pygame.Surface:
             w, h = surf.get_size()
             ds = max(1, int(downsample))
             small = pygame.transform.smoothscale(surf, (max(1, w // ds), max(1, h // ds)))
             return pygame.transform.smoothscale(small, (w, h))
 
-        bloom = blur_surface(bolt, downsample=5)
-        bloom.set_alpha(int(alpha * 0.55))
+        bloom = blur_surface(bolt, downsample=2)
+        bloom.set_alpha(int(alpha * 0.22))
 
-        # Optional early flash: briefly lights the whole rune footprint.
+        # Optional early flash: briefly over-brightens rune edges (stays thin/on-edge).
         if flash_s > 1e-6 and (now - t0) < flash_s:
             flash_u = 1.0 - ((now - t0) / flash_s)
-            flash_a = int(110 * max(0.0, min(1.0, flash_u)))
+            flash_a = int(220 * max(0.0, min(1.0, flash_u)))
             if flash_a > 0:
-                flash = pygame.Surface((fx_rect.w, fx_rect.h), pygame.SRCALPHA)
-                for tx, ty in mask_tiles:
-                    rx = int(tx * self.tile + self.origin_x - fx_rect.x)
-                    ry = int(ty * self.tile + self.origin_y - fx_rect.y)
-                    pygame.draw.rect(flash, (255, 255, 255, flash_a), pygame.Rect(rx, ry, self.tile, self.tile))
-                self.surface.blit(flash, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
+                for path in paths_world:
+                    pts = [to_local_px(x, y) for (x, y) in path]
+                    n = max(2, int(len(pts) * reveal))
+                    pts = pts[:n]
+                    if len(pts) >= 2:
+                        pygame.draw.lines(bolt, (255, 255, 255, flash_a), False, pts, 2)
 
         # Composite additively onto the main surface.
         self.surface.blit(bloom, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
@@ -2871,12 +2788,14 @@ class AsciiRenderer:
         # Extra punch: starbursts on struck targets.
         target_tiles = state.get("target_tiles") or []
         if target_tiles:
-            star_radius = max(10, int(self.tile * 1.1))
+            # TUNING: hit marker size/intensity. Keep this small so it reads as a "spark"
+            # on the creature, not a large white disk.
+            star_radius = max(6, int(self.tile * 0.055))
             star = self._get_starburst_sprite(star_radius, spikes=8, color=(220, 240, 255))
-            star_a = int(255 * min(1.0, intensity * 1.4))
+            star_a = int(200 * min(1.0, intensity * 1.2))
             if star_a > 0:
                 for tx, ty in target_tiles:
-                    cx, cy = to_local_px(tx + 0.5, ty + 0.5)
+                    cx, cy = to_local_px(float(tx), float(ty))
                     sprite = star.copy()
                     sprite.set_alpha(star_a)
                     self.surface.blit(sprite, sprite.get_rect(center=(fx_rect.x + cx, fx_rect.y + cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)

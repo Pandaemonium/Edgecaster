@@ -1210,7 +1210,9 @@ def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
     try:
         level.lightning_state = {
             "t0": float(time.monotonic()),
-            # Very fast, punchy bolt.
+            # TUNING: bolt VFX timing (renderer reads these; no simulation depends on them).
+            # - duration_s: how long the bolt animates (seconds)
+            # - flash_s: how long the initial flash lasts (seconds)
             "duration_s": 0.26,
             "flash_s": 0.08,
             "seed": seed,
@@ -1221,6 +1223,9 @@ def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
                 (int(getattr(t, "pos", (0, 0))[0]), int(getattr(t, "pos", (0, 0))[1]))
                 for t in targets
             ],
+            # Snapshot the rune geometry for edge-constrained lightning VFX.
+            "verts": [(float(x), float(y)) for (x, y) in verts_world],
+            "edges": [(int(e.a), int(e.b)) for e in getattr(pattern, "edges", []) or []],
         }
     except Exception:
         pass
