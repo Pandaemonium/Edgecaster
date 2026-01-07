@@ -941,7 +941,9 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
     try:
         level.sparkle_state = {
             "t0": float(time.monotonic()),
-            "duration_s": 1.0,
+            # Edges fade back in more slowly than the crackle.
+            "duration_s": 2.0,
+            "spark_duration_s": 1.0,
             "seed": seed,
             # Snapshot the geometry at cast time so the effect doesn't jump if the
             # player immediately edits the rune after casting.

@@ -138,6 +138,9 @@ class AsciiRenderer:
 
         # cached glow sprites: key = (radius_px, color_tuple)
         self.glow_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
+        # cached sparkle VFX sprites
+        self._radial_cache: Dict[Tuple[int, Tuple[int, int, int]], pygame.Surface] = {}
+        self._starburst_cache: Dict[Tuple[int, int, Tuple[int, int, int]], pygame.Surface] = {}
         self.quit_requested = False
         self.pause_requested = False   # NEW: used by DungeonScene to decide on pause
         self.lorenz_center_x: float | None = None
@@ -2469,6 +2472,12 @@ class AsciiRenderer:
             setattr(self, "_sparkle_overlay_surface", overlay)
         overlay.fill((0, 0, 0, 0))
 
+        glow = getattr(self, "_sparkle_glow_surface", None)
+        if glow is None or glow.get_size() != (self.width, self.height):
+            glow = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+            setattr(self, "_sparkle_glow_surface", glow)
+        glow.fill((0, 0, 0, 0))
+
         verts = state.get("verts") or []
         edges = state.get("edges") or []
 
@@ -2512,8 +2521,15 @@ class AsciiRenderer:
         frame = int((now - t0) / 0.045)  # ~22 Hz
         rng = random.Random((seed ^ (frame * 0x9E3779B1)) & 0xFFFFFFFF)
 
-        # More sparkles early, fewer as it settles.
-        settle = (1.0 - fade) ** 0.5
+        # More sparkles early, fewer as it settles (use the shorter crackle window).
+        try:
+            spark_dur = float(state.get("spark_duration_s", 1.0) or 1.0)
+        except Exception:
+            spark_dur = 1.0
+        spark_t = 1.0
+        if spark_dur > 1e-6:
+            spark_t = max(0.0, min(1.0, (now - t0) / spark_dur))
+        settle = (1.0 - spark_t) ** 0.5
         max_sparkles = 90
         base_sparkles = max(14, min(max_sparkles, len(verts) // 18))
         sparkle_count = max(8, int(base_sparkles * (0.35 + 0.65 * settle)))
@@ -2545,14 +2561,55 @@ class AsciiRenderer:
             a = max(0, min(255, a))
 
             rgb = rng.choice(palette)
-            pygame.draw.circle(overlay, (*rgb, a), (px, py), r)
+            pygame.draw.circle(glow, (*rgb, a), (px, py), r)
             if r >= 2 and a >= 120:
                 # Tiny cross "sequin" glint.
                 glint = (*rgb, int(a * 0.85))
-                pygame.draw.aaline(overlay, glint, (px - r, py), (px + r, py))
-                pygame.draw.aaline(overlay, glint, (px, py - r), (px, py + r))
+                pygame.draw.aaline(glow, glint, (px - r, py), (px + r, py))
+                pygame.draw.aaline(glow, glint, (px, py - r), (px, py + r))
 
+        # Lens flare / starburst: one bright pulse near the rune COM.
+        # This is purely visual, and uses additive blending.
+        if spark_t < 1.0 and len(verts) >= 2:
+            sx = sum(float(v[0]) for v in verts) / max(1, len(verts))
+            sy = sum(float(v[1]) for v in verts) / max(1, len(verts))
+            cx = int(sx * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int(sy * self.tile + self.tile * 0.5 + self.origin_y)
+
+            # Fast attack + exponential-ish decay (matches the inspiration).
+            attack = 0.05
+            decay = max(0.10, spark_dur - attack)
+            elapsed = max(0.0, now - t0)
+            if elapsed <= attack:
+                u = elapsed / max(1e-6, attack)
+                intensity = 1.0 - (1.0 - u) * (1.0 - u)  # ease-out
+            else:
+                d = (elapsed - attack) / max(1e-6, decay)
+                intensity = math.exp(-4.0 * d)
+
+            intensity = max(0.0, min(1.0, intensity))
+            if intensity > 0.02:
+                radius = max(10, int(self.tile * 1.35))
+                glow_sprite = self._get_radial_sprite(max(6, radius // 2), (255, 255, 255))
+                star_sprite = self._get_starburst_sprite(radius, spikes=8, color=(255, 255, 255))
+
+                # Rotate faster near the peak, slower later.
+                spin_speed = 720.0
+                spin = spin_speed * (0.25 + 0.75 * intensity)
+                angle = (spin * elapsed) % 360.0
+
+                punch = 1.0 + 0.15 * math.exp(-40.0 * elapsed)
+                sprite = pygame.transform.rotozoom(star_sprite, angle, punch)
+                sprite.set_alpha(int(255 * intensity))
+
+                g = glow_sprite.copy()
+                g.set_alpha(int(200 * intensity))
+                glow.blit(g, g.get_rect(center=(cx, cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
+                glow.blit(sprite, sprite.get_rect(center=(cx, cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
+
+        # Darken edges first, then add glow/sparkles on top.
         self.surface.blit(overlay, (0, 0))
+        self.surface.blit(glow, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
 
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
         """Simple word-wrap that fits text within max_width."""
@@ -2827,6 +2884,54 @@ class AsciiRenderer:
             col = (*color, alpha)
             pygame.draw.circle(surf, col, (cx, cy), r)
         self.glow_cache[key] = surf
+        return surf
+
+    def _get_radial_sprite(self, radius: int, color: Tuple[int, int, int]) -> pygame.Surface:
+        """Soft circular glow via concentric circles (cached)."""
+        radius = int(max(2, min(512, radius)))
+        key = (radius, color)
+        cached = self._radial_cache.get(key)
+        if cached is not None:
+            return cached
+        surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        cx = cy = radius
+        for r in range(radius, 0, -1):
+            a = int(255 * (r / radius) ** 2)
+            pygame.draw.circle(surf, (*color, a), (cx, cy), r)
+        self._radial_cache[key] = surf
+        return surf
+
+    def _get_starburst_sprite(self, radius: int, *, spikes: int = 8, color: Tuple[int, int, int] = (255, 255, 255)) -> pygame.Surface:
+        """Lens flare-ish starburst (cached)."""
+        radius = int(max(6, min(768, radius)))
+        spikes = int(max(4, min(24, spikes)))
+        key = (radius, spikes, color)
+        cached = self._starburst_cache.get(key)
+        if cached is not None:
+            return cached
+
+        surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        cx = cy = radius
+
+        # Halo (additive on self-surface)
+        halo = self._get_radial_sprite(radius, color)
+        surf.blit(halo, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+
+        # Star spikes
+        for i in range(spikes):
+            ang = (i / spikes) * math.tau
+            length = radius * (1.0 if i % 2 == 0 else 0.55)
+            x2 = cx + math.cos(ang) * length
+            y2 = cy + math.sin(ang) * length
+            for w, alpha_scale in ((3, 0.20), (2, 0.35), (1, 0.60)):
+                a = int(255 * alpha_scale)
+                pygame.draw.line(surf, (*color, a), (cx, cy), (x2, y2), w)
+                pygame.draw.aaline(surf, (*color, a), (cx, cy), (x2, y2))
+
+        # Hot core
+        pygame.draw.circle(surf, (*color, 255), (cx, cy), max(2, radius // 10))
+
+        self._starburst_cache[key] = surf
         return surf
 
     def _lerp_color(self, c1: Tuple[int, int, int], c2: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
