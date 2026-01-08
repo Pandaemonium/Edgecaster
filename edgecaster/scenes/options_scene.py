@@ -274,9 +274,15 @@ class OptionsScene(PopupMenuScene):
             toggles = getattr(manager, "options", None)
             if isinstance(toggles, dict):
                 toggles[item.key] = not bool(toggles.get(item.key))
+
+                # Apply effects immediately (music, sound, etc.)
+                if hasattr(manager, "apply_options_now"):
+                    manager.apply_options_now()
+
                 if item.key.lower() == "fullscreen":
                     manager.renderer.toggle_fullscreen()
             return
+
 
         # Submenus
         if item.label == "Options":

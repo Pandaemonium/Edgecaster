@@ -74,6 +74,10 @@ class MerchantScene(PanelScene):
         self._summary: LabelWidget | None = None
         self._status: LabelWidget | None = None
 
+        # Keep merchant theme playing while the trade UI is open
+        self.music_override_key = "shop"
+
+
         self._build_widgets()
 
     def _sell_id_is_equipped(self, ent_id: str) -> bool:

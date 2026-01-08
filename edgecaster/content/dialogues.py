@@ -320,6 +320,8 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
         return DialogueTree(
             id=f"npc:{npc_id}",
             start_id="start",
+            music_key="polka",
+
             nodes={
                 "start": DialogueNode(
                     id="start",
@@ -342,6 +344,8 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
     return DialogueTree(
         id=f"npc:{npc_id}",
         start_id="start",
+        music_key="polka",
+
         nodes={
             "start": DialogueNode(
                 id="start",
@@ -381,6 +385,15 @@ def _build_merchant(_game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogu
                         trade_system.restock_merchant(game, lvl, merchant, force=True)
                 except Exception:
                     pass
+
+            # Keep shop music across the dialogue->merchant transition gap.
+            try:
+                game.pending_music_override_key = "shop"
+            except Exception:
+                pass
+
+
+
             game.merchant_requested = merchant_actor_id
         except Exception:
             pass
@@ -388,6 +401,8 @@ def _build_merchant(_game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogu
     return DialogueTree(
         id=f"npc:{npc_id}",
         start_id="start",
+        music_key="shop",
+
         nodes={
             "start": DialogueNode(
                 id="start",

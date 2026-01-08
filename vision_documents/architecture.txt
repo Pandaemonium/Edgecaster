@@ -161,6 +161,161 @@ NPC dialogue authoring:
   - Avoid ad-hoc dialogue handlers (no legacy talk_start/talk_complete); always route through DialogueTree
 
 ===============================================================================
+
+===============================================================================
+SECTION 5.6 — AUDIO & MUSIC SYSTEM (SCENE-DRIVEN, STACK-AWARE)
+
+Edgecaster uses a centralized, scene-driven music controller designed to work
+with the SceneManager stack model (base scenes + window/overlay scenes).
+
+The key design rule:
+
+• At any moment, exactly ONE "music" track plays.
+• Sound effects (SFX) are layered separately and do not affect music state.
+
+-------------------------------------------------------------------------------
+OVERVIEW
+
+Music playback is owned by a single AudioManager instance, created and owned by
+SceneManager.
+
+File:
+edgecaster/scenes/audio_manager.py
+
+SceneManager is responsible for:
+• Creating AudioManager
+• Registering music keys → file paths
+• Synchronizing music when the scene stack changes
+• Forwarding pygame music-end events
+• Ticking AudioManager each frame
+
+Scenes NEVER load or play music directly.
+Scenes only DECLARE intent via attributes.
+
+-------------------------------------------------------------------------------
+AUDIO MANAGER RESPONSIBILITIES
+
+AudioManager handles:
+
+• One-at-a-time music playback (pygame.mixer.music)
+• Fade-out / fade-in transitions
+• Hard cuts (for dramatic stings)
+• Temporary overrides (dialogue / popup scenes)
+• Interrupt tracks that resume previous music when finished
+• Sticky behavior (music persists unless explicitly overridden)
+
+Important constraints:
+• pygame.mixer.music is single-channel → no true crossfade
+• Fades are implemented as fade-out → delayed play
+• Fail-soft: audio errors never crash the game
+
+-------------------------------------------------------------------------------
+SCENE-DRIVEN MUSIC DECLARATION
+
+Scenes may declare music intent using simple attributes:
+
+    music_key = "menu"          # registry key
+    music_playlist = ["a", "b"] # optional pool (randomly chosen)
+    music_loop = True
+    music_hard_cut = False
+    music_fade_out_ms = 700
+    music_fade_in_ms = 700
+
+If a scene declares NONE of these, it does NOT affect music.
+Current music continues ("sticky" behavior).
+
+Typical usage:
+• Main menu declares menu music
+• Dungeon scene declares dungeon playlist
+• Options / save / character creation declare nothing (inherit)
+
+-------------------------------------------------------------------------------
+WINDOW SCENES & OVERRIDES (DIALOGUE, POPUPS)
+
+Overlay scenes (DialoguePopupScene, urgent popups, etc.) may temporarily override
+music while they are open.
+
+Convention:
+• A scene is considered a WINDOW scene if:
+      scene.window_rect is NOT None
+
+Window scenes may declare:
+    music_override_key = "npc_theme"
+
+While the window is open:
+• Its override music plays
+• Underlying base scene music is paused conceptually
+When the window closes:
+• SceneManager resyncs and base music resumes
+
+IMPORTANT:
+Fullscreen PanelScenes use window_rect = None and are BASE scenes,
+not overlays.
+
+-------------------------------------------------------------------------------
+INTERRUPT MUSIC (EVENT STINGS)
+
+AudioManager supports one-shot interrupt tracks that resume previous music when
+finished (e.g. dramatic events, cutscenes).
+
+API:
+    audio.interrupt_then_resume(
+        MusicRequest(key="event_theme", loop=False),
+        resume_to=previous_request
+    )
+
+Used for:
+• Story beats
+• Boss reveals
+• Non-looping narrative music
+
+Interrupt tracks rely on pygame's MUSIC_END_EVENT to resume correctly.
+
+-------------------------------------------------------------------------------
+SCENE MANAGER INTEGRATION
+
+SceneManager owns music synchronization via:
+
+    sync_music_to_scene_stack()
+
+Rules:
+1) Topmost WINDOW scene with override wins
+2) Otherwise, topmost BASE scene with music intent wins
+3) Otherwise, do nothing (music persists)
+4) If stack is empty, stop music
+
+AudioManager is ticked once per frame:
+    audio.update()
+
+AudioManager consumes its own pygame events:
+    audio.handle_pygame_event(event)
+
+-------------------------------------------------------------------------------
+WHY THIS DESIGN?
+
+• Matches the scene stack model already used everywhere else
+• Prevents audio ownership conflicts
+• Makes dialogue and popups trivial
+• Avoids reloading music on minor scene transitions
+• Scales cleanly to biome music, combat stingers, and future systems
+
+Key principle:
+Scenes DECLARE intent.
+SceneManager ARBITRATES.
+AudioManager EXECUTES.
+
+-------------------------------------------------------------------------------
+ADDING NEW MUSIC
+
+1) Add file to assets/music/
+2) Register key in SceneManager.__init__:
+       self.audio.register_music("key", "path.wav")
+3) Declare music_key on the relevant scene
+
+No other wiring required.
+
+===============================================================================
+
 SECTION 6 — VISUAL TRANSFORM & EFFECT PIPELINE
 
 visuals.py:

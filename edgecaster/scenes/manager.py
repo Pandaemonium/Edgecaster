@@ -19,6 +19,7 @@ from .main_menu import MainMenuScene
 from .world_map_scene import WorldMapScene
 from edgecaster.ui.status_header import StatusHeaderWidget
 from edgecaster.ui.widgets import WidgetContext
+from edgecaster.scenes.audio_manager import AudioManager, MusicRequest
 
 
 class SceneManager:
@@ -59,11 +60,183 @@ class SceneManager:
         # Optional global visual profile (e.g. world-level curses/blessings).
         # This is a high-level hint; renderers may choose how to apply it.
         self.global_visual_profile: VisualProfile | None = None
+
+        self.audio = AudioManager(
+            enabled_music=bool(self.options.get("Music", True)),
+            enabled_sfx=bool(self.options.get("Sound", True)),
+        )
+
+        self.audio.register_music_many({
+            "menu": "assets/music/menu.wav",
+
+            # Dungeon ambient loop
+            "harmonic": "assets/music/harmonic.wav",
+            "aire": "assets/music/aire.wav",
+            "majesty": "assets/music/majesty.wav",
+
+            # Event stingers
+            "imp_cackle": "assets/music/imp_cackle.wav",
+            "slot_machine": "assets/music/slot_machine.wav",
+            "alligator_sting": "assets/music/alligator_sting.wav",
+            "cascade": "assets/music/cascade.wav",
+            "arpeggio": "assets/music/arpeggio.wav",
+            # Dialogue theme
+            "beggarly_vagrant": "assets/music/beggarly_vagrant.wav",
+            "polka": "assets/music/polka.wav",
+            "shop": "assets/music/shop.wav",
+
+
+        })
+
+
         # Start on the main menu
         self.set_scene(MainMenuScene())
 
+
+
+    def apply_options_now(self) -> None:
+        """
+        Apply options that affect global systems immediately.
+        Call this right after options are changed in the Options menu.
+        """
+        self.audio.set_music_enabled(bool(self.options.get("Music", True)))
+
+        # (Optional but good to keep consistent for the future)
+        if hasattr(self.audio, "set_sfx_enabled"):
+            self.audio.set_sfx_enabled(bool(self.options.get("Sound", True)))
+
+        # If music was re-enabled, re-resolve what should be playing
+        if bool(self.options.get("Music", True)):
+            self.sync_music_to_scene_stack()
+
+
     # ------------------------------------------------------------------ #
     # RNG factory used by scenes (e.g. DungeonScene) to spin up new RNGs.
+    # ------------------------------------------------------------------ #
+    # Music resolution from scene stack
+
+
+
+    def _scene_music_request(self, scene: Scene) -> MusicRequest | None:
+        """
+        Convention-based music request:
+          - scene.music_key: str
+          - scene.music_playlist: list[str]
+          - scene.music_hard_cut: bool
+          - scene.music_fade_out_ms / scene.music_fade_in_ms: int
+        """
+        key = getattr(scene, "music_key", None)
+        playlist = getattr(scene, "music_playlist", None)
+
+        if not key and not playlist:
+            return None
+
+        return MusicRequest(
+            key=key,
+            playlist=playlist,
+            loop=bool(getattr(scene, "music_loop", True)),
+            hard_cut=bool(getattr(scene, "music_hard_cut", False)),
+            fade_out_ms=int(getattr(scene, "music_fade_out_ms", 700)),
+            fade_in_ms=int(getattr(scene, "music_fade_in_ms", 700)),
+        )
+
+    def _window_music_override(self) -> MusicRequest | None:
+        """
+        Topmost window scene may declare an override:
+          - scene.music_override_key or scene.music_key
+        """
+        if not self.scene_stack:
+            return None
+
+        # Search from top down, but only consider windowed scenes first.
+        for sc in reversed(self.scene_stack):
+            if getattr(sc, "window_rect", None) is None:
+                break
+            override_key = getattr(sc, "music_override_key", None) or getattr(sc, "music_key", None)
+            override_playlist = getattr(sc, "music_override_playlist", None)
+            if override_key or override_playlist:
+                return MusicRequest(
+                    key=override_key,
+                    playlist=override_playlist,
+                    loop=bool(getattr(sc, "music_loop", True)),
+                    hard_cut=bool(getattr(sc, "music_hard_cut", False)),
+                    fade_out_ms=int(getattr(sc, "music_fade_out_ms", 700)),
+                    fade_in_ms=int(getattr(sc, "music_fade_in_ms", 700)),
+                )
+
+        return None
+
+    def sync_music_to_scene_stack(self) -> None:
+        """
+        Call this whenever scene stack changes (push/pop/set/open_window_scene).
+        """
+        # Keep audio flags in sync with options (cheap, safe)
+        self.audio.set_music_enabled(bool(self.options.get("Music", True)))
+
+        # Window override wins if present
+        override = self._window_music_override()
+        if override is not None:
+            self.audio.set_music(override)
+            return
+        # --- Pending transition override (prevents 1-tick music flicker) ---
+        game = getattr(self, "current_game", None)
+        pending_key = getattr(game, "pending_music_override_key", None) if game is not None else None
+        pending_playlist = getattr(game, "pending_music_override_playlist", None) if game is not None else None
+
+        if pending_key or pending_playlist:
+            self.audio.set_music(
+                MusicRequest(
+                    key=str(pending_key) if pending_key else None,
+                    playlist=list(pending_playlist) if pending_playlist else None,
+                    loop=True,
+                    hard_cut=False,
+                    fade_out_ms=150,
+                    fade_in_ms=150,
+                )
+            )
+            return
+
+        # Otherwise base music comes from topmost *non-window* scene that declares it.
+        base_scene = None
+        for sc in reversed(self.scene_stack):
+            if getattr(sc, "window_rect", None) is None:
+                base_scene = sc
+                break
+
+
+        if base_scene is None:
+            # No scenes at all -> stop music.
+            self.audio.set_music(None)
+            return
+
+
+        req = self._scene_music_request(base_scene)
+        if req is not None:
+            self.audio.set_music(req)
+        # else: no explicit request -> leave current music alone (sticky)
+
+
+    def current_music_request(self) -> MusicRequest | None:
+        """
+        Return the music request that SHOULD be playing given the current scene stack.
+        Used for event stingers: after the stinger ends, resume this.
+        """
+        override = self._window_music_override()
+        if override is not None:
+            return override
+
+        base_scene = None
+        for sc in reversed(self.scene_stack):
+            if getattr(sc, "window_rect", None) is None:
+                base_scene = sc
+                break
+
+        if base_scene is None:
+            return None
+
+        return self._scene_music_request(base_scene)
+
+
 
     def rng_factory(self, seed=None):
         """
@@ -127,6 +300,8 @@ class SceneManager:
         scene.window_rect = window_rect  # type: ignore[attr-defined]
         self.window_stack.append(window_rect)
         self.scene_stack.append(scene)
+        self.sync_music_to_scene_stack()
+
         return scene
 
 
@@ -183,6 +358,7 @@ class SceneManager:
     def push_scene(self, scene: Scene) -> None:
         """For non-windowed scenes, or when you handle window_rect manually."""
         self.scene_stack.append(scene)
+        self.sync_music_to_scene_stack()
 
     def pop_scene(self, *, force: bool = False) -> None:
         """Pop the top scene off the stack.
@@ -207,6 +383,7 @@ class SceneManager:
                     pass
 
         scene = self.scene_stack.pop()
+        self.sync_music_to_scene_stack()
 
         # If this scene was windowed, pop matching rect too
         if hasattr(scene, "window_rect") and self.window_stack:
@@ -220,6 +397,7 @@ class SceneManager:
             self.scene_stack.clear()
         else:
             self.scene_stack = [scene]
+        self.sync_music_to_scene_stack()
 
     # ------------------------------------------------------------------ #
 
@@ -273,11 +451,16 @@ class SceneManager:
                     # Do not forward to scene; handled globally.
                     continue
 
+                if self.audio.handle_pygame_event(event):
+                    continue
+
                 # Normal path: scene-specific handling
                 scene.handle_event(event, self)
 
             # Update
             scene.update(dt, self)
+            self.audio.update()
+
             # Render
             # Make scene + global visual effects available to the renderer so the
             # entire frame (map + UI) can pick them up consistently.

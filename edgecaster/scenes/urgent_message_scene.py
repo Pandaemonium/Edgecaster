@@ -181,11 +181,52 @@ class UrgentMessageScene(PopupMenuScene):
         on_choice: Optional[Callable[[int, "SceneManager"], None]] = None,
         window_rect: Optional[pygame.Rect] = None,
         back_confirms: bool = True,
+        stinger_music_key: str | None = None,
+        stinger_scary: bool = False,
     ) -> None:
+
         # Must exist BEFORE super().__init__ (widget tree build happens early).
         self.game = game
         self.message = message
         self.title = title
+
+        self.stinger_music_key = stinger_music_key
+        self.stinger_scary = stinger_scary
+
+        # Play stinger immediately when the popup is created (if any).
+        if self.stinger_music_key:
+            try:
+                manager = getattr(self.game, "scene_manager", None)
+                if manager is not None and hasattr(manager, "audio"):
+                    from edgecaster.scenes.audio_manager import MusicRequest
+
+                    resume_to = None
+                    if hasattr(manager, "current_music_request"):
+                        resume_to = manager.current_music_request()
+
+                    if self.stinger_scary:
+                        req = MusicRequest(
+                            key=self.stinger_music_key,
+                            loop=False,
+                            hard_cut=True,
+                            fade_out_ms=0,
+                            fade_in_ms=0,
+                        )
+                    else:
+                        req = MusicRequest(
+                            key=self.stinger_music_key,
+                            loop=False,
+                            hard_cut=False,
+                            fade_out_ms=700,
+                            fade_in_ms=50,
+                        )
+
+                    manager.audio.interrupt_then_resume(req, resume_to=resume_to)
+            except Exception:
+                pass
+
+
+
 
         self.choices = choices or ["Continue..."]
         self.on_choice = on_choice
@@ -193,6 +234,9 @@ class UrgentMessageScene(PopupMenuScene):
 
         # Visual knobs some menus expect to exist
         self.visual_effects: list[str] = []
+
+
+
 
         super().__init__(window_rect=window_rect, dim_background=True, scale=0.7)
 

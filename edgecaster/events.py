@@ -27,6 +27,7 @@ class DialogueTree:
     id: str
     start_id: str
     nodes: Dict[str, DialogueNode]
+    music_key: Optional[str] = None   # e.g. "npc_stranger_theme"
 
 
 @dataclass
@@ -47,6 +48,7 @@ class Event:
 
 def effect_alligator(choice_index: int, game) -> None:
     """Lose 50% of current HP."""
+
     player = game._player()
     hp_before = player.stats.hp
     damage = max(1, hp_before // 2)
@@ -64,6 +66,7 @@ def effect_alligator(choice_index: int, game) -> None:
 
 def effect_imps_aplenty(choice_index: int, game) -> None:
     """Spawn 3–8 imps on nearby tiles."""
+
     level = game._level()
     player = game._player()
     num = game.rng.randint(3, 8)
@@ -80,6 +83,7 @@ def effect_imps_aplenty(choice_index: int, game) -> None:
 
 def effect_berry_glut(choice_index: int, game) -> None:
     """Spawn a glut of berries around the player."""
+
     level = game._level()
     player = game._player()
     # "10ish" berries: 8–12 feels about right.
@@ -116,6 +120,7 @@ def effect_mysterious_stranger(choice_index: int, game: "Game") -> None:
         start_dialogue(game, MYSTERIOUS_STRANGER_DIALOGUE, start_node="path2")
     elif choice_index == 2:
         start_dialogue(game, MYSTERIOUS_STRANGER_DIALOGUE, start_node="path3")
+
 
 
 
@@ -472,6 +477,7 @@ def effect_give_berry(game):
 MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
     id="mysterious_stranger",
     start_id="path2",
+
     nodes={
         "path1": DialogueNode(
             id="path1",

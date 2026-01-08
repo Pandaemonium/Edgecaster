@@ -81,7 +81,12 @@ class DungeonScene(Scene):
     """The main roguelike dungeon scene."""
 
     uses_live_loop = True
-
+    # --- Music declaration ---
+    music_playlist = ["harmonic", "majesty", "aire"]
+    music_loop = True
+    music_fade_out_ms = 1200
+    music_fade_in_ms = 1200
+    
     def _refresh_aim_prediction(self, game: Game) -> None:
         """Compute aim preview data in logic layer so renderer only draws."""
         ui = self.ui_state
@@ -507,6 +512,27 @@ class DungeonScene(Scene):
                         if getattr(game, "urgent_choice_effect", None) is before:
                             # Clear it so it doesn't leak to the next popup.
                             game.urgent_choice_effect = None
+                stinger_key = None
+                stinger_scary = False
+                t = (title or "").strip().lower()
+
+                if t == "imps aplenty":
+                    stinger_key = "imp_cackle"
+                    stinger_scary = True
+                elif t == "berry glut":
+                    stinger_key = "slot_machine"
+                elif t == "holy christ an alligator!":
+                    stinger_key = "alligator_sting"
+                    stinger_scary = True
+                elif t == "beggarly vagrant":
+                    stinger_key = "beggarly_vagrant"
+                elif t == "level up!":
+                    stinger_key = "arpeggio"
+                elif t == "you unravel...":
+                    stinger_key = "cascade"
+                    stinger_scary = True
+
+
 
                 manager.push_scene(
                     UrgentMessageScene(
@@ -515,8 +541,12 @@ class DungeonScene(Scene):
                         title=title,
                         choices=choices,
                         on_choice=handle_choice,
+                        stinger_music_key=stinger_key,
+                        stinger_scary=stinger_scary,
                     )
                 )
+
+                
 
             game.urgent_callback = show_urgent
 
@@ -549,15 +579,30 @@ class DungeonScene(Scene):
             title = getattr(game, "urgent_title", "") or ""
             choices = getattr(game, "urgent_choices", None) or ["Continue..."]
 
+            stinger_key = None
+            stinger_scary = False
+            t = (title or "").strip().lower()
+
+            if t == "imps aplenty":
+                stinger_key = "imp_cackle"
+            elif t == "berry glut":
+                stinger_key = "slot_machine"
+            elif t == "holy christ an alligator!":
+                stinger_key = "alligator_sting"
+                stinger_scary = True
+
             manager.push_scene(
                 UrgentMessageScene(
                     game,
                     body,
                     title=title,
                     choices=choices,
+                    stinger_music_key=stinger_key,
+                    stinger_scary=stinger_scary,
                 )
             )
             return
+
 
         # 2) Death -> go back to main menu, discard the run
         if not getattr(game, "player_alive", True):
@@ -579,9 +624,23 @@ class DungeonScene(Scene):
                 game.merchant_requested = None
             except Exception:
                 pass
+
+            # We’ve arrived at the merchant UI; clear the transition override.
+            try:
+                game.pending_music_override_key = None
+                game.pending_music_override_playlist = None
+            except Exception:
+                pass
+
+
             from .merchant_scene import MerchantScene
 
-            manager.push_scene(MerchantScene(game, merchant_actor_id=str(merchant_id)))
+            manager.open_window_scene(
+                MerchantScene,
+                scale=0.82,
+                game=game,
+                merchant_actor_id=str(merchant_id),
+            )
             return
 
         # 4) Quest journal requested -> push overlay

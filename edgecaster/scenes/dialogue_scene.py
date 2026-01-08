@@ -34,6 +34,8 @@ class DialoguePopupScene(PopupMenuScene):
     ) -> None:
         self.game = game
         self.tree = tree
+        # If the DialogueTree declares a theme, treat it as a window override.
+        self.music_override_key = getattr(tree, "music_key", None)
 
         # Choose starting node
         self.node_id: str = (

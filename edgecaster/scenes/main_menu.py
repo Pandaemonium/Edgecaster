@@ -46,6 +46,13 @@ ASCII_BANNER = r"""
 class MainMenuScene(MenuScene):
     """Top-level main menu that can launch other scenes."""
 
+    # Music: when main menu is the active context, loop the menu theme.
+    music_key = "menu"
+    music_loop = True
+    # Requirement: "any old music should stop" when we enter main menu.
+    music_hard_cut = True
+
+
     def get_menu_items(self) -> List[str]:
         return ["New Game", "Load Game", "Options", "Quit"]
 
