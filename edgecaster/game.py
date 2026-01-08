@@ -1032,6 +1032,10 @@ class Game:
             if mult > 1.0:
                 delay = int(math.ceil(delay * mult))
 
+            # Optional additive tick offset (e.g. War Drummer haste).
+            # Keep actions non-instant if they were already non-instant.
+            delay = self._apply_action_tick_offset(actor, delay)
+
         # Advance game time by the appropriate amount.
         self._advance_time(lvl, delay)
 
@@ -3227,6 +3231,34 @@ class Game:
                 tags["attack_bonus_ticks"] = ticks
             actor.tags = tags
 
+        # Tick down additive action-speed modifiers (used by War Drummer haste).
+        for actor in level.actors.values():
+            tags = getattr(actor, "tags", None) or {}
+            try:
+                offset = int(tags.get("action_tick_offset", 0))
+            except Exception:
+                offset = 0
+            if offset == 0:
+                continue
+            try:
+                ticks = int(tags.get("action_tick_offset_ticks", 0))
+            except Exception:
+                ticks = 0
+            if ticks <= 0:
+                # Defensive: remove broken/incomplete entries.
+                tags.pop("action_tick_offset", None)
+                tags.pop("action_tick_offset_ticks", None)
+                actor.tags = tags
+                continue
+
+            ticks = max(0, ticks - delta)
+            if ticks <= 0:
+                tags.pop("action_tick_offset", None)
+                tags.pop("action_tick_offset_ticks", None)
+            else:
+                tags["action_tick_offset_ticks"] = ticks
+            actor.tags = tags
+
     def _slow_mult(self, actor: Actor) -> float:
         tags = getattr(actor, "tags", {}) or {}
         try:
@@ -3234,6 +3266,23 @@ class Game:
         except Exception:
             mult = 1.0
         return max(1.0, mult)
+
+    def _apply_action_tick_offset(self, actor: Actor, delay: int) -> int:
+        """Apply an additive tick offset to an action delay.
+
+        This is used for effects like the War Drummer's haste (reduce tick costs).
+        We clamp non-instant actions to at least 1 tick to avoid 0-tick AI loops.
+        """
+        if delay <= 0:
+            return delay
+        tags = getattr(actor, "tags", None) or {}
+        try:
+            offset = int(tags.get("action_tick_offset", 0))
+        except Exception:
+            offset = 0
+        if offset == 0:
+            return delay
+        return max(1, int(delay) + int(offset))
 
 
     # --- Lorenz / strange-attractor aura, game-side ---
@@ -4553,6 +4602,28 @@ class Game:
             self.log.add(f"{attacker.name} hits you for {dmg}.")
         else:
             self.log.add(f"{attacker.name} hits {defender.name} for {dmg}.")
+
+        # Lifesteal on hit (e.g., Blood Sipper). Kept data-driven via YAML tags.
+        try:
+            lifesteal_frac = 0.0
+            atags = getattr(attacker, "tags", None) or {}
+            inner = atags.get("tags")
+            if isinstance(inner, dict):
+                raw = inner.get("lifesteal_frac", None)
+                if raw is not None:
+                    lifesteal_frac = float(raw)
+                elif inner.get("blood_sipper"):
+                    lifesteal_frac = 0.5
+            if lifesteal_frac > 0.0:
+                heal = int(math.ceil(float(dmg) * float(lifesteal_frac)))
+                if heal > 0:
+                    attacker.stats.hp = min(attacker.stats.max_hp, attacker.stats.hp + heal)
+                    attacker.stats.clamp()
+                    if defender.id == self.player_id:
+                        self.log.add(f"{attacker.name} drinks blood and heals {heal}.")
+        except Exception:
+            pass
+
         if defender.stats.hp <= 0:
             # Player death uses the urgent popup; enemies die normally.
             if defender.id == self.player_id:
@@ -4568,6 +4639,18 @@ class Game:
                 tags = getattr(defender, "tags", {}) or {}
                 drop_min = int(tags.get("currency_min", 0))
                 drop_max = int(tags.get("currency_max", 0))
+                if drop_min <= 0 and drop_max <= 0:
+                    # Enemy YAML tags are preserved under tags["tags"] (dict or list).
+                    inner = tags.get("tags")
+                    if isinstance(inner, dict):
+                        try:
+                            drop_min = int(inner.get("currency_min", 0))
+                        except Exception:
+                            drop_min = 0
+                        try:
+                            drop_max = int(inner.get("currency_max", 0))
+                        except Exception:
+                            drop_max = 0
                 if drop_max < drop_min:
                     drop_max = drop_min
                 if drop_max > 0 and level.world.is_walkable(*defender.pos):
@@ -4706,17 +4789,41 @@ class Game:
                 # Unknown action: fall back to a simple wait.
                 delay = self.cfg.action_time_fast
             else:
-                # Perform the action immediately; do NOT call _advance_time
-                # here, because we are already executing inside the event
-                # queue (_advance_time's loop).
-                action_def.func(self, actor.id, **(params or {}))
-                delay = action_delay(self.cfg, action_def)
+                # Cooldown gate for AI actions (player actions go through queue_actor_action).
+                # Without this, any AI ability with a cooldown (e.g. war_drum) would spam.
+                try:
+                    cd = int(getattr(actor, "cooldowns", {}).get(action_name, 0))
+                except Exception:
+                    cd = 0
+                if cd > 0:
+                    action_name, params = "wait", {}
+                    try:
+                        action_def = get_action("wait")
+                        delay = action_delay(self.cfg, action_def)
+                    except Exception:
+                        delay = self.cfg.action_time_fast
+                else:
+                    # Perform the action immediately; do NOT call _advance_time
+                    # here, because we are already executing inside the event
+                    # queue (_advance_time's loop).
+                    action_def.func(self, actor.id, **(params or {}))
+                    delay = action_delay(self.cfg, action_def)
+
+                    # Apply cooldown if defined (origin is always the actor for AI right now).
+                    if getattr(action_def, "cooldown_ticks", 0) > 0:
+                        try:
+                            actor.cooldowns[action_name] = int(action_def.cooldown_ticks)
+                        except Exception:
+                            pass
 
         # --- Schedule next turn -----------------------------------------
         # Apply slow effects to monsters too.
         mult = self._slow_mult(actor)
         if mult > 1.0:
             delay = int(math.ceil(delay * mult))
+
+        # Optional additive tick offset (e.g. War Drummer haste).
+        delay = self._apply_action_tick_offset(actor, delay)
         self._schedule(
             level,
             delay,

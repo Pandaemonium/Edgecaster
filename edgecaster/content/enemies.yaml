@@ -317,6 +317,65 @@
   tags:
     gory_ascetic: true
 
+- id: war_drummer
+  name: War Drummer
+  glyph: "W"
+  color: [255, 210, 80]
+  actions: [move, wait, war_drum]
+  base_hp: 7
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.0
+  faction: hostile
+  ai: war_drummer
+  xp: 9
+  parent: humanoid
+  description: A martial drummer whose rhythms spur nearby foes into a frenzy.
+  tags:
+    war_drummer: true
+    drum_radius: 6
+    drum_duration: 40
+    drum_tick_reduction: 1
+
+- id: disgraced_noble
+  name: Disgraced Noble
+  glyph: "n"
+  color: [210, 230, 255]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 0
+  base_attack: 2
+  base_defense: 0
+  speed: 1.0
+  faction: hostile
+  ai: skirmisher
+  xp: 7
+  parent: humanoid
+  description: A bitter aristocrat turned brigand, still heavy with bismuth.
+  tags:
+    disgraced_noble: true
+    currency_min: 25
+    currency_max: 60
+
+- id: blood_sipper
+  name: Blood Sipper
+  glyph: "b"
+  color: [200, 50, 70]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 0
+  base_attack: 2
+  base_defense: 0
+  speed: 1.2
+  faction: hostile
+  ai: skirmisher
+  xp: 8
+  parent: demon
+  description: A hungry demon that drinks strength from every wound it inflicts.
+  tags:
+    blood_sipper: true
+    lifesteal_frac: 0.5
 
 
 

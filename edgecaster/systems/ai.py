@@ -37,6 +37,9 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if behavior_id == "imp_loudmouth":
         return _imp_loudmouth(game, level, actor)
 
+    if behavior_id == "war_drummer":
+        return _war_drummer(game, level, actor)
+
     if behavior_id == "shackled_brute":
         return _shackled_brute(game, level, actor)
     if behavior_id == "gory_ascetic":
@@ -316,4 +319,73 @@ def _imp_loudmouth(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return ("imp_taunt", {})
 
     # Otherwise, just use the generic walk-toward-then-bump behavior.
+    return _generic_walk_toward(game, level, actor)
+
+
+def _war_drummer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """War drummer.
+
+    Intent: periodically buff nearby hostiles with a haste-like tick reduction.
+    """
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    player_id = getattr(game, "player_id", None)
+    if player_id is None or player_id not in level.actors:
+        return ("wait", {})
+
+    player = level.actors[player_id]
+
+    # If this actor shouldn't be hostile right now, don't act aggressive.
+    try:
+        if not reputation_system.is_hostile(game, actor, player):
+            return ("wait", {}) if "wait" in available else (available[0], {})
+    except Exception:
+        pass
+
+    # Read tuning from YAML tags if present.
+    tags = getattr(actor, "tags", None) or {}
+    yaml_tags = tags.get("tags")
+    if not isinstance(yaml_tags, dict):
+        yaml_tags = {}
+
+    try:
+        radius = int(yaml_tags.get("drum_radius", 6) or 6)
+    except Exception:
+        radius = 6
+    radius = max(1, radius)
+
+    # Trigger range is a bit wider than the buff radius so it can "prep" the fight.
+    trigger_range = max(radius + 2, radius * 2)
+
+    # Prefer using war drum when off cooldown and the player is within range.
+    if "war_drum" in available:
+        try:
+            cd = int(getattr(actor, "cooldowns", {}).get("war_drum", 0))
+        except Exception:
+            cd = 0
+        if cd <= 0:
+            ax, ay = actor.pos
+            px, py = player.pos
+            dist = abs(px - ax) + abs(py - ay)
+            if dist <= trigger_range:
+                # If there are other hostiles nearby, this is especially valuable.
+                nearby_hostiles = 0
+                for other in level.actors.values():
+                    if other is None or not getattr(other, "alive", True):
+                        continue
+                    try:
+                        if not reputation_system.is_hostile(game, other, player):
+                            continue
+                    except Exception:
+                        continue
+                    ox, oy = other.pos
+                    if abs(ox - ax) + abs(oy - ay) <= radius:
+                        nearby_hostiles += 1
+                        if nearby_hostiles >= 2:
+                            break
+                if nearby_hostiles >= 2 or dist <= radius:
+                    return ("war_drum", {})
+
     return _generic_walk_toward(game, level, actor)

@@ -11,6 +11,7 @@ except Exception:  # pragma: no cover - keep fail-soft for minimal envs/tests
     pattern_colors = None
 
 from edgecaster import prototypes
+from edgecaster.systems import reputation as reputation_system
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +572,109 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.log.add(f"The {imp_name} {verb}: \"{line}\"")
     else:
         print(f"The {imp_name} {verb}: \"{line}\"")
+
+
+@register_action("war_drum", label="War Drum", speed="slow", cooldown_ticks=80)
+def _action_war_drum(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Buff nearby creatures that are hostile to the player.
+
+    This applies an additive action-speed modifier (tick offset) for a fixed
+    duration. The scheduler consumes that tag when computing action delays.
+
+    Tuning is data-driven via the actor's YAML tags (enemies.yaml):
+    - drum_radius: Manhattan radius around the drummer
+    - drum_duration: duration in ticks
+    - drum_tick_reduction: how many ticks to subtract from action costs (min 1)
+    """
+    if not hasattr(game, "_level"):
+        return
+    level = game._level()
+    actor = getattr(getattr(level, "actors", {}), "get", lambda *_: None)(actor_id)
+    if actor is None:
+        return
+
+    # Read optional tuning params from the actor's YAML tags.
+    raw_tags = getattr(actor, "tags", None) or {}
+    yaml_tags = raw_tags.get("tags", {})
+    if not isinstance(yaml_tags, dict):
+        yaml_tags = {}
+
+    try:
+        radius = int(yaml_tags.get("drum_radius", 6) or 6)
+    except Exception:
+        radius = 6
+    try:
+        duration = int(yaml_tags.get("drum_duration", 40) or 40)
+    except Exception:
+        duration = 40
+    try:
+        reduction = int(yaml_tags.get("drum_tick_reduction", 1) or 1)
+    except Exception:
+        reduction = 1
+
+    radius = max(0, radius)
+    duration = max(0, duration)
+    reduction = max(0, reduction)
+    if radius <= 0 or duration <= 0 or reduction <= 0:
+        return
+
+    # Who is "hostile"? Use the same reputation-driven hostility logic as AI.
+    player_id = getattr(game, "player_id", None)
+    player = getattr(getattr(level, "actors", {}), "get", lambda *_: None)(player_id)
+    if player is None:
+        return
+
+    ax, ay = getattr(actor, "pos", (0, 0))
+    tick_offset = -abs(reduction)
+
+    affected = 0
+    for other in list(getattr(level, "actors", {}).values()):
+        if other is None or not getattr(other, "alive", True):
+            continue
+
+        try:
+            if not reputation_system.is_hostile(game, other, player):
+                continue
+        except Exception:
+            # Fallback: treat differing factions as hostile.
+            if getattr(other, "faction", None) == getattr(player, "faction", None):
+                continue
+
+        ox, oy = getattr(other, "pos", (0, 0))
+        if abs(ox - ax) + abs(oy - ay) > radius:
+            continue
+
+        otags = getattr(other, "tags", None) or {}
+        try:
+            existing_offset = int(otags.get("action_tick_offset", 0))
+        except Exception:
+            existing_offset = 0
+        # Keep the most beneficial (most negative) offset if multiple sources exist.
+        if existing_offset == 0 or tick_offset < existing_offset:
+            otags["action_tick_offset"] = tick_offset
+
+        try:
+            existing_ticks = int(otags.get("action_tick_offset_ticks", 0))
+        except Exception:
+            existing_ticks = 0
+        otags["action_tick_offset_ticks"] = max(existing_ticks, duration)
+
+        try:
+            other.tags = otags
+        except Exception:
+            pass
+
+        affected += 1
+
+    # Single log line (avoid spam).
+    try:
+        if hasattr(game, "log") and hasattr(game.log, "add"):
+            if affected <= 1:
+                game.log.add(f"{actor.name} beats a war drum.")
+            else:
+                game.log.add(f"{actor.name} beats a war drum, spurring {affected} foes onward.")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

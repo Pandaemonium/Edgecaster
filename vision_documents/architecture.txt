@@ -430,8 +430,38 @@ Key principle:
 
 Everything is an entity; differences emerge from data, inheritance, and attention.
 
+-------------------------------------------------------------------------------
+Runtime tags vs YAML tags (important)
+
+ For Actors built from `content/enemies.yaml`, the YAML `tags:` field is preserved under
+  `actor.tags["tags"]` (it may be a dict or list). Do not assume those keys are flattened
+  into `actor.tags`.
+ For gameplay logic that needs YAML tags, either:
+  - read `actor.tags["tags"]` defensively (see `Game._attack`'s `_has_class_tag`), or
+  - resolve the prototype via `prototypes.resolve_proto(actor.proto_id)`.
+
+-------------------------------------------------------------------------------
+Action timing, cooldowns, and timed modifiers
+
+ Canonical action definitions live in `edgecaster/systems/actions.py` (ActionDef registry).
+ Player actions should execute via `Game.queue_actor_action` (handles confirmations, item
+  charges, cooldown origins, and time advancement).
+ AI actions are chosen by `edgecaster/systems/ai.py` and executed in `Game._monster_act`.
+  AI must respect `Entity.cooldowns` + `ActionDef.cooldown_ticks` (cooldowns are ticked in
+  `Game._cooldown_tick`).
+ Timed combat/time modifiers live on runtime tags and tick down in `Game._cooldown_tick`:
+  - `frozen_slow` / `frozen_slow_timer` (multiplicative slow)
+  - `action_tick_offset` / `action_tick_offset_ticks` (additive tick offsets, clamped to
+    keep non-instant actions at >= 1 tick; used by War Drummer haste)
+
+-------------------------------------------------------------------------------
+Data-driven enemy combat hooks
+
+ Some on-hit / on-death behaviors are data-driven via YAML tags and handled centrally in
+  `Game._attack` (e.g. `xp_drain`, `lifesteal_frac`, `currency_min/max`).
+
 ===============================================================================
-SECTION 9 — MAP SCALE & ZOOM PHILOSOPHY (NEW)
+SECTION 9 - MAP SCALE & ZOOM PHILOSOPHY (NEW)
 
 Key invariant:
 • The dungeon, overworld, and world map are the SAME grid,
