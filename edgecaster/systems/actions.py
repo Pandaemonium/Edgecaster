@@ -536,7 +536,11 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         "Hey look at this guy over here, Mr. Big Deal Fractal guy, ooh la la he's a fancy fucker ain't he?",
         "Berryfucker!",
         "Your MOM is self-similar!",
-        "You know what would fit perfectly around that pinky slot... my asshole!"
+        "You know what would fit perfectly around that pinky slot... my asshole!",
+        "You know what would fit wonderfully around that first knuckle slot slot... my asshole!",
+        "You know what would fit snugly around that second knuckle slot slot... my asshole!",
+        "You know what would fit beautifully around that third knuckle slot slot... my asshole!",
+        
         
     ]
 
@@ -1039,7 +1043,7 @@ def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
     Strike all creatures touching the squares occupied by the current pattern.
 
     - High mana cost, long cooldown.
-    - Rolls 2d20 total damage.
+    - Rolls 2dN total damage, where N is the number of vertices in the pattern.
     - Distributes damage evenly (rounding up) across all hit creatures.
     """
     if not hasattr(game, "_level"):
@@ -1230,10 +1234,17 @@ def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
     except Exception:
         pass
 
+    # Total damage: 2dN where N = number of vertices in the pattern.
     try:
-        total = int(rng.randint(1, 20)) + int(rng.randint(1, 20))
+        n = int(len(getattr(pattern, "vertices", []) or []))
+        n = max(1, n)
+        total = int(rng.randint(1, n)) + int(rng.randint(1, n))
     except Exception:
-        total = 20
+        # Fallback: expected value of 2dN is N+1.
+        try:
+            total = max(2, int(len(getattr(pattern, "vertices", []) or [])) + 1)
+        except Exception:
+            total = 2
 
     if not targets:
         if actor_id == getattr(game, "player_id", None):
