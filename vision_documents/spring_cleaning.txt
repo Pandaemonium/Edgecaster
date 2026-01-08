@@ -1,6 +1,6 @@
 ﻿SPRING CLEANING — ACTIONABLE PLAN
-Updated: 2025-12-22
-Status: UI migration largely complete; map zoom refactor complete
+Updated: 2026-01-08
+Status: UI migration largely complete; map zoom refactor complete; game.py refactor PLANNED
 
 Legend:
 [CLEANUP] structure / correctness
@@ -47,9 +47,349 @@ Cleanup tasks:
 [CLEANUP] Normalize zoom step curve (feel tuning)
 
 ===============================================================================
+SLICE 5 — GAME.PY DECOMPOSITION (NEW — PRIORITY)
+===============================================================================
+
+STATUS: game.py is ~5300 lines (drifts over time) and has become the primary bottleneck for
+maintainability. This slice defines a surgical decomposition strategy.
+
+GOAL: Reduce game.py to ~1500-2000 lines by extracting cohesive subsystems
+into dedicated modules. Game class remains the orchestrator but delegates
+to specialized systems.
+
+-------------------------------------------------------------------------------
+PHASE 0: ACTION EXECUTION UNIFICATION (~250 lines -> systems/action_runner.py)
+-------------------------------------------------------------------------------
+Lines: queue_actor_action / _monster_act (plus confirmations + wand/charge plumbing)
+Dependencies: systems/actions.py (ActionDef registry), systems/turns.py, urgent-message confirmations
+
+Extract / centralize into a single runner:
+- Resolve action def + base delay (action_delay)
+- Determine origin (actor vs held/equipped item) for cooldowns/charges
+- Gate on cooldowns/charges, emit feedback
+- Run confirmations (urgent message) for risky actions (e.g. self-damage)
+- Consume charges (wands) and auto-unequip when empty
+- Apply cooldowns to the origin
+- Apply delay modifiers (slow multipliers, buffs) and clamp (avoid 0-tick loops)
+
+Target module: edgecaster/systems/action_runner.py
+Interface: ActionRunner.run(game, actor_id, action_name, **kwargs) -> delay_used
+
+Notes:
+- Today the player path (queue_actor_action) and AI path (_monster_act) diverge; unify to prevent bugs.
+- After extraction: Game.queue_actor_action becomes a thin wrapper; AI chooses an action then calls ActionRunner and schedules by the returned delay.
+
+-------------------------------------------------------------------------------
+PHASE 1: SPAWNING & ENTITY FACTORIES (~800 lines → systems/spawning.py)
+-------------------------------------------------------------------------------
+Lines: ~2150-2930 (approx)
+Dependencies: prototypes.py, spawn_factory.py, enemy_factory
+
+Extract:
+• _enemy_template_ids()
+• _entity_templates()
+• _spawn_entity_from_template()
+• _spawn_enemies()
+• _spawn_mentor()
+• _spawn_intro_npcs()
+• _spawn_poi_contents()
+• _spawn_npcs()
+• _spawn_entities_near()
+• _spawn_imps_near()
+• _spawn_echoes_near()
+• _spawn_berries_near()
+• _scatter_test_berries()
+• debug_spawn_inventory_near_player()
+
+Target module: edgecaster/systems/spawning.py
+Interface: Functions accept (game, level, ...) or SpawnContext dataclass
+
+Notes:
+- Already data-driven via YAML; module is mostly plumbing
+- Low risk of behavioral changes
+- Can be done incrementally (extract helpers first, then main spawners)
+
+-------------------------------------------------------------------------------
+PHASE 2: INVENTORY & EQUIPMENT (~400 lines → systems/inventory.py)
+-------------------------------------------------------------------------------
+Lines: ~3720-4035 + scattered helpers
+Dependencies: systems/equipment.py (already exists), systems/item_grants.py
+
+Extract:
+• get_inventory()
+• player_inventory property
+• player_pick_up()
+• drop_inventory_item()
+• eat_item_from_inventory() / eat_inventory_item()
+• take_from_container()
+• move_item_between_inventories()
+• get_equipped_in_slot()
+• unequip_slot()
+• unequip_item()
+• equip_item_to_slot()
+
+Target module: edgecaster/systems/inventory.py
+Interface: InventoryManager class or free functions with (game, owner_id, ...)
+
+Notes:
+- equipment.py already handles stat mods; this is the container logic
+- Recursive container handling is delicate; test thoroughly
+- item_grants integration must be preserved
+
+-------------------------------------------------------------------------------
+PHASE 3: LORENZ / STRANGE ATTRACTOR (~250 lines → systems/lorenz_aura.py)
+-------------------------------------------------------------------------------
+Lines: ~3288-3440, ~4038-4070
+Dependencies: lorenz.py (already exists), config
+
+Extract:
+• _init_lorenz_points() [wrapper]
+• _step_lorenz() [wrapper]
+• _advance_lorenz()
+• _lorenz_contact_damage()
+• has_lorenz_aura property
+• _reset_lorenz_on_zone_change()
+• lorenz_* instance state (move to a LorenzState dataclass)
+
+Target module: edgecaster/systems/lorenz_aura.py (or merge into lorenz.py)
+Interface: LorenzAuraManager or extend existing lorenz module
+
+Notes:
+- lorenz.py already has game-agnostic math; this is the game integration
+- Consider moving lorenz instance state to a dedicated dataclass
+- Contact damage is the trickiest part (interacts with combat)
+
+-------------------------------------------------------------------------------
+PHASE 4: OVERMAP + CORRUPTION ORCHESTRATION (~600 lines → systems/overmap.py)
+-------------------------------------------------------------------------------
+Lines: ~1180-1620, ~1650-1985
+Dependencies: mapgen.py, poi_content, corruption.py, overmap_accel.py, scenes/world_map_scene.py
+
+Extract:
+• build_tile_julia_grid()
+• _init_overmap_params_and_grid()
+• _init_rune_anchors()
+• _start_world_map_thread()
+• _background_render_map()
+• _ensure_overmap_ready()
+• _jx_jy_slices_for_zone()
+• set_corruption_level()
+• set_corruption_spline_weight()
+• add_corruption_hotspot()
+• add_corruption_anchor()
+• _refresh_corruption_visuals()
+• _alloc_rune_anchor_poi_id()
+• overmap_params, tile_julia_grid, corruption_* state
+
+Target module: edgecaster/systems/overmap.py
+Interface: OvermapManager class owning all Julia/anchor state
+
+Notes:
+- Threading: world map render runs in a background thread; document cache/thread ownership explicitly
+- World map cache management is complex; consider a CacheManager sub-object
+- Keep edgecaster/corruption.py as pure math + LUT, and edgecaster/overmap_accel.py as the fast path; this phase is orchestration
+- Ensure one source of truth for corruption envelope/sampling (avoid world_map_scene vs overmap_accel drift)
+
+-------------------------------------------------------------------------------
+PHASE 5: LEGENDARY CREATURES & POI DISCOVERY (~200 lines → systems/legendaries.py)
+-------------------------------------------------------------------------------
+Lines: ~1690-1880
+Dependencies: poi_content, prototypes
+
+Extract:
+• _init_legendaries()
+• _alloc_legendary_lair_poi_id()
+• add_poi_rumor()
+• get_nearest_legendary_lairs()
+• _discover_pois_for_level()
+• legendary_registry state
+
+Target module: edgecaster/systems/legendaries.py
+Interface: LegendaryManager or free functions
+
+Notes:
+- Mostly initialization + queries; low coupling
+- POI discovery overlaps with zone creation; consider boundaries
+
+-------------------------------------------------------------------------------
+PHASE 6: PATTERN OPERATIONS (~300 lines → systems/pattern_ops.py)
+-------------------------------------------------------------------------------
+Lines: ~4070-4250, ~4830-5035+ (ignite, etc.)
+Dependencies: patterns/*, builder
+
+Extract:
+• projected_vertices()
+• nearest_vertex()
+• neighbors_of()
+• neighbor_set_depth()
+• begin_place_mode()
+• try_place_terminus()
+• reset_pattern()
+• act_activate_all()
+• act_activate_seed()
+• act_push_pattern()
+• act_ignite()
+• Pattern activation state (activation_points, activation_ttl)
+
+Target module: edgecaster/systems/pattern_ops.py
+Interface: PatternOperations class or extend existing patterns/ modules
+
+Notes:
+- patterns/activation.py already has projection; this is glue
+- act_ignite is complex (tick-based state machine)
+- Consider if motion.py should absorb push_pattern
+
+-------------------------------------------------------------------------------
+PHASE 7: COMBAT & DAMAGE (~250 lines → expand systems/combat.py)
+-------------------------------------------------------------------------------
+Lines: ~4448-4675 (main combat), scattered damage helpers
+Dependencies: reputation_system, systems/effects
+
+Extract:
+• is_hostile()
+• _attack()
+• _handle_move_or_attack() (or keep in game.py as dispatcher)
+• Damage calculation helpers
+• Death handling / _kill_actor()
+
+Target module: edgecaster/systems/combat.py (new)
+Interface: combat.resolve_attack(game, attacker, defender, ...)
+
+Notes:
+- _attack has YAML tag parsing for special behaviors (lifesteal_frac, xp_drain, currency_min/max)
+- Careful: move/attack dispatch is central to the game loop
+- Consider splitting "move" from "combat" concerns
+
+-------------------------------------------------------------------------------
+PHASE 8: ZONE MANAGEMENT (~350 lines → systems/zones.py)
+-------------------------------------------------------------------------------
+Lines: ~1986-2105, ~3538-3600, ~4678-4740
+Dependencies: mapgen, mapgen_sites, poi_content
+
+Extract:
+• _make_zone()
+• _get_zone()
+• get_zone_for_render()
+• _transition_edge()
+• fast_travel_to_zone()
+• use_stairs_up() / use_stairs_down()
+• Zone creation helpers
+
+Target module: edgecaster/systems/zones.py
+Interface: ZoneManager class or free functions
+
+Notes:
+- Zone creation calls many spawn/POI helpers; order matters
+- Stair usage intertwines with zone transitions
+- This is a "hub" module that ties spawning + POI + player movement
+
+-------------------------------------------------------------------------------
+PHASE 9: SCHEDULING & TIME (~150 lines → expand systems/turns.py)
+-------------------------------------------------------------------------------
+Lines: ~3091-3120, ~3140-3290
+Dependencies: heapq, systems/turns.py
+
+Extract:
+• _schedule()
+• _advance_time()
+• _start_regen()
+• _coherence_tick()
+• _cooldown_tick()
+• _slow_mult()
+• _apply_action_tick_offset()
+
+Target module: edgecaster/systems/turns.py (existing)
+Interface: Extend TurnScheduler or add TickManager
+
+Notes:
+- _advance_time is the heartbeat; changes here affect everything
+- Coherence tick is pattern-specific; may belong with pattern_ops
+- Cooldown tick is general; good fit for turns.py
+
+-------------------------------------------------------------------------------
+PHASE 10: PARAM SYSTEM (~150 lines → systems/params.py)
+-------------------------------------------------------------------------------
+Lines: ~558-615, ~4126-4220
+Dependencies: character stats, config
+
+Extract:
+• _init_param_defs()
+• _init_param_state()
+• _recalc_param_state_max()
+• _stat_value()
+• _allowed_index()
+• _param_value()
+• adjust_param()
+• param_view()
+• get_param_value()
+• param_defs, param_state instance state
+
+Target module: edgecaster/systems/params.py
+Interface: ParamManager class
+
+Notes:
+- Self-contained stat-gating system
+- Low coupling; easy extraction
+- Consider if this should merge with character.py
+
+-------------------------------------------------------------------------------
+ORDERING & DEPENDENCIES
+-------------------------------------------------------------------------------
+
+Recommended extraction order (by risk/coupling):
+
+1. [LOW RISK]    Phase 10: Params       - self-contained, no side effects
+2. [LOW RISK]    Phase 5: Legendaries   - mostly queries, low coupling
+3. [LOW RISK]    Phase 3: Lorenz        - isolated system, clear boundary
+4. [MEDIUM RISK] Phase 0: Action runner - high leverage; touches core loop (player + AI)
+5. [MEDIUM RISK] Phase 1: Spawning      - many helpers, but one-directional
+6. [MEDIUM RISK] Phase 2: Inventory     - recursive containers need care
+7. [MEDIUM RISK] Phase 6: Patterns      - activation state is shared
+8. [MEDIUM RISK] Phase 9: Scheduling    - central but well-defined
+9. [HIGH RISK]   Phase 4: Overmap       - threading, caching complexity
+10. [HIGH RISK]  Phase 8: Zones         - hub module, many dependencies
+11. [HIGH RISK]  Phase 7: Combat        - core game loop integration
+
+-------------------------------------------------------------------------------
+WHAT REMAINS IN GAME.PY (~1500 lines)
+-------------------------------------------------------------------------------
+
+After extraction, Game class retains:
+
+• __init__: Orchestrates initialization, calls subsystem inits
+• Core state: levels, zone_coord, player_id, character, config
+• queue_actor_action / queue_player_action: Central action dispatch
+• _level() / _player(): Convenience accessors
+• _actor_at() / _entity_at() / _all_actors(): Query helpers (or move to state/)
+• Urgent message system (set_urgent, urgent_*)
+• describe_current_tile / show_help: UI-facing helpers
+• XP / level-up system (_grant_xp, _on_level_up, etc.)
+• FOV management (_update_fov wrapper)
+• Simple bridge methods to subsystems
+
+-------------------------------------------------------------------------------
+MIGRATION STRATEGY
+-------------------------------------------------------------------------------
+
+For each phase:
+
+1. Create new module with empty class/functions
+2. Copy method bodies, adjusting 'self' → 'game' parameter
+3. Add thin wrapper in Game that calls the new module
+4. Run tests / manual play to verify
+5. Delete old method body, keep wrapper OR inline the call
+6. Repeat until phase complete
+
+Testing checklist per phase:
+- [ ] New game starts without crash
+- [ ] Save/load round-trips correctly
+- [ ] Affected mechanics work (spawn, inventory, combat, etc.)
+- [ ] No import-time errors or circular imports
+
+===============================================================================
 ONGOING ENGINE CLEANUPS
 
-[CLEANUP] Decompose game.py into systems/*
+[CLEANUP] Decompose game.py into systems/* ← SEE SLICE 5 ABOVE
 [CLEANUP] Scheduler semantics and typing
 [CLEANUP] MessageLog performance
 [CLEANUP] Entity/actor ID consistency
@@ -59,7 +399,7 @@ ONGOING ENGINE CLEANUPS
 [CLEANUP] Centralize tuning constants
 
 ===============================================================================
-NEW ISSUES IDENTIFIED (2026-01-04)
+NEW ISSUES IDENTIFIED (2026-01-08)
 
 [CLEANUP] Renderer UI state migration incomplete
   - ascii.py still owns some targeting/ability state
@@ -77,10 +417,15 @@ NEW ISSUES IDENTIFIED (2026-01-04)
   - Should audit for circular imports or lazy-loading opportunities
   - May affect startup time as codebase grows
 
-[CLEANUP] Threading usage in game.py
-  - game.py imports threading but usage unclear from initial scan
-  - Verify thread safety if background tasks exist
-  - Document threading model if intentional
+[CLEANUP] Threading model (world map + corruption)
+  - World map rendering runs in a background thread and writes to caches
+  - Define ownership of world_map_cache / overmap_params and when they can be mutated
+  - Document safe invalidation when corruption/zoom triggers rerender
+
+[CLEANUP] Player vs AI action execution divergence
+  - Player path uses queue_actor_action; AI path calls ActionDef directly in _monster_act
+  - Divergence breaks cooldowns/charges/confirmations/buffs
+  - Phase 0 proposes ActionRunner to unify
 
 [CLEANUP] Exception handling in prototypes.py
   - Fail-soft pattern in systems/actions.py: "except Exception: pass"

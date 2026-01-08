@@ -3,7 +3,9 @@
     "allow": [
       "Bash(wc:*)",
       "Bash(find:*)",
-      "Bash(python -m edgecaster.main:*)"
+      "Bash(python -m edgecaster.main:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python:*)"
     ]
   }
 }

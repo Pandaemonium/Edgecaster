@@ -32,6 +32,9 @@ from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import reputation as reputation_system
 from edgecaster.systems import item_grants
 from edgecaster.systems import ai
+from edgecaster.systems.params import ParamManager
+from edgecaster.systems import legendaries as legendaries_system
+from edgecaster.systems import lorenz_aura
 from . import lorenz
 import math
 from edgecaster import prototypes
@@ -172,12 +175,17 @@ class Game:
         self.current_host_label: Optional[str] = base_label
 
         # XP / parameter defs based on character stats
-        self.param_defs = self._init_param_defs()
-        self.param_state = self._init_param_state()
+        # Use ParamManager for stat-gated action parameters
+        self._param_manager = ParamManager()
+        # Deferred: set stat getter after effective_character_stats is available
+        self._param_manager.set_stat_getter(lambda: self.effective_character_stats())
+        # Expose param_defs and param_state for backwards compatibility
+        self.param_defs = self._param_manager.param_defs
+        self.param_state = self._param_manager.param_state
         # generators the player "knows" for NPC rewards etc.
         self.unlocked_generators: List[str] = [self.character.generator]
         # start with params auto-maxed given current stats
-        self._recalc_param_state_max()
+        self._param_manager.recalc_max()
         # custom patterns (list of vertex lists)
         self.custom_patterns: List[list] = []
         if getattr(self.character, "custom_pattern", None):
@@ -555,85 +563,15 @@ class Game:
         except Exception:
             return
 
-    def _init_param_defs(self) -> Dict[str, Dict[str, dict]]:
-        # thresholds correspond to minimum stat to unlock the value at same index
-        return {
-            "branch": {
-                "angle": {
-                    "values": [30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90],
-                    "thresholds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-                    "stat": "int",
-                    "label": "Angle",
-                },
-                "count": {"values": [2, 3, 4, 5], "thresholds": [0, 3, 5, 7], "stat": "int", "label": "Branches"},
-            },
-            "koch": {
-                "height": {"values": [0.25, 0.4, 0.6], "thresholds": [0, 3, 6], "stat": "int", "label": "Amplitude"},
-                "flip": {"values": [False, True], "thresholds": [0, 5], "stat": "int", "label": "Mirror"},
-            },
-            "subdivide": {
-                "parts": {"values": [2, 3, 4, 5, 6], "thresholds": [0, 2, 4, 6, 8], "stat": "int", "label": "Segments"},
-            },
-            "zigzag": {
-                "parts": {"values": [4, 6, 8, 10], "thresholds": [0, 2, 4, 6], "stat": "int", "label": "Segments"},
-                "amp": {"values": [0.1, 0.2, 0.3], "thresholds": [0, 3, 6], "stat": "int", "label": "Amplitude"},
-            },
-            "activate_all": {
-                "radius": {"values": [0.5, 1.0, 1.5, 2.0, 3.0, 4.0], "thresholds": [0, 1, 2, 3, 5, 8], "stat": "res", "label": "Radius"},
-                "damage": {"values": [1, 2, 3], "thresholds": [0, 4, 8], "stat": "res", "label": "Damage"},
-            },
-            "activate_seed": {
-                "neighbor_depth": {"values": [1, 2, 3], "thresholds": [0, 3, 6], "stat": "res", "label": "Depth"},
-                "damage": {"values": [1, 2, 3], "thresholds": [0, 4, 8], "stat": "res", "label": "Damage"},
-            },
-            "custom": {
-                "amplitude": {"values": [1.0, 0.9, 0.8, 0.7], "thresholds": [0, 1, 2, 3], "stat": "int", "label": "Scale"},
-            },
-            "winter_hue": {
-                "radius": {"values": [1, 2, 3, 4], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Radius"},
-                "scale": {"values": [1.0, 1.5, 2.0, 3.0], "thresholds": [0, 5, 10, 15], "stat": "res", "label": "Intensity Scale"},
-            },
-            "freeze": {
-                "damage_scale": {"values": [0.05, 0.1, 0.2, 0.3], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Dmg / Blue"},
-                "slow_scale": {"values": [0.02, 0.04, 0.06, 0.08], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Slow / Blue"},
-            },
-            "corruption_cone": {
-                "height": {"values": [0.5, 1.0, 1.5, 2.0], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Height"},
-                "slope": {"values": [0.25, 0.18, 0.12, 0.08], "thresholds": [0, 2, 4, 6], "stat": "res", "label": "Slope"},
-            },
-            "place_rune_anchor": {
-                # Range is expressed in tiles for ergonomics, then converted to Julia-plane sigma
-                # using tile_julia_grid step size at runtime.
-                #
-                # NOTE: Rune anchors are intentionally *not* stat-gated. We want designers (and
-                # later players, via progression systems) to be able to freely tune anchor
-                # range/strength regardless of the host body's attributes.
-                "range": {"values": [25.0, 60.0, 140.0, 260.0], "thresholds": [0, 0, 0, 0], "stat": "res", "label": "Range (tiles)"},
-                "strength": {"values": [0.5, 0.75, 1.0], "thresholds": [0, 0, 0], "stat": "res", "label": "Strength"},
-            },
-        }
-
-    def _init_param_state(self) -> Dict[Tuple[str, str], int]:
-        state: Dict[Tuple[str, str], int] = {}
-        for action, params in self.param_defs.items():
-            for key in params:
-                state[(action, key)] = 0
-        return state
+    # =========================================================================
+    # PHASE 10: PARAM SYSTEM -> systems/params.py
+    # These methods now delegate to self._param_manager
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def _recalc_param_state_max(self) -> None:
-        """Set all params to the highest tier allowed by current stats (for auto-max radii/neighbor depth)."""
-        for action, params in self.param_defs.items():
-            for key in params:
-                if action == "custom" and key == "amplitude":
-                    # keep custom amplitude at user choice (default 1.0)
-                    continue
-                if action == "place_rune_anchor":
-                    # Rune-anchor range/strength are designer/player-tuned, not auto-maxed by stats.
-                    continue
-                allowed = self._allowed_index(action, key)
-                if allowed < 0:
-                    allowed = 0
-                self.param_state[(action, key)] = allowed
+        """Set all params to the highest tier allowed by current stats."""
+        self._param_manager.recalc_max()
 
     def _xp_needed_for_level(self, level: int) -> int:
         """XP needed to go from this level to the next."""
@@ -826,6 +764,12 @@ class Game:
 
 
 
+
+    # =========================================================================
+    # PHASE 0: ACTION EXECUTION -> systems/action_runner.py
+    # Unify player (queue_actor_action) and AI (_monster_act) paths
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def queue_actor_action(self, actor_id: str, action_name: str, **kwargs) -> None:
         """
@@ -1154,6 +1098,12 @@ class Game:
 
 
 
+    # =========================================================================
+    # PHASE 2: INVENTORY & EQUIPMENT -> systems/inventory.py
+    # Container logic, pickup/drop, equip/unequip
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
+
     def get_inventory(self, owner_id: str) -> List[Entity]:
         """Return the inventory list for a given owner id, creating it if needed.
 
@@ -1178,6 +1128,12 @@ class Game:
 
 
 
+
+    # =========================================================================
+    # PHASE 4: OVERMAP + CORRUPTION -> systems/overmap.py
+    # World map threading, Julia grid, corruption anchors/hotspots
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def build_tile_julia_grid(self) -> None:
         """Precompute per-tile Julia coordinates across the whole world grid."""
@@ -1681,146 +1637,25 @@ class Game:
                 return pid
             i += 1
 
+    # =========================================================================
+    # PHASE 5: LEGENDARIES & POI DISCOVERY -> systems/legendaries.py
+    # These methods now delegate to legendaries_system
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
+
     def _alloc_legendary_lair_poi_id(self) -> str:
         """Return a unique POI id for a newly-generated legendary lair."""
-        i = 0
-        while True:
-            pid = f"legendary_lair_{i:03d}"
-            if pid not in poi_content.POIS:
-                return pid
-            i += 1
+        return legendaries_system.alloc_legendary_lair_poi_id()
 
     def _init_legendaries(self, count: int = 50) -> None:
-        """Generate a set of named legendary creatures and inject their lair POIs.
-
-        Phase 1:
-        - Legends are stronger versions of existing hostile templates.
-        - Each gets its own lair POI on the overworld (depth 0).
-        - Lair markers are hidden on the world map until discovered/rumored
-          (handled by the POI discovery system).
-        """
+        """Generate legendary creatures and inject their lair POIs."""
         if getattr(self, "legendary_registry", None) is not None:
             return
-
-        self.legendary_registry: Dict[str, dict] = {}
-
-        try:
-            base_templates = list(self._enemy_template_ids())
-        except Exception:
-            base_templates = []
-        if not base_templates:
-            return
-
-        # Avoid placing lairs on top of existing POIs.
-        reserved_coords = {tuple(poi.coord) for poi in poi_content.POIS.values()}
-        reserved_coords.add(tuple(getattr(self, "zone_coord", (0, 0, 0))))
-
-        # Simple name generator (can be replaced with a richer content system later).
-        names = [
-            "Akhraz",
-            "Velis",
-            "Khor",
-            "Sable",
-            "Orun",
-            "Nym",
-            "Kesh",
-            "Mora",
-            "Zarith",
-            "Iolan",
-            "Riven",
-            "Seph",
-            "Vox",
-            "Cael",
-            "Thorn",
-            "Ash",
-            "Nyx",
-            "Rook",
-            "Iris",
-            "Maven",
-        ]
-        used_names: set[str] = set()
-
-        screens = int(getattr(self.cfg, "world_map_screens", 1) or 1)
-        screens = max(1, screens)
-
-        created = 0
-        attempts = 0
-        max_attempts = max(5000, int(count) * 500)
-        while created < int(count) and attempts < max_attempts:
-            attempts += 1
-            zx = int(self.rng.randrange(0, screens))
-            zy = int(self.rng.randrange(0, screens))
-            coord = (zx, zy, 0)
-            if coord in reserved_coords:
-                continue
-
-            base_proto = str(self.rng.choice(base_templates))
-            try:
-                base_spec = prototypes.resolve_proto(base_proto) or {}
-                base_name = str(base_spec.get("name") or base_proto)
-            except Exception:
-                base_name = base_proto
-
-            # Unique-ish legendary name.
-            raw = str(self.rng.choice(names))
-            full_name = f"{raw}, Legendary {base_name}"
-            if full_name in used_names:
-                full_name = f"{raw} {created + 1}, Legendary {base_name}"
-            used_names.add(full_name)
-
-            # A simple power boost (HP only for now; combat scaling is still primitive).
-            hp_mult = float(self.rng.uniform(3.0, 6.0))
-
-            reserved_coords.add(coord)
-            poi_id = self._alloc_legendary_lair_poi_id()
-            legendary_id = f"legendary_{created:03d}"
-
-            try:
-                poi_content.POIS[poi_id] = poi_content.POI(
-                    id=poi_id,
-                    coord=coord,
-                    npcs=[],
-                    structures=[
-                        {
-                            "kind": "legendary_lair",
-                            "legendary_id": legendary_id,
-                            "template_id": base_proto,
-                            "name": full_name,
-                            "hp_mult": hp_mult,
-                        }
-                    ],
-                )
-            except Exception:
-                continue
-
-            self.legendary_registry[legendary_id] = {
-                "poi_id": poi_id,
-                "coord": coord,
-                "template_id": base_proto,
-                "name": full_name,
-                "hp_mult": hp_mult,
-            }
-            created += 1
+        self.legendary_registry = legendaries_system.init_legendaries(self, count=count)
 
     def add_poi_rumor(self, poi_id: str, *, log: bool = True) -> None:
         """Mark a POI as rumored so it appears on the world map before discovery."""
-        poi_id = str(poi_id)
-        if not hasattr(self, "rumored_pois"):
-            self.rumored_pois = set()
-        if not hasattr(self, "discovered_pois"):
-            self.discovered_pois = set()
-        if poi_id in self.discovered_pois:
-            return
-        self.rumored_pois.add(poi_id)
-
-        if not log:
-            return
-        poi = poi_content.POIS.get(poi_id)
-        if poi:
-            zx, zy, _ = poi.coord
-            self.log.add(f"You hear rumors of {poi_id.replace('_', ' ')} at ({zx}, {zy}).")
-        else:
-            self.log.add(f"You hear rumors of {poi_id.replace('_', ' ')}.")
+        legendaries_system.add_poi_rumor(self, poi_id, log=log)
 
     def get_nearest_legendary_lairs(
         self,
@@ -1828,55 +1663,12 @@ class Game:
         *,
         from_coord: Optional[Tuple[int, int, int]] = None,
     ) -> List[Tuple[str, Tuple[int, int, int]]]:
-        """Return the N nearest legendary lair POIs (by overworld zone distance)."""
-        try:
-            n = int(n)
-        except Exception:
-            n = 5
-        if n <= 0:
-            return []
-
-        origin = from_coord or getattr(self, "zone_coord", (0, 0, 0))
-        try:
-            ox, oy = int(origin[0]), int(origin[1])
-        except Exception:
-            ox, oy = 0, 0
-
-        locations = getattr(self, "poi_locations", None)
-        if not locations:
-            try:
-                locations = {pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()}
-            except Exception:
-                locations = {}
-
-        scored: List[Tuple[int, str, Tuple[int, int, int]]] = []
-        for pid, coord in (locations or {}).items():
-            pid_s = str(pid)
-            if not pid_s.startswith("legendary_lair_"):
-                continue
-            try:
-                zx, zy, zz = int(coord[0]), int(coord[1]), int(coord[2])
-            except Exception:
-                continue
-            d2 = (zx - ox) * (zx - ox) + (zy - oy) * (zy - oy)
-            scored.append((d2, pid_s, (zx, zy, zz)))
-
-        scored.sort(key=lambda t: (t[0], t[1]))
-        return [(pid, coord) for _, pid, coord in scored[:n]]
+        """Return the N nearest legendary lair POIs."""
+        return legendaries_system.get_nearest_legendary_lairs(self, n, from_coord=from_coord)
 
     def _discover_pois_for_level(self, level: LevelState) -> None:
-        """Record POIs attached to this level as discovered (reveals markers)."""
-        if not hasattr(self, "discovered_pois"):
-            self.discovered_pois = set()
-        if not hasattr(self, "rumored_pois"):
-            self.rumored_pois = set()
-
-        poi_ids = getattr(level.world, "poi_ids", None)
-        if not poi_ids:
-            return
-        for pid in list(poi_ids):
-            self.discovered_pois.add(str(pid))
-            self.rumored_pois.discard(str(pid))
+        """Record POIs attached to this level as discovered."""
+        legendaries_system.discover_pois_for_level(self, level)
 
     def add_corruption_anchor(
         self,
@@ -1982,6 +1774,12 @@ class Game:
         # Force overmap re-render to reflect new corruption.
         self.world_map_ready = False
         self._start_world_map_thread(reason="corruption")
+
+    # =========================================================================
+    # PHASE 8: ZONE MANAGEMENT -> systems/zones.py
+    # Zone creation, transitions, stairs, fast travel
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
         x, y, depth = coord
@@ -2103,6 +1901,12 @@ class Game:
         return lvl
 
 
+
+    # =========================================================================
+    # PHASE 1: SPAWNING & ENTITY FACTORIES -> systems/spawning.py
+    # Enemy/NPC/entity spawning, template instantiation
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def _enemy_template_ids(self) -> List[str]:
         cached = getattr(self, "_enemy_ids_cache", None)
@@ -3088,7 +2892,11 @@ class Game:
         else:
             self.log.add("This is no place for an inventory.")
 
-    # --- scheduling ---
+    # =========================================================================
+    # PHASE 9: SCHEDULING & TIME -> systems/turns.py
+    # Tick scheduling, time advancement, cooldowns, regen
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def _schedule(self, level: LevelState, delay: int, action: Callable[[], None]) -> None:
         level.order += 1
@@ -3285,154 +3093,27 @@ class Game:
         return max(1, int(delay) + int(offset))
 
 
-    # --- Lorenz / strange-attractor aura, game-side ---
+    # =========================================================================
+    # PHASE 3: LORENZ / STRANGE ATTRACTOR -> systems/lorenz_aura.py
+    # These methods now delegate to lorenz_aura module
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def _init_lorenz_points(self) -> None:
-        """Thin wrapper around lorenz.init_lorenz_points."""
+        """Initialize Lorenz points via lorenz module."""
         lorenz.init_lorenz_points(self)
 
     def _step_lorenz(self, steps: int) -> None:
-        """Thin wrapper around lorenz.step_lorenz."""
+        """Step Lorenz points via lorenz module."""
         lorenz.step_lorenz(self, steps)
 
     def _advance_lorenz(self, level: LevelState, delta: int) -> None:
-        """Advance the Lorenz aura only for Strange Attractors."""
-        if not self.has_lorenz_aura:
-            # Keep all Lorenz state dormant/cleared for other classes.
-            self.lorenz_points = []
-            self.lorenz_center_x = None
-            self.lorenz_center_y = None
-            self._lorenz_prev_pos = None
-            self._lorenz_prev_zone = self.zone_coord
-            return
-
-        # First advance the continuous Lorenz dynamics
-        lorenz.advance_lorenz(self, level, delta)
-
-        # Then apply contact damage from butterflies to nearby hostiles
-        self._lorenz_contact_damage(level)
-
-        # Clear reset flag after consumers have had a chance to react.
-        if self.lorenz_reset_trails:
-            self.lorenz_reset_trails = False
-
-
+        """Advance the Lorenz aura for Strange Attractors."""
+        lorenz_aura.advance_lorenz(self, level, delta)
 
     def _lorenz_contact_damage(self, level: LevelState) -> None:
-        """Apply 'butterfly' contact damage to hostiles overlapping the Lorenz storm.
-
-        We mirror the renderer's projection:
-        - Take (x, z) from each Lorenz point
-        - Rotate in the (x, z) plane by 30 deg
-        - Subtract a fixed 'natural' Lorenz center between the wings
-        - Scale to tile offsets, clamp to a radius
-        - Map to world tiles around lorenz_center_x/lorenz_center_y
-        """
-        points = getattr(self, "lorenz_points", None)
-        if not points:
-            return
-
-        # Only apply if we have a valid center; lorenz.advance_lorenz sets this to the player.
-        center_x = self.lorenz_center_x
-        center_y = self.lorenz_center_y
-        if center_x is None or center_y is None:
-            player = self._player()
-            center_x, center_y = player.pos
-
-        # Match the renderer's projection parameters
-        angle = math.radians(30.0)
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        lorenz_scale = 0.18          # same as AsciiRenderer.lorenz_scale
-        lorenz_radius_tiles = 7      # same as AsciiRenderer.lorenz_radius_tiles
-
-        # Project into a rotated 2D plane, track z band for the natural center
-        points_2d: List[Tuple[float, float, float]] = []
-        z_min = float("inf")
-        z_max = float("-inf")
-
-        for (x, y, z) in points:
-            u = x
-            v = z
-            ux = cos_a * u - sin_a * v
-            uy = sin_a * u + cos_a * v
-            points_2d.append((ux, uy, z))
-            if z < z_min:
-                z_min = z
-            if z > z_max:
-                z_max = z
-
-        if not points_2d:
-            return
-
-        if z_max <= z_min:
-            z_max = z_min + 1e-6
-
-        # Same 'natural' center as the renderer: between the wings
-        z_mid = 0.5 * (z_min + z_max)
-        x0 = 0.0
-        natural_ux = cos_a * x0 - sin_a * z_mid
-        natural_uy = sin_a * x0 + cos_a * z_mid
-
-        # Map butterflies to tiles and count how many hit each tile
-        tile_hits: Dict[Tuple[int, int], int] = {}
-        r2_max = float(lorenz_radius_tiles * lorenz_radius_tiles)
-
-        for (ux, uy, z) in points_2d:
-            rel_x = ux - natural_ux
-            rel_y = uy - natural_uy
-            dx = rel_x * lorenz_scale
-            dy = rel_y * lorenz_scale
-            if dx * dx + dy * dy > r2_max:
-                continue
-
-            tx = int(round(center_x + dx))
-            ty = int(round(center_y + dy))
-            if not level.world.in_bounds(tx, ty):
-                continue
-
-            key = (tx, ty)
-            tile_hits[key] = tile_hits.get(key, 0) + 1
-
-        if not tile_hits:
-            return
-
-        verbs = ["cuts", "slices", "singes", "shocks", "jolts", "burns", "blinds", "chars", "sears"]
-        base_damage = 1  # TODO: scale with stats later
-
-        for actor in list(level.actors.values()):
-            if not actor.alive:
-                continue
-            if actor.id == self.player_id:
-                continue
-            if actor.faction != "hostile":
-                continue
-
-            hits = tile_hits.get(actor.pos, 0)
-            if hits <= 0:
-                continue
-
-            dmg = base_damage * hits
-            if dmg <= 0:
-                continue
-
-            actor.stats.hp -= dmg
-            actor.stats.clamp()
-
-            verb = self.rng.choice(verbs)
-            self.log.add(f"Your butterfly {verb} the {actor.name} for {dmg} damage.")
-
-            # 50% chance to distract nearby foes until end of next turn
-            if self.rng.random() < 0.5:
-                if not self._has_status(actor, "distracted"):
-                    self._add_status(actor, "distracted", duration=1, on_apply=f"The {actor.name} seems distracted by the butterflies.")
-                else:
-                    # refresh duration
-                    actor.statuses["distracted"] = max(actor.statuses.get("distracted", 0), 1)
-
-            if actor.stats.hp <= 0:
-                self.log.add(f"{actor.name} dies.")
-                self._kill_actor(level, actor, killer_id=self.player_id, killer_is_player=True)
+        """Apply butterfly contact damage to nearby hostiles."""
+        lorenz_aura.apply_contact_damage(self, level)
 
 
 
@@ -3719,7 +3400,7 @@ class Game:
             choices=["Continue..."],
         )
 
-
+    # --- PHASE 2 (continued): inventory manipulation methods ---
 
     def player_pick_up(self) -> None:
         """Attempt to pick up an item under the player's feet."""
@@ -4038,37 +3719,19 @@ class Game:
     @property
     def has_lorenz_aura(self) -> bool:
         """True if the current character should have the Lorenz storm aura."""
-        return getattr(self.character, "player_class", None) == "Strange Attractor"
+        return lorenz_aura.has_lorenz_aura(self)
 
     def _reset_lorenz_on_zone_change(self, player: Actor) -> None:
         """Hard-snap the Lorenz storm to the player when changing zones."""
-        if not self.has_lorenz_aura:
-            return
-
-        # Clear all continuous state so we don't smear across zones.
-        self.lorenz_points = []
-        self._lorenz_prev_pos = player.pos
-        self._lorenz_prev_zone = self.zone_coord
-
-        # Center the storm on the new player position immediately.
-        px, py = player.pos
-        self.lorenz_center_x = float(px)
-        self.lorenz_center_y = float(py)
-
-        # Tell the renderer to nuke any old afterimage frames.
-        self.lorenz_reset_trails = True
-
-        # Optionally seed fresh butterflies right away so you never get a "blank" frame.
-        lorenz.init_lorenz_points(self)
-        # Clear any existing pattern when entering a zone and reset coherence
-        lvl = self._level()
-        lvl.pattern = builder.Pattern()
-        lvl.pattern_anchor = None
-        lvl.activation_points = []
-        lvl.activation_ttl = 0
-        player.stats.coherence = player.stats.max_coherence
+        lorenz_aura.reset_on_zone_change(self, player)
 
 
+
+    # =========================================================================
+    # PHASE 6: PATTERN OPERATIONS -> systems/pattern_ops.py
+    # Pattern projection, vertex queries, activation, ignite/regrow/freeze
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def projected_vertices(self) -> List[Tuple[float, float]]:
         lvl = self._level()
@@ -4123,100 +3786,31 @@ class Game:
             frontier = new_frontier
         return list(visited)
 
-    # --- param helpers ---
+    # --- PHASE 10 (continued): param helpers -> delegating to _param_manager ---
 
     def _stat_value(self, stat: str) -> int:
-        try:
-            return int(self.effective_character_stats().get(stat, 0))
-        except Exception:
-            return int(getattr(self.character, "stats", {}).get(stat, 0))
+        """Get current value of a stat (delegates to _param_manager)."""
+        return self._param_manager._get_stat_value(stat)
 
     def _allowed_index(self, action: str, key: str) -> int:
-        spec = self.param_defs[action][key]
-        thresholds = spec["thresholds"]
-        stat_val = self._stat_value(spec["stat"])
-        allowed = -1
-        for i, thr in enumerate(thresholds):
-            if stat_val >= thr:
-                allowed = i
-        return allowed
+        """Return max tier index allowed by current stats."""
+        return self._param_manager.allowed_index(action, key)
 
     def _param_value(self, action: str, key: str):
-        idx = self.param_state.get((action, key), 0)
-        values = self.param_defs[action][key]["values"]
-        idx = max(0, min(idx, len(values) - 1))
-        # Ensure we never use a value beyond the current stat cap.
-        allowed = self._allowed_index(action, key)
-        if allowed < 0:
-            allowed = 0
-        idx = min(idx, allowed)
-        return values[idx]
+        """Get current param value respecting stat caps."""
+        return self._param_manager._get_value_internal(action, key)
 
     def adjust_param(self, action: str, key: str, delta: int) -> Tuple[bool, str]:
-        spec = self.param_defs.get(action, {}).get(key)
-        if not spec:
-            return False, "Unknown parameter"
-        values = spec["values"]
-        allowed = self._allowed_index(action, key)
-        cur_idx = self.param_state.get((action, key), 0)
-        # If the player's effective stats dropped (e.g. unequipped an item),
-        # clamp the stored index back into range so the UI can still adjust down.
-        if allowed < 0:
-            allowed = 0
-        if cur_idx > allowed:
-            cur_idx = allowed
-            self.param_state[(action, key)] = cur_idx
-        new_idx = cur_idx + delta
-        new_idx = max(0, min(new_idx, len(values) - 1))
-        if new_idx > allowed:
-            need = spec["thresholds"][new_idx]
-            return False, f"Requires {spec['stat'].upper()} {need}"
-        if new_idx == cur_idx:
-            return False, ""
-        self.param_state[(action, key)] = new_idx
-        return True, ""
+        """Adjust a param by delta steps. Returns (success, message)."""
+        return self._param_manager.adjust(action, key, delta)
 
     def param_view(self, action: str) -> List[dict]:
-        result = []
-        params = self.param_defs.get(action, {})
-        for key, spec in params.items():
-            if action == "activate_all" and key == "damage":
-                # damage scales automatically with resonance; hide from UI
-                continue
-            cur_idx = self.param_state.get((action, key), 0)
-            allowed = self._allowed_index(action, key)
-            value = spec["values"][cur_idx]
-            label = spec.get("label", key)
-            blocked = cur_idx >= allowed and cur_idx == len(spec["values"]) - 1
-            # next requirement
-            next_req = ""
-            next_idx = cur_idx + 1
-            if next_idx < len(spec["values"]):
-                need = spec["thresholds"][next_idx]
-                if self._stat_value(spec["stat"]) < need:
-                    next_req = f"{spec['stat'].upper()} {need}"
-            result.append(
-                {
-                    "key": key,
-                    "label": label,
-                    "value": value,
-                    "allowed_idx": allowed,
-                    "current_idx": cur_idx,
-                    "next_req": next_req,
-                }
-            )
-        return result
+        """Return UI-friendly view of params for an action."""
+        return self._param_manager.view(action)
 
     def get_param_value(self, action: str, key: str):
-        if action == "activate_all" and key == "damage":
-            spec = self.param_defs.get(action, {}).get(key)
-            if not spec:
-                return self._param_value(action, key)
-            allowed = self._allowed_index(action, key)
-            values = spec["values"]
-            allowed = max(0, min(allowed, len(values) - 1))
-            return values[allowed]
-        return self._param_value(action, key)
+        """Get the current value for a param (with special cases)."""
+        return self._param_manager.get_value(action, key)
 
     # --- placement ---
 
@@ -4443,7 +4037,11 @@ class Game:
 
 
 
-    # --- movement & combat ---
+    # =========================================================================
+    # PHASE 7: COMBAT & DAMAGE -> systems/combat.py
+    # Hostility checks, attack resolution, death handling
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
 
     def is_hostile(self, attacker: Actor, target: Actor) -> bool:
         """Reputation-driven hostility check used by movement + AI."""
@@ -4740,6 +4338,8 @@ class Game:
         # DEBUG: same behaviour as edge-wrap: one Inventory per arrival.
         self.debug_spawn_inventory_near_player(count=1)
 
+    # --- PHASE 0 (continued): AI action execution path ---
+    # This should unify with queue_actor_action in systems/action_runner.py
 
     def _monster_act(self, level: LevelState, id: str) -> None:
         actor = level.actors.get(id)
