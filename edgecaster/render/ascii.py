@@ -899,6 +899,28 @@ class AsciiRenderer:
         except (Exception, KeyError, AttributeError):
             pass  # No player/world available, render everything at full brightness
 
+        # When rendering at 1 world-tile per cell, prefer the *actual* local-map glyphs
+        # (walls, stairs, site structures, etc.) over the overmap/biome sampler output.
+        #
+        # This keeps the pretty zoomed LoD terrain while ensuring authored/placed
+        # features are still visible.
+        biome_glyph_to_color = None
+        special_glyph_to_color = None
+        try:
+            from edgecaster import biome as _biome
+
+            biome_glyph_to_color = {
+                ch: _biome.BIOME_COLORS[i] for i, ch in enumerate(_biome.BIOME_CHARS)
+            }
+            special_glyph_to_color = {
+                ">": (220, 220, 255),  # stairs down
+                "<": (220, 220, 255),  # stairs up
+                "=": (255, 240, 160),  # lab console
+            }
+        except Exception:
+            biome_glyph_to_color = None
+            special_glyph_to_color = None
+
         for rr in range(rows):
             cy = base_cy + rr
             py_f = map_rect.y + rr * cell_h_tiles * world_scale - offset_px_y - pad_px_y
@@ -932,11 +954,30 @@ class AsciiRenderer:
                     if world.in_bounds(local_x, local_y):
                         tile = world.get_tile(local_x, local_y)
                         if tile:
+                            # Prefer true local glyphs at LoD=1 tile/cell so walls/structures are visible.
+                            try:
+                                ch = str(tile.glyph or ch)
+                                # If this is ever more than 1 char, take the first for font rendering.
+                                if len(ch) > 1:
+                                    ch = ch[0]
+                            except Exception:
+                                pass
+
                             if not tile.explored:
                                 continue
+
+                            # Choose a stable color for known glyphs so structures don’t inherit biome colors.
+                            base_color = orig_color
+                            if biome_glyph_to_color is not None and ch in biome_glyph_to_color:
+                                base_color = biome_glyph_to_color[ch]
+                            elif special_glyph_to_color is not None and ch in special_glyph_to_color:
+                                base_color = special_glyph_to_color[ch]
+
                             if not tile.visible:
-                                r, g, b = orig_color
+                                r, g, b = base_color
                                 color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
+                            else:
+                                color = base_color
                     else:
                         # Out-of-zone cells should behave like unexplored tiles: render nothing.
                         continue

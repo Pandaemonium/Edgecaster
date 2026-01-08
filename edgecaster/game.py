@@ -1255,11 +1255,15 @@ class Game:
         self.build_tile_julia_grid()
         # Seed rune anchors now that we have a Julia grid.
         self._init_rune_anchors()
-        # Do NOT render the world map during startup.
+        # Kick off world-map rendering in a background thread during startup so the
+        # first time you open the map it (usually) appears immediately.
         #
-        # Overmap rendering is CPU-heavy (and can contend with the main thread via the GIL),
-        # so we start it lazily when the player opens the world map (or when corruption
-        # forces a rerender).
+        # NOTE: This should never block game start, but it may contend for CPU while
+        # generating. If that ever becomes a problem again, make this configurable.
+        try:
+            self._start_world_map_thread(reason="startup", view=None, view_token=0)
+        except Exception:
+            pass
 
     def _init_rune_anchors(self) -> None:
         """Seed rune-anchor POIs and corresponding corruption suppressors."""
@@ -2618,7 +2622,7 @@ class Game:
                         name=name,
                         pos=spawn_pos,
                         faction="npc",
-                        stats=Stats(hp=1, max_hp=1),
+                        stats=Stats(hp=50, max_hp=50),
                         tags={"npc_id": spec.npc_id},
                         disposition=npc_def.get("base_disposition", 0),
                         affiliations=tuple(npc_def.get("factions", [])),

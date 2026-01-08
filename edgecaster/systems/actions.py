@@ -531,12 +531,12 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
         "What the fuck, who the fuck is this dude, what an ugly bitch, am I right?",
         f"Nobody likes you, {player_name}, they're just afraid to say it to your face.",
         "Get punked asshole! Imps forever, imp pride!",
-        "I hope you crash in an overflow error!",
         "I hate you!!! A lot!!!",
         "I hope you get ambushed by an alligator.",
         "Hey look at this guy over here, Mr. Big Deal Fractal guy, ooh la la he's a fancy fucker ain't he?",
         "Berryfucker!",
         "Your MOM is self-similar!",
+        "You know what would fit perfectly around that pinky slot... my asshole!"
         
     ]
 
