@@ -478,15 +478,90 @@ Performance rule:
 • No forced transition to “beautiful but slow” modes
 
 ===============================================================================
-SECTION 10 - CURRENT STATUS & DIRECTION
+SECTION 10 - GAME SYSTEMS (edgecaster/systems/)
+
+Game.py decomposition extracts cohesive subsystems into dedicated modules.
+Game class remains the orchestrator; subsystems handle domain logic.
+
+-------------------------------------------------------------------------------
+Extracted Systems (in systems/):
+
+params.py
+• ParamManager class for stat-gated action parameters
+• Manages param_defs (per-action parameter bounds) and param_state (current indices)
+• Handles stat-based gating (e.g., "requires 3+ focus to unlock damage level 2")
+• Interface: ParamManager.get_value(action, key), .adjust(action, key, delta)
+
+legendaries.py
+• Legendary creature generation and POI discovery
+• Allocates unique lair POIs for procedurally-generated bosses
+• Tracks rumored vs discovered POIs for world map visibility
+• Interface: init_legendaries(game), add_poi_rumor(game, poi_id), discover_pois_for_level(game, level)
+
+lorenz_aura.py
+• Strange Attractor's butterfly storm game integration
+• Contact damage to enemies overlapping the projected storm
+• Zone transition handling (hard-snap storm to player)
+• Uses lorenz.py for core math; this module is game-side orchestration
+• Interface: advance_lorenz(game, level, delta), reset_on_zone_change(game, player), has_lorenz_aura(game)
+
+action_runner.py
+• Unified action execution for players and AI
+• Handles cooldown gating, charge consumption (wands), confirmation prompts
+• Calculates final delay with slow/haste modifiers
+• Eliminates divergence between player (queue_actor_action) and AI (_monster_act) paths
+• Interface: run_action(game, actor_id, action_name, ...), run_ai_action(game, actor_id, action_name, ...)
+
+spawning.py
+• Entity factories and spawn orchestration
+• Template loading and caching for enemies (enemies.yaml) and entities (entities.yaml)
+• Position finding for valid spawn locations
+• Actor registration with AI scheduling
+• Spawn functions: enemies, imps, echoes, berries, NPCs, mentor
+• Interface: spawn_enemies(game, level, count), spawn_entity_from_template(game, template_id, pos), register_actor(game, level, actor)
+
+inventory.py
+• Container logic and item manipulation
+• Inventory access and creation (get_inventory, get_player_inventory)
+• Pick up and drop items (player_pick_up, drop_inventory_item)
+• Move items between inventories (recursive container handling)
+• Equipment tagging (equip/unequip slots)
+• Eating/consuming items
+• Interface: player_pick_up(game), drop_inventory_item(game, index), move_item_between_inventories(game, src, idx, dest), equip_item_to_slot(game, owner, item, slot)
+
+-------------------------------------------------------------------------------
+Integration Pattern:
+
+Game class retains thin wrappers that delegate to subsystems:
+    def add_poi_rumor(self, poi_id, *, log=True):
+        legendaries_system.add_poi_rumor(self, poi_id, log=log)
+
+Subsystems accept (game, ...) as first parameter for access to shared state.
+TYPE_CHECKING imports prevent circular dependencies.
+
+-------------------------------------------------------------------------------
+Remaining Extractions (see vision_documents/spring_cleaning.txt):
+
+• action_runner.py - Unified player/AI action execution
+• spawning.py - Entity factories and spawn orchestration
+• inventory.py - Container and equipment management
+• pattern_ops.py - Pattern activation and geometry
+• combat.py - Attack resolution and damage
+• zones.py - Zone creation and transitions
+• overmap.py - Julia grid and corruption orchestration
+
+===============================================================================
+SECTION 11 - CURRENT STATUS & DIRECTION
 
 Completed:
 • Continuous local → global zoom
 • Snapped LoD terrain rendering
 • Camera responsibility centralized
 • Renderer slimmed down (post–ascii purge)
+• game.py decomposition started (params, legendaries, lorenz_aura extracted)
 
 Immediate focus:
+• Continue game.py decomposition (action_runner, spawning next)
 • Entity LoD integration (creatures at different scales)
 • Further renderer modularization (sprite backend later)
 
@@ -496,7 +571,7 @@ Keep responsibilities clean.
 Refactor surgically.
 
 ===============================================================================
-SECTION 11 - MERCHANTS & TRADING
+SECTION 12 - MERCHANTS & TRADING
 
 Trade is implemented as a standard PanelScene popup with no renderer-side logic.
 

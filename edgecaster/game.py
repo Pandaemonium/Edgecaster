@@ -35,6 +35,9 @@ from edgecaster.systems import ai
 from edgecaster.systems.params import ParamManager
 from edgecaster.systems import legendaries as legendaries_system
 from edgecaster.systems import lorenz_aura
+from edgecaster.systems import action_runner
+from edgecaster.systems import spawning as spawning_system
+from edgecaster.systems import inventory as inventory_system
 from . import lorenz
 import math
 from edgecaster import prototypes
@@ -771,217 +774,36 @@ class Game:
     # See vision_documents/spring_cleaning.txt for refactor plan
     # =========================================================================
 
+    # =========================================================================
+    # PHASE 0: ACTION EXECUTION -> systems/action_runner.py
+    # These methods delegate to action_runner module
+    # See vision_documents/spring_cleaning.txt for refactor plan
+    # =========================================================================
+
     def queue_actor_action(self, actor_id: str, action_name: str, **kwargs) -> None:
         """
         Perform a generic action for the given actor and advance time based
         on the action's speed.
 
-        This uses the existing per-level event system (_advance_time)
-        instead of introducing a separate scheduler.
+        Delegates to action_runner.run_action for unified player/AI action handling.
         """
-        lvl = self._level()
-        action_def = get_action(action_name)
-        delay = action_delay(self.cfg, action_def)  # use cfg, not 'config'
-        # Internal hook: allows "are you sure?" prompts to re-invoke the action
-        # without re-prompting or causing recursion.
+        # Pop internal confirmation-skip flags for backwards compatibility
         skip_confirm = bool(kwargs.pop("__skip_confirm", False))
         skip_wand_confirm = bool(kwargs.pop("__skip_wand_confirm", False))
 
-        # Determine cooldown origin: prefer the item currently granting the action (held/equipped),
-        # otherwise fall back to the actor itself.
-        origin = None
-        actor = None
-        try:
-            actor = self._level().actors.get(actor_id)
-        except Exception:
-            actor = None
-        if actor is not None:
-            # If the action is intrinsic to the actor (built-in kit or permanently learned),
-            # prefer the actor as the origin so item-granted versions (e.g. wands) don't
-            # accidentally consume charges or apply item cooldowns for an ability you
-            # already know.
-            tags = getattr(actor, "tags", {}) or {}
-            intrinsic = tags.get("intrinsic_actions")
-            if not isinstance(intrinsic, list):
-                intrinsic = list(getattr(actor, "actions", ()) or [])
-                tags["intrinsic_actions"] = list(intrinsic)
-                try:
-                    actor.tags = tags
-                except Exception:
-                    pass
-            intrinsic_set = {str(x) for x in intrinsic if x}
-            if str(action_name) not in intrinsic_set:
-                inv = self.inventories.get(actor_id, [])
-                origin = item_grants.find_grant_origin(inv, action_name)
-        if origin is None and actor is not None:
-            origin = actor
+        result = action_runner.run_action(
+            self,
+            actor_id,
+            action_name,
+            skip_confirm=skip_confirm,
+            skip_wand_confirm=skip_wand_confirm,
+            is_ai=False,
+            **kwargs,
+        )
 
-        # Cooldown gate
-        if origin is not None:
-            cd = getattr(origin, "cooldowns", {}).get(action_name, 0)
-            if cd > 0:
-                if actor_id == self.player_id:
-                    self.log.add("That ability is recharging.")
-                return
-
-        # Charges gate (for item-granted actions like wands).
-        #
-        # Charges live on the item instance so they persist across owners.
-        charge_item = None
-        charges_left: int | None = None
-        try:
-            if actor is not None and origin is not None and origin is not actor:
-                inv = self.inventories.get(actor_id, [])
-                if origin in inv:
-                    charge_item = origin
-        except Exception:
-            charge_item = None
-
-        if charge_item is not None:
-            tags = getattr(charge_item, "tags", None) or {}
-            if "charges" in tags:
-                try:
-                    charges_left = int(tags.get("charges", 0))
-                except Exception:
-                    charges_left = 0
-                if charges_left <= 0:
-                    if actor_id == self.player_id:
-                        self.log.add("That item is out of charges.")
-                    return
-
-        # Wand confirmation (player only): confirm before consuming a wand charge.
-        if (
-            not skip_wand_confirm
-            and actor_id == self.player_id
-            and charge_item is not None
-            and charges_left is not None
-        ):
-            is_wand_use = False
-            try:
-                for act, mode in item_grants.get_item_grants(charge_item):
-                    if act == str(action_name) and mode == item_grants.GRANT_MODE_EQUIPPED:
-                        is_wand_use = True
-                        break
-            except Exception:
-                is_wand_use = False
-
-            if is_wand_use:
-                item_name = getattr(charge_item, "name", None) or "wand"
-                body = f"This will use your {item_name} ({charges_left} charges remaining.) Confirm?"
-                call_kwargs = dict(kwargs)
-
-                def on_choice(idx: int, game: "Game") -> None:
-                    if idx != 1:
-                        return
-                    game.queue_actor_action(
-                        actor_id,
-                        action_name,
-                        __skip_wand_confirm=True,
-                        **call_kwargs,
-                    )
-
-                self.set_urgent(
-                    body,
-                    title="Confirm",
-                    choices=["Cancel", "Confirm"],
-                    on_choice_effect=on_choice,
-                )
-                return
-
-        # Optional action-defined confirmation prompt (player only).
-        # This is intentionally general so other actions can add confirmations later.
-        confirm = getattr(action_def, "confirm", None)
-        if (
-            not skip_confirm
-            and callable(confirm)
-            and actor_id == self.player_id
-        ):
-            try:
-                prompt = confirm(self, actor_id, **kwargs)
-            except Exception:
-                prompt = None
-            if prompt is not None:
-                # Snapshot kwargs so the closure can't be affected by later mutation.
-                call_kwargs = dict(kwargs)
-                if skip_wand_confirm:
-                    call_kwargs["__skip_wand_confirm"] = True
-                choices = list(getattr(prompt, "choices", None) or ["Cancel", "Proceed"])
-                proceed_idx = int(getattr(prompt, "proceed_index", 1))
-                proceed_idx = max(0, min(proceed_idx, len(choices) - 1))
-
-                def on_choice(idx: int, game: "Game") -> None:
-                    if idx != proceed_idx:
-                        return
-                    game.queue_actor_action(
-                        actor_id,
-                        action_name,
-                        __skip_confirm=True,
-                        **call_kwargs,
-                    )
-
-                self.set_urgent(
-                    str(getattr(prompt, "body", "")),
-                    title=str(getattr(prompt, "title", "")),
-                    choices=choices,
-                    on_choice_effect=on_choice,
-                )
-                return
-
-        # Do the actual action right now.
-        action_def.func(self, actor_id, **kwargs)
-
-        # Consume a charge if this action comes from a charged item.
-        if charge_item is not None:
-            tags = getattr(charge_item, "tags", None) or {}
-            if "charges" in tags:
-                try:
-                    charges_left = int(tags.get("charges", 0))
-                except Exception:
-                    charges_left = 0
-                before = charges_left
-                charges_left = max(0, charges_left - 1)
-                tags["charges"] = charges_left
-                if "max_charges" not in tags:
-                    raw_max = tags.get("charges_max")
-                    try:
-                        tags["max_charges"] = int(raw_max) if raw_max is not None else int(before)
-                    except Exception:
-                        tags["max_charges"] = int(before)
-                try:
-                    charge_item.tags = tags
-                except Exception:
-                    pass
-                if charges_left == 0:
-                    # Auto-unequip spent items (e.g. wands). This keeps the UI/state
-                    # consistent and prevents "equipped but unusable" cases.
-                    try:
-                        if equipment_system.is_equipped(charge_item):
-                            self.unequip_item(str(actor_id), str(getattr(charge_item, "id", "")))
-                    except Exception:
-                        pass
-                    if actor_id == self.player_id:
-                        name = getattr(charge_item, "name", None) or "item"
-                        self.log.add(f"The {name.lower()} is spent.")
-
-        # Apply cooldown if defined
-        if origin is not None and action_def.cooldown_ticks > 0:
-            try:
-                origin.cooldowns[action_name] = action_def.cooldown_ticks
-            except Exception:
-                pass
-
-        # Slow effects: multiply delay by any active slow multiplier on the actor.
-        if actor is not None:
-            mult = self._slow_mult(actor)
-            if mult > 1.0:
-                delay = int(math.ceil(delay * mult))
-
-            # Optional additive tick offset (e.g. War Drummer haste).
-            # Keep actions non-instant if they were already non-instant.
-            delay = self._apply_action_tick_offset(actor, delay)
-
-        # Advance game time by the appropriate amount.
-        self._advance_time(lvl, delay)
+        # If action executed (not blocked or pending confirmation), advance time
+        if result.executed:
+            self._advance_time(self._level(), result.delay)
 
     def queue_player_action(self, action_name: str, **kwargs) -> None:
         """Convenience wrapper to queue an action for the current player."""
@@ -1105,20 +927,11 @@ class Game:
     # =========================================================================
 
     def get_inventory(self, owner_id: str) -> List[Entity]:
-        """Return the inventory list for a given owner id, creating it if needed.
-
-        This keeps all inventories in a single registry on the Game object,
-        while still conceptually treating them as per-entity state.
-        """
-        return self.inventories.setdefault(owner_id, [])
+        return inventory_system.get_inventory(self, owner_id)
 
     @property
     def player_inventory(self) -> List[Entity]:
-        """Convenience accessor for the current host's inventory.
-
-        This automatically follows body-swaps by using the current player_id.
-        """
-        return self.get_inventory(self.player_id)
+        return inventory_system.get_player_inventory(self)
 
     @property
     def messages(self) -> MessageLog:
@@ -1904,183 +1717,25 @@ class Game:
 
     # =========================================================================
     # PHASE 1: SPAWNING & ENTITY FACTORIES -> systems/spawning.py
-    # Enemy/NPC/entity spawning, template instantiation
+    # These methods now delegate to spawning_system module
     # See vision_documents/spring_cleaning.txt for refactor plan
     # =========================================================================
 
     def _enemy_template_ids(self) -> List[str]:
-        cached = getattr(self, "_enemy_ids_cache", None)
-        if cached is not None:
-            return cached
-
-        content_dir = Path(__file__).resolve().parent / "content"
-        yaml_path = content_dir / "enemies.yaml"
-
-        with yaml_path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or []
-
-        enemy_ids: List[str] = []
-        for entry in data:
-            if not isinstance(entry, dict):
-                continue
-            tid = entry.get("id")
-            if not tid:
-                continue
-
-            faction = entry.get("faction", "hostile")
-            tags_raw = entry.get("tags", None)
-            if isinstance(tags_raw, dict):
-                tags = set(tags_raw.keys())
-            elif isinstance(tags_raw, list):
-                tags = set(tags_raw)
-            else:
-                tags = set()
-
-            # Only randomize true enemies
-            if faction != "hostile":
-                continue
-            if "player_only" in tags or "no_random_spawn" in tags or "training_dummy" in tags:
-                continue
-
-            enemy_ids.append(tid)
-
-        if not enemy_ids:
-            enemy_ids = ["imp"]
-
-        self._enemy_ids_cache = enemy_ids
-        return enemy_ids
+        """Get valid enemy template IDs. Delegates to spawning_system."""
+        return spawning_system.get_enemy_template_ids(self)
 
 
 
 
 
     def _spawn_enemies(self, level: LevelState, count: int) -> None:
-        """Spawn a handful of enemies using the data-driven enemy factory."""
-        spawned = 0
-        attempts = 0
-        while spawned < count and attempts < 200:
-            attempts += 1
-            x = self.rng.randint(1, level.world.width - 2)
-            y = self.rng.randint(1, level.world.height - 2)
-            pos = (x, y)
-
-            if not level.world.is_walkable(x, y):
-                continue
-            if self._actor_at(level, pos):
-                continue
-            if self._blocking_entity_at(level, pos):
-                continue
-
-            # Pick a random enemy template id from enemies.yaml
-            enemy_ids = self._enemy_template_ids()
-            tmpl_id = self.rng.choice(enemy_ids)
-
-            mob = enemy_factory.spawn_enemy(tmpl_id, pos)
-            # 50% bismuth imps (works for both direct "imp" spawns and YAML-driven pools)
-            if tmpl_id == "imp" and self.rng.random() < 0.2:
-                mob.tags = getattr(mob, "tags", None) or {}
-                mob.tags["visual_effects"] = ["bismuth"]
-                # Temporary naming convention (will be replaced by descriptor system later)
-                if not mob.name.lower().startswith("bismuth "):
-                    mob.name = "bismuth imp"
-
-            # Slaver packs: a slaver arrives chained to two brutes.
-            if tmpl_id == "slaver":
-                mob.tags = getattr(mob, "tags", None) or {}
-                group_id = f"slaver_chain_{mob.id}"
-                mob.tags["slaver_group_id"] = group_id
-
-                brute_ids: list[str] = []
-                offsets = [
-                    (-1, 0),
-                    (1, 0),
-                    (0, -1),
-                    (0, 1),
-                    (-1, -1),
-                    (1, -1),
-                    (-1, 1),
-                    (1, 1),
-                    (-2, 0),
-                    (2, 0),
-                    (0, -2),
-                    (0, 2),
-                ]
-                try:
-                    self.rng.shuffle(offsets)
-                except Exception:
-                    pass
-
-                for dx, dy in offsets:
-                    if len(brute_ids) >= 2:
-                        break
-                    tx, ty = x + dx, y + dy
-                    if not level.world.in_bounds(tx, ty):
-                        continue
-                    if not level.world.is_walkable(tx, ty):
-                        continue
-                    if self._actor_at(level, (tx, ty)):
-                        continue
-                    if self._blocking_entity_at(level, (tx, ty)):
-                        continue
-                    if self._entity_at(level, (tx, ty)):
-                        continue
-
-                    brute = enemy_factory.spawn_enemy("shackled_brute", (tx, ty))
-                    brute.tags = getattr(brute, "tags", None) or {}
-                    brute.tags["slaver_master_id"] = mob.id
-                    brute.tags["slaver_group_id"] = group_id
-                    level.actors[brute.id] = brute
-                    level.entities[brute.id] = brute
-                    brute_ids.append(brute.id)
-
-                    # Schedule AI for this brute too.
-                    self._schedule(
-                        level,
-                        self.cfg.action_time_fast,
-                        lambda aid=brute.id, lvl=level: self._monster_act(lvl, aid),
-                    )
-
-                if brute_ids:
-                    mob.tags["slaver_minion_ids"] = brute_ids
-            level.actors[mob.id] = mob
-            level.entities[mob.id] = mob  # mirror into entities
-
-            # Schedule AI for this enemy.
-            self._schedule(
-                level,
-                self.cfg.action_time_fast,
-                lambda aid=mob.id, lvl=level: self._monster_act(lvl, aid),
-            )
-            spawned += 1
+        """Spawn enemies. Delegates to spawning_system."""
+        spawning_system.spawn_enemies(self, level, count)
 
     def _entity_templates(self) -> Dict[str, dict]:
-        """Load non-actor entity templates from content/entities.yaml (cached)."""
-        cached = getattr(self, "_entity_templates_cache", None)
-        if cached is not None:
-            return cached
-
-        content_dir = Path(__file__).resolve().parent / "content"
-        yaml_path = content_dir / "entities.yaml"
-
-        try:
-            with yaml_path.open("r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or []
-        except FileNotFoundError:
-            self._debug(f"No entities.yaml found at {yaml_path}; using empty template set.")
-            data = []
-
-        templates: Dict[str, dict] = {}
-        for entry in data:
-            if not isinstance(entry, dict):
-                continue
-            tid = entry.get("id")
-            if not tid:
-                continue
-            templates[tid] = entry
-
-        self._entity_templates_cache = templates
-        self._debug(f"Loaded {len(templates)} entity templates from {yaml_path}.")
-        return templates
+        """Get entity templates. Delegates to spawning_system."""
+        return spawning_system.get_entity_templates(self)
 
     def _spawn_entity_from_template(
         self,
@@ -2088,145 +1743,16 @@ class Game:
         pos: Tuple[int, int],
         overrides: Optional[Dict[str, object]] = None,
     ) -> Entity:
-        """Instantiate a plain Entity from the unified prototype bucket.
-
-        Uses prototypes.resolve_proto() so inheritance works across entities.yaml/enemies.yaml/etc.
-        `overrides` merges on top; `tags` merge dict-wise (entity-style).
-        """
-        spec = prototypes.resolve_proto(template_id)
-        if not spec:
-            raise KeyError(f"Unknown prototype id {template_id!r}")
-
-        eid = self._new_id()
-        ent = spawn_factory.build_entity_from_spec(
-            spec=spec,
-            eid=eid,
-            pos=pos,
-            overrides=overrides,  # tags merge handled inside builder
-        )
-
-        # Initialize per-instance item charges.
-        #
-        # This is a general mechanism used by "consumable" item-granted actions like
-        # wands (equip-grants) or future items. Charges are stored on the item entity
-        # itself so they persist if the item changes owners.
-        try:
-            tags = getattr(ent, "tags", None) or {}
-            # Backward compatibility: if YAML specified charges explicitly, keep it,
-            # but still ensure we have a max_charges value for UI/inspection later.
-            if "charges" not in tags:
-                raw_min = tags.get("charges_min")
-                raw_max = tags.get("charges_max")
-                if raw_min is not None or raw_max is not None:
-                    lo = int(raw_min if raw_min is not None else raw_max)
-                    hi = int(raw_max if raw_max is not None else raw_min)
-                    if hi < lo:
-                        lo, hi = hi, lo
-                    lo = max(0, lo)
-                    hi = max(0, hi)
-                    charges = int(self.rng.randint(lo, hi))
-                    tags["charges"] = charges
-                    tags.setdefault("max_charges", charges)
-            else:
-                try:
-                    tags.setdefault("max_charges", int(tags.get("charges")))
-                except Exception:
-                    pass
-            ent.tags = tags
-        except Exception:
-            pass
-
-        return ent
-
-
+        """Spawn entity from template. Delegates to spawning_system."""
+        return spawning_system.spawn_entity_from_template(self, template_id, pos, overrides)
 
     def _spawn_mentor(self, level: LevelState) -> None:
-        """Place mentor NPC near entry if available."""
-        entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
-        x, y = entry
-        offsets = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (-2, 0), (0, 2), (0, -2)]
-        for dx, dy in offsets:
-            tx, ty = x + dx, y + dy
-            if not level.world.in_bounds(tx, ty):
-                continue
-            if not level.world.is_walkable(tx, ty):
-                continue
-            if self._actor_at(level, (tx, ty)):
-                continue
-            aid = self._new_id()
-            mentor = Human(
-                id=aid,
-                name="Mentor",
-                pos=(tx, ty),
-                faction="npc",
-                stats=Stats(hp=1, max_hp=1),
-                tags={"npc_id": "mentor"},
-                disposition=10,
-                affiliations=("edgecasters",),
-            )
-            # Custom look/inspect description
-            mentor.description = "Old, one-eyed, and syphilitic, yet unerringly optimistic."
-            
-
-            level.actors[aid] = mentor
-            level.entities[aid] = mentor
-            break
-
+        """Place mentor NPC near entry. Delegates to spawning_system."""
+        spawning_system.spawn_mentor(self, level)
 
     def _spawn_intro_npcs(self, level: LevelState) -> None:
-        """Place the Hexmage and Cartographer near the entry if space allows."""
-        entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
-        x, y = entry
-        offsets = [
-            (1, 1),
-            (-1, 1),
-            (2, 1),
-            (-2, 1),
-            (1, -1),
-            (-1, -1),
-            (2, -1),
-            (-2, -1),
-        ]
-        npc_specs = [
-            ("hexmage", "The Hexmage"),
-            ("cartographer", "The Cartographer"),
-        ]
-        placed = 0
-        for npc_id, name in npc_specs:
-            for dx, dy in offsets:
-                tx, ty = x + dx + placed, y + dy  # small shift per NPC to avoid collisions
-                if not level.world.in_bounds(tx, ty):
-                    continue
-                if not level.world.is_walkable(tx, ty):
-                    continue
-                if self._actor_at(level, (tx, ty)):
-                    continue
-                aid = self._new_id()
-                npc = Human(
-                    id=aid,
-                    name=name,
-                    pos=(tx, ty),
-                    faction="npc",
-                    stats=Stats(hp=1, max_hp=1),
-                    tags={"npc_id": npc_id},
-                    disposition=5,
-                    affiliations=("edgecasters",),
-                    glyph="&",
-                )
-
-                # Custom per-NPC description for the look system
-                if npc_id == "hexmage":
-                    npc.description = "This runecaster is swarming with bees."
-                elif npc_id == "cartographer":
-                    npc.description = "This chick is WAY too hot to be a cartographer."
-                    
-
-                level.actors[aid] = npc
-                level.entities[aid] = npc
-                placed += 1
-                break
-            # continue loop to next npc even if not placed; failure to place is tolerated
-
+        """Place intro NPCs. Delegates to spawning_system."""
+        spawning_system.spawn_intro_npcs(self, level)
 
     def _spawn_poi_contents(self, level: LevelState, coord: Tuple[int, int, int]) -> None:
         """Spawn NPCs defined by any POIs attached to this level."""
@@ -2508,34 +2034,7 @@ class Game:
                 level.entities[actor.id] = actor
 
     def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
-        if count <= 0:
-            return
-        placed = 0
-        attempts = 0
-        defs = list(npcs.NPC_DEFS.items())
-        while placed < count and attempts < 100 and defs:
-            attempts += 1
-            npc_id, npc_data = defs[min(placed, len(defs) - 1)]
-            # place near entry if possible
-            ex, ey = level.world.entry
-            x = max(1, min(level.world.width - 2, ex + (placed * 2)))
-            y = max(1, min(level.world.height - 2, ey + 1))
-            if not level.world.is_walkable(x, y) or self._actor_at(level, (x, y)):
-                continue
-            aid = self._new_id()
-            actor = Human(
-                id=aid,
-                name=npc_data.get("name", "NPC"),
-                pos=(x, y),
-                faction="npc",
-                stats=Stats(hp=1, max_hp=1),
-                tags={"npc_id": npc_id},
-                disposition=npc_data.get("base_disposition", 0),
-                affiliations=tuple(npc_data.get("factions", [])),
-            )
-            level.actors[aid] = actor
-            level.entities[aid] = actor  # now NPCs are entities too
-            placed += 1
+        spawning_system.spawn_npcs(self, level, count)
 
     def _spawn_entities_near(
         self,
@@ -2545,36 +2044,7 @@ class Game:
         place_entity: Callable[[Tuple[int, int]], None],
         radius: int = 3,
     ) -> int:
-        """Generic helper to spawn up to `count` entities within `radius` of center.
-
-        `place_entity` is called with each chosen (x, y) and is responsible for
-        inserting the new thing into `level.entities` (and `level.actors`, if
-        applicable).
-        """
-        cx, cy = center
-        spawned = 0
-        attempts = 0
-        max_attempts = count * 20
-
-        while spawned < count and attempts < max_attempts:
-            attempts += 1
-            x = cx + self.rng.randint(-radius, radius)
-            y = cy + self.rng.randint(-radius, radius)
-
-            if not level.world.in_bounds(x, y):
-                continue
-            if not level.world.is_walkable(x, y):
-                continue
-            if self._actor_at(level, (x, y)):
-                continue
-            # Avoid stacking multiple entities on the same tile for now.
-            if self._entity_at(level, (x, y)):
-                continue
-
-            place_entity((x, y))
-            spawned += 1
-
-        return spawned
+        return spawning_system.spawn_entities_near(self, level, center, count, place_entity, radius)
 
     def _spawn_imps_near(
         self,
@@ -2583,27 +2053,7 @@ class Game:
         count: int,
         radius: int = 3,
     ) -> int:
-        """Spawn up to `count` imps within `radius` tiles of center using templates."""
-
-        def place_imp(pos: Tuple[int, int]) -> None:
-            imp = enemy_factory.spawn_enemy("imp", pos)
-
-            # 50% chance this imp is bismuth (visual effect applies to its glyph/color everywhere)
-            if self.rng.random() < 0.2:
-                imp.tags = getattr(imp, "tags", None) or {}
-                imp.tags["visual_effects"] = ["bismuth"]
-                imp.name = "bismuth imp"
-
-            level.actors[imp.id] = imp
-            level.entities[imp.id] = imp
-
-            self._schedule(
-                level,
-                self.cfg.action_time_fast,
-                lambda aid=imp.id, lvl=level: self._monster_act(lvl, aid),
-            )
-
-        return self._spawn_entities_near(level, center, count, place_imp, radius)
+        return spawning_system.spawn_imps_near(self, level, center, count, radius)
 
 
     def _spawn_echoes_near(
@@ -2613,19 +2063,7 @@ class Game:
         count: int,
         radius: int = 3,
     ) -> int:
-        """Spawn hostile fractal echoes within `radius` of center."""
-        def place_echo(pos: Tuple[int, int]) -> None:
-            echo = enemy_factory.spawn_enemy("fractal_echo", pos)
-            level.actors[echo.id] = echo
-            level.entities[echo.id] = echo
-
-            self._schedule(
-                level,
-                self.cfg.action_time_fast,
-                lambda aid=echo.id, lvl=level: self._monster_act(lvl, aid),
-            )
-
-        return self._spawn_entities_near(level, center, count, place_echo, radius)
+        return spawning_system.spawn_echoes_near(self, level, center, count, radius)
 
 
     def _spawn_berries_near(
@@ -2635,104 +2073,10 @@ class Game:
         count: int,
         radius: int = 3,
     ) -> int:
-        """Spawn up to `count` test berries within `radius` tiles of center
-        using data-driven templates from entities.yaml.
-        """
-        templates = self._entity_templates()
-        berry_ids: List[str] = []
-        for tid, tmpl in templates.items():
-            tags = tmpl.get("tags", {}) or {}
-            # Any template tagged as a test berry is allowed.
-            if tags.get("test_berry"):
-                berry_ids.append(tid)
-
-        if not berry_ids:
-            # Fallback to legacy behaviour if no berries defined.
-            self._debug("No test_berry templates found in entities.yaml.")
-            return 0
-
-        def place_berry(pos: Tuple[int, int]) -> None:
-            template_id = self.rng.choice(berry_ids)
-            ent = self._spawn_entity_from_template(template_id, pos)
-            level.entities[ent.id] = ent
-
-        return self._spawn_entities_near(level, center, count, place_berry, radius)
-
-
-
-
-
+        return spawning_system.spawn_berries_near(self, level, center, count, radius)
 
     def _scatter_test_berries(self, level: LevelState, count: int = 30) -> None:
-        """Scatter some colored berry entities across the map as a test.
-
-        Berries are defined in content/entities.yaml via the `test_berry` tag.
-        """
-        if count <= 0:
-            return
-
-        templates = self._entity_templates()
-        berry_ids: List[str] = []
-        for tid, tmpl in templates.items():
-            tags = tmpl.get("tags", {}) or {}
-            if tags.get("test_berry"):
-                berry_ids.append(tid)
-
-        if not berry_ids:
-            self._debug("No test_berry templates in entities.yaml; skipping berry scatter.")
-            return
-
-        placed = 0
-        attempts = 0
-        max_attempts = count * 50
-        world = level.world
-
-        while placed < count and attempts < max_attempts:
-            attempts += 1
-            x = self.rng.randint(0, world.width - 1)
-            y = self.rng.randint(0, world.height - 1)
-
-            if not world.in_bounds(x, y):
-                continue
-            if not world.is_walkable(x, y):
-                continue
-            if self._actor_at(level, (x, y)):
-                continue
-            if self._entity_at(level, (x, y)):
-                continue
-
-            template_id = self.rng.choice(berry_ids)
-            ent = self._spawn_entity_from_template(template_id, (x, y))
-            level.entities[ent.id] = ent
-            placed += 1
-
-        # Sprinkle some bismuth piles alongside berries for testing.
-        bismuth_count = max(1, count // 10)
-        for _ in range(bismuth_count):
-            attempts = 0
-            while attempts < max_attempts and placed < count + bismuth_count:
-                attempts += 1
-                x = self.rng.randint(0, world.width - 1)
-                y = self.rng.randint(0, world.height - 1)
-                if not world.in_bounds(x, y):
-                    continue
-                if not world.is_walkable(x, y):
-                    continue
-                if self._actor_at(level, (x, y)):
-                    continue
-                if self._entity_at(level, (x, y)):
-                    continue
-                try:
-                    ent = self._spawn_entity_from_template(
-                        "bismuth_pile",
-                        (x, y),
-                        overrides={"tags": {"amount": self.rng.randint(3, 15)}},
-                    )
-                    level.entities[ent.id] = ent
-                    placed += 1
-                    break
-                except Exception:
-                    continue
+        spawning_system.scatter_test_berries(self, level, count)
 
     def debug_spawn_inventory_near_player(self, radius: int = 3, *, count: int | None = None) -> None:
         """Debug helper: conjure a curated batch of meta-Inventories near the player.
@@ -3068,29 +2412,12 @@ class Game:
             actor.tags = tags
 
     def _slow_mult(self, actor: Actor) -> float:
-        tags = getattr(actor, "tags", {}) or {}
-        try:
-            mult = float(tags.get("frozen_slow", 1.0))
-        except Exception:
-            mult = 1.0
-        return max(1.0, mult)
+        """Get slow multiplier for an actor. Delegates to action_runner."""
+        return action_runner.slow_mult(actor)
 
     def _apply_action_tick_offset(self, actor: Actor, delay: int) -> int:
-        """Apply an additive tick offset to an action delay.
-
-        This is used for effects like the War Drummer's haste (reduce tick costs).
-        We clamp non-instant actions to at least 1 tick to avoid 0-tick AI loops.
-        """
-        if delay <= 0:
-            return delay
-        tags = getattr(actor, "tags", None) or {}
-        try:
-            offset = int(tags.get("action_tick_offset", 0))
-        except Exception:
-            offset = 0
-        if offset == 0:
-            return delay
-        return max(1, int(delay) + int(offset))
+        """Apply additive tick offset. Delegates to action_runner."""
+        return action_runner.apply_tick_offset(actor, delay)
 
 
     # =========================================================================
@@ -3400,164 +2727,22 @@ class Game:
             choices=["Continue..."],
         )
 
-    # --- PHASE 2 (continued): inventory manipulation methods ---
+    # --- PHASE 2: inventory manipulation methods -> systems/inventory.py ---
 
     def player_pick_up(self) -> None:
-        """Attempt to pick up an item under the player's feet."""
-        level = self._level()
-        if self.player_id not in level.actors:
-            return
-        player = level.actors[self.player_id]
-        ent = self._entity_at(level, player.pos)
-        if ent is None:
-            self.log.add("There is nothing here to pick up.")
-            return
+        inventory_system.player_pick_up(self)
 
-        # Currency piles are auto-absorbed.
-        tags = getattr(ent, "tags", {}) or {}
-        if tags.get("currency") == "bismuth":
-            amt = int(tags.get("amount", 0))
-            if amt > 0:
-                self.adjust_currency(amt, log=True)
-                # Play cash pickup sound (best-effort).
-                self._play_sfx("assets/sfx/chaching.mp3", volume=0.7)
-            # remove entity from world
-            for eid, e in list(level.entities.items()):
-                if e is ent:
-                    del level.entities[eid]
-                    break
-            return
-
-        # Don't allow picking up actors or non-item entities (for now).
-        if hasattr(ent, "faction") or getattr(ent, "kind", None) != "item":
-            self.log.add("You can't pick that up.")
-            return
-
-        # Remove from the level's entity list.
-        for eid, e in list(level.entities.items()):
-            if e is ent:
-                del level.entities[eid]
-                break
-
-        # Append the item to the current host's inventory.
-        inv = self.player_inventory
-        inv.append(ent)
-
-        name = getattr(ent, "name", None) or "item"
-        article = "an" if name and name[0].lower() in "aeiou" else "a"
-        self.log.add(f"You pick up {article} {name.lower()}.")
-
-        # Item-granted actions (held/equipped) are computed from inventory state,
-        # so they appear/disappear automatically when the item is moved.
-        try:
-            grants = item_grants.get_item_grants(ent)
-        except Exception:
-            grants = []
-        if grants:
-            self.refresh_actor_actions(self.player_id)
-            for action, mode in grants:
-                if mode != "held":
-                    continue
-                # Held-grants are temporary, so avoid "learned" language here.
-                self.log.add(f"You can {action.replace('_', ' ')} while holding it.")
     def drop_inventory_item(self, index: int) -> None:
-        """Drop an item from the inventory onto the player's current tile."""
-        inv = self.player_inventory
-        if not (0 <= index < len(inv)):
-            return
-
-        level = self._level()
-        if self.player_id not in level.actors:
-            return
-        player = level.actors[self.player_id]
-
-        ent = inv[index]
-        # If the item was equipped, unequip it first so it stops granting stats/actions.
-        try:
-            if equipment_system.is_equipped(ent):
-                self.unequip_item(self.player_id, str(getattr(ent, "id", "")))
-        except Exception:
-            pass
-        ent = inv.pop(index)
-
-        # Place the entity at the player's current position in the world.
-        ent.pos = player.pos
-        level.entities[ent.id] = ent  # type: ignore[index]
-
-        name = getattr(ent, "name", None) or "item"
-        article = "an" if name and name[0].lower() in "aeiou" else "a"
-        self.log.add(f"You drop {article} {name.lower()}.")
-        self.refresh_actor_actions(self.player_id)
-
+        inventory_system.drop_inventory_item(self, index)
 
     def eat_item_from_inventory(self, owner_id: str, index: int) -> None:
-        """Consume an item from the given owner's inventory, if edible.
-
-        This is mainly used for test berries. The *player* always gets
-        healed, regardless of where the item was stored.
-        """
-        inv = self.get_inventory(owner_id)
-        if not inv:
-            if owner_id == self.player_id:
-                self.log.add("You have nothing to eat.")
-            return
-
-        if not (0 <= index < len(inv)):
-            return
-
-        ent = inv[index]
-        tags = getattr(ent, "tags", {}) or {}
-
-        is_berry = bool(tags.get("test_berry")) or tags.get("item_type") in {
-            "blueberry",
-            "raspberry",
-            "strawberry",
-        }
-        if not is_berry:
-            name = getattr(ent, "name", None) or "item"
-            if owner_id == self.player_id:
-                self.log.add(f"You can't eat the {name.lower()}.")
-            else:
-                # Slightly different flavour when rummaging in bags.
-                self.log.add(f"You decide not to eat the {name.lower()}.")
-            return
-
-        # Actually consume the item from that inventory.
-        inv.pop(index)
-
-        # Heal the player a bit for eating a berry.
-        player = self._player()
-        before = player.stats.hp
-        player.stats.hp = min(player.stats.max_hp, player.stats.hp + 1)
-        after = player.stats.hp
-
-        if after > before:
-            self.log.add("That was tart!")
-        else:
-            self.log.add("That was really tart!")
+        inventory_system.eat_item_from_inventory(self, owner_id, index)
 
     def eat_inventory_item(self, index: int) -> None:
-        """Backward-compatible wrapper for older code paths.
-
-        Eats from the current host's inventory (player).
-        """
-        self.eat_item_from_inventory(self.player_id, index)
-
+        inventory_system.eat_inventory_item(self, index)
 
     def take_from_container(self, container_id: str, index: int) -> None:
-        """Move an item from another entity's inventory into the player's.
-
-        Legacy helper used by some older UIs / AI. Newer code should prefer
-        ``move_item_between_inventories`` directly so we have a single place
-        to handle recursive containers and logging.
-        """
-        self.move_item_between_inventories(
-            container_id,
-            index,
-            self.player_id,
-        )
-
-
+        inventory_system.take_from_container(self, container_id, index)
 
     def move_item_between_inventories(
         self,
@@ -3565,155 +2750,19 @@ class Game:
         index: int,
         dest_owner_id: str,
     ) -> None:
-        """Move an item from one entity's inventory to another's.
-
-        Used by the UI to 'bag' items into containers (or later,
-        for trading, stealing, etc.).
-        """
-        # No-op if same inventory
-        if src_owner_id == dest_owner_id:
-            return
-
-        src_inv = self.get_inventory(src_owner_id)
-        if not (0 <= index < len(src_inv)):
-            return
-
-        # Peek at the item first so we can detect self-removal on recursive bags.
-        ent = src_inv[index]
-        if getattr(ent, "id", None) == src_owner_id:
-            # Special case: a container trying to remove itself from its own inventory.
-            # Do not mutate any inventories; just narrate the failure.
-            name = getattr(ent, "name", None) or "item"
-            self.log.add(
-                f"You turn the {name.lower()} inside out, but it remains itself."
-            )
-            return
-
-        # If the item is equipped, unequip it before transferring inventories.
-        # "Equipped" is a relationship to the current owner; it should not travel.
-        try:
-            if equipment_system.is_equipped(ent):
-                tags = getattr(ent, "tags", {}) or {}
-                tags.pop("equipped_slot", None)
-                tags.pop("equipped", None)
-                ent.tags = tags
-        except Exception:
-            pass
-
-        # Normal case: actually move the item.
-        ent = src_inv.pop(index)
-        dst_inv = self.get_inventory(dest_owner_id)
-        dst_inv.append(ent)
-
-        name = getattr(ent, "name", None) or "item"
-        article = "an" if name and name[0].lower() in "aeiou" else "a"
-
-        # Friendly label for the destination
-        if dest_owner_id == self.player_id:
-            dest_label = "your inventory"
-        else:
-            dest_label = dest_owner_id
-            level = self._level()
-
-            # First try level entities / actors
-            dest_ent = level.entities.get(dest_owner_id) or level.actors.get(dest_owner_id)
-
-            # If not found there, search through all inventories for a matching entity id
-            if dest_ent is None:
-                for inv_owner, items in self.inventories.items():
-                    for it in items:
-                        if getattr(it, "id", None) == dest_owner_id:
-                            dest_ent = it
-                            break
-                    if dest_ent is not None:
-                        break
-
-        if dest_ent is not None:
-            dest_name = getattr(dest_ent, "name", None)
-            if dest_name:
-                dest_label = dest_name
-
-        self.log.add(f"You put {article} {name.lower()} into {dest_label}.")
-
-        # Item-granted actions can appear/disappear for either inventory owner.
-        self.refresh_actor_actions(src_owner_id)
-        self.refresh_actor_actions(dest_owner_id)
-
-
-    # ---------------------------------------------------------------------
-    # Equipment tagging (UI-facing, lightweight)
-    # ---------------------------------------------------------------------
+        inventory_system.move_item_between_inventories(self, src_owner_id, index, dest_owner_id)
 
     def get_equipped_in_slot(self, owner_id: str, slot_id: str):
-        """Return the inventory entity currently tagged as equipped in `slot_id`, if any."""
-        inv = self.get_inventory(str(owner_id))
-        sid = str(slot_id)
-        for ent in inv:
-            tags = getattr(ent, "tags", {}) or {}
-            cur = tags.get("equipped_slot") or tags.get("equipped")
-            if cur is not None and str(cur) == sid:
-                return ent
-        return None
+        return inventory_system.get_equipped_in_slot(self, owner_id, slot_id)
 
     def unequip_slot(self, owner_id: str, slot_id: str) -> None:
-        """Clear any item currently equipped in `slot_id`."""
-        ent = self.get_equipped_in_slot(owner_id, slot_id)
-        if ent is None:
-            return
-        tags = getattr(ent, "tags", {}) or {}
-        tags.pop("equipped_slot", None)
-        tags.pop("equipped", None)
-        try:
-            setattr(ent, "tags", tags)
-        except Exception:
-            pass
-        self.refresh_actor_actions(str(owner_id))
+        inventory_system.unequip_slot(self, owner_id, slot_id)
 
     def unequip_item(self, owner_id: str, item_id: str) -> None:
-        """Clear equipped tags from the given inventory item if present."""
-        inv = self.get_inventory(str(owner_id))
-        iid = str(item_id)
-        for ent in inv:
-            if str(getattr(ent, "id", "")) != iid:
-                continue
-            tags = getattr(ent, "tags", {}) or {}
-            tags.pop("equipped_slot", None)
-            tags.pop("equipped", None)
-            try:
-                setattr(ent, "tags", tags)
-            except Exception:
-                pass
-            self.refresh_actor_actions(str(owner_id))
-            return
+        inventory_system.unequip_item(self, owner_id, item_id)
 
     def equip_item_to_slot(self, owner_id: str, item_id: str, slot_id: str) -> None:
-        """Tag an existing inventory item as 'equipped' in `slot_id`.
-
-        For now, this is intentionally permissive: any item can be equipped into any slot.
-        If the slot is already occupied, it will be replaced.
-        """
-        oid = str(owner_id)
-        iid = str(item_id)
-        sid = str(slot_id)
-
-        # Ensure only one item occupies a slot.
-        self.unequip_slot(oid, sid)
-
-        inv = self.get_inventory(oid)
-        for ent in inv:
-            if str(getattr(ent, "id", "")) != iid:
-                continue
-            tags = getattr(ent, "tags", {}) or {}
-            tags["equipped_slot"] = sid
-            try:
-                setattr(ent, "tags", tags)
-            except Exception:
-                pass
-            self.refresh_actor_actions(oid)
-            return
-
-
-
+        inventory_system.equip_item_to_slot(self, owner_id, item_id, slot_id)
 
 
     @property
@@ -4338,10 +3387,11 @@ class Game:
         # DEBUG: same behaviour as edge-wrap: one Inventory per arrival.
         self.debug_spawn_inventory_near_player(count=1)
 
-    # --- PHASE 0 (continued): AI action execution path ---
-    # This should unify with queue_actor_action in systems/action_runner.py
-
     def _monster_act(self, level: LevelState, id: str) -> None:
+        """AI actor turn execution.
+
+        Uses action_runner for unified action handling (cooldowns, delays).
+        """
         actor = level.actors.get(id)
         if actor is None or not actor.alive:
             return
@@ -4381,49 +3431,20 @@ class Game:
         delay = self.cfg.action_time_fast
 
         if action_name:
-            from edgecaster.systems.actions import get_action, action_delay
-
-            try:
-                action_def = get_action(action_name)
-            except KeyError:
-                # Unknown action: fall back to a simple wait.
-                delay = self.cfg.action_time_fast
+            # Use unified action runner for AI actions
+            result = action_runner.run_ai_action(
+                self,
+                actor.id,
+                action_name,
+                **(params or {}),
+            )
+            if result.executed:
+                delay = result.delay
             else:
-                # Cooldown gate for AI actions (player actions go through queue_actor_action).
-                # Without this, any AI ability with a cooldown (e.g. war_drum) would spam.
-                try:
-                    cd = int(getattr(actor, "cooldowns", {}).get(action_name, 0))
-                except Exception:
-                    cd = 0
-                if cd > 0:
-                    action_name, params = "wait", {}
-                    try:
-                        action_def = get_action("wait")
-                        delay = action_delay(self.cfg, action_def)
-                    except Exception:
-                        delay = self.cfg.action_time_fast
-                else:
-                    # Perform the action immediately; do NOT call _advance_time
-                    # here, because we are already executing inside the event
-                    # queue (_advance_time's loop).
-                    action_def.func(self, actor.id, **(params or {}))
-                    delay = action_delay(self.cfg, action_def)
-
-                    # Apply cooldown if defined (origin is always the actor for AI right now).
-                    if getattr(action_def, "cooldown_ticks", 0) > 0:
-                        try:
-                            actor.cooldowns[action_name] = int(action_def.cooldown_ticks)
-                        except Exception:
-                            pass
+                # Action blocked (cooldown, etc.) - fall back to wait
+                delay = self.cfg.action_time_fast
 
         # --- Schedule next turn -----------------------------------------
-        # Apply slow effects to monsters too.
-        mult = self._slow_mult(actor)
-        if mult > 1.0:
-            delay = int(math.ceil(delay * mult))
-
-        # Optional additive tick offset (e.g. War Drummer haste).
-        delay = self._apply_action_tick_offset(actor, delay)
         self._schedule(
             level,
             delay,
