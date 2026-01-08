@@ -95,6 +95,7 @@
   description: No lights without shadow, no trees without blight.
   tags:
     shadow: true
+    xp_drain: true
 
 - id: fractal_echo
   name: Fractal Echo
@@ -241,6 +242,80 @@
   tags:
     no_random_spawn: true
 
+- id: slaver
+  name: Slaver
+  glyph: "S"
+  color: [220, 180, 120]
+  actions: [move, wait]
+  base_hp: 7
+  base_mana: 0
+  base_attack: 2
+  base_defense: 0
+  speed: 1.0
+  faction: hostile
+  ai: skirmisher
+  xp: 8
+  parent: humanoid
+  description: A cruel handler dragging chained brutes behind.
+  tags:
+    slaver: true
+
+- id: shackled_brute
+  name: Shackled Brute
+  glyph: "B"
+  color: [180, 160, 140]
+  actions: [brute_move, wait]
+  base_hp: 12
+  base_mana: 0
+  base_attack: 5
+  base_defense: 1
+  speed: 0.6
+  faction: hostile
+  ai: shackled_brute
+  xp: 10
+  parent: humanoid
+  description: A hulking brute bound in chains, swinging with brutal force.
+  tags:
+    shackled_brute: true
+    no_random_spawn: true
+
+- id: devilish_dandy
+  name: Devilish Dandy
+  glyph: "d"
+  color: [255, 80, 170]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 0
+  base_attack: 2
+  base_defense: 0
+  speed: 1.1
+  faction: hostile
+  ai: skirmisher
+  xp: 9
+  parent: demon
+  description: A finely-attired demon who sports a sage cap.
+  drop_items: ["sage_cap"]
+  tags:
+    devilish_dandy: true
+
+- id: gory_ascetic
+  name: Gory Ascetic
+  glyph: "a"
+  color: [230, 80, 80]
+  actions: [move, wait, flagellate_self]
+  base_hp: 8
+  base_mana: 0
+  base_attack: 2
+  base_defense: 0
+  speed: 1.0
+  faction: hostile
+  ai: gory_ascetic
+  xp: 10
+  parent: humanoid
+  description: A bloody self-flagellating fanatic who whips themself into a frenzy.
+  drop_items: ["whip"]
+  tags:
+    gory_ascetic: true
 
 
 

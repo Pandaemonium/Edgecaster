@@ -1639,6 +1639,141 @@ class AsciiRenderer:
                 pass
         return canvas
 
+    def _draw_slaver_chains(self, world: World, entities, *, tile_px_f: float) -> None:
+        """Draw visual-only chains between slavers and their chained brutes.
+
+        This intentionally does NOT enforce gameplay rules; the chain leash is enforced in `Game._handle_move_or_attack`.
+
+        Tuning knobs are grouped below:
+        - `base_w` / `core_w`: chain thickness (pixels)
+        - `base_col` / `core_col`: chain color + opacity
+        - `sag`: how much the chain droops (pixels)
+        - `pip_*`: link "pips" that make it read as a chain
+        """
+        if tile_px_f <= 0:
+            return
+
+        # Build a quick id->actor map from renderables (we only chain actors).
+        actor_by_id = {}
+        for ent in entities:
+            if not hasattr(ent, "faction"):
+                continue
+            if not getattr(ent, "alive", True):
+                continue
+            ent_id = getattr(ent, "id", None)
+            if isinstance(ent_id, str) and ent_id:
+                actor_by_id[ent_id] = ent
+
+        if not actor_by_id:
+            return
+
+        screen_rect = pygame.Rect(0, 0, self.width, self.height)
+        now = time.monotonic()
+
+        for brute in actor_by_id.values():
+            tags = getattr(brute, "tags", None) or {}
+            master_id = tags.get("slaver_master_id")
+            if not master_id:
+                continue
+
+            master = actor_by_id.get(str(master_id))
+            if master is None:
+                continue
+
+            ax, ay = getattr(master, "pos", (None, None))
+            bx, by = getattr(brute, "pos", (None, None))
+            if ax is None or ay is None or bx is None or by is None:
+                continue
+
+            # Match entity visibility: only draw chains when both endpoints are visible.
+            tile_a = world.get_tile(int(ax), int(ay))
+            tile_b = world.get_tile(int(bx), int(by))
+            if not tile_a or not tile_b or not tile_a.visible or not tile_b.visible:
+                continue
+
+            # Tile centers in screen pixels (same mapping used by entity glyph/sprite rendering).
+            a_px = (
+                float(ax) * tile_px_f + float(self.origin_x) + tile_px_f * 0.5,
+                float(ay) * tile_px_f + float(self.origin_y) + tile_px_f * 0.5,
+            )
+            b_px = (
+                float(bx) * tile_px_f + float(self.origin_x) + tile_px_f * 0.5,
+                float(by) * tile_px_f + float(self.origin_y) + tile_px_f * 0.5,
+            )
+
+            # Quick reject: if the entire chain is off-screen, skip.
+            if not screen_rect.inflate(40, 40).collidepoint(int(a_px[0]), int(a_px[1])) and not screen_rect.inflate(40, 40).collidepoint(int(b_px[0]), int(b_px[1])):
+                continue
+
+            # Local overlay for alpha (keeps the chain subtle without tinting the whole screen).
+            pad = int(max(6, min(18, tile_px_f * 0.35)))
+            left = int(min(a_px[0], b_px[0]) - pad)
+            top = int(min(a_px[1], b_px[1]) - pad)
+            w = int(abs(a_px[0] - b_px[0]) + pad * 2)
+            h = int(abs(a_px[1] - b_px[1]) + pad * 2)
+            fx_rect = pygame.Rect(left, top, max(2, w), max(2, h)).clip(screen_rect)
+            if fx_rect.w <= 1 or fx_rect.h <= 1:
+                continue
+
+            overlay = pygame.Surface((fx_rect.w, fx_rect.h), pygame.SRCALPHA)
+
+            axp, ayp = a_px
+            bxp, byp = b_px
+            dx = bxp - axp
+            dy = byp - ayp
+            length = math.hypot(dx, dy)
+            if length <= 1e-6:
+                continue
+
+            # Perpendicular unit for droop.
+            px = -dy / length
+            py = dx / length
+
+            # TUNING: sag in pixels (droop). We keep it small so it reads as a chain, not a big curve.
+            dist_tiles = max(abs(int(bx) - int(ax)), abs(int(by) - int(ay)))
+            sag = min(tile_px_f * 0.45, float(dist_tiles) * tile_px_f * 0.18)
+            phase = (hash((str(master_id), getattr(brute, "id", ""))) & 0xFFFF) / 65536.0 * math.tau
+            sag *= 0.85 + 0.15 * math.sin(now * 2.0 + phase)
+
+            cxp = (axp + bxp) * 0.5 + px * sag
+            cyp = (ayp + byp) * 0.5 + py * sag
+
+            # Sample a quadratic Bezier (A -> C -> B).
+            steps = int(max(10, min(28, length / 12.0)))
+            pts: list[tuple[int, int]] = []
+            for i in range(steps + 1):
+                t = i / float(steps)
+                omt = 1.0 - t
+                x = omt * omt * axp + 2.0 * omt * t * cxp + t * t * bxp
+                y = omt * omt * ayp + 2.0 * omt * t * cyp + t * t * byp
+                pts.append((int(x - fx_rect.x), int(y - fx_rect.y)))
+
+            if len(pts) < 2:
+                continue
+
+            # TUNING: thickness/colors (keep thin so it hugs tiles).
+            base_w = 2
+            core_w = 1
+            base_col = (18, 18, 28, 150)   # darker = more subtle
+            core_col = (185, 185, 210, 210)
+
+            pygame.draw.lines(overlay, base_col, False, pts, base_w)
+            pygame.draw.lines(overlay, core_col, False, pts, core_w)
+
+            # TUNING: chain "links" along the curve.
+            pip_r = 1
+            pip_col = (210, 210, 235, 200)
+            pip_step = max(3, int(len(pts) / max(6, dist_tiles * 3)))
+            for j in range(0, len(pts), pip_step):
+                pygame.draw.circle(overlay, pip_col, pts[j], pip_r)
+
+            # Endpoint shackles.
+            shackle_r = 2
+            pygame.draw.circle(overlay, (235, 235, 250, 220), pts[0], shackle_r, 1)
+            pygame.draw.circle(overlay, (235, 235, 250, 220), pts[-1], shackle_r, 1)
+
+            self.surface.blit(overlay, fx_rect.topleft)
+
 
     def draw_entities(self, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
@@ -1682,7 +1817,10 @@ class AsciiRenderer:
         tile_px_f = float(getattr(self, "tile_px", float(self.tile)))
         tile_px_i = max(1, int(round(tile_px_f)))
 
-        # Approx “map viewport” bounds, used as a sane cap for huge zoom-in.
+        # Visual-only overlay: slaver chains (drawn underneath actor glyphs/sprites).
+        self._draw_slaver_chains(world, entities_sorted, tile_px_f=tile_px_f)
+
+        # Approx "map viewport" bounds, used as a sane cap for huge zoom-in.
         map_w = max(1, int(self.width - self.log_panel_width))
         map_h = max(1, int(self.height - self.ability_bar_height - self._map_origin_base()[1]))
         min_dim = max(1, min(map_w, map_h))

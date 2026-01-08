@@ -429,6 +429,26 @@ def _action_move(game: Any, actor_id: str, **kwargs: Any) -> None:
     game._handle_move_or_attack(level, actor_id, dx, dy)
 
 
+@register_action("brute_move", label="Move", speed="slow")
+def _action_brute_move(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """A slower movement/attack action used by heavy enemies (e.g. Shackled Brutes)."""
+    dx = int(kwargs.get("dx", 0))
+    dy = int(kwargs.get("dy", 0))
+    if dx == 0 and dy == 0:
+        return
+
+    if not hasattr(game, "_level") or not hasattr(game, "_handle_move_or_attack"):
+        actor = getattr(game, "actors", {}).get(actor_id)
+        if actor is None or not hasattr(actor, "pos"):
+            return
+        x, y = actor.pos
+        actor.pos = (x + dx, y + dy)
+        return
+
+    level = game._level()
+    game._handle_move_or_attack(level, actor_id, dx, dy)
+
+
 @register_action("yawp", label="Yawp", speed="instant")
 def _debug_yawp(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
@@ -1387,6 +1407,56 @@ def _action_meditate(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_meditate"):
         game.act_meditate(actor_id)
+
+
+@register_action("flagellate_self", label="Flagellate", speed="fast")
+def _action_flagellate_self(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Self-harm to gain a temporary attack bonus (used by the Gory Ascetic)."""
+    if not hasattr(game, "_level"):
+        return
+    level = game._level()
+    actor = getattr(level, "actors", {}).get(actor_id)
+    if actor is None:
+        return
+
+    # Never allow this to kill the actor.
+    try:
+        if int(getattr(actor.stats, "hp", 0)) <= 1:
+            return
+    except Exception:
+        return
+
+    # Damage self.
+    try:
+        actor.stats.hp = max(1, int(actor.stats.hp) - 1)
+        actor.stats.clamp()
+    except Exception:
+        return
+
+    # Apply/refresh a short-lived attack bonus.
+    tags = getattr(actor, "tags", None) or {}
+    try:
+        cur_bonus = int(tags.get("attack_bonus", 0))
+    except Exception:
+        cur_bonus = 0
+    try:
+        cur_ticks = int(tags.get("attack_bonus_ticks", 0))
+    except Exception:
+        cur_ticks = 0
+
+    bonus_amt = 2
+    bonus_ticks = 60  # 60 ticks = ~6 "fast" turns at default config
+    tags["attack_bonus"] = max(cur_bonus, bonus_amt)
+    tags["attack_bonus_ticks"] = max(cur_ticks, bonus_ticks)
+    actor.tags = tags
+
+    # Only narrate if the player could plausibly observe it.
+    try:
+        tile = level.world.get_tile(*actor.pos)
+        if tile is not None and getattr(tile, "visible", False):
+            game.log.add(f"{actor.name} lashes themself into a frenzy!")
+    except Exception:
+        pass
 
 
 @register_action(

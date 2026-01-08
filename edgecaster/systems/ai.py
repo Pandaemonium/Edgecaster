@@ -37,6 +37,11 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if behavior_id == "imp_loudmouth":
         return _imp_loudmouth(game, level, actor)
 
+    if behavior_id == "shackled_brute":
+        return _shackled_brute(game, level, actor)
+    if behavior_id == "gory_ascetic":
+        return _gory_ascetic(game, level, actor)
+
     # Default: generic “walk toward player and bump” brain.
     return _generic_walk_toward(game, level, actor)
 
@@ -110,6 +115,104 @@ def _skirmisher(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     Intent: low HP, medium damage, might kite; may drop items on death (handled elsewhere).
     Currently: generic walk toward + bump attack.
     """
+    return _generic_walk_toward(game, level, actor)
+
+
+def _shackled_brute(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """
+    Shackled brute.
+    Intent: hard-hitting but slow (uses brute_move, which costs more ticks).
+    """
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    player_id = getattr(game, "player_id", None)
+    if player_id is None or player_id not in level.actors:
+        return ("wait", {})
+
+    player = level.actors[player_id]
+
+    # Reputation-driven hostility: don't chase/bump-attack the player unless hostile.
+    try:
+        if not reputation_system.is_hostile(game, actor, player):
+            return ("wait", {}) if "wait" in available else (available[0], {})
+    except Exception:
+        pass
+
+    move_action = "brute_move" if "brute_move" in available else ("move" if "move" in available else None)
+    if move_action is None:
+        return ("wait", {}) if "wait" in available else (available[0], {})
+
+    px, py = player.pos
+    ax, ay = actor.pos
+    dx = px - ax
+    dy = py - ay
+
+    if abs(dx) + abs(dy) == 1:
+        return (move_action, {"dx": dx, "dy": dy})
+
+    rng = getattr(game, "rng", None)
+    if rng is None:
+        import random as rng  # type: ignore
+
+    candidates = []
+    if dx > 0:
+        candidates.append((1, 0))
+    if dx < 0:
+        candidates.append((-1, 0))
+    if dy > 0:
+        candidates.append((0, 1))
+    if dy < 0:
+        candidates.append((0, -1))
+
+    if not candidates:
+        return ("wait", {}) if "wait" in available else (available[0], {})
+
+    step = rng.choice(candidates)  # type: ignore[attr-defined]
+    return (move_action, {"dx": step[0], "dy": step[1]})
+
+
+def _gory_ascetic(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """
+    Gory ascetic.
+    Intent: when close to the player, self-harm to gain a short attack bonus.
+    """
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    player_id = getattr(game, "player_id", None)
+    if player_id is None or player_id not in level.actors:
+        return ("wait", {})
+
+    player = level.actors[player_id]
+
+    # Reputation-driven hostility: don't chase/bump-attack the player unless hostile.
+    try:
+        if not reputation_system.is_hostile(game, actor, player):
+            return ("wait", {}) if "wait" in available else (available[0], {})
+    except Exception:
+        pass
+
+    ax, ay = actor.pos
+    px, py = player.pos
+    dist = abs(px - ax) + abs(py - ay)
+
+    # Only flagellate when close.
+    if dist <= 2 and "flagellate_self" in available:
+        tags = getattr(actor, "tags", None) or {}
+        try:
+            ticks = int(tags.get("attack_bonus_ticks", 0))
+        except Exception:
+            ticks = 0
+        try:
+            hp = int(getattr(actor.stats, "hp", 0))
+        except Exception:
+            hp = 0
+        if ticks <= 0 and hp > 1:
+            return ("flagellate_self", {})
+
     return _generic_walk_toward(game, level, actor)
 
 

@@ -153,6 +153,19 @@
   tags:
     item_type: koch_knife
 
+- id: whip
+  name: Whip
+  glyph: "~"
+  color: [230, 160, 160]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A long leather whip, still wet with old blood."
+  tags:
+    item_type: whip
+    value_bismuth: 12
+
 # --- SIMPLE EQUIPMENT (STAT MODS) ------------------------------------------
 # These items can be equipped into any slot for now.
 # Stat bonuses are read from `tags.equip_mods` while the item is equipped.

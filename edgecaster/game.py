@@ -2175,6 +2175,65 @@ class Game:
                 # Temporary naming convention (will be replaced by descriptor system later)
                 if not mob.name.lower().startswith("bismuth "):
                     mob.name = "bismuth imp"
+
+            # Slaver packs: a slaver arrives chained to two brutes.
+            if tmpl_id == "slaver":
+                mob.tags = getattr(mob, "tags", None) or {}
+                group_id = f"slaver_chain_{mob.id}"
+                mob.tags["slaver_group_id"] = group_id
+
+                brute_ids: list[str] = []
+                offsets = [
+                    (-1, 0),
+                    (1, 0),
+                    (0, -1),
+                    (0, 1),
+                    (-1, -1),
+                    (1, -1),
+                    (-1, 1),
+                    (1, 1),
+                    (-2, 0),
+                    (2, 0),
+                    (0, -2),
+                    (0, 2),
+                ]
+                try:
+                    self.rng.shuffle(offsets)
+                except Exception:
+                    pass
+
+                for dx, dy in offsets:
+                    if len(brute_ids) >= 2:
+                        break
+                    tx, ty = x + dx, y + dy
+                    if not level.world.in_bounds(tx, ty):
+                        continue
+                    if not level.world.is_walkable(tx, ty):
+                        continue
+                    if self._actor_at(level, (tx, ty)):
+                        continue
+                    if self._blocking_entity_at(level, (tx, ty)):
+                        continue
+                    if self._entity_at(level, (tx, ty)):
+                        continue
+
+                    brute = enemy_factory.spawn_enemy("shackled_brute", (tx, ty))
+                    brute.tags = getattr(brute, "tags", None) or {}
+                    brute.tags["slaver_master_id"] = mob.id
+                    brute.tags["slaver_group_id"] = group_id
+                    level.actors[brute.id] = brute
+                    level.entities[brute.id] = brute
+                    brute_ids.append(brute.id)
+
+                    # Schedule AI for this brute too.
+                    self._schedule(
+                        level,
+                        self.cfg.action_time_fast,
+                        lambda aid=brute.id, lvl=level: self._monster_act(lvl, aid),
+                    )
+
+                if brute_ids:
+                    mob.tags["slaver_minion_ids"] = brute_ids
             level.actors[mob.id] = mob
             level.entities[mob.id] = mob  # mirror into entities
 
@@ -3149,6 +3208,23 @@ class Game:
             else:
                 tags["frozen_slow"] = mult
                 tags["frozen_slow_timer"] = acc
+            actor.tags = tags
+
+        # Tick down temporary attack bonuses (used by enemies like the Gory Ascetic).
+        for actor in level.actors.values():
+            tags = getattr(actor, "tags", None) or {}
+            try:
+                ticks = int(tags.get("attack_bonus_ticks", 0))
+            except Exception:
+                ticks = 0
+            if ticks <= 0:
+                continue
+            ticks = max(0, ticks - delta)
+            if ticks <= 0:
+                tags.pop("attack_bonus", None)
+                tags.pop("attack_bonus_ticks", None)
+            else:
+                tags["attack_bonus_ticks"] = ticks
             actor.tags = tags
 
     def _slow_mult(self, actor: Actor) -> float:
@@ -4369,6 +4445,53 @@ class Game:
                 self.log.add("You bump into a wall.")
             return
 
+        # Slaver packs: enforce that chains never exceed their leash length.
+        # This is implemented at the movement dispatcher level so it applies
+        # universally (AI, possession, scripted moves), not just in the AI layer.
+        try:
+            CHAIN_RANGE = 4  # tiles, using Chebyshev distance (same convention as adjacency checks)
+            tags = getattr(actor, "tags", None) or {}
+            proto_id = str(getattr(actor, "proto_id", "") or tags.get("template_id") or "")
+
+            # Brutes: cannot step farther than CHAIN_RANGE from their slaver.
+            master_id = tags.get("slaver_master_id")
+            if master_id:
+                master = level.actors.get(str(master_id))
+                if master is None or not getattr(master, "alive", False):
+                    # If the master no longer exists, treat the brute as freed.
+                    tags.pop("slaver_master_id", None)
+                    actor.tags = tags
+                else:
+                    mx, my = master.pos
+                    cur_d = max(abs(x - mx), abs(y - my))
+                    new_d = max(abs(nx - mx), abs(ny - my))
+                    if cur_d <= CHAIN_RANGE:
+                        # Normal case: prevent exceeding the leash.
+                        if new_d > CHAIN_RANGE:
+                            return
+                    else:
+                        # Recovery case (e.g. after a teleport): allow only moves that don't stretch further.
+                        if new_d > cur_d:
+                            return
+
+            # Slavers: cannot step farther than CHAIN_RANGE from any still-chained brutes.
+            if proto_id == "slaver":
+                for other in level.actors.values():
+                    otags = getattr(other, "tags", None) or {}
+                    if otags.get("slaver_master_id") != actor.id:
+                        continue
+                    bx, by = other.pos
+                    cur_d = max(abs(x - bx), abs(y - by))
+                    new_d = max(abs(nx - bx), abs(ny - by))
+                    if cur_d <= CHAIN_RANGE:
+                        if new_d > CHAIN_RANGE:
+                            return
+                    else:
+                        if new_d > cur_d:
+                            return
+        except Exception:
+            pass
+
         actor.pos = (nx, ny)
         if id == self.player_id:
             level.need_fov = True
@@ -4380,7 +4503,48 @@ class Game:
                 self.request_fractal_editor()
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
-        dmg = 1
+        def _has_class_tag(actor: Actor, key: str) -> bool:
+            try:
+                t = getattr(actor, "tags", None) or {}
+                inner = t.get("tags")
+                if isinstance(inner, dict):
+                    return bool(inner.get(key))
+                if isinstance(inner, (list, tuple, set)):
+                    return key in inner
+            except Exception:
+                pass
+            return False
+
+        # Base damage uses template stats, plus any temporary bonuses.
+        try:
+            base_attack = int(getattr(attacker, "tags", {}).get("base_attack", 1))
+        except Exception:
+            base_attack = 1
+        try:
+            base_defense = int(getattr(defender, "tags", {}).get("base_defense", 0))
+        except Exception:
+            base_defense = 0
+        try:
+            bonus = int(getattr(attacker, "tags", {}).get("attack_bonus", 0))
+        except Exception:
+            bonus = 0
+
+        dmg = max(1, base_attack + bonus - base_defense)
+
+        # Special case: some attackers drain XP instead of HP (e.g., Shadows).
+        if defender.id == self.player_id and _has_class_tag(attacker, "xp_drain"):
+            xp_dmg = max(1, base_attack + bonus)
+            try:
+                defender.stats.xp = max(0, int(defender.stats.xp) - xp_dmg)
+            except Exception:
+                pass
+
+            if defender.id == self.player_id:
+                self.log.add(f"{attacker.name} drains {xp_dmg} XP from you.")
+            else:
+                self.log.add(f"{attacker.name} drains {xp_dmg} XP from {defender.name}.")
+            return
+
         defender.stats.hp -= dmg
         defender.stats.clamp()
         if attacker.id == self.player_id:
@@ -5615,6 +5779,7 @@ class Game:
             actor_pos = (None, None)
 
         aid = actor.id
+        proto_id = getattr(actor, "proto_id", None) or (getattr(actor, "tags", {}) or {}).get("template_id")
 
         # Remove from actors dict
         if aid in level.actors:
@@ -5623,6 +5788,48 @@ class Game:
         # Remove from entities dict (so it stops being rendered)
         if aid in level.entities:
             del level.entities[aid]
+
+        # Slaver death frees chained brutes (they become neutral).
+        if str(proto_id or "") == "slaver":
+            freed = 0
+            for other in list(level.actors.values()):
+                try:
+                    otags = getattr(other, "tags", None) or {}
+                except Exception:
+                    continue
+                if otags.get("slaver_master_id") != aid:
+                    continue
+                try:
+                    other.faction = "neutral"
+                except Exception:
+                    pass
+                try:
+                    otags.pop("slaver_master_id", None)
+                    otags["freed_from_slaver"] = True
+                    other.tags = otags
+                except Exception:
+                    pass
+                freed += 1
+            if freed > 0:
+                self.log.add("The shackled brutes are freed as the slaver falls.")
+
+        # Prototype-driven item drops (e.g. whip, sage cap).
+        try:
+            from edgecaster import prototypes as _prototypes
+
+            spec = _prototypes.resolve_proto(str(proto_id)) if proto_id else {}
+            drop_items = spec.get("drop_items") or []
+            if isinstance(drop_items, (list, tuple)) and actor_pos and actor_pos[0] is not None and actor_pos[1] is not None:
+                drop_pos = (int(actor_pos[0]), int(actor_pos[1]))
+                for drop_pid in drop_items:
+                    try:
+                        ent = self._spawn_entity_from_template(str(drop_pid), drop_pos)
+                        level.entities[ent.id] = ent
+                        self.log.add(f"{actor.name} drops {ent.name}.")
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
         # Guaranteed legendary loot drop (after removal so the tile is unoccupied).
         try:
