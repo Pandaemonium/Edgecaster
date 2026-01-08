@@ -374,11 +374,69 @@ def _safe_float(v: Any) -> Optional[float]:
     except Exception:
         return None
 
-def _display_body_node_label(nid: str) -> str:
+def _display_body_node_label(
+    nid: str,
+    node_spec: dict | None = None,
+    *,
+    cur_nodes: dict | None = None,
+) -> str:
+    """
+    UI label for a body node.
+
+    Append '*' ONLY if this node has a meaningful sub-schema (i.e. proto resolves to
+    a schema that actually differs from the current schema), not merely because we're
+    inside some zoomed subtree.
+    """
+    has_children = False
+    if isinstance(node_spec, dict):
+        proto = node_spec.get("proto")
+        if proto:
+            try:
+                sub = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+            except Exception:
+                sub = {"root": None, "nodes": {}}
+
+            sub_nodes = sub.get("nodes") if isinstance(sub, dict) else None
+            meaningful = bool(isinstance(sub_nodes, dict) and len(sub_nodes) > 1)
+
+            # If we know the current schema's nodes, suppress '*' when proto doesn't
+            # actually change the node set (common with inherited/alias protos).
+            if meaningful and isinstance(cur_nodes, dict) and isinstance(sub_nodes, dict):
+                try:
+                    meaningful = {str(k) for k in sub_nodes.keys()} != {str(k) for k in cur_nodes.keys()}
+                except Exception:
+                    pass
+
+            has_children = bool(meaningful)
+
     s = str(nid)
-    if s.endswith("_m"):
-        return f"mirrored {s[:-2]}"
-    return s
+    is_mirrored = s.endswith("_m")
+    base_id = s[:-2] if is_mirrored else s
+
+    # Prefer name from the node spec (if the schema provides it).
+    label = None
+    if isinstance(node_spec, dict):
+        for k in ("name", "Name", "display_name", "label"):
+            v = node_spec.get(k)
+            if isinstance(v, str) and v.strip():
+                label = v.strip()
+                break
+
+    # Fallback: prettify the id
+    if not label:
+        label = base_id.replace("_", " ")
+
+    if has_children:
+        label = f"{label}*"
+
+    if is_mirrored:
+        if label:
+            label = label[0].lower() + label[1:]
+        return f"mirrored {label}"
+
+    return label
+
+
 
 
 
@@ -694,6 +752,10 @@ def _compute_body_graph_camera(
         if t >= 0.999:
             try:
                 setattr(scene, "_body_zoom_anim", None)
+                try:
+                    setattr(scene, "_body_zoom_fade", None)
+                except Exception:
+                    pass
             except Exception:
                 pass
             return (float(to_center_u[0]), float(to_center_u[1])), float(to_scale)
@@ -704,6 +766,10 @@ def _compute_body_graph_camera(
         # Fail-soft to base camera
         try:
             setattr(scene, "_body_zoom_anim", None)
+            try:
+                setattr(scene, "_body_zoom_fade", None)
+            except Exception:
+                pass
         except Exception:
             pass
         return base_center_u, float(base_scale)
@@ -1340,7 +1406,7 @@ class EntityPreviewWidget(Widget):
                 root_scale = getattr(scene, "_body_zoom_root_cam_scale", None)
 
                 # Update the root reference whenever we're at the top level.
-                if len(stack) == 0:
+                if len(stack) == 0 and getattr(scene, "_body_zoom_anim", None) is None:
                     root_scale = float(cam_scale)
                     setattr(scene, "_body_zoom_root_cam_scale", root_scale)
 
@@ -1360,7 +1426,10 @@ class EntityPreviewWidget(Widget):
             # the in-widget glyph match exactly at the moment we switch modes.
             base_px = int(getattr(scene, "_zoom_glyph_base_px", 0) or 0)
             if base_px <= 0:
-                base_px = max(12, int(min(region.w, region.h) * 0.50))
+                # Make the glyph ~2× bigger, but keep a little breathing room.
+                base_px = max(12, int(min(region.w, region.h) * 0.50 * 2.0))
+                base_px = min(base_px, int(min(region.w, region.h) * 0.90))
+
 
             # Apply body-graph camera zoom here (this is the intended place for it).
             glyph_px = int(max(10, min(2048, float(base_px) * max(0.25, min(6.0, zoom_mul)))))
@@ -1502,12 +1571,36 @@ class BodyPlanGraphWidget(Widget):
 
         pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
+        # Combined position map (active + any ghost layers).
+        # Used for rendering optional cross-layer links (e.g. torso -> head ghost).
+        all_pos_px: dict[str, tuple[float, float]] = dict(pos_px)
+
         scale = float(cam_scale)
         node_size = int(max(18, min(56, scale * 0.45)))
         half = node_size // 2
 
         hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
-        alpha = 150 if hovered_right else 70
+        alpha_base = 150 if hovered_right else 70
+        alpha = int(alpha_base)
+
+        # Adjacent-LoD fade during camera transition.
+        fade = getattr(scene, "_body_zoom_fade", None)
+        fade_dir: str | None = None
+        fade_t: float = 0.0
+        fade_outgoing_layer = None
+        try:
+            if isinstance(fade, tuple) and len(fade) >= 6:
+                fade_dir, _from_stack, _to_stack, _start_ms, _dur_ms, fade_outgoing_layer = fade
+                cur_stack = tuple(str(x) for x in (getattr(scene, "_body_zoom_stack", []) or []))
+                if _to_stack == cur_stack and isinstance(_start_ms, int) and isinstance(_dur_ms, int) and _dur_ms > 0:
+                    now = int(pygame.time.get_ticks())
+                    fade_t = _smoothstep((float(now - _start_ms)) / float(_dur_ms))
+                    fade_dir = str(fade_dir)
+                else:
+                    fade_dir = None
+        except Exception:
+            fade_dir = None
+
 
         drag_active = bool(getattr(scene, "_drag_active", False))
         drag_kind = getattr(scene, "_drag_target_kind", None) if drag_active else None
@@ -1539,21 +1632,45 @@ class BodyPlanGraphWidget(Widget):
                 except Exception:
                     return int(max(10, min(255, base_alpha // 3)))
 
+            zoom_stack = [str(x) for x in (getattr(scene, "_body_zoom_stack", []) or [])]
+            # Apply fade to the active layer alpha (ghost layers use alpha_base).
+            if fade_dir == "in":
+                alpha = int(round(float(alpha_base) * float(fade_t)))
+            elif fade_dir == "out":
+                g1 = _ghost_alpha(alpha_base, 1)
+                alpha = int(round(float(g1) * (1.0 - float(fade_t)) + float(alpha_base) * float(fade_t)))
+
             for i, (g_schema, g_off_u, g_scale_u) in enumerate(chain[:-1]):
                 dist = (len(chain) - 1) - i  # +1, +2, ...
-                g_alpha = _ghost_alpha(alpha, dist)
+                if fade_dir == "in" and dist == 1:
+                    continue  # dist=1 handled by crossfade layer
+                g_alpha = _ghost_alpha(alpha_base, dist)
                 if g_alpha < 12:
                     continue
+
+                # IMPORTANT: don't draw ghost edges *out of* the node we zoomed through
+                # at this layer (that node is being "replaced" by the active subgraph).
+                zs = list(getattr(scene, "_body_zoom_stack", []) or [])
+                skip_from_nid = str(zs[i]) if i < len(zs) else None
+
 
                 g_pos_u = _embed_positions(_compute_body_positions(g_schema), g_off_u, g_scale_u)
                 g_pos_px = _project_positions_with_camera(
                     g_pos_u, region_local, center_u=cam_center_u, scale=cam_scale
                 )
 
+                # Merge ghost node positions into combined map (do not clobber active positions).
+                for _nid, _p in (g_pos_px or {}).items():
+                    if _nid not in all_pos_px and _p is not None:
+                        all_pos_px[_nid] = _p
+
                 g_nodes = g_schema.get("nodes") if isinstance(g_schema, dict) else None
                 if isinstance(g_nodes, dict):
                     line_col = (*fg, int(g_alpha * 0.65))
                     for nid, spec in g_nodes.items():
+                        if skip_from_nid is not None and str(nid) == skip_from_nid:
+                            continue  # suppress outgoing ghost edges from the embedding node
+
                         a = g_pos_px.get(str(nid))
                         if a is None:
                             continue
@@ -1575,6 +1692,84 @@ class BodyPlanGraphWidget(Widget):
                     pygame.draw.rect(overlay, border, pygame.Rect(cx - half, cy - half, node_size, node_size), 1, 2)
 
         # ----------------------------
+        
+        # ----------------------------
+        # Adjacent-LoD crossfade: draw outgoing parent layer (zoom-in)
+        # ----------------------------
+        def _draw_simple_layer(
+            layer_schema: dict,
+            layer_pos_px: dict[str, tuple[float, float]],
+            layer_alpha: int,
+        ) -> None:
+            if layer_alpha <= 0:
+                return
+            nodes_l = layer_schema.get("nodes") if isinstance(layer_schema, dict) else None
+            if not isinstance(nodes_l, dict):
+                return
+
+            # edges
+            try:
+                line_col_l = (*fg, int(layer_alpha * 0.85))
+                for _nid, _spec in nodes_l.items():
+                    a = layer_pos_px.get(str(_nid))
+                    if a is None:
+                        continue
+                    for ch in _children_of(_spec if isinstance(_spec, dict) else {}):
+                        b = layer_pos_px.get(str(ch))
+                        if b is None:
+                            continue
+                        ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                        bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                        pygame.draw.line(overlay, line_col_l, (ax, ay), (bx, by), 2)
+            except Exception:
+                pass
+
+            # boxes + labels (no equips, no hover)
+            try:
+                node_fill_l = (*fg, int(layer_alpha * 0.08))
+                node_border_l = (*fg, int(layer_alpha * 0.78))
+                label_col_l = (int(fg[0] * 0.95), int(fg[1] * 0.95), int(fg[2] * 0.95), int(layer_alpha * 0.95))
+                try:
+                    label_font_l = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)), bold=True)
+                except Exception:
+                    label_font_l = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)))
+
+                for _nid, (px, py) in layer_pos_px.items():
+                    # region-local clip test
+                    if not pygame.Rect(0, 0, region.w, region.h).collidepoint(px, py):
+                        continue
+                    sq = pygame.Rect(int(px - half) + region.x, int(py - half) + region.y, int(node_size), int(node_size))
+                    pygame.draw.rect(overlay, node_fill_l, sq)
+                    pygame.draw.rect(overlay, node_border_l, sq, 2)
+
+                    try:
+                        label = _display_body_node_label(str(_nid), nodes_l.get(str(_nid)), cur_nodes=nodes_l)
+                        ls = label_font_l.render(label, True, label_col_l).convert_alpha()
+                        ls.set_alpha(int(layer_alpha * 0.92))
+                        lx = sq.centerx - ls.get_width() // 2
+                        ly = sq.top - ls.get_height() - 3
+                        overlay.blit(ls, (lx, ly))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        if fade_dir == "in" and len(chain) >= 2:
+            try:
+                # outgoing parent is the immediate ancestor layer
+                p_schema, p_off_u, p_scale_u = chain[-2]
+                p_pos_u = _embed_positions(_compute_body_positions(p_schema), p_off_u, p_scale_u)
+                p_pos_px = _project_positions_with_camera(p_pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+                g1 = _ghost_alpha(alpha_base, 1)
+                out_a = int(round(float(alpha_base) * (1.0 - float(fade_t)) + float(g1) * float(fade_t)))
+                _draw_simple_layer(p_schema, p_pos_px, out_a)
+
+                # ensure these positions are available for optional cross-layer links
+                all_pos_px.update({str(k): v for k, v in p_pos_px.items() if v is not None})
+            except Exception:
+                pass
+
         # Active edges
         # ----------------------------
         nodes = schema.get("nodes") if isinstance(schema, dict) else None
@@ -1591,6 +1786,31 @@ class BodyPlanGraphWidget(Widget):
                     ax, ay = int(a[0] + region.x), int(a[1] + region.y)
                     bx, by = int(b[0] + region.x), int(b[1] + region.y)
                     pygame.draw.line(overlay, line_col, (ax, ay), (bx, by), 2)
+
+        # Optional extra links (schema-level). These are render-only edges that may
+        # connect nodes across layers, e.g. torso -> head (ghost) or hips -> leg (ghost).
+        links = schema.get("links") if isinstance(schema, dict) else None
+        if isinstance(links, list) and links:
+            link_col = (*fg, int(alpha * 0.70))
+            for ln in links:
+                a_id = None
+                b_id = None
+                if isinstance(ln, (list, tuple)) and len(ln) >= 2:
+                    a_id, b_id = str(ln[0]), str(ln[1])
+                elif isinstance(ln, dict):
+                    a_id = ln.get("from", ln.get("a"))
+                    b_id = ln.get("to", ln.get("b"))
+                    a_id = str(a_id) if a_id is not None else None
+                    b_id = str(b_id) if b_id is not None else None
+                if not a_id or not b_id:
+                    continue
+                a = all_pos_px.get(a_id)
+                b = all_pos_px.get(b_id)
+                if a is None or b is None:
+                    continue
+                ax, ay = int(a[0] + region.x), int(a[1] + region.y)
+                bx, by = int(b[0] + region.x), int(b[1] + region.y)
+                pygame.draw.line(overlay, link_col, (ax, ay), (bx, by), 1)
 
         node_fill = (*fg, int(alpha * 0.10))
         node_border = (*fg, int(alpha * 0.85))
@@ -1615,11 +1835,18 @@ class BodyPlanGraphWidget(Widget):
         owner_id = str(getattr(owner, "id", ""))
 
         def _equipped_for(nid: str):
+            # IMPORTANT: equip slots must be unique per *instance*, not per proto-id.
+            # Use the current zoom stack + local nid as a stable path key.
+            stack = [str(x) for x in (getattr(scene, "_body_zoom_stack", []) or [])]
+            slot_id = "/".join(stack + [str(nid)]) if stack else str(nid)
+
             if hasattr(scene, "game") and hasattr(scene.game, "get_equipped_in_slot"):
                 try:
-                    return scene.game.get_equipped_in_slot(owner_id, str(nid))
+                    return scene.game.get_equipped_in_slot(owner_id, slot_id)
                 except Exception:
                     return None
+
+            # Fallback: scan inventory tags
             try:
                 inv = scene.game.get_inventory(owner_id)
             except Exception:
@@ -1627,9 +1854,10 @@ class BodyPlanGraphWidget(Widget):
             if inv:
                 for it in inv:
                     tags = getattr(it, "tags", {}) or {}
-                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(nid):
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == slot_id:
                         return it
             return None
+
 
         for nid, (px, py) in pos_px.items():
             # region-local clip test
@@ -1650,7 +1878,7 @@ class BodyPlanGraphWidget(Widget):
 
             # label above
             try:
-                label = _display_body_node_label(str(nid))
+                label = _display_body_node_label(str(nid), nodes.get(str(nid)), cur_nodes=nodes)
                 ls = label_font.render(label, True, label_hi if is_hover else (label_half if is_target else label_col)).convert_alpha()
                 ls.set_alpha(int(alpha * (0.98 if is_hot else 0.90)))
                 lx = sq.centerx - ls.get_width() // 2
@@ -1701,6 +1929,23 @@ class BodyPlanGraphWidget(Widget):
                     nx = sq.centerx - ns.get_width() // 2
                     ny = sq.bottom + 3
                     overlay.blit(ns, (nx, ny))
+            except Exception:
+                pass
+
+        
+        # ----------------------------
+        # Adjacent-LoD crossfade: draw outgoing child layer (zoom-out) on top
+        # ----------------------------
+        if fade_dir == "out" and fade_outgoing_layer is not None:
+            try:
+                c_schema, c_off_u, c_scale_u = fade_outgoing_layer
+                c_pos_u = _embed_positions(_compute_body_positions(c_schema), c_off_u, c_scale_u)
+                c_pos_px = _project_positions_with_camera(c_pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+                out_a = int(round(float(alpha_base) * (1.0 - float(fade_t))))
+                _draw_simple_layer(c_schema, c_pos_px, out_a)
+
+                # (No equip rendering for outgoing layer: slot paths differ.)
             except Exception:
                 pass
 
@@ -1930,6 +2175,12 @@ class BodyPlanGraphWidget(Widget):
                                                     meaningful = set(sub_nodes.keys()) != set(cur_nodes.keys())
                                                 can_zoom = bool(meaningful)
                                 if can_zoom:
+                                    # Double-click zoom wins: cancel any pending delayed single-click activation.
+                                    try:
+                                        setattr(scene, "_pending_node_activate_nid", None)
+                                        setattr(scene, "_pending_node_activate_due_ms", 0)
+                                    except Exception:
+                                        pass
                                     setattr(scene, "_pending_body_zoom_in", str(release_nid))
                                 self._last_click_nid = None
                                 self._last_click_ms = 0
@@ -1940,16 +2191,25 @@ class BodyPlanGraphWidget(Widget):
                         self._last_click_nid = str(release_nid)
                         self._last_click_ms = now_ms
 
-                        eq = (
-                            scene._equipped_entity_for_slot(str(press_nid))
-                            if hasattr(scene, "_equipped_entity_for_slot")
-                            else None
-                        )
+                        if hasattr(scene, "_equipped_entity_for_slot"):
+                            stack = [str(x) for x in (getattr(scene, "_body_zoom_stack", []) or [])]
+                            slot_id = "/".join(stack + [str(press_nid)]) if stack else str(press_nid)
+                            eq = scene._equipped_entity_for_slot(slot_id)
+                        else:
+                            eq = None
+
                         if eq is not None:
+                            # Delay the single-click context menu so a possible double-click zoom
+                            # can "win" without the menu stealing focus.
                             try:
-                                setattr(scene, "_pending_node_activate", str(press_nid))
+                                setattr(scene, "_pending_node_activate_nid", str(press_nid))
+                                setattr(scene, "_pending_node_activate_due_ms", int(now_ms) + 320)
                             except Exception:
-                                pass
+                                # Fallback: behave like immediate activate.
+                                try:
+                                    setattr(scene, "_pending_node_activate", str(press_nid))
+                                except Exception:
+                                    pass
                             return True
 
             return False
@@ -2317,6 +2577,19 @@ class InventoryScene(PopupMenuScene):
         self._body_zoom_anim_duration_ms: int = 220
 
 
+        # Fade state for adjacent-LoD crossfade during camera zoom.
+        # (dir, from_stack, to_stack, start_ms, dur_ms, outgoing_layer_bundle)
+        # outgoing_layer_bundle is only used for dir=='out' and is a (schema, embed_off_u, embed_scale_u)
+        # already embedded into root/world-space.
+        self._body_zoom_fade: tuple[
+            str,
+            tuple[str, ...],
+            tuple[str, ...],
+            int,
+            int,
+            tuple[dict, tuple[float, float], float] | None,
+        ] | None = None
+
         # set by BodyPlanGraphWidget on double-click
         self._pending_body_zoom_in: str | None = None
 
@@ -2328,6 +2601,7 @@ class InventoryScene(PopupMenuScene):
 
         # Depth-based “CRT recursion” scaling that actually scales rendered text.
         self._depth_visual_scale = float(self.DEPTH_SCALE ** max(0, self.stack_depth))
+        self._body_zoom_anim_duration_ms = 800
 
         self._zoom_elapsed = 0
         self._zoom_progress = 0.0
@@ -2403,6 +2677,11 @@ class InventoryScene(PopupMenuScene):
         # Pending delayed single-click activation (for contextual double-click handling)
         self._pending_click_activate_index: int | None = None
         self._pending_click_activate_due_ms: int = 0
+        # Pending delayed single-click activation for equipped body nodes
+        # (allows double-click zoom to win over single-click context menu)
+        self._pending_node_activate_nid: str | None = None
+        self._pending_node_activate_due_ms: int = 0
+
 
         
 
@@ -2437,6 +2716,87 @@ class InventoryScene(PopupMenuScene):
             except Exception:
                 self._pending_click_activate_index = None
                 self._pending_click_activate_due_ms = 0
+
+        # Execute delayed single-click activation (equipped body nodes) once the double-click window expires.
+        if self._pending_node_activate_nid is not None and not self._closing and not bool(getattr(self, "_drag_active", False)):
+            try:
+                now = int(pygame.time.get_ticks())
+                if now >= int(self._pending_node_activate_due_ms):
+                    self._pending_node_activate = str(self._pending_node_activate_nid)  # type: ignore[attr-defined]
+                    self._pending_node_activate_nid = None
+                    self._pending_node_activate_due_ms = 0
+            except Exception:
+                self._pending_node_activate_nid = None
+                self._pending_node_activate_due_ms = 0
+
+
+        # -----------------------------------------------------------------
+        # Flush pending widget actions here (not only in handle_event),
+        # so delayed single-clicks work even if no further events arrive.
+        # -----------------------------------------------------------------
+
+        # Widget-triggered double-click open: needs manager to push InventoryScene.
+        idx = getattr(self, "_pending_double_open_index", None)
+        if idx is not None:
+            try:
+                self._pending_double_open_index = None
+            except Exception:
+                pass
+            try:
+                if bool(getattr(self, "allow_open_containers", True)):
+                    self._open_container_from_index(int(idx), manager)
+            except Exception:
+                pass
+
+        # Delayed single-click activation for the left inventory list (container action menu).
+        midx = getattr(self, "_pending_mouse_activate", None)
+        if midx is not None:
+            try:
+                self._pending_mouse_activate = None
+            except Exception:
+                pass
+            try:
+                # Provided by GeneralMenuScene
+                self._on_list_activate(int(midx), manager)
+            except Exception:
+                pass
+
+        # Widget-triggered double-click on a body node -> zoom in.
+        pending_zoom = getattr(self, "_pending_body_zoom_in", None)
+        if pending_zoom is not None:
+            try:
+                self._pending_body_zoom_in = None
+            except Exception:
+                pass
+            try:
+                self._body_zoom_in(str(pending_zoom))
+            except Exception:
+                pass
+
+        # Delayed single-click on an equipped body node -> open context menu.
+        pending_node = getattr(self, "_pending_node_activate", None)
+        if pending_node is not None:
+            try:
+                self._pending_node_activate = None
+            except Exception:
+                pass
+            try:
+                node_id = str(pending_node)
+                slot_id = self._canonical_body_slot_id(node_id)
+
+                eq = self._equipped_entity_for_slot(slot_id)
+                if eq is not None:
+                    src_px, src_sz = self._node_glyph_screen_info(node_id, manager)
+                    self._open_entity_context_menu(
+                        eq,
+                        manager,
+                        source_px=src_px,
+                        source_glyph_px=src_sz,
+                        equipped_slot_id=slot_id,
+                    )
+            except Exception:
+                pass
+
 
     # ---------------------------------------------------------------------
     # Effects inheritance (names only)
@@ -2510,11 +2870,12 @@ class InventoryScene(PopupMenuScene):
             return False
 
         owner_id = str(getattr(owner, "id", self._owner_id()))
+        slot_id = self._canonical_body_slot_id(str(node_id))
 
         ent = None
         if hasattr(self.game, "get_equipped_in_slot"):
             try:
-                ent = self.game.get_equipped_in_slot(owner_id, str(node_id))
+                ent = self.game.get_equipped_in_slot(owner_id, slot_id)
             except Exception:
                 ent = None
         if ent is None:
@@ -2523,7 +2884,7 @@ class InventoryScene(PopupMenuScene):
                 inv = self.game.get_inventory(owner_id)
                 for it in inv:
                     tags = getattr(it, "tags", {}) or {}
-                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == str(node_id):
+                    if str(tags.get("equipped_slot") or tags.get("equipped") or "") == slot_id:
                         ent = it
                         break
             except Exception:
@@ -2609,7 +2970,11 @@ class InventoryScene(PopupMenuScene):
             from_center_u, from_scale = _camera_for_stack(list(getattr(self, "_body_zoom_stack", []) or []))
 
         # Apply the schema switch immediately (Phase 1 behavior), but animate the camera.
+        from_stack = tuple(str(x) for x in (getattr(self, "_body_zoom_stack", []) or []))
+
         self._body_zoom_stack.append(nid)
+        to_stack = tuple(str(x) for x in (getattr(self, "_body_zoom_stack", []) or []))
+
         self._body_zoom_focus_nid = None
         self._body_zoom_scale = 1.0
 
@@ -2618,67 +2983,115 @@ class InventoryScene(PopupMenuScene):
         dur_ms = int(getattr(self, "_body_zoom_anim_duration_ms", 220) or 220)
         start_ms = int(pygame.time.get_ticks())
         self._body_zoom_anim = (tuple(from_center_u), float(from_scale), tuple(to_center_u), float(to_scale), start_ms, dur_ms)
-
+        try:
+            self._body_zoom_fade = ("in", from_stack, to_stack, start_ms, dur_ms, None)
+        except Exception:
+            self._body_zoom_fade = None
 
     def _body_zoom_out(self) -> None:
-        if not getattr(self, "_body_zoom_stack", None):
+        """Pop one zoom level (if any), with optional camera animation + adjacent-LoD fade."""
+
+        stack_now = list(getattr(self, "_body_zoom_stack", []) or [])
+        if not stack_now:
             return
 
         owner = getattr(self, "_preview_entity", None)
         owner = owner() if callable(owner) else getattr(self, "_find_owner_entity", lambda: None)()
 
+        # Snap behavior
         if not bool(getattr(self, "_body_zoom_anim_enabled", True)):
-            self._body_zoom_stack.pop()
+            try:
+                self._body_zoom_stack.pop()
+            except Exception:
+                return
             self._body_zoom_focus_nid = None
             self._body_zoom_scale = 1.0
             self._body_zoom_anim = None
+            self._body_zoom_fade = None
             return
 
         region_wh = getattr(self, "_last_body_cam_region", None)
         if not (isinstance(region_wh, tuple) and len(region_wh) == 2):
-            self._body_zoom_stack.pop()
+            try:
+                self._body_zoom_stack.pop()
+            except Exception:
+                return
             self._body_zoom_focus_nid = None
             self._body_zoom_scale = 1.0
             self._body_zoom_anim = None
+            self._body_zoom_fade = None
             return
 
         rw, rh = int(region_wh[0]), int(region_wh[1])
         if rw <= 0 or rh <= 0:
-            self._body_zoom_stack.pop()
+            try:
+                self._body_zoom_stack.pop()
+            except Exception:
+                return
             self._body_zoom_focus_nid = None
             self._body_zoom_scale = 1.0
             self._body_zoom_anim = None
+            self._body_zoom_fade = None
             return
 
         region_local = pygame.Rect(0, 0, rw, rh)
 
         def _camera_for_stack(stack: list[str]) -> tuple[tuple[float, float], float]:
             try:
-                schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, stack)
+                chain = _resolve_body_view_chain_for_zoom_path(owner, stack)
+                if not chain:
+                    chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
             except Exception:
-                schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
+                chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+
+            schema, embed_off_u, embed_scale_u = chain[-1]
             pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
             center_u, scale = _fit_camera_to_positions(pos_u, region_local, margin_frac=0.12)
             return (float(center_u[0]), float(center_u[1])), float(scale)
 
+        # Capture "from" camera based on last render (fail-soft to computed).
         from_center_u = getattr(self, "_last_body_cam_center_u", None)
         from_scale = getattr(self, "_last_body_cam_scale", None)
         if (
             not (isinstance(from_center_u, tuple) and len(from_center_u) == 2)
             or not isinstance(from_scale, (int, float))
         ):
-            from_center_u, from_scale = _camera_for_stack(list(getattr(self, "_body_zoom_stack", []) or []))
+            from_center_u, from_scale = _camera_for_stack([str(x) for x in stack_now])
 
-        # Pop one level (schema switch), then animate toward the new fit camera.
-        self._body_zoom_stack.pop()
+        # Capture outgoing (child) layer bundle for fade-out.
+        from_stack = tuple(str(x) for x in stack_now)
+        outgoing_layer: tuple[dict, tuple[float, float], float] | None = None
+        try:
+            ch = _resolve_body_view_chain_for_zoom_path(owner, stack_now)
+            if ch:
+                outgoing_layer = ch[-1]
+        except Exception:
+            outgoing_layer = None
+
+        # Pop to the new active view, then animate toward its camera.
+        try:
+            self._body_zoom_stack.pop()
+        except Exception:
+            return
+
+        to_stack = tuple(str(x) for x in (getattr(self, "_body_zoom_stack", []) or []))
+        to_center_u, to_scale = _camera_for_stack([str(x) for x in (getattr(self, "_body_zoom_stack", []) or [])])
+
         self._body_zoom_focus_nid = None
         self._body_zoom_scale = 1.0
 
-        to_center_u, to_scale = _camera_for_stack(list(getattr(self, "_body_zoom_stack", []) or []))
-
-        dur_ms = int(getattr(self, "_body_zoom_anim_duration_ms", 220) or 220)
         start_ms = int(pygame.time.get_ticks())
-        self._body_zoom_anim = (tuple(from_center_u), float(from_scale), tuple(to_center_u), float(to_scale), start_ms, dur_ms)
+        dur_ms = int(getattr(self, "_body_zoom_anim_duration_ms", 220) or 220)
+
+        self._body_zoom_anim = (
+            tuple(from_center_u),
+            float(from_scale),
+            tuple(to_center_u),
+            float(to_scale),
+            start_ms,
+            dur_ms,
+        )
+        self._body_zoom_fade = ("out", from_stack, to_stack, start_ms, dur_ms, outgoing_layer)
 
 
     def _body_zoom_tick(self) -> None:
@@ -2913,7 +3326,7 @@ class InventoryScene(PopupMenuScene):
             nid = getattr(self._body_graph, "hovered_nid", None)
             if nid:
                 self._drag_target_kind = "body_node"
-                self._drag_target_node_id = str(nid)
+                self._drag_target_node_id = self._canonical_body_slot_id(str(nid))
                 sn = getattr(self._drag_ent, "name", None) or "Item"
                 dn = _display_body_node_label(str(nid))
                 self._drag_hint = f"Equip {sn} to {dn}"
@@ -3368,6 +3781,14 @@ class InventoryScene(PopupMenuScene):
         # Phase 5: Widget-triggered double-click on a body node -> zoom in.
         pending_zoom = getattr(self, "_pending_body_zoom_in", None)
         if pending_zoom is not None:
+            # Zoom-in should win over any pending single-click activation (context menus).
+            try:
+                self._pending_node_activate_nid = None
+                self._pending_node_activate_due_ms = 0
+                self._pending_click_activate_index = None
+                self._pending_click_activate_due_ms = 0
+            except Exception:
+                pass
             try:
                 self._pending_body_zoom_in = None
             except Exception:
@@ -3388,7 +3809,9 @@ class InventoryScene(PopupMenuScene):
                 pass
             try:
                 node_id = str(pending_node)
-                eq = self._equipped_entity_for_slot(node_id)
+                slot_id = self._canonical_body_slot_id(node_id)
+
+                eq = self._equipped_entity_for_slot(slot_id)
                 if eq is not None:
                     src_px, src_sz = self._node_glyph_screen_info(node_id, manager)
                     self._open_entity_context_menu(
@@ -3396,8 +3819,9 @@ class InventoryScene(PopupMenuScene):
                         manager,
                         source_px=src_px,
                         source_glyph_px=src_sz,
-                        equipped_slot_id=node_id,
+                        equipped_slot_id=slot_id,
                     )
+
             except Exception:
                 pass
 
@@ -3414,6 +3838,24 @@ class InventoryScene(PopupMenuScene):
     # ---------------------------------------------------------------------
     # Context menus / equip helpers
     # ---------------------------------------------------------------------
+
+
+    def _canonical_body_slot_id(self, node_or_slot_id: str) -> str:
+        """
+        Convert a *local* node id (e.g. 'wrist', 'fingernail') into a unique, stable
+        equip-slot id by prefixing the current zoom stack, e.g.:
+            ['arm', 'hand', 'finger2'] + 'fingernail' -> 'arm/hand/finger2/fingernail'
+
+        If the caller already passed a full slot path (contains '/'), leave it alone.
+        """
+        s = str(node_or_slot_id or "")
+        if not s:
+            return s
+        if "/" in s:
+            return s
+        stack = [str(x) for x in (getattr(self, "_body_zoom_stack", []) or [])]
+        return "/".join(stack + [s]) if stack else s
+
 
     def _body_slot_targets(self) -> list[tuple[str, str]]:
         """Return [(node_id, display_label), ...] for the current owner's body schema."""
@@ -3436,9 +3878,13 @@ class InventoryScene(PopupMenuScene):
         nodes = schema.get("nodes", {}) or {}
         out: list[tuple[str, str]] = []
         try:
+            stack = getattr(self, "_body_zoom_stack", []) or []
             for nid in nodes.keys():
                 sn = str(nid)
-                out.append((sn, _display_body_node_label(sn)))
+                # Unique slot id = zoom_path + local nid
+                slot_id = "/".join([str(x) for x in list(stack) + [sn]]) if stack else sn
+                out.append((slot_id, _display_body_node_label(sn)))
+
         except Exception:
             return []
         return out
@@ -4242,6 +4688,96 @@ class InventoryScene(PopupMenuScene):
                 self._pending_click_activate_index = None
                 self._pending_click_activate_due_ms = 0
 
+
+
+        # -----------------------------------------------------------------
+        # Flush pending widget actions here (not only in handle_event),
+        # so delayed single-clicks work even if no further events arrive.
+        # -----------------------------------------------------------------
+
+        # Widget-triggered double-click open: needs manager to push InventoryScene.
+        idx = getattr(self, "_pending_double_open_index", None)
+        if idx is not None:
+            try:
+                self._pending_double_open_index = None
+            except Exception:
+                pass
+            try:
+                if bool(getattr(self, "allow_open_containers", True)):
+                    self._open_container_from_index(int(idx), manager)
+            except Exception:
+                pass
+
+        # Delayed single-click activation for the left inventory list (container action menu).
+        midx = getattr(self, "_pending_mouse_activate", None)
+        if midx is not None:
+            try:
+                self._pending_mouse_activate = None
+            except Exception:
+                pass
+            try:
+                # Provided by GeneralMenuScene
+                self._on_list_activate(int(midx), manager)
+            except Exception:
+                pass
+        # Execute delayed single-click activation for equipped body nodes once the double-click window expires.
+        # (BodyPlanGraphWidget sets _pending_node_activate_nid/_due_ms; we "promote" it here.)
+        if (
+            getattr(self, "_pending_node_activate_nid", None) is not None
+            and not self._closing
+            and not bool(getattr(self, "_drag_active", False))
+        ):
+            try:
+                now = int(pygame.time.get_ticks())
+                if now >= int(getattr(self, "_pending_node_activate_due_ms", 0)):
+                    self._pending_node_activate = str(self._pending_node_activate_nid)  # type: ignore[attr-defined]
+                    self._pending_node_activate_nid = None
+                    self._pending_node_activate_due_ms = 0
+            except Exception:
+                try:
+                    self._pending_node_activate_nid = None
+                    self._pending_node_activate_due_ms = 0
+                except Exception:
+                    pass
+
+        # Widget-triggered double-click on a body node -> zoom in.
+        pending_zoom = getattr(self, "_pending_body_zoom_in", None)
+        if pending_zoom is not None:
+            try:
+                self._pending_body_zoom_in = None
+            except Exception:
+                pass
+            try:
+                self._body_zoom_in(str(pending_zoom))
+            except Exception:
+                pass
+
+        # Delayed single-click on an equipped body node -> open context menu.
+        pending_node = getattr(self, "_pending_node_activate", None)
+        if pending_node is not None:
+            try:
+                self._pending_node_activate = None
+            except Exception:
+                pass
+            try:
+                node_id = str(pending_node)
+                slot_id = self._canonical_body_slot_id(node_id)
+
+                eq = self._equipped_entity_for_slot(slot_id)
+                if eq is not None:
+                    src_px, src_sz = self._node_glyph_screen_info(node_id, manager)
+                    self._open_entity_context_menu(
+                        eq,
+                        manager,
+                        source_px=src_px,
+                        source_glyph_px=src_sz,
+                        equipped_slot_id=slot_id,
+                    )
+            except Exception:
+                pass
+
+
+
         # Opening (zoom-in) vs closing (zoom-out) animation.
         if not self._closing:
             self._zoom_elapsed = min(self.ZOOM_MS, self._zoom_elapsed + int(dt_ms))
@@ -4568,10 +5104,10 @@ class InventoryScene(PopupMenuScene):
                 # _zoom_glyph_base_px should represent the *base* glyph-cell size for the preview region
                 # at zoom_scale == 1.0. The body-graph camera zoom is applied elsewhere (preview draw),
                 # so we do NOT bake it in here (otherwise we double-scale and create pop on mode handoff).
-                self._zoom_glyph_base_px = max(12, int(min(region_w, region_h) * 0.50))
+                # Make the glyph ~2× bigger, but keep a little breathing room.
+                self._zoom_glyph_base_px = max(12, int(min(region_w, region_h) * 0.50 * 2.0))
+                self._zoom_glyph_base_px = min(int(self._zoom_glyph_base_px), int(min(region_w, region_h) * 0.90))
 
-                # Keep the same cap family as EntityPreviewWidget (which clamps to 512).
-                self._zoom_glyph_base_px = min(int(self._zoom_glyph_base_px), 2048)
 
 
                 if owner is not None:

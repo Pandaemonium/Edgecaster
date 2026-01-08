@@ -28,6 +28,8 @@
         layout:
           x: 0
           y: 0
+        props:
+          size: 1
   description: A physical object, possessed of mass and size.
 
 
