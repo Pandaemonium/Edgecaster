@@ -529,6 +529,32 @@ inventory.py
 • Eating/consuming items
 • Interface: player_pick_up(game), drop_inventory_item(game, index), move_item_between_inventories(game, src, idx, dest), equip_item_to_slot(game, owner, item, slot)
 
+pattern_ops.py
+• Pattern projection and vertex queries (world-space conversion)
+• Neighbor graph traversal (BFS for neighbor_set_depth)
+• Pattern placement mode (begin_place_mode, try_place_terminus)
+• Pattern reset and motion (push_pattern)
+• Note: Complex tick-based actions (act_ignite, act_regrow, act_freeze) remain in game.py due to scheduler coupling
+• Interface: projected_vertices(game), nearest_vertex(game, pos), neighbor_set_depth(game, seed, depth), reset_pattern(game), push_pattern(game, level, target, rotation)
+
+scheduling.py
+• Event scheduling with heapq priority queue
+• Time advancement and event processing
+• Periodic regen ticks (HP regeneration)
+• Cooldown decay for entities, actors, and inventory items
+• Coherence drain based on pattern vertices (pattern unraveling at zero)
+• Frozen/slow effect decay, attack bonus decay, action tick offset decay
+• Interface: schedule(game, level, delay, action), advance_time(game, level, delta), start_regen(game, level, actor_id, amount, interval), coherence_tick(game, level, delta), cooldown_tick(game, level, delta)
+
+combat.py
+• Attack resolution and damage calculation
+• Hostility checks (via reputation system delegation)
+• Death handling and cleanup (removing actors, awarding XP)
+• Currency drops and prototype-driven item drops
+• Lifesteal and XP drain mechanics
+• Slaver pack chain-breaking on death
+• Interface: is_hostile(game, attacker, target), attack(game, level, attacker, defender), kill_actor(game, level, actor, killer_id, killer_is_player)
+
 -------------------------------------------------------------------------------
 Integration Pattern:
 
@@ -542,11 +568,6 @@ TYPE_CHECKING imports prevent circular dependencies.
 -------------------------------------------------------------------------------
 Remaining Extractions (see vision_documents/spring_cleaning.txt):
 
-• action_runner.py - Unified player/AI action execution
-• spawning.py - Entity factories and spawn orchestration
-• inventory.py - Container and equipment management
-• pattern_ops.py - Pattern activation and geometry
-• combat.py - Attack resolution and damage
 • zones.py - Zone creation and transitions
 • overmap.py - Julia grid and corruption orchestration
 

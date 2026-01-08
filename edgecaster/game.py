@@ -38,6 +38,9 @@ from edgecaster.systems import lorenz_aura
 from edgecaster.systems import action_runner
 from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems import inventory as inventory_system
+from edgecaster.systems import pattern_ops
+from edgecaster.systems import scheduling
+from edgecaster.systems import combat as combat_system
 from . import lorenz
 import math
 from edgecaster import prototypes
@@ -2237,187 +2240,38 @@ class Game:
             self.log.add("This is no place for an inventory.")
 
     # =========================================================================
-    # PHASE 9: SCHEDULING & TIME -> systems/turns.py
+    # PHASE 9: SCHEDULING & TIME -> systems/scheduling.py
     # Tick scheduling, time advancement, cooldowns, regen
     # See vision_documents/spring_cleaning.txt for refactor plan
     # =========================================================================
 
     def _schedule(self, level: LevelState, delay: int, action: Callable[[], None]) -> None:
-        level.order += 1
-        heapq.heappush(level.events, (level.current_tick + delay, level.order, action))
+        """Schedule an action to run after `delay` ticks."""
+        scheduling.schedule(self, level, delay, action)
 
     def _advance_time(self, level: LevelState, delta: int) -> None:
-        target = level.current_tick + delta
-        while level.events and level.events[0][0] <= target:
-            tick, _, action = heapq.heappop(level.events)
-            level.current_tick = tick
-            action()
-        level.current_tick = target
-        if level.activation_ttl > 0:
-            level.activation_ttl = max(0, level.activation_ttl - delta)
-            if level.activation_ttl == 0:
-                level.activation_points = []
-        if level.need_fov:
-            self._update_fov(level)
-
-        # NEW: advance the Lorenz aura in game-time, not render-time
-        self._advance_lorenz(level, delta)
-
-        # NEW: coherence drain based on vertices
-        self._coherence_tick(level, delta)
-        # NEW: cooldowns tick down
-        self._cooldown_tick(level, delta)
-        # NEW: pattern motion tick
-        pattern_motion.step_motion(self, level, delta)
+        """Advance time by delta ticks. Delegates to scheduling module."""
+        scheduling.advance_time(self, level, delta)
 
     def _start_regen(self, level: LevelState, actor_id: str, amount: int, interval: int) -> None:
-        """
-        Start periodic regen for an actor: heals `amount` HP every `interval` ticks.
-        """
-        def tick() -> None:
-            actor = level.actors.get(actor_id)
-            if actor is None or getattr(actor, "alive", True) is False:
-                return
-            try:
-                stats = actor.stats
-                if stats.hp < stats.max_hp:
-                    stats.hp = min(stats.max_hp, stats.hp + amount)
-            except Exception:
-                pass
-            # reschedule if still alive
-            if actor is not None:
-                self._schedule(level, interval, tick)
-
-        self._schedule(level, interval, tick)
-
+        """Start periodic regen for an actor. Delegates to scheduling module."""
+        scheduling.start_regen(self, level, actor_id, amount, interval)
 
     def _coherence_tick(self, level: LevelState, delta: int) -> None:
-        """Drain coherence each tick based on vertex count beyond INT*4."""
-        player = self._player()
-        stats = player.stats
-        intel = self.character.stats.get("int", 0)
-        discount = intel * 4
-        verts = len(level.pattern.vertices) if level.pattern else 0
-        over = max(0, verts - discount)
-        if over <= 0:
-            return
-        # drain per tick: over/10 per requested design
-        drain = over * delta / 10.0
-        stats.coherence = int(max(0, stats.coherence - drain))
-        if stats.coherence <= 0:
-            # pattern unravels immediately
-            level.pattern = builder.Pattern()
-            level.pattern_anchor = None
-            level.activation_points = []
-            level.activation_ttl = 0
-            self.log.add("Your pattern loses coherence and unravels.")
-            stats.coherence = stats.max_coherence
-
-
+        """Drain coherence each tick. Delegates to scheduling module."""
+        scheduling.coherence_tick(self, level, delta)
 
     def _cooldown_tick(self, level: LevelState, delta: int) -> None:
-        """Tick down cooldowns on actors, ground entities, and inventory items."""
-        seen: set[str] = set()
-
-        def tick_entity(ent) -> None:
-            if not hasattr(ent, "cooldowns"):
-                return
-            ent_id = getattr(ent, "id", None)
-            if ent_id and ent_id in seen:
-                return
-            if ent_id:
-                seen.add(ent_id)
-            cds = getattr(ent, "cooldowns", {})
-            to_delete = []
-            for name, val in list(cds.items()):
-                new_val = max(0, val - delta)
-                if new_val <= 0:
-                    to_delete.append(name)
-                else:
-                    cds[name] = new_val
-            for name in to_delete:
-                del cds[name]
-
-        for act in level.actors.values():
-            tick_entity(act)
-        for ent in level.entities.values():
-            tick_entity(ent)
-        for items in getattr(self, "inventories", {}).values():
-            for ent in items:
-                tick_entity(ent)
-
-        # Tick down frozen/chilled slow effects (decay 0.1 every 10 ticks).
-        for actor in level.actors.values():
-            tags = getattr(actor, "tags", None) or {}
-            mult = float(tags.get("frozen_slow", 1.0))
-            if mult <= 1.0:
-                continue
-            acc = float(tags.get("frozen_slow_timer", 0.0))
-            acc += delta
-            if acc >= 10:
-                steps = int(acc // 10)
-                acc = acc % 10
-                mult = max(1.0, mult - steps * 0.1)
-            if mult <= 1.0 + 1e-6:
-                tags.pop("frozen_slow", None)
-                tags.pop("frozen_slow_timer", None)
-            else:
-                tags["frozen_slow"] = mult
-                tags["frozen_slow_timer"] = acc
-            actor.tags = tags
-
-        # Tick down temporary attack bonuses (used by enemies like the Gory Ascetic).
-        for actor in level.actors.values():
-            tags = getattr(actor, "tags", None) or {}
-            try:
-                ticks = int(tags.get("attack_bonus_ticks", 0))
-            except Exception:
-                ticks = 0
-            if ticks <= 0:
-                continue
-            ticks = max(0, ticks - delta)
-            if ticks <= 0:
-                tags.pop("attack_bonus", None)
-                tags.pop("attack_bonus_ticks", None)
-            else:
-                tags["attack_bonus_ticks"] = ticks
-            actor.tags = tags
-
-        # Tick down additive action-speed modifiers (used by War Drummer haste).
-        for actor in level.actors.values():
-            tags = getattr(actor, "tags", None) or {}
-            try:
-                offset = int(tags.get("action_tick_offset", 0))
-            except Exception:
-                offset = 0
-            if offset == 0:
-                continue
-            try:
-                ticks = int(tags.get("action_tick_offset_ticks", 0))
-            except Exception:
-                ticks = 0
-            if ticks <= 0:
-                # Defensive: remove broken/incomplete entries.
-                tags.pop("action_tick_offset", None)
-                tags.pop("action_tick_offset_ticks", None)
-                actor.tags = tags
-                continue
-
-            ticks = max(0, ticks - delta)
-            if ticks <= 0:
-                tags.pop("action_tick_offset", None)
-                tags.pop("action_tick_offset_ticks", None)
-            else:
-                tags["action_tick_offset_ticks"] = ticks
-            actor.tags = tags
+        """Tick down cooldowns. Delegates to scheduling module."""
+        scheduling.cooldown_tick(self, level, delta)
 
     def _slow_mult(self, actor: Actor) -> float:
-        """Get slow multiplier for an actor. Delegates to action_runner."""
-        return action_runner.slow_mult(actor)
+        """Get slow multiplier for an actor. Delegates to scheduling module."""
+        return scheduling.slow_mult(actor)
 
     def _apply_action_tick_offset(self, actor: Actor, delay: int) -> int:
-        """Apply additive tick offset. Delegates to action_runner."""
-        return action_runner.apply_tick_offset(actor, delay)
+        """Apply additive tick offset. Delegates to scheduling module."""
+        return scheduling.apply_action_tick_offset(actor, delay)
 
 
     # =========================================================================
@@ -2783,57 +2637,16 @@ class Game:
     # =========================================================================
 
     def projected_vertices(self) -> List[Tuple[float, float]]:
-        lvl = self._level()
-        if lvl.pattern_anchor is None:
-            return []
-        return project_vertices(lvl.pattern, lvl.pattern_anchor)
+        return pattern_ops.projected_vertices(self)
 
     def nearest_vertex(self, world_pos: Tuple[float, float]) -> Optional[int]:
-        verts = self.projected_vertices()
-        if not verts:
-            return None
-        wx, wy = world_pos
-        best_idx = None
-        best_d2 = 1e18
-        for i, (vx, vy) in enumerate(verts):
-            dx = vx - wx
-            dy = vy - wy
-            d2 = dx * dx + dy * dy
-            if d2 < best_d2:
-                best_d2 = d2
-                best_idx = i
-        return best_idx
+        return pattern_ops.nearest_vertex(self, world_pos)
 
     def neighbors_of(self, idx: int) -> List[int]:
-        lvl = self._level()
-        adj: Dict[int, List[int]] = {}
-        for e in lvl.pattern.edges:
-            adj.setdefault(e.a, []).append(e.b)
-            adj.setdefault(e.b, []).append(e.a)
-        return adj.get(idx, [])
+        return pattern_ops.neighbors_of(self, idx)
 
     def neighbor_set_depth(self, seed: int, depth: int) -> List[int]:
-        """Return unique vertices within depth hops (including seed)."""
-        if depth <= 0:
-            return [seed]
-        visited = {seed}
-        frontier = {seed}
-        lvl = self._level()
-        adj: Dict[int, List[int]] = {}
-        for e in lvl.pattern.edges:
-            adj.setdefault(e.a, []).append(e.b)
-            adj.setdefault(e.b, []).append(e.a)
-        for _ in range(depth):
-            new_frontier = set()
-            for node in frontier:
-                for n in adj.get(node, []):
-                    if n not in visited:
-                        visited.add(n)
-                        new_frontier.add(n)
-            if not new_frontier:
-                break
-            frontier = new_frontier
-        return list(visited)
+        return pattern_ops.neighbor_set_depth(self, seed, depth)
 
     # --- PHASE 10 (continued): param helpers -> delegating to _param_manager ---
 
@@ -2861,34 +2674,13 @@ class Game:
         """Get the current value for a param (with special cases)."""
         return self._param_manager.get_value(action, key)
 
-    # --- placement ---
+    # --- placement -> pattern_ops ---
 
     def begin_place_mode(self) -> None:
-        lvl = self._level()
-        lvl.awaiting_terminus = True
-        self.log.add(f"Select terminus within {self.place_range} tiles (click or arrows+Enter).")
+        pattern_ops.begin_place_mode(self)
 
     def try_place_terminus(self, target: Tuple[int, int]) -> None:
-        lvl = self._level()
-        if not lvl.awaiting_terminus:
-            return
-        px, py = self._player().pos
-        dx = target[0] - px
-        dy = target[1] - py
-        dist2 = dx * dx + dy * dy
-        if dist2 > self.place_range * self.place_range:
-            self.log.add("Out of range.")
-            return
-
-        def do_place() -> None:
-            lvl.pattern = builder.line_pattern((0.0, 0.0), (dx, dy))
-            lvl.pattern_anchor = (px, py)
-            lvl.pattern_motion = None
-            self.log.add(f"Terminus placed at {target}.")
-
-        self._schedule(lvl, self.cfg.place_time_ticks, do_place)
-        self._advance_time(lvl, self.cfg.place_time_ticks)
-        lvl.awaiting_terminus = False
+        pattern_ops.try_place_terminus(self, target)
 
     # --- actions ---
 
@@ -2917,8 +2709,7 @@ class Game:
 
 
     def reset_pattern(self) -> None:
-        lvl = self._level()
-        self._reset_pattern_core(lvl)
+        pattern_ops.reset_pattern(self)
 
 
     def queue_player_activate(self, target_vertex: Optional[int]) -> None:
@@ -3093,8 +2884,8 @@ class Game:
     # =========================================================================
 
     def is_hostile(self, attacker: Actor, target: Actor) -> bool:
-        """Reputation-driven hostility check used by movement + AI."""
-        return reputation_system.is_hostile(self, attacker, target)
+        """Reputation-driven hostility check. Delegates to combat_system."""
+        return combat_system.is_hostile(self, attacker, target)
 
     def _handle_move_or_attack(self, level: LevelState, id: str, dx: int, dy: int) -> None:
         actor = level.actors.get(id)
@@ -3199,125 +2990,8 @@ class Game:
                 self.request_fractal_editor()
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
-        def _has_class_tag(actor: Actor, key: str) -> bool:
-            try:
-                t = getattr(actor, "tags", None) or {}
-                inner = t.get("tags")
-                if isinstance(inner, dict):
-                    return bool(inner.get(key))
-                if isinstance(inner, (list, tuple, set)):
-                    return key in inner
-            except Exception:
-                pass
-            return False
-
-        # Base damage uses template stats, plus any temporary bonuses.
-        try:
-            base_attack = int(getattr(attacker, "tags", {}).get("base_attack", 1))
-        except Exception:
-            base_attack = 1
-        try:
-            base_defense = int(getattr(defender, "tags", {}).get("base_defense", 0))
-        except Exception:
-            base_defense = 0
-        try:
-            bonus = int(getattr(attacker, "tags", {}).get("attack_bonus", 0))
-        except Exception:
-            bonus = 0
-
-        dmg = max(1, base_attack + bonus - base_defense)
-
-        # Special case: some attackers drain XP instead of HP (e.g., Shadows).
-        if defender.id == self.player_id and _has_class_tag(attacker, "xp_drain"):
-            xp_dmg = max(1, base_attack + bonus)
-            try:
-                defender.stats.xp = max(0, int(defender.stats.xp) - xp_dmg)
-            except Exception:
-                pass
-
-            if defender.id == self.player_id:
-                self.log.add(f"{attacker.name} drains {xp_dmg} XP from you.")
-            else:
-                self.log.add(f"{attacker.name} drains {xp_dmg} XP from {defender.name}.")
-            return
-
-        defender.stats.hp -= dmg
-        defender.stats.clamp()
-        if attacker.id == self.player_id:
-            self.log.add(f"You hit {defender.name} for {dmg}.")
-        elif defender.id == self.player_id:
-            self.log.add(f"{attacker.name} hits you for {dmg}.")
-        else:
-            self.log.add(f"{attacker.name} hits {defender.name} for {dmg}.")
-
-        # Lifesteal on hit (e.g., Blood Sipper). Kept data-driven via YAML tags.
-        try:
-            lifesteal_frac = 0.0
-            atags = getattr(attacker, "tags", None) or {}
-            inner = atags.get("tags")
-            if isinstance(inner, dict):
-                raw = inner.get("lifesteal_frac", None)
-                if raw is not None:
-                    lifesteal_frac = float(raw)
-                elif inner.get("blood_sipper"):
-                    lifesteal_frac = 0.5
-            if lifesteal_frac > 0.0:
-                heal = int(math.ceil(float(dmg) * float(lifesteal_frac)))
-                if heal > 0:
-                    attacker.stats.hp = min(attacker.stats.max_hp, attacker.stats.hp + heal)
-                    attacker.stats.clamp()
-                    if defender.id == self.player_id:
-                        self.log.add(f"{attacker.name} drinks blood and heals {heal}.")
-        except Exception:
-            pass
-
-        if defender.stats.hp <= 0:
-            # Player death uses the urgent popup; enemies die normally.
-            if defender.id == self.player_id:
-                cause = attacker.name
-                self.set_urgent(
-                    f"by way of {cause}",
-                    title="You unravel...",
-                    choices=["Continue..."],
-                )
-            else:
-                self.log.add(f"{defender.name} dies.")
-                # Currency drop if the defender carries bismuth loot tags.
-                tags = getattr(defender, "tags", {}) or {}
-                drop_min = int(tags.get("currency_min", 0))
-                drop_max = int(tags.get("currency_max", 0))
-                if drop_min <= 0 and drop_max <= 0:
-                    # Enemy YAML tags are preserved under tags["tags"] (dict or list).
-                    inner = tags.get("tags")
-                    if isinstance(inner, dict):
-                        try:
-                            drop_min = int(inner.get("currency_min", 0))
-                        except Exception:
-                            drop_min = 0
-                        try:
-                            drop_max = int(inner.get("currency_max", 0))
-                        except Exception:
-                            drop_max = 0
-                if drop_max < drop_min:
-                    drop_max = drop_min
-                if drop_max > 0 and level.world.is_walkable(*defender.pos):
-                    amt = self.rng.randint(drop_min, drop_max) if drop_min < drop_max else drop_min
-                    if amt > 0:
-                        try:
-                            ent = self._spawn_entity_from_template(
-                                "bismuth_pile",
-                                defender.pos,
-                                overrides={"tags": {"amount": amt}},
-                            )
-                            level.entities[ent.id] = ent
-                        except Exception:
-                            pass
-                self._kill_actor(
-                    level,
-                    defender,
-                    killer_id=attacker.id,
-                    killer_is_player=(attacker.id == self.player_id),
-                )
+        """Resolve an attack. Delegates to combat_system."""
+        combat_system.attack(self, level, attacker, defender)
 
 
 
@@ -3471,28 +3145,8 @@ class Game:
         self._activate_pattern_seed_neighbors(level, target_vertex)
 
     def act_push_pattern(self, actor_id: str, target_pos=None, rotation_deg: float = 0) -> None:
-        """Begin repeated motion/rotation of the current pattern."""
         level = self._level()
-        pattern = getattr(level, "pattern", None)
-        anchor = getattr(level, "pattern_anchor", None)
-        if pattern is None or anchor is None or not pattern.vertices:
-            return
-        com = pattern_motion.center_of_mass(pattern)
-        com_world = (com[0] + anchor[0], com[1] + anchor[1])
-        if target_pos is None:
-            target_pos = com_world
-        dx = target_pos[0] - com_world[0]
-        dy = target_pos[1] - com_world[1]
-        dist = (dx * dx + dy * dy) ** 0.5
-        # Allow pure rotation if targeting the current tile (avoid half-tile drift).
-        if dist < 0.51:
-            dx = dy = 0.0
-        max_range = 5.0
-        if dist > max_range and dist > 0:
-            scale = max_range / dist
-            dx *= scale
-            dy *= scale
-        pattern_motion.start_motion(level, (dx, dy), rotation_deg, interval=10)
+        pattern_ops.push_pattern(self, level, target_pos, rotation_deg)
 
     def act_destabilize(self, actor_id: str) -> None:
         """Teleport randomly within 10 tiles; 50% chance to take 10% max HP."""
@@ -4219,14 +3873,7 @@ class Game:
 
 
     def _reset_pattern_core(self, lvl: LevelState) -> None:
-        lvl.pattern = builder.Pattern()
-        lvl.pattern_anchor = None
-        lvl.activation_points = []
-        lvl.activation_ttl = 0
-        # restore coherence to max when manually resetting
-        player = self._player()
-        player.stats.coherence = player.stats.max_coherence
-        self.log.add("Rune reset.")
+        pattern_ops.reset_pattern(self)
 
 
     def _meditate_core(self, lvl: LevelState, actor_id: str) -> None:
@@ -4488,83 +4135,14 @@ class Game:
         killer_id: Optional[str] = None,
         killer_is_player: bool = False,
     ) -> None:
-        """Handle removing a dead actor from the world and awarding XP once."""
-        # Award XP (handles faction check + duplicate protection)
-        self._on_enemy_killed(actor)
-
-        # Reputation: only the player currently tracks dynamic reputation.
-        if killer_is_player or (killer_id == self.player_id):
-            try:
-                reputation_system.apply_rep_event(self, actor, event="kill")
-            except Exception:
-                pass
-
-        # Use the canonical id (actor_id is a property alias if you made Actor->Entity)
-        # Capture pre-removal data for reward spawning.
-        try:
-            actor_pos = tuple(getattr(actor, "pos", (None, None)))
-        except Exception:
-            actor_pos = (None, None)
-
-        aid = actor.id
-        proto_id = getattr(actor, "proto_id", None) or (getattr(actor, "tags", {}) or {}).get("template_id")
-
-        # Remove from actors dict
-        if aid in level.actors:
-            del level.actors[aid]
-
-        # Remove from entities dict (so it stops being rendered)
-        if aid in level.entities:
-            del level.entities[aid]
-
-        # Slaver death frees chained brutes (they become neutral).
-        if str(proto_id or "") == "slaver":
-            freed = 0
-            for other in list(level.actors.values()):
-                try:
-                    otags = getattr(other, "tags", None) or {}
-                except Exception:
-                    continue
-                if otags.get("slaver_master_id") != aid:
-                    continue
-                try:
-                    other.faction = "neutral"
-                except Exception:
-                    pass
-                try:
-                    otags.pop("slaver_master_id", None)
-                    otags["freed_from_slaver"] = True
-                    other.tags = otags
-                except Exception:
-                    pass
-                freed += 1
-            if freed > 0:
-                self.log.add("The shackled brutes are freed as the slaver falls.")
-
-        # Prototype-driven item drops (e.g. whip, sage cap).
-        try:
-            from edgecaster import prototypes as _prototypes
-
-            spec = _prototypes.resolve_proto(str(proto_id)) if proto_id else {}
-            drop_items = spec.get("drop_items") or []
-            if isinstance(drop_items, (list, tuple)) and actor_pos and actor_pos[0] is not None and actor_pos[1] is not None:
-                drop_pos = (int(actor_pos[0]), int(actor_pos[1]))
-                for drop_pid in drop_items:
-                    try:
-                        ent = self._spawn_entity_from_template(str(drop_pid), drop_pos)
-                        level.entities[ent.id] = ent
-                        self.log.add(f"{actor.name} drops {ent.name}.")
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-
-        # Guaranteed legendary loot drop (after removal so the tile is unoccupied).
-        try:
-            if actor_pos and actor_pos[0] is not None and actor_pos[1] is not None:
-                self._spawn_legendary_reward(level, (int(actor_pos[0]), int(actor_pos[1])), actor)
-        except Exception:
-            pass
+        """Handle removing a dead actor. Delegates to combat_system."""
+        combat_system.kill_actor(
+            self,
+            level,
+            actor,
+            killer_id=killer_id,
+            killer_is_player=killer_is_player,
+        )
 
 
     def _update_fov(self, level: LevelState, radius: int = 8) -> None:
