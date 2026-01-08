@@ -84,6 +84,129 @@
   name: Head
   parent: entity
   description: A head, home to senses and teeth-to-be.
+  body:
+    root: neck
+    nodes:
+      neck:
+        proto: neck
+        children:
+        - skull
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 0.55
+      skull:
+        proto: skull
+        children: []
+        layout:
+          x: 0.0
+          y: -0.7
+        props:
+          size: 0.95
+- id: skull
+  name: Skull
+  parent: head
+  description: The bony capsule of the head, bearing face, ears, and hair.
+  body:
+    root: face
+    links:
+    - - face
+      - ear
+    - - face
+      - ear_m
+    - - face
+      - hair
+    nodes:
+      face:
+        proto: face
+        children: []
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 0.65
+      ear:
+        proto: ear
+        children: []
+        layout:
+          x: -0.85
+          y: -0.05
+        props:
+          size: 0.28
+      ear_m:
+        proto: ear
+        children: []
+        layout:
+          x: 0.85
+          y: -0.05
+        props:
+          size: 0.28
+      hair:
+        proto: hair
+        children: []
+        layout:
+          x: 0.0
+          y: -1.05
+        props:
+          size: 0.42
+
+
+- id: face
+  name: Face
+  parent: skull
+  description: "The front of the head: eyes, nose, mouth, and brow."
+  body:
+    root: nose
+    links:
+    - - nose
+      - eye
+    - - nose
+      - eye_m
+    nodes:
+      nose:
+        proto: nose
+        children:
+        - forehead
+        - mouth
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 0.22
+      forehead:
+        proto: forehead
+        children: []
+        layout:
+          x: 0.0
+          y: -0.55
+        props:
+          size: 0.30
+      mouth:
+        proto: mouth
+        children: []
+        layout:
+          x: 0.0
+          y: 0.55
+        props:
+          size: 0.28
+      eye:
+        proto: eye
+        children: []
+        layout:
+          x: -0.45
+          y: -0.18
+        props:
+          size: 0.18
+      eye_m:
+        proto: eye
+        children: []
+        layout:
+          x: 0.45
+          y: -0.18
+        props:
+          size: 0.18
+
 - id: tail
   name: Tail
   parent: entity
@@ -147,6 +270,45 @@
   name: Leg
   parent: limb
   description: A limb suited for support and locomotion.
+  body:
+    root: thigh
+    nodes:
+      thigh:
+        proto: thigh
+        children:
+        - knee
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 1.10
+      knee:
+        proto: knee
+        children:
+        - calf
+        layout:
+          x: -0.22
+          y: 1.30
+        props:
+          size: 0.68
+      calf:
+        proto: calf
+        children:
+        - foot
+        layout:
+          x: -0.34
+          y: 2.85
+        props:
+          size: 0.86
+      foot:
+        proto: foot
+        children: []
+        layout:
+          x: -0.48
+          y: 3.65
+        props:
+          size: 0.32
+
 - id: hand
   name: Hand
   parent: limb
@@ -180,7 +342,7 @@
         proto: thumb_finger
         children: []
         layout:
-          x: -0.95
+          x: 0.95
           y: 0.88
         props:
           size: 0.16
@@ -188,7 +350,7 @@
         proto: index_finger
         children: []
         layout:
-          x: -0.42
+          x: 0.42
           y: 1.55
         props:
           size: 0.12
@@ -196,7 +358,7 @@
         proto: middle_finger
         children: []
         layout:
-          x: -0.05
+          x: 0.05
           y: 1.72
         props:
           size: 0.14
@@ -204,7 +366,7 @@
         proto: ring_finger
         children: []
         layout:
-          x: 0.26
+          x: -0.26
           y: 1.58
         props:
           size: 0.12
@@ -212,10 +374,90 @@
         proto: pinky_finger
         children: []
         layout:
-          x: 0.58
+          x: -0.58
           y: 1.38
         props:
           size: 0.11
+
+- id: foot
+  name: Foot
+  parent: limb
+  description: A support extremity with an ankle, sole, heel, and toes.
+  body:
+    root: ankle
+    nodes:
+      ankle:
+        proto: ankle
+        children:
+        - sole
+        layout:
+          x: 0.0
+          y: 0.0
+        props:
+          size: 0.34
+      sole:
+        proto: sole
+        children:
+        - heel
+        - big_toe
+        - index_toe
+        - middle_toe
+        - ring_toe
+        - pinky_toe
+        layout:
+          x: 0.05
+          y: 0.78
+        props:
+          size: 0.30
+      heel:
+        proto: heel
+        children: []
+        layout:
+          x: 0.42
+          y: 0.30
+        props:
+          size: 0.20
+      big_toe:
+        proto: big_toe
+        children: []
+        layout:
+          x: 0.38
+          y: 1.48
+        props:
+          size: 0.15
+      index_toe:
+        proto: index_toe
+        children: []
+        layout:
+          x: 0.16
+          y: 1.38
+        props:
+          size: 0.13
+      middle_toe:
+        proto: middle_toe
+        children: []
+        layout:
+          x: -0.05
+          y: 1.38
+        props:
+          size: 0.13
+      ring_toe:
+        proto: ring_toe
+        children: []
+        layout:
+          x: -0.26
+          y: 1.32
+        props:
+          size: 0.12
+      pinky_toe:
+        proto: pinky_toe
+        children: []
+        layout:
+          x: -0.48
+          y: 1.32
+        props:
+          size: 0.11
+
 - id: shoulder
   name: Shoulder
   parent: arm
@@ -310,3 +552,79 @@
   name: Pinky Finger
   parent: finger
   description: A pinky finger.
+- id: thigh
+  name: Thigh
+  parent: leg
+  description: The upper leg segment between hips and knee.
+- id: knee
+  name: Knee
+  parent: leg
+  description: The knee joint.
+- id: calf
+  name: Calf
+  parent: leg
+  description: The lower leg segment between knee and ankle.
+- id: ankle
+  name: Ankle
+  parent: foot
+  description: The ankle joint connecting leg to foot.
+- id: sole
+  name: Sole
+  parent: foot
+  description: The underside of the foot.
+- id: heel
+  name: Heel
+  parent: foot
+  description: The rear support of the foot.
+- id: toe
+  name: Toe
+  parent: foot
+  description: A generic toe.
+- id: big_toe
+  name: Big Toe
+  parent: toe
+  description: The big toe.
+- id: index_toe
+  name: Index Toe
+  parent: toe
+  description: The second toe.
+- id: middle_toe
+  name: Middle Toe
+  parent: toe
+  description: The middle toe.
+- id: ring_toe
+  name: Ring Toe
+  parent: toe
+  description: The fourth toe.
+- id: pinky_toe
+  name: Pinky Toe
+  parent: toe
+  description: The smallest toe.
+- id: neck
+  name: Neck
+  parent: head
+  description: The connector between torso and skull.
+- id: forehead
+  name: Forehead
+  parent: face
+  description: The brow and upper front of the face.
+- id: eye
+  name: Eye
+  parent: face
+  description: A sensory organ for vision.
+- id: nose
+  name: Nose
+  parent: face
+  description: A sensory organ for smell and breathing.
+- id: mouth
+  name: Mouth
+  parent: face
+  description: The opening for eating and speech-to-be.
+- id: ear
+  name: Ear
+  parent: skull
+  description: A sensory organ for hearing.
+- id: hair
+  name: Hair
+  parent: skull
+  description: Hair growing from the top of the skull.
