@@ -564,6 +564,15 @@ zones.py
 • Note: _make_zone creation logic remains in game.py due to heavy POI/mapgen coupling
 • Interface: get_zone(game, coord, up_pos), get_zone_for_render(game, coord), use_stairs_down(game), use_stairs_up(game), transition_edge(game, actor, dx, dy), fast_travel_to_zone(game, zx, zy)
 
+overmap.py
+• Julia coordinate grid (tile_julia_grid) for fractal terrain generation
+• Overmap parameter initialization from WorldMapScene visual entry
+• Background world map rendering thread (with request queueing and staleness detection)
+• Corruption level, hotspots, and anchors (rune anchor POI suppression zones)
+• Zone-to-Julia coordinate mapping for local zone generation
+• Key design: overmap is "intimately linked" with local map generation - local zones query the Julia grid to sample the fractal at correct coordinates
+• Interface: build_tile_julia_grid(game), init_overmap_params_and_grid(game), init_rune_anchors(game), start_world_map_thread(game, reason, width, height, span, view, view_token, corruption_version), ensure_overmap_ready(game), jx_jy_slices_for_zone(game, coord), set_corruption_level(game, level), set_corruption_spline_weight(game, weight), add_corruption_hotspot(game, jx, jy, strength, sigma), add_corruption_anchor(game, jx, jy, sigma, strength, coord, spawn_pos), refresh_corruption_visuals(game)
+
 -------------------------------------------------------------------------------
 Integration Pattern:
 
@@ -577,7 +586,13 @@ TYPE_CHECKING imports prevent circular dependencies.
 -------------------------------------------------------------------------------
 Remaining Extractions (see vision_documents/spring_cleaning.txt):
 
-• overmap.py - Julia grid and corruption orchestration
+All major subsystem extractions from spring_cleaning.txt are now complete.
+game.py remains the orchestrator with thin wrapper delegations to:
+• params.py (ParamManager), legendaries.py, lorenz_aura.py
+• action_runner.py, spawning.py, inventory.py, pattern_ops.py
+• scheduling.py, combat.py, zones.py, overmap.py
+
+_make_zone creation logic remains in game.py due to heavy POI/mapgen coupling.
 
 ===============================================================================
 SECTION 11 - CURRENT STATUS & DIRECTION
@@ -587,12 +602,16 @@ Completed:
 • Snapped LoD terrain rendering
 • Camera responsibility centralized
 • Renderer slimmed down (post–ascii purge)
-• game.py decomposition started (params, legendaries, lorenz_aura extracted)
+• game.py decomposition complete: reduced from ~6035 to ~3575 lines (~41% reduction)
+  - Extracted: params.py, legendaries.py, lorenz_aura.py, action_runner.py
+  - Extracted: spawning.py, inventory.py, pattern_ops.py
+  - Extracted: scheduling.py, combat.py, zones.py, overmap.py
+  - 102 unit tests covering the new subsystem modules
 
 Immediate focus:
-• Continue game.py decomposition (action_runner, spawning next)
 • Entity LoD integration (creatures at different scales)
 • Further renderer modularization (sprite backend later)
+• Gameplay iteration on corruption/anchor mechanics
 
 Guiding principles:
 Keep geometry weird.

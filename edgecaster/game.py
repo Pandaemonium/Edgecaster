@@ -42,6 +42,7 @@ from edgecaster.systems import pattern_ops
 from edgecaster.systems import scheduling
 from edgecaster.systems import combat as combat_system
 from edgecaster.systems import zones as zones_system
+from edgecaster.systems import overmap as overmap_system
 from . import lorenz
 import math
 from edgecaster import prototypes
@@ -954,180 +955,15 @@ class Game:
 
     def build_tile_julia_grid(self) -> None:
         """Precompute per-tile Julia coordinates across the whole world grid."""
-        if not getattr(self, "overmap_params", None):
-            return
-        p = self.overmap_params
-        # Require julia extents from overmap_params
-        if not all(k in p for k in ("view_min_jx", "view_max_jx", "view_min_jy", "view_max_jy")):
-            return
-        total_x = self.cfg.world_map_screens * self.cfg.world_width
-        total_y = self.cfg.world_map_screens * self.cfg.world_height
-        if total_x <= 0 or total_y <= 0:
-            return
-        step_x = (p["view_max_jx"] - p["view_min_jx"]) / max(1, total_x - 1)
-        step_y = (p["view_max_jy"] - p["view_min_jy"]) / max(1, total_y - 1)
-        jx = [p["view_min_jx"] + i * step_x for i in range(total_x)]
-        jy = [p["view_min_jy"] + i * step_y for i in range(total_y)]
-        self.tile_julia_grid = {
-            "x": jx,
-            "y": jy,
-            "total_x": total_x,
-            "total_y": total_y,
-            "step_x": step_x,
-            "step_y": step_y,
-            "view_min_jx": p["view_min_jx"],
-            "view_max_jx": p["view_max_jx"],
-            "view_min_jy": p["view_min_jy"],
-            "view_max_jy": p["view_max_jy"],
-        }
+        overmap_system.build_tile_julia_grid(self)
 
     def _init_overmap_params_and_grid(self) -> None:
         """Set fixed overmap params from curated c-path bounds and start background render."""
-        # If already initialized, do nothing.
-        if getattr(self, "overmap_params", None) and getattr(self, "tile_julia_grid", None):
-            return
-        try:
-            from edgecaster.scenes.world_map_scene import WorldMapScene
-            wm = WorldMapScene(self, span=16)
-            entry = wm._pick_visual_entry()
-        except Exception:
-            return
-        cfg = self.cfg
-        total_w = cfg.world_map_screens * cfg.world_width
-        total_h = cfg.world_map_screens * cfg.world_height
-        min_wx = 0.0
-        min_wy = 0.0
-        max_wx = float(total_w)
-        max_wy = float(total_h)
-        # stash params without surface; render thread will fill it
-        self.overmap_params = {
-            "min_wx": min_wx,
-            "min_wy": min_wy,
-            "span_x": max_wx,
-            "span_y": max_wy,
-            "visual_c": entry["c"],
-            "corruption_level": float(getattr(self, "corruption_level", 0.0) or 0.0),
-            "corruption_seed": int(getattr(self, "corruption_seed", 1337) or 1337),
-            "corruption_hotspots": list(getattr(self, "corruption_hotspots", []) or []),
-            "corruption_anchors": list(getattr(self, "corruption_anchors", []) or []),
-            "corruption_spline_weight": float(getattr(self, "corruption_spline_weight", 0.0) or 0.0),
-            "surface_size": (0, 0),
-            "surface": None,
-            "orig_min_wx": min_wx,
-            "orig_min_wy": min_wy,
-            "orig_max_wx": max_wx,
-            "orig_max_wy": max_wy,
-            "view_max_wx": max_wx,
-            "view_max_wy": max_wy,
-            "orig_min_jx": entry["x_min"],
-            "orig_max_jx": entry["x_max"],
-            "orig_min_jy": entry["y_min"],
-            "orig_max_jy": entry["y_max"],
-            "view_min_jx": entry["x_min"],
-            "view_max_jx": entry["x_max"],
-            "view_min_jy": entry["y_min"],
-            "view_max_jy": entry["y_max"],
-        }
-        # build grid immediately so locals can generate
-        self.build_tile_julia_grid()
-        # Seed rune anchors now that we have a Julia grid.
-        self._init_rune_anchors()
-        # Kick off world-map rendering in a background thread during startup so the
-        # first time you open the map it (usually) appears immediately.
-        #
-        # NOTE: This should never block game start, but it may contend for CPU while
-        # generating. If that ever becomes a problem again, make this configurable.
-        try:
-            self._start_world_map_thread(reason="startup", view=None, view_token=0)
-        except Exception:
-            pass
+        overmap_system.init_overmap_params_and_grid(self)
 
     def _init_rune_anchors(self) -> None:
         """Seed rune-anchor POIs and corresponding corruption suppressors."""
-        if getattr(self, "corruption_anchors", None) and len(self.corruption_anchors) > 0:
-            return
-        grid = getattr(self, "tile_julia_grid", None)
-        if not isinstance(grid, dict):
-            return
-
-        screens = int(getattr(self.cfg, "world_map_screens", 0) or 0)
-        if screens <= 0:
-            return
-        zone_w = int(getattr(self.cfg, "world_width", 0) or 0)
-        zone_h = int(getattr(self.cfg, "world_height", 0) or 0)
-        if zone_w <= 0 or zone_h <= 0:
-            return
-
-        total_x = screens * zone_w
-        total_y = screens * zone_h
-        xgrid = grid.get("x") or []
-        ygrid = grid.get("y") or []
-        if len(xgrid) < total_x or len(ygrid) < total_y:
-            return
-
-        # Clear any previous dynamic anchors (e.g. if re-initialized in the same process).
-        try:
-            for pid in list(poi_content.POIS.keys()):
-                if str(pid).startswith("rune_anchor_"):
-                    del poi_content.POIS[pid]
-        except Exception:
-            pass
-
-        # Target count scales gently with map width to avoid thousands of markers.
-        target_count = max(12, int(round(screens * 0.6)))
-
-        # Use an isolated RNG so anchor placement doesn't perturb gameplay RNG.
-        rng = random.Random(int(self.corruption_seed) + 424242)
-
-        try:
-            occupied: set[tuple[int, int, int]] = {tuple(poi.coord) for poi in poi_content.POIS.values()}
-        except Exception:
-            occupied = set()
-
-        anchors: List[Tuple[float, float, float, float]] = []
-        tries = 0
-        max_tries = target_count * 50
-        while len(anchors) < target_count and tries < max_tries:
-            tries += 1
-            # Bias X to the left side: u^2 concentrates near 0.
-            zx = int((rng.random() ** 2.0) * screens)
-            zy = int(rng.random() * screens)
-            coord = (zx, zy, 0)
-            if coord in occupied:
-                continue
-            occupied.add(coord)
-
-            gx = zx * zone_w + (zone_w // 2)
-            gy = zy * zone_h + (zone_h // 2)
-            if gx < 0 or gy < 0 or gx >= len(xgrid) or gy >= len(ygrid):
-                continue
-            jx = float(xgrid[gx])
-            jy = float(ygrid[gy])
-
-            # Anchor "range": sigma is the Gaussian falloff radius in Julia-plane units.
-            # If you want anchors to affect a wider (or tighter) region of the map,
-            # adjust this sigma range. (To reason in tiles, convert via tile_julia_grid step_x/step_y.)
-            sigma = float(rng.uniform(0.05, 0.2))
-            strength = 1.0
-            anchors.append((jx, jy, sigma, strength))
-
-            pid = f"rune_anchor_{len(anchors) - 1:03d}"
-            try:
-                poi_content.POIS[pid] = poi_content.POI(
-                    id=pid,
-                    coord=coord,
-                    npcs=[],
-                    structures=[{"kind": "rune_anchor"}],
-                )
-            except Exception:
-                pass
-
-        self.corruption_anchors = anchors
-        if getattr(self, "overmap_params", None):
-            try:
-                self.overmap_params["corruption_anchors"] = list(self.corruption_anchors)
-            except Exception:
-                pass
+        overmap_system.init_rune_anchors(self)
 
     def _start_world_map_thread(
         self,
@@ -1140,319 +976,41 @@ class Game:
         view_token: Optional[int] = None,
         corruption_version: Optional[int] = None,
     ) -> None:
-        self._debug(f"[_start_world_map_thread] called with reason={reason} view_token={view_token}")
-        reason = str(reason or "loading")
-
-        if width is not None:
-            self.world_map_render_width = int(width)
-        if height is not None:
-            self.world_map_render_height = int(height)
-        if span is not None:
-            self.world_map_render_span = int(span)
-        if view is not None:
-            self.world_map_view = (float(view[0]), float(view[1]), float(view[2]), float(view[3]))
-        if view_token is not None:
-            self.world_map_view_token = int(view_token)
-
-        if corruption_version is not None:
-            corr_ver = corruption_version
-        else:
-            corr_ver = int(getattr(self, "corruption_version", 0) or 0)
-
-        req = {
-            "reason": reason,
-            "width": int(self.world_map_render_width),
-            "height": int(self.world_map_render_height),
-            "span": int(self.world_map_render_span),
-            "view": self.world_map_view,
-            "view_token": int(self.world_map_view_token),
-            "corruption_version": corr_ver,
-        }
-        self._debug(f"[_start_world_map_thread] Request dictionary: {req}")
-
-        # Ensure dict cache exists (the scene reads this)
-        if not hasattr(self, "world_map_cache_dict"):
-            self.world_map_cache_dict = {}
-
-        key = (req["width"], req["height"], req["span"], req["view_token"], req["corruption_version"])
-
-        # If we already have the exact requested render, do nothing.
-        try:
-            if not getattr(self, "world_map_rendering", False) and key in self.world_map_cache_dict:
-                self._debug(f"[_start_world_map_thread] Render cache hit for key={key}. Skipping render.")
-                return
-        except Exception:
-            pass
-
-        if getattr(self, "world_map_rendering", False):
-            self._debug(f"[_start_world_map_thread] World map is already rendering. Queueing request for view_token={req['view_token']}.")
-            # Queue only the most recent request; older ones are irrelevant.
-            self._world_map_pending_request = {
-                "reason": req["reason"],
-                "width": req["width"],
-                "height": req["height"],
-                "span": req["span"],
-                "view": req["view"],
-                "view_token": req["view_token"],
-                "corruption_version": req["corruption_version"],  # <-- ADD
-            }
-            return
-
-        self._debug(f"[_start_world_map_thread] No render in progress. Starting new render for view_token={req['view_token']}.")
-        self._world_map_pending_request = None
-        self.world_map_thread_started = True
-        self.world_map_version += 1
-        version = self.world_map_version
-        self.world_map_render_reason = reason
-        self.world_map_rendering = True
-        try:
-            v = req.get("view")
-            self._debug(
-                "[world_map] thread start "
-                f"version={version} reason={self.world_map_render_reason} "
-                f"size={req['width']}x{req['height']} span={req['span']} "
-                f"view_token={req['view_token']} corr_ver={req['corruption_version']} "
-                f"view={v!r}"
-            )
-        except Exception:
-            pass
-        t = threading.Thread(target=self._background_render_map, args=(version, req), daemon=True)
-        t.start()
-
-    def _background_render_map(self, version: int, req: dict) -> None:
-        """Render overmap in a background thread using the requested view window.
-
-        Drop-in replacement that stores results into self.world_map_cache_dict[key]
-        (the dict cache that WorldMapScene.run() now queries), while keeping the
-        legacy self.world_map_cache populated for backwards compatibility.
-        """
-        self._debug(f"[_background_render_map] Thread started for version: {version}. Request: {req}")
-        t0 = time.perf_counter()
-        try:
-            from edgecaster.scenes.world_map_scene import WorldMapScene
-
-            # Ensure dict cache exists (scene reads this)
-            if not hasattr(self, "world_map_cache_dict"):
-                self.world_map_cache_dict = {}
-
-            span = int(req.get("span", 16) or 16)
-            w = int(req.get("width", 0) or 0)
-            h = int(req.get("height", 0) or 0)
-            view = req.get("view")
-            view_token = int(req.get("view_token", 0) or 0)
-            corr_ver = int(req.get("corruption_version", 0) or 0)
-
-            wm = WorldMapScene(self, span=span)
-
-            class Stub:
-                def __init__(self, ww: int, hh: int) -> None:
-                    self.width = ww
-                    self.height = hh
-
-            stub = Stub(w, h)
-
-            try:
-                self._debug(f"[_background_render_map] Starting overmap render for version={version}, view_token={view_token}.")
-                surf, out_view, surf_corr = wm._render_overmap(stub, view=view)
-                self._debug(f"[_background_render_map] Finished overmap render for version={version}, view_token={view_token}.")
-            except Exception as e:
-                try:
-                    self._debug(f"[world_map] thread error version={version}: {e!r}")
-                    self._debug(traceback.format_exc())
-                except Exception:
-                    pass
-                return
-
-            self._debug(f"[_background_render_map] Checking for staleness. Render version={version}, game version={getattr(self, 'world_map_version', version)}. Render token={view_token}, game token={getattr(self, 'world_map_view_token', view_token)}")
-            # Only publish if this render is still current.
-            # (If a newer request started, discard to avoid overwriting current view.)
-            if version != getattr(self, "world_map_version", version):
-                self._debug(f"[_background_render_map] Stale render (version {version}), a newer one ({getattr(self, 'world_map_version', version)}) was started. Discarding.")
-                return
-
-            # Extra safety: if the game's current token has moved on, discard.
-            # This prevents publishing an older zoom render after another zoom happened.
-            try:
-                cur_token = int(getattr(self, "world_map_view_token", view_token) or view_token)
-                if cur_token != view_token:
-                    self._debug(f"[_background_render_map] Stale render (view_token {view_token}), a newer one ({cur_token}) was requested. Discarding.")
-                    return
-            except Exception as e:
-                self._debug(f"[_background_render_map] Error checking view_token: {e}")
-                pass
-
-            self._debug(f"[_background_render_map] Render is not stale. Publishing result for view_token={view_token}.")
-            # Cache by (quantized) view window rather than a monotonically increasing token.
-            # `out_view` may be either a dict-like rect (x_min/x_max/...) or a tuple
-            # (x_min, y_min, span_x, span_y) depending on the caller.
-            try:
-                if isinstance(out_view, dict):
-                    x_min = float(out_view.get('x_min', 0.0))
-                    x_max = float(out_view.get('x_max', x_min + 1.0))
-                    y_min = float(out_view.get('y_min', 0.0))
-                    y_max = float(out_view.get('y_max', y_min + 1.0))
-                    vw = max(1.0, x_max - x_min)
-                    vh = max(1.0, y_max - y_min)
-                elif isinstance(out_view, (tuple, list)) and len(out_view) >= 4:
-                    x_min = float(out_view[0])
-                    y_min = float(out_view[1])
-                    vw = max(1.0, float(out_view[2]))
-                    vh = max(1.0, float(out_view[3]))
-                    x_max = x_min + vw
-                    y_max = y_min + vh
-                else:
-                    x_min = y_min = 0.0
-                    vw = vh = 1.0
-                    x_max = x_min + vw
-                    y_max = y_min + vh
-            except Exception:
-                x_min = y_min = 0.0
-                vw = vh = 1.0
-                x_max = x_min + vw
-                y_max = y_min + vh
-
-            q = max(1.0, min(64.0, max(vw, vh) / 512.0))
-            q_inv = 1.0 / q
-            qx = int(round(x_min * q_inv))
-            qy = int(round(y_min * q_inv))
-            qw = int(round(vw * q_inv))
-            qh = int(round(vh * q_inv))
-            qk = int(round(q * 1000.0))
-            key = (w, h, span, qx, qy, qw, qh, qk, corr_ver)
-
-            payload = {
-                "surface": surf,
-                "surface_corr": surf_corr,
-                "view": out_view,
-                "key": key,
-            }
-
-            # New dict cache (what the scene uses)
-            self.world_map_cache_dict[key] = payload
-            # Also cache by the request's size_key (what WorldMapScene uses),
-            # so scene lookups succeed even though we internally de-duplicate by quantized view.
-            try:
-                size_key = (w, h, span, view_token, corr_ver)
-                self.world_map_cache_dict[size_key] = payload
-            except Exception:
-                pass
-            # Simple bound on cache size to avoid unbounded growth during rapid zoom/pan.
-            max_cache = int(getattr(self.cfg, 'world_map_cache_max', 32) or 32)
-            max_cache = max(8, min(256, max_cache))
-            while len(self.world_map_cache_dict) > max_cache:
-                try:
-                    self.world_map_cache_dict.pop(next(iter(self.world_map_cache_dict)))
-                except Exception:
-                    break
-
-            # Legacy single-slot cache (keep for any older code paths)
-            self.world_map_cache = payload
-
-            self.world_map_ready = True
-
-            try:
-                dt = time.perf_counter() - t0
-                self._debug(
-                    f"[world_map] thread done version={version} dt={dt:.2f}s "
-                    f"key={key} view={out_view!r}"
-                )
-            except Exception:
-                pass
-
-        finally:
-            # Only the latest thread should flip the rendering flag.
-            if version == getattr(self, "world_map_version", version):
-                self.world_map_rendering = False
-                self.world_map_render_reason = "ready"
-                self._debug(f"[_background_render_map] Render version {version} finished. world_map_rendering is now False.")
-
-                pending = getattr(self, "_world_map_pending_request", None)
-                if isinstance(pending, dict) and pending:
-                    self._debug(f"[_background_render_map] Found pending request. Starting new render thread for view_token={pending.get('view_token')}.")
-                    # Clear first so a failure doesn't loop forever.
-                    self._world_map_pending_request = None
-
-                    # Make sure queued requests carry corruption_version (older callers might not).
-                    if "corruption_version" not in pending:
-                        try:
-                            pending["corruption_version"] = int(getattr(self, "corruption_version", 0) or 0)
-                        except Exception:
-                            pending["corruption_version"] = 0
-
-                    try:
-                        self._start_world_map_thread(**pending)
-                    except Exception as e:
-                        self._debug(f"[_background_render_map] Error starting new render thread: {e!r}")
-                        try:
-                            self._debug(traceback.format_exc())
-                        except Exception:
-                            pass
-                else:
-                    self._debug(f"[_background_render_map] No pending requests.")
-
+        """Start background thread to render the world map."""
+        overmap_system.start_world_map_thread(
+            self,
+            reason=reason,
+            width=width,
+            height=height,
+            span=span,
+            view=view,
+            view_token=view_token,
+            corruption_version=corruption_version,
+        )
 
     def _ensure_overmap_ready(self) -> None:
-        """Ensure overmap params/grid exist.
-
-        Overmap *rendering* is started lazily by WorldMapScene (or by corruption changes),
-        so this should stay inexpensive and safe to call during startup.
-        """
-        if getattr(self, "overmap_params", None) and getattr(self, "tile_julia_grid", None):
-            return
-        # initialize params/grid
-        self._init_overmap_params_and_grid()
+        """Ensure overmap params/grid exist."""
+        overmap_system.ensure_overmap_ready(self)
 
     def _jx_jy_slices_for_zone(self, coord: Tuple[int, int, int]) -> tuple[Optional[List[float]], Optional[List[float]]]:
         """Return (jx_slice, jy_slice) for this zone coord using the global tile_julia_grid."""
-        if getattr(self, "tile_julia_grid", None) is None:
-            return None, None
-        zx, zy, depth = coord
-        if depth != 0:
-            return None, None
-        w = self.cfg.world_width
-        h = self.cfg.world_height
-        gx0 = zx * w
-        gx1 = gx0 + w
-        gy0 = zy * h
-        gy1 = gy0 + h
-        xgrid = self.tile_julia_grid.get("x", [])  # type: ignore[union-attr]
-        ygrid = self.tile_julia_grid.get("y", [])  # type: ignore[union-attr]
-        if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
-            return None, None
-        return xgrid[gx0:gx1], ygrid[gy0:gy1]
+        return overmap_system.jx_jy_slices_for_zone(self, coord)
 
     def set_corruption_level(self, level: float) -> None:
         """Set global corruption intensity (phase 1: visuals-only morphing)."""
-        level = max(0.0, float(level))
-        if abs(level - getattr(self, "corruption_level", 0.0)) < 1e-9:
-            return
-        self.corruption_level = level
-        self.corruption_version += 1
-        self._refresh_corruption_visuals()
+        overmap_system.set_corruption_level(self, level)
 
     def set_corruption_spline_weight(self, weight: float) -> None:
         """Set weight for the optional spline-based distortion field (0 disables)."""
-        weight = max(0.0, float(weight))
-        if abs(weight - getattr(self, "corruption_spline_weight", 0.0)) < 1e-9:
-            return
-        self.corruption_spline_weight = weight
-        self.corruption_version += 1
-        self._refresh_corruption_visuals()
+        overmap_system.set_corruption_spline_weight(self, weight)
 
     def add_corruption_hotspot(self, jx: float, jy: float, strength: float, sigma: float) -> None:
         """Add a localized corruption 'cone' (Gaussian bump) in Julia-plane coordinates."""
-        self.corruption_hotspots.append((float(jx), float(jy), float(strength), float(sigma)))
-        self.corruption_version += 1
-        self._refresh_corruption_visuals()
+        overmap_system.add_corruption_hotspot(self, jx, jy, strength, sigma)
 
     def _alloc_rune_anchor_poi_id(self) -> str:
         """Return a unique POI id for a newly-created rune anchor."""
-        i = 0
-        while True:
-            pid = f"rune_anchor_{i:03d}"
-            if pid not in poi_content.POIS:
-                return pid
-            i += 1
+        return overmap_system.alloc_rune_anchor_poi_id(self)
 
     # =========================================================================
     # PHASE 5: LEGENDARIES & POI DISCOVERY -> systems/legendaries.py
@@ -1497,100 +1055,14 @@ class Game:
         coord: Optional[Tuple[int, int, int]] = None,
         spawn_pos: Optional[Tuple[int, int]] = None,
     ) -> Optional[str]:
-        """Add a rune anchor (corruption suppressor) and optionally create a POI marker.
-
-        Args:
-            jx, jy: Julia-plane coordinates of the anchor center (z-plane units).
-            sigma: Gaussian falloff radius in Julia-plane units (controls range).
-            strength: suppression strength in [0..1].
-            coord: if provided, inject a POI at this zone coord so the anchor is discoverable on the world map.
-            spawn_pos: optional tile position to spawn the visible anchor entity (if the zone already exists).
-        """
-        sigma = max(1e-6, float(sigma))
-        strength = max(0.0, min(1.0, float(strength)))
-        if strength <= 0.0:
-            return None
-
-        self.corruption_anchors.append((float(jx), float(jy), float(sigma), float(strength)))
-        self.corruption_version += 1
-
-        pid: Optional[str] = None
-        if coord is not None:
-            pid = self._alloc_rune_anchor_poi_id()
-            try:
-                poi_content.POIS[pid] = poi_content.POI(
-                    id=pid,
-                    coord=tuple(coord),
-                    npcs=[],
-                    structures=[{"kind": "rune_anchor"}],
-                )
-            except Exception:
-                pid = None
-
-            # Keep the world-map marker list in sync with dynamic POIs.
-            if pid is not None:
-                try:
-                    if getattr(self, "poi_locations", None) is None:
-                        self.poi_locations = {}
-                    self.poi_locations[pid] = tuple(coord)
-                except Exception:
-                    pass
-
-            # If the zone already exists, ensure it knows about the POI and spawn the visible entity.
-            try:
-                lvl = self.levels.get(tuple(coord)) if hasattr(self, "levels") else None
-            except Exception:
-                lvl = None
-            if lvl is not None:
-                try:
-                    poi_ids = getattr(lvl.world, "poi_ids", None)
-                    if poi_ids is None:
-                        setattr(lvl.world, "poi_ids", [pid] if pid else [])
-                    elif pid and isinstance(poi_ids, list) and pid not in poi_ids:
-                        poi_ids.append(pid)
-                except Exception:
-                    pass
-
-                if spawn_pos is not None:
-                    try:
-                        ent = self._spawn_entity_from_template("rune_anchor", spawn_pos)
-                        lvl.entities[ent.id] = ent
-                    except Exception:
-                        pass
-
-        # Apply immediately to visited zones + overmap.
-        self._refresh_corruption_visuals()
-        return pid
+        """Add a rune anchor (corruption suppressor) and optionally create a POI marker."""
+        return overmap_system.add_corruption_anchor(
+            self, jx, jy, sigma=sigma, strength=strength, coord=coord, spawn_pos=spawn_pos
+        )
 
     def _refresh_corruption_visuals(self) -> None:
         """Refresh already-instantiated overworld visuals and kick off overmap rerender."""
-        if getattr(self, "overmap_params", None):
-            self.overmap_params["corruption_level"] = float(self.corruption_level)
-            self.overmap_params["corruption_seed"] = int(self.corruption_seed)
-            self.overmap_params["corruption_hotspots"] = list(getattr(self, "corruption_hotspots", []) or [])
-            self.overmap_params["corruption_anchors"] = list(getattr(self, "corruption_anchors", []) or [])
-            self.overmap_params["corruption_spline_weight"] = float(getattr(self, "corruption_spline_weight", 0.0) or 0.0)
-
-        for coord, lvl in list(getattr(self, "levels", {}).items()):
-            if coord[2] != 0:
-                continue
-            jx_slice, jy_slice = self._jx_jy_slices_for_zone(coord)
-            if jx_slice is None or jy_slice is None:
-                continue
-            try:
-                mapgen.refresh_fractal_overworld_visuals(
-                    lvl.world,
-                    coord,
-                    overmap_params=self.overmap_params,
-                    jx_slice=jx_slice,
-                    jy_slice=jy_slice,
-                )
-            except Exception:
-                continue
-
-        # Force overmap re-render to reflect new corruption.
-        self.world_map_ready = False
-        self._start_world_map_thread(reason="corruption")
+        overmap_system.refresh_corruption_visuals(self)
 
     # =========================================================================
     # PHASE 8: ZONE MANAGEMENT -> systems/zones.py
