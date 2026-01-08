@@ -555,6 +555,15 @@ combat.py
 • Slaver pack chain-breaking on death
 • Interface: is_hostile(game, attacker, target), attack(game, level, attacker, defender), kill_actor(game, level, actor, killer_id, killer_is_player)
 
+zones.py
+• Zone retrieval with lazy creation
+• Pattern/coherence reset on zone entry
+• Stair usage (up/down) with player movement
+• Zone boundary transitions (edge wrapping)
+• Fast travel to overworld zones
+• Note: _make_zone creation logic remains in game.py due to heavy POI/mapgen coupling
+• Interface: get_zone(game, coord, up_pos), get_zone_for_render(game, coord), use_stairs_down(game), use_stairs_up(game), transition_edge(game, actor, dx, dy), fast_travel_to_zone(game, zx, zy)
+
 -------------------------------------------------------------------------------
 Integration Pattern:
 
@@ -568,7 +577,6 @@ TYPE_CHECKING imports prevent circular dependencies.
 -------------------------------------------------------------------------------
 Remaining Extractions (see vision_documents/spring_cleaning.txt):
 
-• zones.py - Zone creation and transitions
 • overmap.py - Julia grid and corruption orchestration
 
 ===============================================================================

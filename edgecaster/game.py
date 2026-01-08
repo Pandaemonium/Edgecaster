@@ -41,6 +41,7 @@ from edgecaster.systems import inventory as inventory_system
 from edgecaster.systems import pattern_ops
 from edgecaster.systems import scheduling
 from edgecaster.systems import combat as combat_system
+from edgecaster.systems import zones as zones_system
 from . import lorenz
 import math
 from edgecaster import prototypes
@@ -2398,47 +2399,12 @@ class Game:
         return actor.statuses.get(name, 0) > 0
 
     def _get_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]] = None) -> LevelState:
-        if coord not in self.levels:
-            self.levels[coord] = self._make_zone(coord, up_pos=up_pos)
-            # Default random spawns for most zones, but skip special "site" zones
-            # like labs and lairs (they control their own populations).
-            try:
-                w = self.levels[coord].world
-                is_special = bool(getattr(w, "is_lab", False) or getattr(w, "is_lair", False))
-            except Exception:
-                is_special = False
-            if not is_special:
-                self._spawn_enemies(self.levels[coord], count=4)
-        # entering any zone clears pattern and resets coherence
-        lvl = self.levels[coord]
-        lvl.pattern = builder.Pattern()
-        lvl.pattern_anchor = None
-        lvl.activation_points = []
-        lvl.activation_ttl = 0
-        # Stop any lingering motion when the pattern is cleared.
-        lvl.pattern_motion = None
-        # reset coherence to max on zone change
-        player = self._player() if hasattr(self, "_player") else None
-        if player:
-            player.stats.coherence = player.stats.max_coherence
-
-        # POI discovery: entering a zone reveals its POI markers on the world map.
-        try:
-            self._discover_pois_for_level(lvl)
-        except Exception:
-            pass
-        return self.levels[coord]
+        """Get (and lazily create) a zone. Delegates to zones_system."""
+        return zones_system.get_zone(self, coord, up_pos)
 
     def get_zone_for_render(self, coord: Tuple[int, int, int]) -> LevelState:
-        """Get (and lazily create) a zone for *rendering* purposes.
-
-        Unlike _get_zone(), this does **not** reset pattern state, coherence, or
-        any other per-zone gameplay state. It's intended for 'peek' rendering of
-        adjacent zones while zooming out.
-        """
-        if coord not in self.levels:
-            self.levels[coord] = self._make_zone(coord, up_pos=None)
-        return self.levels[coord]
+        """Get zone for rendering without side effects. Delegates to zones_system."""
+        return zones_system.get_zone_for_render(self, coord)
 
     def all_actors_current(self) -> List[Actor]:
         """Alive actors on the current level."""
@@ -2746,52 +2712,12 @@ class Game:
 
 
     def use_stairs_down(self) -> None:
-        lvl = self._level()
-        player = self._player()
-        tile = lvl.world.get_tile(*player.pos)
-        if tile is None:
-            return
-        cx, cy, cz = self.zone_coord
-        if tile.glyph == ">":
-            target_coord = (cx, cy, cz + 1)
-            up_pos = player.pos
-            dest_level = self._get_zone(target_coord, up_pos=up_pos)
-            # move player
-            del lvl.actors[self.player_id]
-            dest_pos = dest_level.up_stairs or dest_level.world.entry
-            player.pos = dest_pos
-            dest_level.actors[self.player_id] = player
-            self.zone_coord = target_coord
-            self.log.add(f"You descend to depth {self.zone_coord[2]}.")
-            self._update_fov(dest_level)
-
-            # NEW: snap the Lorenz storm to the new floor
-            self._reset_lorenz_on_zone_change(player)
+        """Use downward stairs. Delegates to zones_system."""
+        zones_system.use_stairs_down(self)
 
     def use_stairs_up(self) -> None:
-        lvl = self._level()
-        player = self._player()
-        tile = lvl.world.get_tile(*player.pos)
-        if tile is None:
-            return
-        cx, cy, cz = self.zone_coord
-        # surface: if no upstairs, request world map
-        if cz == 0 and tile.glyph != "<":
-            self.map_requested = True
-            return
-        if tile.glyph == "<" and cz > 0:
-            target_coord = (cx, cy, cz - 1)
-            dest_level = self._get_zone(target_coord, up_pos=None)
-            del lvl.actors[self.player_id]
-            dest_pos = dest_level.down_stairs or dest_level.world.entry
-            player.pos = dest_pos
-            dest_level.actors[self.player_id] = player
-            self.zone_coord = target_coord
-            self.log.add(f"You ascend to depth {self.zone_coord[2]}.")
-            self._update_fov(dest_level)
-
-            # NEW: snap the Lorenz storm to the new floor
-            self._reset_lorenz_on_zone_change(player)
+        """Use upward stairs. Delegates to zones_system."""
+        zones_system.use_stairs_up(self)
 
 
     def possess_actor(self, target_id: str) -> None:
@@ -2997,69 +2923,12 @@ class Game:
 
 
     def _transition_edge(self, actor: Actor, dx: int, dy: int) -> None:
-        """Move the player across zone boundaries."""
-        level = self._level()
-        w, h = level.world.width, level.world.height
-        x, y = actor.pos
-        nx = x + dx
-        ny = y + dy
-        zx, zy, zz = self.zone_coord
-        dzx = 1 if nx >= w else -1 if nx < 0 else 0
-        dzy = 1 if ny >= h else -1 if ny < 0 else 0
-        if dzx == 0 and dzy == 0:
-            return
-        dest_coord = (zx + dzx, zy + dzy, zz)
-        dest_x = 0 if nx >= w else (w - 1 if nx < 0 else nx)
-        dest_y = 0 if ny >= h else (h - 1 if ny < 0 else ny)
-        dest_level = self._get_zone(dest_coord, up_pos=None)
-        # move actor
-        del level.actors[self.player_id]
-        actor.pos = (dest_x, dest_y)
-        dest_level.actors[self.player_id] = actor
-        self.zone_coord = dest_coord
-        self.log.add(f"You travel to zone {dest_coord[0]},{dest_coord[1]} (depth {dest_coord[2]}).")
-        self._update_fov(dest_level)
-        # NEW: hard-snap Lorenz storm when wrapping zones
-        self._reset_lorenz_on_zone_change(actor)
- 
-        # --- RANDOM OVERWORLD EVENTS (testing) ---
-        # 50% chance to fire *some* event on overworld for now.
-        if self.zone_coord[2] == 0 and self.rng.random() < 0.5:
-            ev = events.pick_random_event(self)
-            if ev is not None:
-                self.set_urgent(
-                    ev.body,
-                    title=ev.title,
-                    choices=ev.choices,
-                    on_choice_effect=ev.effect,
-                )
-
-
+        """Move the player across zone boundaries. Delegates to zones_system."""
+        zones_system.transition_edge(self, actor, dx, dy)
 
     def fast_travel_to_zone(self, zx: int, zy: int) -> None:
-        """Instantly move the player to the given overworld zone (depth 0)."""
-        # clamp to world bounds
-        zx = max(0, min(self.cfg.world_map_screens - 1, zx))
-        zy = max(0, min(self.cfg.world_map_screens - 1, zy))
-        dest_coord = (zx, zy, 0)
-        level = self._level()
-        actor = level.actors.get(self.player_id)
-        if actor is None:
-            return
-        dest_level = self._get_zone(dest_coord, up_pos=None)
-        # move actor between levels
-        if self.player_id in level.actors:
-            del level.actors[self.player_id]
-        actor.pos = dest_level.world.entry
-        dest_level.actors[self.player_id] = actor
-        self.zone_coord = dest_coord
-        dest_level.need_fov = True
-        self._update_fov(dest_level)
-        self._reset_lorenz_on_zone_change(actor)
-        self.log.add(f"You fast-travel to zone {zx},{zy}.")
-
-        # DEBUG: same behaviour as edge-wrap: one Inventory per arrival.
-        self.debug_spawn_inventory_near_player(count=1)
+        """Fast travel to zone. Delegates to zones_system."""
+        zones_system.fast_travel_to_zone(self, zx, zy)
 
     def _monster_act(self, level: LevelState, id: str) -> None:
         """AI actor turn execution.
