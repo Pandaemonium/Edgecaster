@@ -153,53 +153,62 @@
 - id: humanoid
   name: Humanoid
   parent: ape
+  description: A roughly bipedal ape in a paper-doll orientation.
+
   body_patch:
-  - op: replace_node
-    node: head
-    layout:
-      x: 0
-      y: -2.75
-    props:
-      size: 0.2
-  - op: replace_node
-    node: body
-    layout:
-      x: 0
-      y: 0
-    props:
-      size: 1
-  - op: replace_node
-    node: arm
-    layout:
-      x: -1.55
-      y: -1
-    props:
-      size: 0.5
-  - op: replace_node
-    node: arm_m
-    layout:
-      y: -1
-    props:
-      size: 1
-  - op: replace_node
-    node: leg
-    layout:
-      x: -0.75
-      y: 2.75
-    props:
-      size: 0.5
-  - op: replace_node
-    node: leg_m
-    layout:
-      x: 0.75
-      y: 2.75
-    props:
-      size: 0.5
+    # Core body
+    - op: replace_node
+      node: body
+      layout:
+        x: 0.0
+        y: 0.0
+      props:
+        size: 0.6
+
+    # Head
+    - op: replace_node
+      node: head
+      layout:
+        x: 0.0
+        y: -0.6
+      props:
+        size: 1
+
+    # Arms
+    - op: replace_node
+      node: arm
+      layout:
+        x: -0.55
+        y: -0.15
+      props:
+        size: 0.6
+
+    - op: replace_node
+      node: arm_m
+
+
+    # Legs
+    - op: replace_node
+      node: leg
+      layout:
+        x: -0.35
+        y: 0.7
+      props:
+        size: 0.6
+
+    - op: replace_node
+      node: leg_m
+
+
+
   description: A roughly bipedal ape in a paper-doll orientation.
 - id: human
   name: Human
   parent: humanoid
   description: Halfway between an ape and an angel.
+  tags:
+    icon_path: assets/icons/bismuth_wizard.png
+
 - id: actor
   name: Actor
   parent: entity
