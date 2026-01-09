@@ -109,6 +109,14 @@ def player_pick_up(game: "Game") -> None:
             # Held-grants are temporary, so avoid "learned" language here.
             game.log.add(f"You can {action.replace('_', ' ')} while holding it.")
 
+    # Refresh FOV if picked up item was emitting light
+    if tags.get("light_radius", 0) > 0:
+        level.need_fov = True
+        try:
+            game._update_fov(level)
+        except Exception:
+            pass
+
 
 def drop_inventory_item(game: "Game", index: int) -> None:
     """Drop an item from the inventory onto the player's current tile."""
@@ -138,6 +146,15 @@ def drop_inventory_item(game: "Game", index: int) -> None:
     article = "an" if name and name[0].lower() in "aeiou" else "a"
     game.log.add(f"You drop {article} {name.lower()}.")
     game.refresh_actor_actions(game.player_id)
+
+    # Refresh FOV if dropped item emits light
+    tags = getattr(ent, "tags", {}) or {}
+    if tags.get("light_radius", 0) > 0:
+        level.need_fov = True
+        try:
+            game._update_fov(level)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +317,17 @@ def move_item_between_inventories(
 # Equipment Tagging
 # ---------------------------------------------------------------------------
 
+
+def _refresh_fov_if_player(game: "Game", owner_id: str) -> None:
+    """Refresh FOV if owner is the player (for view radius equipment changes)."""
+    try:
+        if str(owner_id) == str(getattr(game, "player_id", "")):
+            level = game._level()
+            game._update_fov(level)
+    except Exception:
+        pass
+
+
 def get_equipped_in_slot(
     game: "Game",
     owner_id: str,
@@ -329,6 +357,8 @@ def unequip_slot(game: "Game", owner_id: str, slot_id: str) -> None:
     except Exception:
         pass
     game.refresh_actor_actions(str(owner_id))
+    # Refresh FOV in case equipment affected view radius
+    _refresh_fov_if_player(game, owner_id)
 
 
 def unequip_item(game: "Game", owner_id: str, item_id: str) -> None:
@@ -346,6 +376,8 @@ def unequip_item(game: "Game", owner_id: str, item_id: str) -> None:
         except Exception:
             pass
         game.refresh_actor_actions(str(owner_id))
+        # Refresh FOV in case equipment affected view radius
+        _refresh_fov_if_player(game, owner_id)
         return
 
 
@@ -378,4 +410,6 @@ def equip_item_to_slot(
         except Exception:
             pass
         game.refresh_actor_actions(oid)
+        # Refresh FOV in case equipment affected view radius
+        _refresh_fov_if_player(game, oid)
         return

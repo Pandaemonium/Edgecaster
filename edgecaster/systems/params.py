@@ -143,6 +143,20 @@ def default_param_defs() -> Dict[str, Dict[str, dict]]:
                 "label": "Slow / Blue",
             },
         },
+        "corrosive_melt": {
+            "damage_scale": {
+                "values": [20.0, 30.0, 40.0, 50.0],
+                "thresholds": [0, 2, 4, 6],
+                "stat": "res",
+                "label": "Dmg / Green",
+            },
+            "mana_cost": {
+                "values": [30, 25, 20, 15],
+                "thresholds": [0, 3, 6, 9],
+                "stat": "res",
+                "label": "Mana Cost",
+            },
+        },
         "corruption_cone": {
             "height": {
                 "values": [0.5, 1.0, 1.5, 2.0],

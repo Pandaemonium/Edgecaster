@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable
 
 
-EQUIP_STAT_KEYS: tuple[str, ...] = ("con", "agi", "int", "res")
+EQUIP_STAT_KEYS: tuple[str, ...] = ("con", "agi", "int", "res", "view")
 
 
 def is_equipped(ent: Any) -> bool:

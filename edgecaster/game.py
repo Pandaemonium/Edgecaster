@@ -127,6 +127,7 @@ class LevelState:
     spotted: set[str] = field(default_factory=set)  # seen actors
     coord: Tuple[int, int, int] = (0, 0, 0)  # (x, y, depth)
     lab_state: Optional["LabState"] = None  # lab-specific state if this is a lab zone
+    acidic_pattern: bool = False  # True when Corrosive Melt is active
 
 
 
@@ -389,6 +390,7 @@ class Game:
             actions.append("meditate")
             actions.append("rainbow_edges")
             actions.append("verdant_edges")
+            actions.append("corrosive_melt")
             actions.append("winter_hue")
             actions.append("freeze")
             actions.append("ignite")
@@ -1325,16 +1327,26 @@ class Game:
                             level.entities[ent.id] = ent
                         except Exception:
                             pass
-                    # Place items in interior
+                    # Place items in interior - one of each type first, then random
                     interior = depot_info.get("interior") or []
+                    # All spawnable items (excludes base templates, features, currency)
                     item_ids = [
+                        # Consumables
                         "blueberry",
                         "raspberry",
                         "strawberry",
+                        "healing_kit",
+                        # Utility items
                         "destabilizer",
                         "debug_inventory",
-                        "healing_kit",
                         "koch_knife",
+                        "whip",
+                        # Equipment (stat mods)
+                        "resonant_ring",
+                        "sage_cap",
+                        "fleet_boots",
+                        "vital_belt",
+                        "glowing_band",
                         # Wands (equip-grant + charges)
                         "wand_koch",
                         "wand_branch",
@@ -1342,9 +1354,18 @@ class Game:
                         "wand_activate_n",
                         "wand_sparkle",
                     ]
-                    for pos in interior:
+                    # Shuffle to get one of each, then fill remaining slots
+                    shuffled = list(item_ids)
+                    self.rng.shuffle(shuffled)
+                    spawn_queue = list(shuffled)  # One of each first
+                    # If more interior spots than items, cycle through again
+                    while len(spawn_queue) < len(interior):
+                        extra = list(item_ids)
+                        self.rng.shuffle(extra)
+                        spawn_queue.extend(extra)
+                    for i, pos in enumerate(interior):
                         try:
-                            template_id = self.rng.choice(item_ids)
+                            template_id = spawn_queue[i]
                             ent = self._spawn_entity_from_template(template_id, pos)
                             level.entities[ent.id] = ent
                         except Exception:
@@ -3215,6 +3236,7 @@ class Game:
         level.pattern_motion = None
         level.activation_points = []
         level.activation_ttl = 0
+        level.acidic_pattern = False  # Clear corrosive melt on new pattern
 
         self.log.add(f"Polygon ({num_sides} sides, radius {radius}) placed.")
 
@@ -3247,9 +3269,45 @@ class Game:
         level.pattern_motion = None
         level.activation_points = []
         level.activation_ttl = 0
+        level.acidic_pattern = False  # Clear corrosive melt on new pattern
 
         self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
+    def act_corrosive_melt(self, actor_id: str) -> None:
+        """Activate acidic mode on the current pattern.
+
+        When active, edges that touch enemy tiles dissolve and deal damage
+        based on their green intensity. Lasts until pattern reset.
+        """
+        level = self._level()
+        player = self._player()
+
+        # Check if already acidic
+        if level.acidic_pattern:
+            self.log.add("Pattern is already acidic.")
+            return
+
+        # Check if there's a pattern to make acidic
+        if not level.pattern.vertices:
+            self.log.add("No pattern to corrode. Place a terminus first.")
+            return
+
+        # Get mana cost from params
+        mana_cost = self._param_value("corrosive_melt", "mana_cost")
+        if mana_cost is None:
+            mana_cost = 30
+
+        # Check mana
+        if player.stats.mana < mana_cost:
+            self.log.add(f"Not enough mana ({int(player.stats.mana)}/{mana_cost}).")
+            return
+
+        # Spend mana and activate
+        player.stats.mana -= mana_cost
+        player.stats.clamp()
+        level.acidic_pattern = True
+
+        self.log.add("Pattern becomes acidic! Edges will dissolve on enemy contact.")
 
     def _apply_fractal_op(self, lvl: LevelState, kind: str) -> None:
         if not lvl.pattern.vertices:
@@ -3589,6 +3647,9 @@ class Game:
     def _update_fov(self, level: LevelState, radius: int = 8) -> None:
         if self.player_id not in level.actors:
             return
+        # Apply view bonus from equipment
+        view_bonus = self.effective_character_stats().get("view", 0)
+        radius = radius + view_bonus
         px, py = level.actors[self.player_id].pos
         level.world.clear_visibility()
         r2 = radius * radius
@@ -3610,6 +3671,11 @@ class Game:
                         level.spotted.add(actor.id)
                         if actor.id != self.player_id:
                             self.log.add(f"You spot a {actor.name}.")
+
+        # Apply lighting from light-emitting entities (e.g., dropped Glowing Band)
+        from edgecaster.systems import lighting
+        lighting.update_level_lighting(self, level, (px, py))
+
         level.need_fov = False
 
     # --- exposed for renderer ---

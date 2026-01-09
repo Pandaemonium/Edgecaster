@@ -1434,6 +1434,57 @@ def _orbital_profile(p: VisualProfile, t: int) -> VisualProfile:
     )
 
 
+# ---------------------------------------------------------------------------
+# Radiant Yellow: pulsing yellow glow for items like the Glowing Band
+# ---------------------------------------------------------------------------
+
+
+def _radiant_yellow_color(ent: Any, base: RGB, t: int) -> RGB:
+    """Pulse the base color toward bright yellow on a slow sine wave."""
+    phase = (t % 1400) / 1400.0  # Faster pulse
+    pulse = 0.5 + 0.5 * math.sin(phase * 2.0 * math.pi)
+    yellow = (255, 230, 100)
+    # Stronger color shift toward yellow
+    return _lerp_rgb(base, yellow, 0.5 + 0.4 * pulse)
+
+
+def _radiant_yellow_overlay_rect(obj: Any, base: pygame.Rect, t: int) -> pygame.Rect:
+    # Glow extends significantly beyond the base rect.
+    return base.inflate(24, 24)
+
+
+def _radiant_yellow_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
+    """Draw a pulsing yellow radial glow around the item."""
+    if rect.w <= 0 or rect.h <= 0:
+        return
+
+    layer = _with_alpha_layer(surf, rect)
+    lr = layer.get_rect()
+    cx = lr.centerx
+    cy = lr.centery
+
+    # Pulsing intensity - faster and stronger
+    phase = (t % 1400) / 1400.0
+    pulse = 0.5 + 0.5 * math.sin(phase * 2.0 * math.pi)
+
+    # Draw a filled radial gradient glow (much stronger)
+    max_r = max(lr.w, lr.h) // 2
+    for r in range(max_r, 0, -1):
+        falloff = r / max(1, max_r)
+        intensity = (1.0 - falloff) ** 1.2  # Gentler falloff = wider glow
+        # Much stronger alpha values
+        a = int((60 + 140 * pulse) * intensity)
+        if a < 2:
+            continue
+        col = (255, 230, 100, min(255, a))
+        pygame.draw.circle(layer, col, (cx, cy), r, 1)
+
+    # Add a bright core
+    core_a = int(120 + 80 * pulse)
+    pygame.draw.circle(layer, (255, 245, 150, core_a), (cx, cy), max(2, max_r // 4))
+
+    surf.blit(layer, rect.topleft)
+
 
 ###Install Built-in Effects
 
@@ -1522,6 +1573,13 @@ def _install_builtin_effects() -> None:
     ))
     register_effect(VisualEffectDef("revolving", modify_profile=_revolving_profile))
     register_effect(VisualEffectDef("orbital", modify_profile=_orbital_profile))
+
+    register_effect(VisualEffectDef(
+        "radiant_yellow",
+        modify_entity_color=_radiant_yellow_color,
+        overlay_rect=_radiant_yellow_overlay_rect,
+        draw_overlay=_radiant_yellow_overlay,
+    ))
 
 
 _install_builtin_effects()

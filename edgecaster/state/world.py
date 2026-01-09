@@ -8,6 +8,7 @@ class Tile:
     visible: bool = False
     explored: bool = False
     glyph: str = "."
+    illumination: float = 0.0  # Light level from nearby light sources (0.0 = dark)
 
 
 def _make_grid(width: int, height: int) -> List[List[Tile]]:
@@ -43,3 +44,9 @@ class World:
         for row in self.tiles:
             for tile in row:
                 tile.visible = False
+
+    def clear_illumination(self) -> None:
+        """Reset illumination for all tiles."""
+        for row in self.tiles:
+            for tile in row:
+                tile.illumination = 0.0

@@ -99,9 +99,35 @@ Key modules (non-exhaustive):
 - systems/reputation.py: faction reputation and hostility hooks
 - systems/legendaries.py: legendary registry, lairs, POI discovery/rumors
 - systems/lorenz_aura.py: Strange Attractor aura simulation (game-side)
+- systems/lighting.py: light emission from entities (illumination, visibility)
 
 ===============================================================================
-6) DATA-DRIVEN PROTOTYPES + SPAWN PIPELINE
+6) VISIBILITY + LIGHTING
+
+FOV (Field of View):
+- game.py `_update_fov()` computes which tiles the player can see
+- Uses Bresenham LOS checks (`_los()`) from player to each tile in radius
+- Equipment can modify view radius via `equip_mods: {view: N}` tag
+
+Lighting System:
+- systems/lighting.py handles light-emitting entities
+- Entities with `light_radius > 0` tag emit light
+- Light illuminates tiles within radius (with distance falloff)
+- Lit tiles become visible if player has LOS to them (even outside FOV radius)
+- Optional tags: `light_intensity` (default 1.0), `light_color` (RGB tuple)
+
+Tile State:
+- state/world.py `Tile` has: `visible`, `explored`, `illumination`
+- `visible`: currently seen this frame
+- `explored`: ever seen (for fog-of-war rendering)
+- `illumination`: light level from nearby sources (0.0 = dark)
+
+Integration:
+- FOV refresh triggered on: movement, zone change, equip/unequip, item drop/pickup
+- Lighting calculated after FOV, marks additional lit tiles as visible
+
+===============================================================================
+7) DATA-DRIVEN PROTOTYPES + SPAWN PIPELINE
 
 Prototypes:
 - edgecaster/content/entities.yaml: non-actor entities (items, doors, signs, etc.)
@@ -117,7 +143,7 @@ Rule: if you are adding entities like NPCs, item stocks, POI spawns, etc.,
 prefer sending them through the prototype/spawn pipeline so instantiation stays consistent.
 
 ===============================================================================
-7) DIALOGUE
+8) DIALOGUE
 
 Dialogue model:
 - edgecaster/events.py defines DialogueTree / DialogueNode / DialogueChoice
@@ -131,7 +157,7 @@ Authoring:
 - NPC dialogue trees should be built via a single builder path (avoid ad-hoc talk handlers)
 
 ===============================================================================
-8) ASSETS, LOGGING, AND TESTING
+9) ASSETS, LOGGING, AND TESTING
 
 Assets live in project root:
 - assets/icons/* (PNG icons like bismuth)
@@ -145,7 +171,7 @@ Testing:
   (Avoid calling bare "pytest" on PATH because it may point at a different Python install.)
 
 ===============================================================================
-9) MERCHANTS / TRADING (ARCHITECTURE)
+10) MERCHANTS / TRADING (ARCHITECTURE)
 
 - Trade rules: edgecaster/systems/trade.py
 - UI: edgecaster/scenes/merchant_scene.py (PanelScene-style menu)

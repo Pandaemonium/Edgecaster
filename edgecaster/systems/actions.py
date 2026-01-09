@@ -827,6 +827,16 @@ def _action_verdant_edges(game: Any, actor_id: str, **kwargs: Any) -> None:
         pattern_colors.apply_depth_green_edges(game)
 
 
+@register_action("corrosive_melt", label="Corrosive Melt", speed="fast", show_in_bar=True)
+def _action_corrosive_melt(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Activate acidic mode on the pattern. Edges that touch enemies dissolve
+    and deal damage based on their green intensity.
+    """
+    if hasattr(game, "act_corrosive_melt"):
+        game.act_corrosive_melt(actor_id)
+
+
 @register_action("winter_hue", label="Winter Hue", speed=5, show_in_bar=True)
 def _action_winter_hue(game: Any, actor_id: str, **kwargs: Any) -> None:
     """

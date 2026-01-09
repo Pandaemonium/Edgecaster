@@ -51,6 +51,7 @@ def get_zone(
     lvl.pattern_anchor = None
     lvl.activation_points = []
     lvl.activation_ttl = 0
+    lvl.acidic_pattern = False  # Clear corrosive melt
     # Stop any lingering motion when the pattern is cleared.
     lvl.pattern_motion = None
 

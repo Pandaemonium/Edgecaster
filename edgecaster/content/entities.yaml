@@ -226,6 +226,24 @@
     value_bismuth: 14
     equip_mods: {con: 1}
 
+- id: glowing_band
+  name: Glowing Band
+  glyph: "o"
+  color: [255, 220, 80]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A band of luminescent metal that pulses with warm golden light, illuminating the darkness."
+  tags:
+    item_type: glowing_band
+    value_bismuth: 25
+    equip_mods: {view: 5}
+    visual_effects: ["radiant_yellow"]
+    light_radius: 5
+    light_intensity: 1.0
+    light_color: [255, 220, 80]
+
 # --- WANDS (EQUIP GRANTS + CHARGES) -----------------------------------------
 # Wands are normal items that grant an activated ability while equipped.
 # Charges are initialized at spawn-time from charges_min/charges_max.
