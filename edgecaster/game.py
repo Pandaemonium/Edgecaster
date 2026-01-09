@@ -369,6 +369,7 @@ class Game:
             actions += [
                 "place",
                 "polygon",
+                "star",
                 "subdivide",
                 "extend",
                 generator_choice,   # e.g. "koch", "branch", "zigzag", "custom"
@@ -3216,6 +3217,38 @@ class Game:
         level.activation_ttl = 0
 
         self.log.add(f"Polygon ({num_sides} sides, radius {radius}) placed.")
+
+    def act_star(self, actor_id: str) -> None:
+        """Place a star pattern centered on the player.
+
+        Clears any existing pattern and creates a new star with the
+        configured number of points, outer radius, and inner radius.
+        The first point (root/terminus) is directly north.
+        """
+        level = self._level()
+        player = self._player()
+
+        # Get parameters from the param system
+        num_points = self._param_value("star", "points")
+        outer_radius = self._param_value("star", "outer_radius")
+        inner_radius = self._param_value("star", "inner_radius")
+
+        # Default fallbacks if params not found
+        if num_points is None:
+            num_points = 5
+        if outer_radius is None:
+            outer_radius = 5
+        if inner_radius is None:
+            inner_radius = 2
+
+        # Create the star pattern and anchor it on the player
+        level.pattern = builder.star_pattern(num_points, outer_radius, inner_radius)
+        level.pattern_anchor = player.pos
+        level.pattern_motion = None
+        level.activation_points = []
+        level.activation_ttl = 0
+
+        self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
 
     def _apply_fractal_op(self, lvl: LevelState, kind: str) -> None:

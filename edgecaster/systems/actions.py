@@ -292,6 +292,13 @@ ACTION_SUB_BUTTONS: Dict[str, list[SubButtonMeta]] = {
             kind="open_config",
         ),
     ],
+    "star": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
 }
 
 
@@ -780,6 +787,19 @@ def _action_polygon(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_polygon"):
         game.act_polygon(actor_id)
+
+
+@register_action("star", label="Star", speed="fast", show_in_bar=True)
+def _action_star(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Place a star pattern centered on the player.
+
+    Clears any existing pattern and creates a new star with configurable
+    number of points, outer radius, and inner radius. The first point
+    (root/terminus) is directly north.
+    """
+    if hasattr(game, "act_star"):
+        game.act_star(actor_id)
 
 
 @register_action("destabilize", label="Destabilize", speed="fast", show_in_bar=True, cooldown_ticks=15)

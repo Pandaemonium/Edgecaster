@@ -191,6 +191,26 @@ def default_param_defs() -> Dict[str, Dict[str, dict]]:
                 "label": "Radius",
             },
         },
+        "star": {
+            "points": {
+                "values": [3, 4, 5, 6, 7, 8, 10, 12],
+                "thresholds": [0, 1, 2, 3, 4, 5, 6, 7],
+                "stat": "int",
+                "label": "Points",
+            },
+            "outer_radius": {
+                "values": [3, 4, 5, 6, 8, 10],
+                "thresholds": [0, 1, 2, 3, 4, 5],
+                "stat": "int",
+                "label": "Outer Radius",
+            },
+            "inner_radius": {
+                "values": [1, 2, 3, 4, 5],
+                "thresholds": [0, 1, 2, 3, 4],
+                "stat": "int",
+                "label": "Inner Radius",
+            },
+        },
     }
 
 

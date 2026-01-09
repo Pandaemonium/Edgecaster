@@ -51,6 +51,48 @@ def regular_polygon_pattern(num_sides: int, radius: float) -> Pattern:
     return Pattern.from_segments(segments)
 
 
+def star_pattern(num_points: int, outer_radius: float, inner_radius: float) -> Pattern:
+    """Create a star polygon centered at origin.
+
+    A star is formed by alternating between outer and inner vertices,
+    connecting them in sequence. The first vertex (root/terminus) is
+    placed directly north at the outer radius.
+
+    Args:
+        num_points: Number of points on the star (minimum 3)
+        outer_radius: Distance from center to outer points (star tips)
+        inner_radius: Distance from center to inner points (valleys)
+
+    Returns:
+        A Pattern with vertices and edges forming the star.
+    """
+    num_points = max(3, num_points)
+    outer_radius = max(0.1, outer_radius)
+    inner_radius = max(0.1, min(inner_radius, outer_radius - 0.1))
+
+    # Generate vertices alternating outer/inner, starting from north
+    vertices: List[Vec2] = []
+    total_vertices = num_points * 2
+
+    for i in range(total_vertices):
+        # Angle: start at -pi/2 (north), step by pi/num_points for each vertex
+        angle = -math.pi / 2 + (math.pi * i / num_points)
+        # Alternate between outer and inner radius
+        radius = outer_radius if (i % 2 == 0) else inner_radius
+        x = radius * math.cos(angle)
+        y = radius * math.sin(angle)
+        vertices.append((x, y))
+
+    # Create segments connecting consecutive vertices (closed star)
+    segments: List[Segment] = []
+    for i in range(total_vertices):
+        a = vertices[i]
+        b = vertices[(i + 1) % total_vertices]
+        segments.append(Segment(a=a, b=b, color="neutral"))
+
+    return Pattern.from_segments(segments)
+
+
 @dataclass
 class GeneratorBase:
     name: str
