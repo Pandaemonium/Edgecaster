@@ -944,29 +944,42 @@ class AsciiRenderer:
                 ch, orig_color = val
 
                 # Apply FOV-based dimming using the same tile.visible flags as entities.
+                # This works at all zoom levels:
+                # - cell_w_tiles < 1: multiple cells per tile (zoomed in)
+                # - cell_w_tiles == 1: 1:1 mapping (normal zoom)
+                # - cell_w_tiles > 1: one cell covers multiple tiles (zoomed out)
                 color = orig_color  # Start with cached color
-                if player_pos is not None and world is not None and cell_w_tiles == 1.0:
-                    global_x = int(cx * cell_w_tiles)
-                    global_y = int(cy * cell_h_tiles)
+                if player_pos is not None and world is not None:
+                    # For zoomed out (cell > 1 tile), sample center of cell
+                    # For zoomed in (cell < 1 tile), sample the tile containing this cell
+                    if cell_w_tiles >= 1.0:
+                        # Center of the cell in global tile coords
+                        global_x = int(cx * cell_w_tiles + cell_w_tiles * 0.5)
+                        global_y = int(cy * cell_h_tiles + cell_h_tiles * 0.5)
+                    else:
+                        # Sub-tile cell: just get the tile this cell is within
+                        global_x = int(cx * cell_w_tiles)
+                        global_y = int(cy * cell_h_tiles)
                     local_x = global_x - zone_offset_x
                     local_y = global_y - zone_offset_y
 
                     if world.in_bounds(local_x, local_y):
                         tile = world.get_tile(local_x, local_y)
                         if tile:
-                            # Prefer true local glyphs at LoD=1 tile/cell so walls/structures are visible.
-                            try:
-                                ch = str(tile.glyph or ch)
-                                # If this is ever more than 1 char, take the first for font rendering.
-                                if len(ch) > 1:
-                                    ch = ch[0]
-                            except Exception:
-                                pass
+                            # Prefer true local glyphs only at LoD=1 tile/cell so walls/structures are visible.
+                            if abs(cell_w_tiles - 1.0) < 1e-6:
+                                try:
+                                    ch = str(tile.glyph or ch)
+                                    # If this is ever more than 1 char, take the first for font rendering.
+                                    if len(ch) > 1:
+                                        ch = ch[0]
+                                except Exception:
+                                    pass
 
                             if not tile.explored:
                                 continue
 
-                            # Choose a stable color for known glyphs so structures don’t inherit biome colors.
+                            # Choose a stable color for known glyphs so structures don't inherit biome colors.
                             base_color = orig_color
                             if biome_glyph_to_color is not None and ch in biome_glyph_to_color:
                                 base_color = biome_glyph_to_color[ch]
