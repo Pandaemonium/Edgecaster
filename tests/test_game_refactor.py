@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def mock_pygame():
     """Mock pygame to avoid display initialization in tests."""
     with patch.dict('sys.modules', {'pygame': MagicMock()}):

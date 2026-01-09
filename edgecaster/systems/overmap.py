@@ -17,7 +17,9 @@ All functions accept (game, ...) as parameters to read/modify game state.
 
 from __future__ import annotations
 
+import os
 import random
+import sys
 import threading
 import time
 import traceback
@@ -25,6 +27,22 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
+
+
+def _should_start_world_map_thread() -> bool:
+    """Return True when it is safe/useful to start background overmap rendering.
+
+    We skip background rendering under pytest/mocked pygame so unit tests don't
+    spawn many expensive render threads (which can make the suite appear hung).
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if "pytest" in sys.modules:
+        return False
+    pg = sys.modules.get("pygame")
+    if pg is not None and pg.__class__.__name__ == "MagicMock":
+        return False
+    return True
 
 
 def build_tile_julia_grid(game: "Game") -> None:
@@ -122,10 +140,11 @@ def init_overmap_params_and_grid(game: "Game") -> None:
     init_rune_anchors(game)
     # Kick off world-map rendering in a background thread during startup so the
     # first time you open the map it (usually) appears immediately.
-    try:
-        start_world_map_thread(game, reason="startup", view=None, view_token=0)
-    except Exception:
-        pass
+    if _should_start_world_map_thread():
+        try:
+            start_world_map_thread(game, reason="startup", view=None, view_token=0)
+        except Exception:
+            pass
 
 
 def init_rune_anchors(game: "Game") -> None:

@@ -1,14 +1,8 @@
 from dataclasses import dataclass, field
-import heapq
-import traceback
-import time
-import random
-import threading
+from itertools import islice
 from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
-import yaml
 from collections import deque
-import pygame
 
 
 from edgecaster import config, events
@@ -21,15 +15,12 @@ from edgecaster.enemies import factory as enemy_factory
 from edgecaster import mapgen
 from edgecaster import mapgen_sites
 from edgecaster.content import pois as poi_content
-from edgecaster.patterns.activation import project_vertices, damage_from_vertices
+from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
 from edgecaster.content import npcs
 from edgecaster.systems.actions import get_action, action_delay
-from edgecaster.patterns import colors as pattern_colors
-from edgecaster.patterns import motion as pattern_motion
 from edgecaster.systems import equipment as equipment_system
-from edgecaster.systems import reputation as reputation_system
 from edgecaster.systems import item_grants
 from edgecaster.systems import ai
 from edgecaster.systems.params import ParamManager
@@ -45,8 +36,6 @@ from edgecaster.systems import zones as zones_system
 from edgecaster.systems import overmap as overmap_system
 from . import lorenz
 import math
-from edgecaster import prototypes
-from edgecaster import spawn_factory
 
 
 Move = Tuple[int, int]
@@ -113,7 +102,9 @@ class MessageLog:
     def tail(self, n: int) -> List[str]:
         if n <= 0:
             return []
-        return list(self.messages)[-n:]
+        items = list(islice(reversed(self.messages), 0, n))
+        items.reverse()
+        return items
 
 
 @dataclass
@@ -140,17 +131,27 @@ class LevelState:
 
 
 class Game:
-    def __init__(self, cfg: config.GameConfig, rng, character: Character | None = None) -> None:
+    def __init__(
+        self,
+        cfg: config.GameConfig | None = None,
+        rng=None,
+        *,
+        character: Character | None = None,
+        seed: int | None = None,
+    ) -> None:
+        if cfg is None:
+            cfg = config.GameConfig()
+        if rng is None:
+            from edgecaster.rng import new_rng
+
+            rng = new_rng(seed if seed is not None else getattr(cfg, "seed", None))
+
         self.cfg = cfg
         self.rng = rng
         self._init_debug_log()
         self.log = MessageLog()
         self.place_range = cfg.place_range
-        # ensure enemy templates are loaded once up-front
-        try:
-            enemy_templates.load_enemy_templates(logger=self._debug)
-        except Exception as e:
-            self._debug(f"Enemy template load failed: {e!r}")
+        # Enemy/NPC prototypes are loaded lazily via prototypes.resolve_proto().
         # urgent message system (level-ups, death, important events)
         self.urgent_message: str | None = None
         self.urgent_resolved: bool = True
@@ -249,10 +250,10 @@ class Game:
         self.fractal_editor_state = None
 
 
-                # debug flags
+        # debug flags
         self.debug_no_fog: bool = True
 
-# zones keyed by (x, y, depth)
+        # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
         # start roughly at world center so Julia coords near (0,0)
         center_zx = self.cfg.world_map_screens // 2
@@ -554,6 +555,8 @@ class Game:
     def _play_sfx(self, rel_path: str, volume: float = 1.0) -> None:
         """Lightweight SFX helper with simple caching; best-effort (fails silently)."""
         try:
+            import pygame
+
             root = Path(__file__).resolve().parent.parent
             path = root / rel_path
             if not path.exists():
@@ -1032,14 +1035,48 @@ class Game:
         """Mark a POI as rumored so it appears on the world map before discovery."""
         legendaries_system.add_poi_rumor(self, poi_id, log=log)
 
-    def get_nearest_legendary_lairs(
-        self,
-        n: int = 5,
-        *,
-        from_coord: Optional[Tuple[int, int, int]] = None,
-    ) -> List[Tuple[str, Tuple[int, int, int]]]:
-        """Return the N nearest legendary lair POIs."""
-        return legendaries_system.get_nearest_legendary_lairs(self, n, from_coord=from_coord)
+    def get_nearest_legendary_lairs(self, *args, **kwargs) -> List[Tuple[str, Tuple[int, int, int]]]:
+        """Return nearby legendary lair POIs.
+
+        Supports two call styles:
+        - New: ``get_nearest_legendary_lairs(n=5, from_coord=(zx, zy, 0))``
+        - Back-compat: ``get_nearest_legendary_lairs(zx, zy, max_dist=10, n=5)``
+        """
+        max_dist = kwargs.pop("max_dist", None)
+
+        if len(args) >= 2:
+            # Back-compat signature: (zx, zy, max_dist=?)
+            try:
+                zx = int(args[0])
+                zy = int(args[1])
+            except Exception:
+                zx, zy = 0, 0
+            from_coord = (zx, zy, 0)
+            try:
+                n = int(kwargs.pop("n", 5))
+            except Exception:
+                n = 5
+        else:
+            # New signature: (n=?, from_coord=?)
+            try:
+                n = int(args[0]) if args else int(kwargs.pop("n", 5))
+            except Exception:
+                n = 5
+            from_coord = kwargs.pop("from_coord", None)
+
+        results = legendaries_system.get_nearest_legendary_lairs(self, n, from_coord=from_coord)
+
+        # Optional distance filter for the old signature (zone distance on the overworld).
+        if max_dist is not None and from_coord is not None:
+            try:
+                ox, oy = int(from_coord[0]), int(from_coord[1])
+                md = int(max_dist)
+            except Exception:
+                return results
+            md2 = md * md
+            results = [(pid, coord) for (pid, coord) in results if (coord[0] - ox) ** 2 + (coord[1] - oy) ** 2 <= md2]
+
+        return results
 
     def _discover_pois_for_level(self, level: LevelState) -> None:
         """Record POIs attached to this level as discovered."""
