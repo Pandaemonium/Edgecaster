@@ -368,6 +368,7 @@ class Game:
             # Core rune operators
             actions += [
                 "place",
+                "polygon",
                 "subdivide",
                 "extend",
                 generator_choice,   # e.g. "koch", "branch", "zigzag", "custom"
@@ -3186,6 +3187,35 @@ class Game:
         """Generic action entry point: meditate to restore mana."""
         level = self._level()
         self._meditate_core(level, actor_id)
+
+    def act_polygon(self, actor_id: str) -> None:
+        """Place a regular polygon pattern centered on the player.
+
+        Clears any existing pattern and creates a new polygon with the
+        configured number of sides and radius. The root/terminus vertex
+        is directly north of center, and vertices proceed clockwise.
+        """
+        level = self._level()
+        player = self._player()
+
+        # Get parameters from the param system
+        num_sides = self._param_value("polygon", "sides")
+        radius = self._param_value("polygon", "radius")
+
+        # Default fallbacks if params not found
+        if num_sides is None:
+            num_sides = 6
+        if radius is None:
+            radius = 4
+
+        # Create the polygon pattern and anchor it on the player
+        level.pattern = builder.regular_polygon_pattern(num_sides, radius)
+        level.pattern_anchor = player.pos
+        level.pattern_motion = None
+        level.activation_points = []
+        level.activation_ttl = 0
+
+        self.log.add(f"Polygon ({num_sides} sides, radius {radius}) placed.")
 
 
     def _apply_fractal_op(self, lvl: LevelState, kind: str) -> None:

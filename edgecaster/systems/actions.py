@@ -285,6 +285,13 @@ ACTION_SUB_BUTTONS: Dict[str, list[SubButtonMeta]] = {
             kind="open_config",
         ),
     ],
+    "polygon": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
 }
 
 
@@ -761,6 +768,18 @@ def _action_custom(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_fractal"):
         game.act_fractal(actor_id, "custom")
+
+
+@register_action("polygon", label="Polygon", speed="fast", show_in_bar=True)
+def _action_polygon(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Place a regular polygon pattern centered on the player.
+
+    Clears any existing pattern and creates a new polygon with configurable
+    number of sides and radius. The root/terminus vertex is directly north.
+    """
+    if hasattr(game, "act_polygon"):
+        game.act_polygon(actor_id)
 
 
 @register_action("destabilize", label="Destabilize", speed="fast", show_in_bar=True, cooldown_ticks=15)

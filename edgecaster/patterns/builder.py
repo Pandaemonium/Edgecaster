@@ -12,6 +12,45 @@ def line_pattern(a: Vec2, b: Vec2) -> Pattern:
     return Pattern.from_segments([seg])
 
 
+def regular_polygon_pattern(num_sides: int, radius: float) -> Pattern:
+    """Create a regular polygon centered at origin.
+
+    The first vertex (root/terminus) is placed directly north (0, -radius).
+    Vertices proceed clockwise around the polygon.
+    Edges connect consecutive vertices to form a closed shape.
+
+    Args:
+        num_sides: Number of sides (minimum 3 for a triangle)
+        radius: Distance from center to each vertex
+
+    Returns:
+        A Pattern with vertices and edges forming the polygon.
+    """
+    num_sides = max(3, num_sides)
+    radius = max(0.1, radius)
+
+    # Generate vertices clockwise starting from north (0, -radius)
+    # Angle 0 = north = -Y in screen coordinates
+    # Clockwise means increasing angle (in standard math coords, but we flip Y)
+    vertices: List[Vec2] = []
+    for i in range(num_sides):
+        # Start at -pi/2 (north) and go clockwise
+        # In screen coords where Y increases downward, clockwise is standard direction
+        angle = -math.pi / 2 + (2 * math.pi * i / num_sides)
+        x = radius * math.cos(angle)
+        y = radius * math.sin(angle)
+        vertices.append((x, y))
+
+    # Create segments connecting consecutive vertices (closed polygon)
+    segments: List[Segment] = []
+    for i in range(num_sides):
+        a = vertices[i]
+        b = vertices[(i + 1) % num_sides]
+        segments.append(Segment(a=a, b=b, color="neutral"))
+
+    return Pattern.from_segments(segments)
+
+
 @dataclass
 class GeneratorBase:
     name: str

@@ -177,6 +177,20 @@ def default_param_defs() -> Dict[str, Dict[str, dict]]:
                 "label": "Strength",
             },
         },
+        "polygon": {
+            "sides": {
+                "values": [3, 4, 5, 6, 7, 8, 10, 12],
+                "thresholds": [0, 1, 2, 3, 4, 5, 6, 7],
+                "stat": "int",
+                "label": "Sides",
+            },
+            "radius": {
+                "values": [2, 3, 4, 5, 6, 8, 10],
+                "thresholds": [0, 1, 2, 3, 4, 5, 6],
+                "stat": "int",
+                "label": "Radius",
+            },
+        },
     }
 
 

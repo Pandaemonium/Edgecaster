@@ -5,7 +5,8 @@
       "Bash(find:*)",
       "Bash(python -m edgecaster.main:*)",
       "Bash(python -m pytest:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(ls -la \"c:\\\\Games\\\\Edgecaster\\\\edgecaster\"\" | grep -E \"^d \")"
     ]
   }
 }
