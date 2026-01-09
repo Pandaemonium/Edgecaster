@@ -103,7 +103,7 @@
           x: 0.0
           y: -0.25
         props:
-          size: 0.55
+          size: 0.6
 - id: skull
   name: Skull
   parent: head
@@ -125,7 +125,7 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.34
+          size: 0.6
       ear:
         proto: ear
         children: []
@@ -180,14 +180,14 @@
         children: []
         layout:
           x: 0.0
-          y: 0.42
+          y: 0.32
         props:
           size: 0.17
       eye:
         proto: eye
         children: []
         layout:
-          x: -0.32
+          x: -0.22
           y: -0.14
         props:
           size: 0.12
@@ -223,8 +223,8 @@
         children:
         - elbow
         layout:
-          x: -0.22
-          y: 0.33
+          x: -0.12
+          y: 0.23
         props:
           size: 0.3
       elbow:
@@ -232,8 +232,8 @@
         children:
         - forearm
         layout:
-          x: -0.32
-          y: 0.62
+          x: -0.22
+          y: 0.52
         props:
           size: 0.24
       forearm:
@@ -242,17 +242,17 @@
         - hand
         layout:
           x: -0.18
-          y: 0.88
+          y: 0.78
         props:
           size: 0.28
       hand:
         proto: hand
         children: []
         layout:
-          x: -0.05
-          y: 1.05
+          x: -0.1
+          y: 0.9
         props:
-          size: 0.18
+          size: 0.6
 - id: leg
   name: Leg
   parent: limb
@@ -268,7 +268,7 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.38
+          size: 0.5
       knee:
         proto: knee
         children:
@@ -277,24 +277,24 @@
           x: -0.1
           y: 0.45
         props:
-          size: 0.26
+          size: 0.5
       calf:
         proto: calf
         children:
         - foot
         layout:
-          x: -0.15
-          y: 0.85
+          x: -0.05
+          y: 0.75
         props:
-          size: 0.32
+          size: 0.5
       foot:
         proto: foot
         children: []
         layout:
-          x: -0.18
-          y: 1.08
+          x: 0
+          y: 0.9
         props:
-          size: 0.18
+          size: 1
 - id: hand
   name: Hand
   parent: limb
@@ -323,7 +323,7 @@
           x: 0.0
           y: 0.55
         props:
-          size: 0.28
+          size: 1
       thumb:
         proto: thumb_finger
         children: []
@@ -331,7 +331,7 @@
           x: 0.52
           y: 0.6
         props:
-          size: 0.13
+          size: 1
       index:
         proto: index_finger
         children: []
@@ -339,7 +339,7 @@
           x: 0.26
           y: 0.98
         props:
-          size: 0.11
+          size: 1
       middle:
         proto: middle_finger
         children: []
@@ -347,7 +347,7 @@
           x: 0.05
           y: 1.05
         props:
-          size: 0.12
+          size: 1
       ring:
         proto: ring_finger
         children: []
@@ -355,7 +355,7 @@
           x: -0.15
           y: 0.98
         props:
-          size: 0.11
+          size: 1
       pinky:
         proto: pinky_finger
         children: []
@@ -363,7 +363,7 @@
           x: -0.34
           y: 0.86
         props:
-          size: 0.1
+          size: 1
 - id: foot
   name: Foot
   parent: limb

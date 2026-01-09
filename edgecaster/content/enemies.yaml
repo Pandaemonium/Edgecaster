@@ -60,6 +60,8 @@
     humanoid: true
     player: true
 
+
+
 - id: imp
   name: Imp
   glyph: i

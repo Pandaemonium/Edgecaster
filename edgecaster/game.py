@@ -337,6 +337,7 @@ class Game:
         player.faction = "player"      # make sure this is canonical
         player.stats = player_stats    # use character-derived stats
         player.description = "You attempt to perceive yourself, but can do so only incompletely."
+        player.tags["icon_path"] = "assets/icons/bismuth_wizard.png"
 
         # --- Class kit / action set -----------------------------------
         # Everyone gets the boring core verbs (never shown on the bar):
