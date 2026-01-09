@@ -73,6 +73,7 @@ class SceneManager:
             "harmonic": "assets/music/harmonic.wav",
             "aire": "assets/music/aire.wav",
             "majesty": "assets/music/majesty.wav",
+            "kemet": "assets/music/kemet.ogg",
 
             # Event stingers
             "imp_cackle": "assets/music/imp_cackle.wav",

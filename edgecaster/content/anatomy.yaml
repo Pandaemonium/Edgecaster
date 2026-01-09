@@ -26,40 +26,40 @@
           x: 0.0
           y: 0.0
         props:
-          size: 1.05
+          size: 0.45
       chest:
         proto: chest
         children: []
         layout:
-          x: -0.6
-          y: 0.6
+          x: -0.3
+          y: 0.3
         props:
-          size: 0.85
+          size: 0.35
       back:
         proto: back
         children: []
         layout:
-          x: 0.6
-          y: -0.6
+          x: 0.3
+          y: -0.3
         props:
-          size: 0.85
+          size: 0.35
       abdomen:
         proto: abdomen
         children:
         - hips
         layout:
           x: 0.0
-          y: 0.7
+          y: 0.4
         props:
-          size: 0.95
+          size: 0.4
       hips:
         proto: hips
         children: []
         layout:
           x: 0.0
-          y: 1.4
+          y: 0.85
         props:
-          size: 0.9
+          size: 0.38
 - id: torso
   name: Torso
   parent: body
@@ -95,15 +95,15 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.55
+          size: 0.35
       skull:
         proto: skull
         children: []
         layout:
           x: 0.0
-          y: -0.7
+          y: -0.25
         props:
-          size: 0.95
+          size: 0.55
 - id: skull
   name: Skull
   parent: head
@@ -125,37 +125,30 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.65
+          size: 0.34
       ear:
         proto: ear
         children: []
         layout:
-          x: -0.85
-          y: -0.05
+          x: -0.4
+          y: 0.0
         props:
-          size: 0.28
+          size: 0.12
       ear_m:
         proto: ear
         children: []
-        layout:
-          x: 0.85
-          y: -0.05
-        props:
-          size: 0.28
       hair:
         proto: hair
         children: []
         layout:
           x: 0.0
-          y: -1.05
+          y: -0.6
         props:
-          size: 0.42
-
-
+          size: 0.2
 - id: face
   name: Face
   parent: skull
-  description: "The front of the head: eyes, nose, mouth, and brow."
+  description: 'The front of the head: eyes, nose, mouth, and brow.'
   body:
     root: nose
     links:
@@ -173,40 +166,34 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.22
+          size: 0.14
       forehead:
         proto: forehead
         children: []
         layout:
           x: 0.0
-          y: -0.55
+          y: -0.42
         props:
-          size: 0.30
+          size: 0.18
       mouth:
         proto: mouth
         children: []
         layout:
           x: 0.0
-          y: 0.55
+          y: 0.42
         props:
-          size: 0.28
+          size: 0.17
       eye:
         proto: eye
         children: []
         layout:
-          x: -0.45
-          y: -0.18
+          x: -0.32
+          y: -0.14
         props:
-          size: 0.18
+          size: 0.12
       eye_m:
         proto: eye
         children: []
-        layout:
-          x: 0.45
-          y: -0.18
-        props:
-          size: 0.18
-
 - id: tail
   name: Tail
   parent: entity
@@ -230,42 +217,42 @@
           x: 0.0
           y: 0.0
         props:
-          size: 1.05
+          size: 0.35
       upper_arm:
         proto: upper_arm
         children:
         - elbow
         layout:
-          x: -0.42
-          y: 0.95
+          x: -0.22
+          y: 0.33
         props:
-          size: 0.9
+          size: 0.3
       elbow:
         proto: elbow
         children:
         - forearm
         layout:
-          x: -0.62
-          y: 2.2
+          x: -0.32
+          y: 0.62
         props:
-          size: 0.62
+          size: 0.24
       forearm:
         proto: forearm
         children:
         - hand
         layout:
-          x: -0.34
-          y: 3.15
+          x: -0.18
+          y: 0.88
         props:
-          size: 0.78
+          size: 0.28
       hand:
         proto: hand
         children: []
         layout:
-          x: -0.1
-          y: 3.55
+          x: -0.05
+          y: 1.05
         props:
-          size: 0.35
+          size: 0.18
 - id: leg
   name: Leg
   parent: limb
@@ -281,34 +268,33 @@
           x: 0.0
           y: 0.0
         props:
-          size: 1.10
+          size: 0.38
       knee:
         proto: knee
         children:
         - calf
         layout:
-          x: -0.22
-          y: 1.30
+          x: -0.1
+          y: 0.45
         props:
-          size: 0.68
+          size: 0.26
       calf:
         proto: calf
         children:
         - foot
         layout:
-          x: -0.34
-          y: 2.85
+          x: -0.15
+          y: 0.85
         props:
-          size: 0.86
+          size: 0.32
       foot:
         proto: foot
         children: []
         layout:
-          x: -0.48
-          y: 3.65
+          x: -0.18
+          y: 1.08
         props:
-          size: 0.32
-
+          size: 0.18
 - id: hand
   name: Hand
   parent: limb
@@ -324,7 +310,7 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.36
+          size: 0.22
       palm:
         proto: palm
         children:
@@ -335,50 +321,49 @@
         - pinky
         layout:
           x: 0.0
-          y: 0.82
+          y: 0.55
         props:
-          size: 0.46
+          size: 0.28
       thumb:
         proto: thumb_finger
         children: []
         layout:
-          x: 0.95
-          y: 0.88
+          x: 0.52
+          y: 0.6
         props:
-          size: 0.16
+          size: 0.13
       index:
         proto: index_finger
         children: []
         layout:
-          x: 0.42
-          y: 1.55
+          x: 0.26
+          y: 0.98
         props:
-          size: 0.12
+          size: 0.11
       middle:
         proto: middle_finger
         children: []
         layout:
           x: 0.05
-          y: 1.72
+          y: 1.05
         props:
-          size: 0.14
+          size: 0.12
       ring:
         proto: ring_finger
         children: []
         layout:
-          x: -0.26
-          y: 1.58
+          x: -0.15
+          y: 0.98
         props:
-          size: 0.12
+          size: 0.11
       pinky:
         proto: pinky_finger
         children: []
         layout:
-          x: -0.58
-          y: 1.38
+          x: -0.34
+          y: 0.86
         props:
-          size: 0.11
-
+          size: 0.1
 - id: foot
   name: Foot
   parent: limb
@@ -394,7 +379,7 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.34
+          size: 0.22
       sole:
         proto: sole
         children:
@@ -405,59 +390,58 @@
         - ring_toe
         - pinky_toe
         layout:
-          x: 0.05
-          y: 0.78
+          x: 0.03
+          y: 0.55
         props:
-          size: 0.30
+          size: 0.2
       heel:
         proto: heel
         children: []
         layout:
-          x: 0.42
-          y: 0.30
+          x: 0.3
+          y: 0.22
         props:
-          size: 0.20
+          size: 0.14
       big_toe:
         proto: big_toe
         children: []
         layout:
-          x: 0.38
-          y: 1.48
+          x: 0.28
+          y: 1.05
         props:
-          size: 0.15
+          size: 0.11
       index_toe:
         proto: index_toe
         children: []
         layout:
-          x: 0.16
-          y: 1.38
+          x: 0.12
+          y: 0.98
         props:
-          size: 0.13
+          size: 0.1
       middle_toe:
         proto: middle_toe
         children: []
         layout:
-          x: -0.05
-          y: 1.38
+          x: -0.04
+          y: 0.98
         props:
-          size: 0.13
+          size: 0.1
       ring_toe:
         proto: ring_toe
         children: []
         layout:
-          x: -0.26
-          y: 1.32
+          x: -0.18
+          y: 0.94
         props:
-          size: 0.12
+          size: 0.09
       pinky_toe:
         proto: pinky_toe
         children: []
         layout:
-          x: -0.48
-          y: 1.32
+          x: -0.32
+          y: 0.94
         props:
-          size: 0.11
-
+          size: 0.08
 - id: shoulder
   name: Shoulder
   parent: arm
@@ -505,33 +489,33 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.28
+          size: 0.18
       knuckle_2:
         proto: knuckle
         children:
         - knuckle_3
         layout:
           x: 0.0
-          y: 0.82
+          y: 0.4
         props:
-          size: 0.23
+          size: 0.15
       knuckle_3:
         proto: knuckle
         children:
         - nail
         layout:
           x: 0.0
-          y: 1.52
+          y: 0.72
         props:
-          size: 0.19
+          size: 0.13
       nail:
         proto: fingernail
         children: []
         layout:
           x: 0.0
-          y: 2.05
+          y: 0.95
         props:
-          size: 0.14
+          size: 0.1
 - id: thumb_finger
   name: Thumb
   parent: finger
@@ -612,6 +596,10 @@
   name: Eye
   parent: face
   description: A sensory organ for vision.
+  body:
+    root: null
+    nodes: {}
+    links: []
 - id: nose
   name: Nose
   parent: face
@@ -623,6 +611,10 @@
 - id: ear
   name: Ear
   parent: skull
+  body:
+    root: null
+    nodes: {}
+    links: []
   description: A sensory organ for hearing.
 - id: hair
   name: Hair

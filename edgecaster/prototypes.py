@@ -6,6 +6,97 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import copy
 import yaml
 
+def _bake_mirrored_nodes_in_schema(schema: dict) -> dict:
+    """
+    Normalize/complete any *_m nodes inside THIS schema:
+      - props.mirrored = True
+      - proto rewritten to __m
+      - if *_m is missing layout/size, copy from base node and mirror x
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    schema = _ensure_schema_shape(schema)
+    nodes = _node_dict(schema)
+
+    # Pass 1: normalize mirrored flag and rewrite proto to __m when present
+    for nid, node in list(nodes.items()):
+        if not isinstance(node, dict):
+            continue
+
+        nid_str = str(nid)
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        is_m = bool(nid_str.endswith("_m") or props.get("mirrored"))
+
+        if is_m:
+            props = dict(props)
+            props["mirrored"] = True
+
+            node = dict(node)
+            node["props"] = props
+
+            proto = node.get("proto")
+            if isinstance(proto, str) and proto:
+                node["proto"] = mirrored_proto_id(proto)
+
+            nodes[nid] = node
+
+    # Pass 2: copy layout/size/proto from base node (if base exists)
+    for nid, node in list(nodes.items()):
+        if not isinstance(node, dict):
+            continue
+
+        nid_str = str(nid)
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        is_m = bool(nid_str.endswith("_m") or props.get("mirrored"))
+        if not is_m:
+            continue
+
+        base_nid = nid_str[:-2] if nid_str.endswith("_m") else None
+        if not base_nid or base_nid not in nodes:
+            continue
+
+        base_node = nodes.get(base_nid)
+        if not isinstance(base_node, dict):
+            continue
+
+        # size
+        bn_props = base_node.get("props") if isinstance(base_node.get("props"), dict) else {}
+        n_props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        size = bn_props.get("size")
+        if isinstance(size, (int, float)) and not isinstance(n_props.get("size"), (int, float)):
+            n_props = dict(n_props)
+            n_props["size"] = size
+            node["props"] = n_props
+
+        # layout (mirror x, copy y)
+        bn_layout = base_node.get("layout") if isinstance(base_node.get("layout"), dict) else {}
+        n_layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+
+        changed = False
+        if "y" in bn_layout and "y" not in n_layout:
+            n_layout = dict(n_layout)
+            n_layout["y"] = bn_layout.get("y")
+            changed = True
+
+        if "x" in bn_layout and isinstance(bn_layout.get("x"), (int, float)):
+            n_layout = dict(n_layout)
+            n_layout["x"] = -float(bn_layout.get("x"))
+            changed = True
+
+        if changed:
+            node["layout"] = n_layout
+
+        # proto (if missing/empty)
+        proto = node.get("proto")
+        if not (isinstance(proto, str) and proto):
+            base_proto = base_node.get("proto")
+            if isinstance(base_proto, str) and base_proto:
+                node["proto"] = mirrored_proto_id(base_proto)
+
+        nodes[nid] = node
+
+    return _validate_body_schema(schema)
 
 
 def bake_instance_body_schema(pid: str) -> dict:
@@ -81,10 +172,12 @@ def bake_instance_body_schema(pid: str) -> dict:
         bn_layout = base_node.get("layout") if isinstance(base_node.get("layout"), dict) else {}
         n_layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
 
-        # copy y if missing
-        if "y" in bn_layout and "y" not in n_layout:
+        # copy y
+        if "y" in bn_layout:
             n_layout = dict(n_layout)
             n_layout["y"] = bn_layout.get("y")
+
+
 
         # always mirror x from base if base has x
         if "x" in bn_layout and isinstance(bn_layout.get("x"), (int, float)):
@@ -713,8 +806,10 @@ def _resolve_body_schema_unmirrored(pid: str) -> dict:
             schema = _validate_body_schema(schema)
 
     schema = _validate_body_schema(schema)
+    schema = _bake_mirrored_nodes_in_schema(schema)
     _RESOLVED_BODY_CACHE[pid] = schema
     return schema
+
 
 MIRROR_PROTO_SUFFIX = "__m"
 
@@ -851,7 +946,7 @@ def resolve_body_schema(proto_or_obj: Any) -> dict:
     try:
         inst_schema = getattr(proto_or_obj, "body_schema", None)
         if isinstance(inst_schema, dict) and inst_schema.get("nodes") is not None:
-            return _validate_body_schema(inst_schema)
+            return _bake_mirrored_nodes_in_schema(_validate_body_schema(inst_schema))
     except Exception:
         pass
 

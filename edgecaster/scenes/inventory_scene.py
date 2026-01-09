@@ -6,6 +6,17 @@ from typing import Any, Optional, TYPE_CHECKING
 import pygame
 import math
 
+# Font sizing / glyph sizing limits.
+# Big on purpose: user wants proportionality over crispness.
+FONT_PX_MIN = 1
+FONT_PX_MAX = 10000
+# Cap how big we ever rasterize a font glyph.
+# Anything bigger than this will be rendered at this size, then scaled up.
+FONT_RASTER_PX_MAX = 512
+
+# Quantize font sizes so smooth zoom doesn't generate a new cached font every frame.
+FONT_PX_STEP = 4  # 1=exact, 2/4/8 reduces cache churn
+
 def _body_zoom_pan_t(obj: object, zoom_scale: float) -> float:
     """Blend factor for body-graph camera panning.
 
@@ -638,6 +649,7 @@ def _fit_camera_to_positions(
     target_rect: pygame.Rect,
     *,
     margin_frac: float = 0.12,
+    anchor_u: tuple[float, float] | None = None,
 ) -> tuple[tuple[float, float], float]:
     """
     Fit a camera to a set of world-space (x,y) positions.
@@ -645,34 +657,56 @@ def _fit_camera_to_positions(
     Returns:
       (center_u_x, center_u_y), scale_px_per_unit
 
-    This is like _map_positions_to_rect(), but returns camera parameters instead
-    of already-projected pixels.
+    If anchor_u is provided, the camera is centered on anchor_u (NOT bbox center),
+    and the scale is chosen to fit all points relative to that anchor. This keeps
+    LoD0 stable even when anatomy becomes asymmetric (missing limbs, etc.).
     """
     if not positions:
         return (0.0, 0.0), 1.0
 
-    xs = [p[0] for p in positions.values()]
-    ys = [p[1] for p in positions.values()]
+    xs = [float(p[0]) for p in positions.values()]
+    ys = [float(p[1]) for p in positions.values()]
     minx, maxx = min(xs), max(xs)
     miny, maxy = min(ys), max(ys)
 
-    # Avoid zero spans
-    spanx = max(1e-6, float(maxx - minx))
-    spany = max(1e-6, float(maxy - miny))
-
-    inner = target_rect.copy()
-    m = int(round(min(inner.w, inner.h) * float(margin_frac)))
-    inner.inflate_ip(-2 * m, -2 * m)
-    if inner.w <= 0 or inner.h <= 0:
+    m = int(min(target_rect.w, target_rect.h) * float(margin_frac))
+    inner = target_rect.inflate(-2 * m, -2 * m)
+    if inner.w <= 1 or inner.h <= 1:
         inner = target_rect.copy()
 
-    sx = float(inner.w) / spanx
-    sy = float(inner.h) / spany
-    scale = min(sx, sy)
+    # Choose center.
+    if anchor_u is not None:
+        cx_u, cy_u = float(anchor_u[0]), float(anchor_u[1])
 
-    cx_u = (minx + maxx) * 0.5
-    cy_u = (miny + maxy) * 0.5
+        # Fit extents around the anchor so all points remain visible.
+        max_dx = 0.0
+        max_dy = 0.0
+        for (x, y) in positions.values():
+            dx = abs(float(x) - cx_u)
+            dy = abs(float(y) - cy_u)
+            if dx > max_dx:
+                max_dx = dx
+            if dy > max_dy:
+                max_dy = dy
+
+        # Avoid zero spans. (Use symmetric spans around the anchor.)
+        spanx = max(1e-6, 2.0 * max_dx)
+        spany = max(1e-6, 2.0 * max_dy)
+    else:
+        cx_u = (minx + maxx) * 0.5
+        cy_u = (miny + maxy) * 0.5
+
+        # Avoid zero spans (bbox-based).
+        spanx = max(1e-6, (maxx - minx))
+        spany = max(1e-6, (maxy - miny))
+
+    # scale so it "mostly fills"
+    sx = inner.w / spanx
+    sy = inner.h / spany
+    scale = float(min(sx, sy))
+
     return (float(cx_u), float(cy_u)), float(scale)
+
 
 
 def _project_positions_with_camera(
@@ -702,6 +736,75 @@ def _project_positions_with_camera(
         out[str(nid)] = (px, py)
     return out
 
+def _get_schema_anchor_u(schema: dict, positions_u: dict[str, tuple[float, float]]) -> tuple[float, float]:
+    """
+    Pick a stable anchor point for camera centering (in the SAME coord space as positions_u).
+    Prefer schema['root'] if present; otherwise fall back to first node; else (0,0).
+    """
+    try:
+        root = schema.get("root") if isinstance(schema, dict) else None
+        root_id: str | None = str(root) if root is not None else None
+
+        if root_id is None:
+            nodes = schema.get("nodes") if isinstance(schema, dict) else None
+            if isinstance(nodes, dict) and nodes:
+                root_id = str(next(iter(nodes.keys())))
+
+        if root_id and root_id in positions_u:
+            x, y = positions_u[root_id]
+            return (float(x), float(y))
+    except Exception:
+        pass
+    return (0.0, 0.0)
+
+
+
+def _compute_body_graph_base_camera(
+    scene: object,
+    positions_u: dict[str, tuple[float, float]],
+    region_rect_local: pygame.Rect,
+    *,
+    margin_frac: float = 0.12,
+    anchor_u: tuple[float, float] | None = None,
+) -> tuple[tuple[float, float], float]:
+    """
+    Compute the *non-animated* body-graph camera.
+
+    LoD 0 is treated as a presentation/composition view:
+      - center is anchored (schema root if available)
+      - scale is fixed (NOT fit-to-bounds), so YAML coordinate tweaks actually matter.
+
+    LoD >= 1 remains fit-to-bounds for inspection.
+    """
+    stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
+
+    # LoD 0: fixed scale camera so skeleton can be composed against the glyph/sprite.
+    if stack_depth == 0:
+        cx_u, cy_u = (anchor_u if anchor_u is not None else (0.0, 0.0))
+
+        # Allow easy tuning from the scene if needed.
+        # Interpretation: the camera will fit a square of size `unit_span_u` (in world units)
+        # into the available rect (minus margins).
+        unit_span_u = float(getattr(scene, "_body_lod0_unit_span_u", 2.0))
+
+        # Mirror the margin behavior of _fit_camera_to_positions.
+        inner = region_rect_local.copy()
+        if inner.w > 0 and inner.h > 0:
+            mx = int(inner.w * float(margin_frac))
+            my = int(inner.h * float(margin_frac))
+            inner = inner.inflate(-2 * mx, -2 * my)
+            if inner.w <= 0 or inner.h <= 0:
+                inner = region_rect_local.copy()
+
+        denom = max(1e-6, unit_span_u)
+        scale = float(min(inner.w, inner.h) / denom) if inner.w > 0 and inner.h > 0 else 1.0
+        return (float(cx_u), float(cy_u)), float(scale)
+
+    # LoD >= 1: inspection mode (fit-to-bounds).
+    return _fit_camera_to_positions(
+        positions_u, region_rect_local, margin_frac=margin_frac, anchor_u=anchor_u
+    )
+
 
 def _compute_body_graph_camera(
     scene: object,
@@ -709,6 +812,7 @@ def _compute_body_graph_camera(
     region_rect_local: pygame.Rect,
     *,
     margin_frac: float = 0.12,
+    anchor_u: tuple[float, float] | None = None,
 ) -> tuple[tuple[float, float], float]:
     """
     The single source of truth for the body-graph camera.
@@ -720,8 +824,8 @@ def _compute_body_graph_camera(
     - Optional Phase 1.5 animation interpolates BOTH center and scale together,
       between two fully-defined camera states captured at the zoom event.
     """
-    base_center_u, base_scale = _fit_camera_to_positions(
-        positions_u, region_rect_local, margin_frac=margin_frac
+    base_center_u, base_scale = _compute_body_graph_base_camera(
+        scene, positions_u, region_rect_local, margin_frac=margin_frac, anchor_u=anchor_u
     )
 
     anim = getattr(scene, "_body_zoom_anim", None)
@@ -786,16 +890,34 @@ def _render_entity_glyph_canvas(
     scene_effects: list[str] | None = None,
 ) -> pygame.Surface:
     """
-    Render a single entity glyph into a small RGBA canvas, preserving:
-      - entity base color (player stays yellow, etc.)
-      - scene + entity visual effects (fiery, syrupy, etc.) as much as possible
+    Render a single entity glyph into an RGBA canvas.
+
+    Key policy:
+      - base_px is the desired *display* size.
+      - we only rasterize up to FONT_RASTER_PX_MAX, then scale the surface up.
     """
+    want_px = int(max(1, base_px))
+    raster_px = int(max(1, min(want_px, FONT_RASTER_PX_MAX)))
+    scale_up = float(want_px) / float(raster_px) if raster_px > 0 else 1.0
+
     # Prefer renderer-provided icon/sprite rendering if available.
+    # IMPORTANT: still honor raster-capping by requesting a raster-sized surface,
+    # then scaling up ourselves (pixelization is fine).
     if hasattr(renderer, "get_entity_icon_surface"):
         try:
-            return renderer.get_entity_icon_surface(ent, size_px=int(base_px), scene_effects=scene_effects or [])
+            rsurf = renderer.get_entity_icon_surface(
+                ent,
+                size_px=int(raster_px),  # raster size, NOT want_px
+                scene_effects=scene_effects or [],
+            )
+            if rsurf is not None and scale_up != 1.0:
+                w2 = max(1, int(round(rsurf.get_width() * scale_up)))
+                h2 = max(1, int(round(rsurf.get_height() * scale_up)))
+                rsurf = pygame.transform.scale(rsurf, (w2, h2))
+            return rsurf
         except Exception:
             pass
+
 
     glyph = str(getattr(ent, "glyph", "@"))[:1]
 
@@ -809,15 +931,17 @@ def _render_entity_glyph_canvas(
     eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
     color = apply_entity_color_effects(ent, base_color, eff)
 
-    base_rect = pygame.Rect(0, 0, base_px, base_px)
+    # IMPORTANT: all overlay rects etc. are computed in raster space.
+    base_rect = pygame.Rect(0, 0, raster_px, raster_px)
     union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
 
     canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
     ox, oy = -union_rect.left, -union_rect.top
 
+    # Render glyph at raster size (font itself is already raster-capped via _get_font()).
     gsurf = font.render(glyph, True, color)
-    gx = ox + (base_px - gsurf.get_width()) // 2
-    gy = oy + (base_px - gsurf.get_height()) // 2
+    gx = ox + (raster_px - gsurf.get_width()) // 2
+    gy = oy + (raster_px - gsurf.get_height()) // 2
     canvas.blit(gsurf, (gx, gy))
 
     if eff:
@@ -830,11 +954,21 @@ def _render_entity_glyph_canvas(
             visual = build_visual_profile(VisualProfile(), eff)
             out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
             apply_visual_panel(out, canvas, out.get_rect(), visual)
-            return out
+            canvas = out
         except Exception:
-            return canvas
+            pass
+
+    # Scale up to desired display size (pixelly is fine; use scale not smoothscale).
+    if scale_up != 1.0:
+        try:
+            w2 = max(1, int(round(canvas.get_width() * scale_up)))
+            h2 = max(1, int(round(canvas.get_height() * scale_up)))
+            canvas = pygame.transform.scale(canvas, (w2, h2))
+        except Exception:
+            pass
 
     return canvas
+
 
 
 def _render_entity_glyph_canvas_with_anchor(
@@ -849,22 +983,37 @@ def _render_entity_glyph_canvas_with_anchor(
     Like _render_entity_glyph_canvas(), but also returns the pixel coordinate of the
     *glyph cell center* inside the returned surface.
 
-    Why: effect overlays can expand the union rect asymmetrically (and rotations can
-    further change the bounding box). Using surface.center as the zoom source causes
-    drift that compounds badly under nested/rotated panels.
+    Policy:
+      - base_px is desired *display* size.
+      - rasterize up to FONT_RASTER_PX_MAX, then scale surface + anchor.
     """
-    # Prefer renderer-provided icon/sprite rendering if available.
+    want_px = int(max(1, base_px))
+    raster_px = int(max(1, min(want_px, FONT_RASTER_PX_MAX)))
+    scale_up = float(want_px) / float(raster_px) if raster_px > 0 else 1.0
+
     if hasattr(renderer, "get_entity_icon_surface"):
         try:
-            surf = renderer.get_entity_icon_surface(ent, size_px=int(base_px), scene_effects=scene_effects or [])
-            eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
-            base_rect = pygame.Rect(0, 0, int(base_px), int(base_px))
-            union_rect, _rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
-            ox, oy = -union_rect.left, -union_rect.top
-            anchor = (ox + float(base_px) * 0.5, oy + float(base_px) * 0.5)
-            return surf, anchor
+            rsurf = renderer.get_entity_icon_surface(
+                ent,
+                size_px=int(raster_px),
+                scene_effects=scene_effects or [],
+            )
+            if rsurf is None:
+                raise RuntimeError("renderer returned None")
+
+            # Best-effort anchor: assume glyph cell center is surface center.
+            anchor = (rsurf.get_width() * 0.5, rsurf.get_height() * 0.5)
+
+            if scale_up != 1.0:
+                w2 = max(1, int(round(rsurf.get_width() * scale_up)))
+                h2 = max(1, int(round(rsurf.get_height() * scale_up)))
+                rsurf = pygame.transform.scale(rsurf, (w2, h2))
+                anchor = (anchor[0] * scale_up, anchor[1] * scale_up)
+
+            return rsurf, anchor
         except Exception:
             pass
+
 
     glyph = str(getattr(ent, "glyph", "@"))[:1]
 
@@ -878,59 +1027,45 @@ def _render_entity_glyph_canvas_with_anchor(
     eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
     color = apply_entity_color_effects(ent, base_color, eff)
 
-    base_rect = pygame.Rect(0, 0, base_px, base_px)
+    base_rect = pygame.Rect(0, 0, raster_px, raster_px)
     union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
 
     canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
     ox, oy = -union_rect.left, -union_rect.top
 
-    # The *logical* anchor: center of the base glyph cell.
-    anchor0 = (float(ox) + float(base_px) * 0.5, float(oy) + float(base_px) * 0.5)
-
     gsurf = font.render(glyph, True, color)
-    gx = ox + (base_px - gsurf.get_width()) // 2
-    gy = oy + (base_px - gsurf.get_height()) // 2
+    gx = ox + (raster_px - gsurf.get_width()) // 2
+    gy = oy + (raster_px - gsurf.get_height()) // 2
     canvas.blit(gsurf, (gx, gy))
 
     if eff:
         shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
         apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
 
-    # Some effects include geometry transforms; apply them to the glyph canvas only.
     if eff:
         try:
             visual = build_visual_profile(VisualProfile(), eff)
             out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
             apply_visual_panel(out, canvas, out.get_rect(), visual)
-
-            # Project anchor0 through the same VisualProfile used by apply_visual_panel.
-            # This mirrors the math in visuals.unproject_mouse() / our panel projection helpers.
-            rect = out.get_rect()
-            cx, cy = float(rect.w) * 0.5, float(rect.h) * 0.5
-            dx, dy = float(anchor0[0]) - cx, float(anchor0[1]) - cy
-
-            dx *= float(getattr(visual, "scale_x", 1.0))
-            dy *= float(getattr(visual, "scale_y", 1.0))
-
-            if getattr(visual, "flip_x", False):
-                dx = -dx
-            if getattr(visual, "flip_y", False):
-                dy = -dy
-
-            ang = float(getattr(visual, "angle", 0.0))
-            if ang:
-                rad = math.radians(ang)
-                c = math.cos(rad)
-                s = math.sin(rad)
-                dx, dy = (dx * c + dy * s, -dx * s + dy * c)
-
-            ax = float(rect.centerx) + float(getattr(visual, "offset_x", 0.0)) + dx
-            ay = float(rect.centery) + float(getattr(visual, "offset_y", 0.0)) + dy
-            return out, (ax, ay)
+            canvas = out
         except Exception:
-            return canvas, anchor0
+            pass
 
-    return canvas, anchor0
+    # Anchor = glyph cell center in *canvas* coordinates (raster space)
+    anchor = (float(ox) + float(raster_px) * 0.5, float(oy) + float(raster_px) * 0.5)
+
+    # Scale up surface + anchor together
+    if scale_up != 1.0:
+        try:
+            w2 = max(1, int(round(canvas.get_width() * scale_up)))
+            h2 = max(1, int(round(canvas.get_height() * scale_up)))
+            canvas = pygame.transform.scale(canvas, (w2, h2))
+            anchor = (float(anchor[0]) * scale_up, float(anchor[1]) * scale_up)
+        except Exception:
+            pass
+
+    return canvas, anchor
+
 
 # ---------------------------------------------------------------------------
 # Widgets
@@ -1281,12 +1416,19 @@ class EntityPreviewWidget(Widget):
         self._font_cache: dict[int, pygame.font.Font] = {}
 
     def _get_font(self, size: int) -> pygame.font.Font:
-        size = int(max(10, min(2048, size)))
-        f = self._font_cache.get(size)
+        # Quantize so smooth zoom doesn't generate a new cached font every frame.
+        s = int(round(float(size) / float(FONT_PX_STEP))) * int(FONT_PX_STEP)
+
+        # IMPORTANT: "size" here is the *desired display size*, but we only rasterize up to FONT_RASTER_PX_MAX.
+        s = int(max(FONT_PX_MIN, min(FONT_RASTER_PX_MAX, s)))
+
+        f = self._font_cache.get(s)
         if f is None:
-            f = pygame.font.SysFont("consolas", size, bold=True)
-            self._font_cache[size] = f
+            f = pygame.font.SysFont("consolas", s, bold=True)
+            self._font_cache[s] = f
         return f
+
+
 
     def draw(self, ctx: WidgetContext) -> None:
         if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
@@ -1381,8 +1523,14 @@ class EntityPreviewWidget(Widget):
 
             # Unify preview + overlay: use the SAME world-space camera as BodyPlanGraphWidget.
             region_local = pygame.Rect(0, 0, region.w, region.h)
-            _base_center_u, base_scale = _fit_camera_to_positions(pos_u, region_local, margin_frac=0.12)
-            cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, margin_frac=0.12)
+            # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
+            stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
+            anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
+            _base_center_u, base_scale = _compute_body_graph_base_camera(
+                scene, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u
+            )
+            cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u)
+
 
             # Cache last camera so zoom-in/out can animate cleanly without widget wiring.
             try:
@@ -1431,18 +1579,31 @@ class EntityPreviewWidget(Widget):
                 base_px = min(base_px, int(min(region.w, region.h) * 0.90))
 
 
+            # IMPORTANT: Even with a raster cap, scaling to absurd pixel sizes will stutter.
+            # We don't need more pixels than we can possibly see in the clipped preview region.
             # Apply body-graph camera zoom here (this is the intended place for it).
-            glyph_px = int(max(10, min(2048, float(base_px) * max(0.25, min(6.0, zoom_mul)))))
+            want_px = float(base_px) * float(zoom_mul)
 
+            # NEW: only cap the DISPLAY size to something "safe" for allocations,
+            # not to a tiny multiple of the preview region.
+            # (4096 is usually plenty; 8192 if you want more.)
+            DISPLAY_PX_MAX = 4096
 
-            font = self._get_font(glyph_px)
+            glyph_px = int(max(1, min(FONT_PX_MAX, want_px, DISPLAY_PX_MAX)))
+
+            # Optional: quantize to reduce "new scale every frame" churn
+            glyph_px = int(round(float(glyph_px) / float(FONT_PX_STEP))) * int(FONT_PX_STEP)
+            glyph_px = max(1, glyph_px)
+
+            font = self._get_font(glyph_px)   # NOTE: _get_font will raster-cap internally
             gcanvas = _render_entity_glyph_canvas(
                 renderer,
                 owner if owner is not None else type("X", (), {"glyph": glyph})(),
                 font=font,
-                base_px=glyph_px,
+                base_px=glyph_px,             # NOTE: base_px is DISPLAY size
                 scene_effects=list(getattr(scene, "visual_effects", []) or []),
             )
+
 
             # Fade the glyph when hovering the right pane so the node skeleton is easier to see.
             hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
@@ -1567,7 +1728,11 @@ class BodyPlanGraphWidget(Widget):
 
         # Camera: active schema only (ghosts excluded by design).
         region_local = pygame.Rect(0, 0, region.w, region.h)
-        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+        # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
+        stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
+        anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, anchor_u=anchor_u)
+
 
         pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
@@ -1824,13 +1989,14 @@ class BodyPlanGraphWidget(Widget):
         hovered_nid = self.hovered_nid
 
         try:
-            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)), bold=True)
-            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)), bold=True)
-            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)), bold=False)
+            glyph_font = pygame.font.SysFont("consolas", max(FONT_PX_MIN, int(node_size * 0.78)), bold=True)
+            label_font = pygame.font.SysFont("consolas", max(FONT_PX_MIN, int(node_size * 0.26)), bold=True)
+            item_font  = pygame.font.SysFont("consolas", max(FONT_PX_MIN, int(node_size * 0.24)), bold=False)
+
         except Exception:
-            glyph_font = pygame.font.SysFont("consolas", max(14, int(node_size * 0.78)))
-            label_font = pygame.font.SysFont("consolas", max(11, int(node_size * 0.26)))
-            item_font  = pygame.font.SysFont("consolas", max(10, int(node_size * 0.24)))
+            glyph_font = pygame.font.SysFont("consolas", max(FONT_PX_MIN, int(node_size * 0.78)))
+            label_font = pygame.font.SysFont("consolas", max(FONT_PX_MIN, int(node_size * 0.26)))
+            item_font  = pygame.font.SysFont("consolas", max(FONT_PX_MIN, int(node_size * 0.24)))
 
         owner_id = str(getattr(owner, "id", ""))
 
@@ -2000,7 +2166,10 @@ class BodyPlanGraphWidget(Widget):
         pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
 
         region_local = pygame.Rect(0, 0, region.w, region.h)
-        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+        # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
+        stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
+        anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
+        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, anchor_u=anchor_u)
         pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
         node_size = int(max(18, min(56, float(cam_scale) * 0.45)))
@@ -2264,7 +2433,10 @@ class RightPaneWidget(Widget):
                     pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
                     # Unify preview + overlay: use the SAME world-space camera as BodyPlanGraphWidget.
                     region_local = pygame.Rect(0, 0, region.w, region.h)
-                    cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local)
+                    # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
+                    stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
+                    anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
+                    cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, anchor_u=anchor_u)
                     pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
                     # Match BodyPlanGraphWidget.draw(): interpolate focus when animating.
@@ -2957,7 +3129,12 @@ class InventoryScene(PopupMenuScene):
             except Exception:
                 schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
             pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
-            center_u, scale = _fit_camera_to_positions(pos_u, region_local, margin_frac=0.12)
+            # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
+            anchor_u = _get_schema_anchor_u(schema, pos_u) if len(stack) == 0 else None
+            center_u, scale = _compute_body_graph_base_camera(
+                self, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u
+            )
+
             return (float(center_u[0]), float(center_u[1])), float(scale)
 
         # From-state: prefer last cached camera (what we were actually using on-screen).
@@ -3046,8 +3223,15 @@ class InventoryScene(PopupMenuScene):
 
             schema, embed_off_u, embed_scale_u = chain[-1]
             pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
-            center_u, scale = _fit_camera_to_positions(pos_u, region_local, margin_frac=0.12)
+
+            # IMPORTANT: match render camera logic (anchored fit) to avoid end-of-zoom snap.
+            # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
+            anchor_u = _get_schema_anchor_u(schema, pos_u) if len(stack) == 0 else None
+            center_u, scale = _compute_body_graph_base_camera(
+                self, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u
+            )
             return (float(center_u[0]), float(center_u[1])), float(scale)
+
 
         # Capture "from" camera based on last render (fail-soft to computed).
         from_center_u = getattr(self, "_last_body_cam_center_u", None)
@@ -5112,7 +5296,8 @@ class InventoryScene(PopupMenuScene):
 
                 if owner is not None:
                     base_px = int(self._zoom_glyph_base_px)
-                    font = pygame.font.SysFont("consolas", max(10, int(base_px)), bold=True)
+                    raster_px = min(int(base_px), FONT_RASTER_PX_MAX)
+                    font = pygame.font.SysFont("consolas", max(10, raster_px), bold=True)
 
                     gcanvas, ganchor = _render_entity_glyph_canvas_with_anchor(
                         renderer,
