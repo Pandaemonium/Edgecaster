@@ -221,6 +221,10 @@ class Game:
         # Optional prototype parity: random spline-based distortion field.
         # Keep disabled by default so the landscape field remains canonical until tuned.
         self.corruption_spline_weight: float = 0.0
+        # Climate configuration for biome generation.
+        # Controls land_boost, sea_level, and temperature/moisture parameters.
+        from edgecaster.climate import ClimateConfig
+        self.climate_config: ClimateConfig = ClimateConfig()
         # world map render cache (surface + view window)
         self.world_map_cache = None
         self.world_map_c: complex | None = None

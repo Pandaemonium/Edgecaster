@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+.claude/
 debug.log
 dist/
 build/
@@ -15,3 +16,6 @@ v1/Edgecaster/tools/thumbnails/
 v1/Edgecaster/tools/path_thumbnails/
 v1/Edgecaster/tools/gitignore_tools/
 GEMINI.md
+tools/julia_world_fields_viewer.py
+tools/biome_proportions.csv
+tools/biome_proportions_along_path.py

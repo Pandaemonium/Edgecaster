@@ -1,0 +1,312 @@
+Biome / Climate Generation Strategy (Standalone Prototype)
+=========================================================
+
+Goal
+----
+Build a standalone prototype worldmap-generation tool (NOT integrated into Edgecaster yet) to
+iterate on "world fields" and biomes for a Julia-set-based roguelike.
+
+Core idea: the Julia set provides the "world DNA" (sharp, fractal terrain). Climate/biome
+fields (temperature, wind, moisture) can be smoothed/diffused for readability and coherence.
+
+Key constraints
+---------------
+1) Keep the terrain sharp/fractal (avoid smoothing elevation / coastline).
+2) It must remain coherent at multiple scales (world map + sub-tile detail when zooming).
+3) Latitude must be tied to absolute Julia-plane coordinates (not renormalized per zoom).
+4) Corruption modifies the iterator:
+     z_{n+1} = z_n^2 + c + d(z_n)
+   where d(z) is a distortion field defined over the z-plane (so local+global stay linked).
+5) Performance: compute once per viewport, cache, and only recolor when switching views/overlays.
+
+
+Coordinate systems (the #1 contract)
+-----------------------------------
+Everything should agree on a single mapping between:
+
+  - Pixel coordinates (screen, preview panels)
+  - "World" coordinates (overworld tile grid)
+  - Julia-plane coordinates (complex z = x + i y)
+
+Define a canonical world viewport in Julia space:
+  WORLD_Z_VIEW = (x_min, x_max, y_min, y_max)  # fixed for the run/seed
+
+Latitude:
+  - Use absolute y in WORLD_Z_VIEW as latitude (optionally remap with "tilt" / "curve").
+
+Zoom / sub-tile detail:
+  - Zooming changes sampling density / sub-viewport extents, but the "lat" of a point is
+    always computed from its absolute y in WORLD_Z_VIEW (or equivalent global frame).
+
+Acceptance checks:
+  - If you zoom in/out, the same absolute Julia coordinate keeps the same temperature baseline.
+  - Only detail changes; "global climate bands" do not shift when zooming.
+
+
+Julia iteration metrics (base data for all fields)
+-------------------------------------------------
+For each sampled coordinate z0:
+  Iterate (with corruption applied if enabled):
+    z_{n+1} = z_n^2 + c + d(z_n)
+
+Compute and store (SoA arrays):
+  - escaped: bool
+  - iters: int (escape iteration or max_iter)
+  - smooth_iter (mu): float (smooth escape metric, optional but recommended)
+  - z_last: complex (or zx, zy arrays)
+  - z1: complex after first iteration (useful symmetry-breaker)
+  - orbit samples (optional): z2, z3... or orbit statistics
+  - chaos proxy (optional): mean(log|f'(z_n)|) or derivative growth surrogate
+
+Smooth escape metric:
+  A typical smooth iteration count is:
+    mu = n + 1 - log2(log(|z_n|)) + log2(log(R))
+  Use it for continuous shading + elevation transfer functions.
+
+Important:
+  - Terrain should remain "crisp": do NOT blur mu/elevation.
+  - Climate fields can use mu-derived measures, but may be smoothed later.
+
+
+Elevation model (non-monotonic, as specified)
+---------------------------------------------
+You described:
+  - Fast escape => ocean
+  - As escape speed increases, elevation rises to a point ("ridge belt")
+  - Then it saturates/reverses: very slow escape is lower elevation again
+  - No-escape (bounded) => inland freshwater
+
+Implement as a transfer function:
+  Inputs: escaped, mu (smooth escape), maybe mu_norm in [0..1]
+  Outputs: elevation E in [0..1], plus water classification.
+
+Suggested v1 mapping (tunable):
+  - if not escaped: E = 0.2 and biome = "inland_freshwater" (or lakes/river origin)
+  - else:
+      mu_norm = clamp((mu - mu_min) / (mu_max - mu_min), 0..1)
+      ocean = smoothstep(0, sea_mu, mu_norm)  # ocean when mu_norm is very small
+      ridge = exp(-((mu_norm - ridge_center)^2) / (2 * ridge_sigma^2))  # bell
+      farland = 1 - smoothstep(far_mu0, far_mu1, mu_norm)  # optional taper
+      E = ridge_height * ridge * farland
+      E = max(E, lowland_floor)  # optional small land floor
+
+Water classification:
+  - ocean: escaped and mu_norm <= sea_mu_threshold
+  - inland freshwater: not escaped (bounded) OR (optional) very deep interior basins
+
+Keep it sharp:
+  - Use the raw mu field; no smoothing.
+  - Any "dithering" of biome boundaries should be in the BIOME layer, not elevation.
+
+
+Corruption field d(z): how to keep world+local coherence
+--------------------------------------------------------
+Corruption must be a function of the current iterate z_n (not just the world x,y).
+That is what makes the distorted Julia "feel like the same world" at multiple zoom levels:
+  d(z) is defined over the z-plane domain.
+
+Two corruption-field options (keep both as toggles)
+---------------------------------------------------
+Option A: "Landscape mountains" (noise heightfield + gradient) [current Edgecaster flavor]
+  - Build a scalar heightfield H(z) over a bounded z-plane LUT region.
+  - Distortion vector is the gradient: d(z) = amp * env(z) * ∇H(z)
+  - "Mountains" are peaks in H; "quiet" regions are near-zero gradient.
+
+Option B: "Random spline field with anchors" (the anchor-suppressed field)
+  - Build two scalar fields:
+      D_re(z), D_im(z)
+    via harmonic relaxation / spline-like smoothing from random control points.
+  - d(z) = amp * env(z) * (D_re + i D_im)
+  - Anchors suppress everything (multiply env or multiply the field by a suppressor mask).
+
+Anchors:
+  - Each anchor A has (z_anchor, sigma).
+  - Suppressor mask:
+      S(z) = Π_i (1 - exp(-|z - A_i|^2 / (2*sigma_i^2)))
+    so S≈0 near anchor, S≈1 far away.
+  - Apply anchors late:
+      d(z) *= S(z)
+    (or equivalently env *= S)
+
+Desired world feel:
+  - No global monotonic ramp.
+  - Even on the right side, there should be near-zero regions + mountains of corruption.
+  - Left side can be mathematically zero if desired (mask base+detail).
+
+Implementation note:
+  If you see a "smooth green wall" on the right, it often means env is dominated by a
+  monotonic right-ramp term or base noise is not masked.
+
+
+Climate fields: temperature, wind, moisture (smooth allowed)
+------------------------------------------------------------
+Philosophy:
+  - Terrain is fractal and sharp.
+  - Climate fields should be readable and coherent: allow diffusion/smoothing.
+
+Temperature T(x,y):
+  Components (all tunable):
+  1) Latitude baseline:
+       T_lat = 1 - abs(lat)  (or more complex with tilt)
+     where lat is computed from absolute Julia y in WORLD_Z_VIEW.
+
+  2) Elevation lapse:
+       T -= lapse_rate * E
+
+  3) Ocean moderation:
+       if ocean: pull T toward midrange (reduces extremes)
+
+  4) Fractal "geothermal" / chaos heat (optional):
+       add k_chaos * chaos_metric
+     where chaos_metric might be derivative growth or proximity to Julia boundary.
+
+  5) Symmetry breaking (recommended):
+       Use an orbit-derived perturbation that is inherently asymmetric:
+         Im(z1) = 2*x*y + Im(c)
+       and add a small term:
+         T += asym_strength * smooth(Im(z1) * asym_scale)
+     This breaks the global symmetry without injecting unrelated random noise.
+
+Humidity capacity C(x,y):
+  - Capacity should depend on temperature (and optionally pressure/elevation):
+      C = clamp(exp(k*(T - T0)), C_min..C_max)
+    or a simpler curve:
+      C = clamp(0.2 + 0.8*T, ...)
+
+Wind W(x,y):
+  Two modes (toggleable for Earth-like vs weird):
+  A) Earth-like-ish:
+     - Start with zonal jets by latitude (east/west bands).
+     - Add deflection from temperature gradients (pressure):
+         gradT = ∇T
+         coriolis_rotate(gradT) for geostrophic-ish flow
+     - Add terrain steering:
+         push wind around high E by projecting away from ∇E
+
+  B) Weird / fractal-derivative:
+     - Use a curl field derived from a harmonic potential-like map:
+         V = rotate90(∇Phi)
+       where Phi can be smooth_iter mu (exterior) or a smoothed chaos metric.
+     - Blend with a weak zonal baseline so it doesn't look purely vortex-y.
+
+Moisture / precipitation M(x,y):
+  Recommended representation:
+  - Track "air moisture" advected by wind, with precipitation deposition.
+  - Optionally store "ground moisture" separately (biome uses ground).
+
+v1 algorithm:
+  1) Source moisture from ocean tiles (and optionally inland freshwater).
+  2) Semi-Lagrangian advection:
+       M_air(x) <- M_air(x - W(x)*dt)
+  3) Orographic precipitation (rain shadows):
+       upslope = max(0, dot(W, ∇E))
+       rain = k_rain * upslope * M_air
+       M_ground += rain
+       M_air -= rain
+  4) Clamp M_air by capacity:
+       if M_air > C: overflow precipitates
+  5) Diffuse / smooth moisture (important):
+       apply a few iterations of 4-neighbor diffusion to M_ground (and/or M_air).
+     This reduces pixel-y artifacts while preserving broad structure.
+
+Key design choice:
+  - Do NOT diffuse elevation.
+  - DO diffuse moisture (and optionally temperature slightly) for coherent regions.
+
+
+Biome classification
+--------------------
+Use a simple, explicit lookup:
+  Inputs:
+    - water type: ocean / inland freshwater / land
+    - elevation band: low / mid / high
+    - temperature tier (e.g. 0..4)
+    - moisture tier (e.g. 0..4) derived from M_ground and/or precipitation rate
+    - corruption tier (optional override)
+
+Approach:
+  - Start from a Whittaker-like grid (Temp x Moisture).
+  - Override by elevation (alpine, snow, cliffs).
+  - Override by water (ocean, coast, lake).
+  - Override by corruption tier for "corrupted variants".
+
+Keep edges organic without blurring terrain:
+  - Dither biome boundaries with blue-noise / orbit-based jitter (small amplitude).
+  - Do not blur elevation/coastlines.
+
+
+Prototype tool UI / workflow
+----------------------------
+The prototype tool should make iteration cheap:
+
+Panels:
+  - Mandelbrot view to pick c
+  - Main field view (E/T/M/Biome) + overlays
+  - Zoom view with higher sampling density (sub-tile detail)
+  - Optional 3D elevation view
+
+UI separation (important for performance):
+  - Overlay toggles (wind vectors, debug marks): should NOT recompute fields
+  - Climate config toggles (earth-like, advection, diffusion, asymmetry): DO recompute
+
+Performance features:
+  - Cache computed SoA arrays per viewport + config signature.
+  - Switching "view" should recolor from cached arrays (no recompute).
+  - Progressive render for zoom: quick rescale + background recompute, but keep
+    coordinate invariants (cursor-point invariance when zooming).
+
+Debug overlays:
+  - show lat bands
+  - show wind vectors
+  - show precipitation rate
+  - show corruption magnitude and anchors
+  - show biome index map
+
+
+Performance plan (CPU-first, optional Numba)
+-------------------------------------------
+Baseline (fast enough for iteration):
+  - Use numpy arrays and vectorization where possible.
+  - Avoid per-pixel Python loops in the hot path.
+
+If iteration becomes too slow:
+  - Add a Numba @njit(parallel=True) generator for the Julia metrics pass.
+  - Keep data as SoA arrays (float32/uint8) to maximize cache locality.
+  - Keep corruption sampling in the same compiled loop to avoid Python overhead.
+
+Caching:
+  - Cache derived fields (T, M, wind) by (c, viewport, config hash, corruption hash).
+  - Cache corruption LUTs and anchor masks separately.
+
+
+Step-by-step implementation plan (prototype first, then integrate later)
+------------------------------------------------------------------------
+1) Canonical coordinate mapping + viewport model (WORLD_Z_VIEW).
+2) Julia metrics pass (mu, escaped, z1, chaos metric).
+3) Elevation transfer function + water classification.
+4) Temperature model with lapse + asymmetry + ocean moderation.
+5) Wind model (Earth-like and Weird modes).
+6) Moisture model with advection + orographic precipitation + diffusion smoothing.
+7) Biome classification (Temp/Moisture grid + overrides).
+8) Corruption integration:
+     - implement d(z) lookup (Option A)
+     - implement spline field + anchors (Option B)
+     - verify local/world coherence at multiple zoom levels
+9) UI/overlays + progressive zoom renderer + caching.
+10) Export format for eventual game integration (arrays + seeds + parameters).
+
+
+Notes for eventual Edgecaster integration (not now)
+---------------------------------------------------
+When integrating into Edgecaster later:
+  - Unify "world fields" behind a single interface (one truth source).
+  - Ensure the overmap fast-path and fallback path call the SAME corruption/field code
+    (avoid duplicating logic in multiple modules).
+  - Store only small deltas for visited zones; recompute base from seed+params.
+
+Related docs/code to cross-reference
+------------------------------------
+  - vision_documents/map_generation_strategy.txt
+  - vision_documents/site_generation_strategy.txt
+  - edgecaster/corruption.py
+  - C:\\Users\\Owner\\Documents\\Scripts\\julia_world_fields_viewer.py

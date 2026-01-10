@@ -6,7 +6,8 @@
       "Bash(python -m edgecaster.main:*)",
       "Bash(python -m pytest:*)",
       "Bash(python:*)",
-      "Bash(ls -la \"c:\\\\Games\\\\Edgecaster\\\\edgecaster\"\" | grep -E \"^d \")"
+      "Bash(ls -la \"c:\\\\Games\\\\Edgecaster\\\\edgecaster\"\" | grep -E \"^d \")",
+      "Bash(ls -la \"C:\\\\Games\\\\Edgecaster\\\\tools\"\" 2>/dev/null || dir \"C:GamesEdgecastertools\"\")"
     ]
   }
 }

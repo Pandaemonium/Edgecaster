@@ -5,6 +5,22 @@ from typing import Tuple, Optional, Dict, List
 from edgecaster.content import pois
 from edgecaster.corruption import CorruptionParams, julia_height_norm_corrupted
 
+# Import climate system for biome-aware generation
+from edgecaster.climate import (
+    ClimateConfig,
+    Biome,
+    BIOME_COLORS as CLIMATE_BIOME_COLORS,
+    BIOME_GLYPHS as CLIMATE_BIOME_GLYPHS,
+    elev_ridge_belt,
+    ocean_lake_masks_from_water,
+    manhattan_distance_to,
+    compute_temperature,
+    compute_wind_field,
+    compute_moisture,
+    classify_biome as climate_classify_biome,
+    biome_to_glyph,
+)
+
 from edgecaster.state.world import World
 
 Room = Tuple[int, int, int, int]  # x, y, w, h
@@ -309,6 +325,69 @@ def _color_from_fields(fields: dict) -> tuple[int, int, int]:
             t = 0.0 if h1 == h0 else (h - h0) / (h1 - h0)
             return tuple(int(c0[j] + t * (c1[j] - c0[j])) for j in range(3))
     return anchors[-1][1]
+
+
+def _color_from_biome(biome_id: int) -> tuple[int, int, int]:
+    """Get RGB color from a climate biome ID."""
+    try:
+        b = Biome(biome_id)
+        return CLIMATE_BIOME_COLORS.get(b, (128, 128, 128))
+    except (ValueError, KeyError):
+        return (128, 128, 128)
+
+
+def _compute_zone_climate_fields(
+    *,
+    jx_slice: List[float],
+    jy_slice: List[float],
+    h_grid: "object",  # numpy array
+    env_grid: "object",  # numpy array
+    j_min_y: float,
+    j_max_y: float,
+    climate_config: Optional[ClimateConfig] = None,
+) -> tuple["object", "object", "object", "object", "object"]:
+    """
+    Compute climate fields for a local zone.
+
+    Returns: (biome_grid, E_clim, T, M, ocean_mask) as numpy arrays.
+    """
+    import numpy as np
+
+    if climate_config is None:
+        climate_config = ClimateConfig()
+    cfg = climate_config
+
+    h, w = h_grid.shape
+
+    # Convert normalized height (t) to climate elevation
+    t = h_grid.astype(np.float32)
+    E_clim = elev_ridge_belt(t, land_boost=cfg.land_boost)
+
+    # Water classification
+    water = (E_clim < cfg.sea_level)
+    ocean_mask, lake_mask = ocean_lake_masks_from_water(water, t=t)
+
+    # Distance fields
+    ocean_dist = manhattan_distance_to(ocean_mask)
+    lake_dist = manhattan_distance_to(lake_mask)
+
+    # Latitude from Julia y-coordinates
+    jy_arr = np.array(jy_slice, dtype=np.float32)
+    y_mid = 0.5 * (j_min_y + j_max_y)
+    y_half = 0.5 * (j_max_y - j_min_y) + 1e-6
+    lat_1d = np.clip((jy_arr - y_mid) / y_half, -1.0, 1.0)
+    lat = np.repeat(lat_1d[:, None], w, axis=1).astype(np.float32)
+
+    # Climate fields
+    T = compute_temperature(E_clim, ocean_dist, lat, cfg)
+    U, V = compute_wind_field(E_clim, lat, T, cfg)
+    M = compute_moisture(E_clim, ocean_dist, lake_dist, U, V, T, cfg)
+
+    # Biome classification
+    corruption_env = env_grid.astype(np.float32) if env_grid is not None and np.any(env_grid > 0) else None
+    biome_grid = climate_classify_biome(E_clim, T, M, ocean_mask, lake_mask, corruption_env=corruption_env)
+
+    return biome_grid, E_clim, T, M, ocean_mask
 
 
 def _apply_corruption_tint(color: tuple[int, int, int], strength: float) -> tuple[int, int, int]:
@@ -640,6 +719,7 @@ def generate_fractal_overworld(
     # Fast-path: numpy vectorization for local zones (60x40) makes startup essentially instant,
     # while still using the exact same corruption rules as the world map.
     h_grid = env_grid = None
+    biome_grid = None
     if jx_slice is not None and jy_slice is not None:
         try:
             h_grid, env_grid = _julia_height_env_grid_numpy(
@@ -658,11 +738,43 @@ def generate_fractal_overworld(
         except Exception:
             h_grid = env_grid = None
 
+    # Compute climate-based biome grid if we have the height data
+    j_min_y = float(overmap_params.get("view_min_jy", overmap_params.get("orig_min_jy", -1.5)) or -1.5)
+    j_max_y = float(overmap_params.get("view_max_jy", overmap_params.get("orig_max_jy", 1.5)) or 1.5)
+    climate_config = overmap_params.get("climate_config")
+    if climate_config is None:
+        climate_config = ClimateConfig()
+
+    if h_grid is not None and env_grid is not None and jx_slice is not None and jy_slice is not None:
+        try:
+            biome_grid, _, _, _, ocean_mask = _compute_zone_climate_fields(
+                jx_slice=jx_slice,
+                jy_slice=jy_slice,
+                h_grid=h_grid,
+                env_grid=env_grid,
+                j_min_y=j_min_y,
+                j_max_y=j_max_y,
+                climate_config=climate_config,
+            )
+        except Exception:
+            biome_grid = None
+
     for y in range(h):
         for x in range(w):
             wx = cx0 + x
             wy = cy0 + y
-            if jx_slice is not None and jy_slice is not None and h_grid is not None and env_grid is not None:
+
+            # Climate-aware biome path (preferred)
+            if biome_grid is not None and h_grid is not None and env_grid is not None:
+                biome_id = int(biome_grid[y, x])
+                corr = float(env_grid[y, x])
+                glyph = biome_to_glyph(biome_id)
+                tint = _color_from_biome(biome_id)
+                # Apply corruption tint on top of biome color
+                if corr > 0.0:
+                    tint = _apply_corruption_tint(tint, corr)
+            # Legacy height-only path (fallback)
+            elif jx_slice is not None and jy_slice is not None and h_grid is not None and env_grid is not None:
                 h_val = float(h_grid[y, x])
                 corr = float(env_grid[y, x])
                 fields = {"height": h_val, "moisture": h_val, "pattern": 0.0, "corruption": corr}
@@ -704,6 +816,9 @@ def generate_fractal_overworld(
             tile.glyph = glyph if glyph != "~" else "."
             tile.walkable = True
             tile.tint = tint
+            # Store biome ID on the tile for gameplay use
+            if biome_grid is not None:
+                tile.biome_id = int(biome_grid[y, x])
 
     # entry: use up_pos if provided, else nearest walkable to center
     if up_pos and world.in_bounds(*up_pos) and world.is_walkable(*up_pos):

@@ -1,12 +1,40 @@
 # edgecaster/biome.py
+"""
+Biome classification and rendering for Edgecaster.
+
+This module provides backwards-compatible biome classification while
+leveraging the new climate-aware system from edgecaster.climate.
+
+Legacy 6-biome system (for height-only classification):
+    0=water, 1=shore, 2=plains, 3=forest, 4=hills, 5=mountains
+
+New 21-biome system (for full climate classification):
+    See edgecaster.climate.Biome for the full enum.
+"""
 from __future__ import annotations
 
 from typing import Optional, Tuple, Dict, Sequence
 
 import numpy as np
 
+# Import the new climate-aware biome system
+from edgecaster.climate import (
+    Biome,
+    BIOME_COLORS as CLIMATE_BIOME_COLORS,
+    BIOME_GLYPHS as CLIMATE_BIOME_GLYPHS,
+    BIOME_SHORT_NAMES,
+    ClimateConfig,
+    classify_biome as climate_classify_biome,
+    biome_to_color,
+    biome_to_glyph,
+)
 
-# Biome index convention:
+
+# -----------------------------
+# Legacy 6-biome system (backwards compatibility)
+# -----------------------------
+
+# Legacy biome index convention:
 # 0 water "~"
 # 1 shore ","
 # 2 plains "."
@@ -17,8 +45,7 @@ import numpy as np
 BIOME_CHARS: Tuple[str, ...] = ("~", ",", ".", "T", "^", "#")
 BIOME_GLYPHS_NP = np.asarray([ord(c) for c in BIOME_CHARS], dtype=np.int16)
 
-# These color anchors intentionally match the palette used inside overmap_accel
-# (so global tiles derived from overmap buffers stay consistent with local mapgen).
+# Legacy color anchors (used by height-based interpolation in overmap_accel)
 ANCHORS_RGB: Tuple[Tuple[int, int, int], ...] = (
     (50, 90, 170),    # deep water
     (110, 160, 190),  # shore/shallows
@@ -28,8 +55,15 @@ ANCHORS_RGB: Tuple[Tuple[int, int, int], ...] = (
     (210, 210, 215),  # high/mountains
 )
 
+# Legacy biome glyphs (by index)
 BIOME_GLYPHS: Dict[int, str] = {i: BIOME_CHARS[i] for i in range(len(BIOME_CHARS))}
+
+# Legacy biome colors (by index) - backwards compatible
 BIOME_COLORS: Dict[int, Tuple[int, int, int]] = {i: ANCHORS_RGB[i] for i in range(len(ANCHORS_RGB))}
+
+# Extend with new climate biome colors (using Biome enum values as keys)
+for b, color in CLIMATE_BIOME_COLORS.items():
+    BIOME_COLORS[int(b)] = color
 
 
 def classify_biome_idx(height_norm: np.ndarray, moisture_norm: Optional[np.ndarray] = None) -> np.ndarray:

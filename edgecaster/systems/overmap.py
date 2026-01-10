@@ -117,6 +117,7 @@ def init_overmap_params_and_grid(game: "Game") -> None:
         "corruption_hotspots": list(getattr(game, "corruption_hotspots", []) or []),
         "corruption_anchors": list(getattr(game, "corruption_anchors", []) or []),
         "corruption_spline_weight": float(getattr(game, "corruption_spline_weight", 0.0) or 0.0),
+        "climate_config": getattr(game, "climate_config", None),
         "surface_size": (0, 0),
         "surface": None,
         "orig_min_wx": min_wx,
