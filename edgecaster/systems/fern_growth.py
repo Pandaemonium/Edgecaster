@@ -1,5 +1,5 @@
 """
-Fern Growth System - Grows a fern frond shape over time.
+Fern Growth System - Grows fern fronds from every pattern vertex.
 
 This creates a fern-like structure with:
 - A curved central rachis (stem) that arcs gracefully
@@ -7,8 +7,10 @@ This creates a fern-like structure with:
 - Each pinna curves back toward the tip
 - Sub-pinnae on larger fronds
 
-The fern grows from the base upward, with new pinnae appearing
-as the main stem extends.
+When activated, EVERY vertex in the pattern becomes a growth tip,
+with each tip pointing away from the root (the vertex closest to
+the pattern anchor). This creates a "budding" effect where the
+entire pattern sprouts fern fronds outward.
 """
 
 from __future__ import annotations
@@ -53,26 +55,147 @@ class FernState:
     """State for the growing fern."""
     tips: List[GrowthTip] = field(default_factory=list)
     turn: int = 0
+    initialized: bool = False  # Has been seeded from existing pattern
+
+
+def _find_nonroot_vertices_with_outward_angles(pattern, root_idx: int) -> List[Tuple[int, float, float, float]]:
+    """Find all non-root vertices with angles pointing away from the root.
+
+    Uses BFS from the root to determine depth. For each non-root vertex,
+    the growth angle is the direction of the edge leading AWAY from root
+    (i.e., from parent toward this vertex).
+
+    The root vertex is EXCLUDED - no growth starts from the root.
+
+    Returns list of (vertex_id, x, y, outward_angle) for non-root vertices.
+    """
+    if not pattern or not pattern.vertices:
+        return []
+
+    from collections import deque
+
+    # Build adjacency
+    adj: dict[int, List[int]] = {}
+    for e in pattern.edges:
+        adj.setdefault(e.a, []).append(e.b)
+        adj.setdefault(e.b, []).append(e.a)
+
+    # BFS to find parent of each vertex (the vertex closer to root)
+    parent: dict[int, int] = {root_idx: root_idx}  # root is its own parent
+    q = deque([root_idx])
+    while q:
+        cur = q.popleft()
+        for nb in adj.get(cur, []):
+            if nb not in parent:
+                parent[nb] = cur
+                q.append(nb)
+
+    tips = []
+    for i, v in enumerate(pattern.vertices):
+        # Skip the root vertex entirely - no growth from root
+        if i == root_idx:
+            continue
+
+        if i not in parent:
+            # Disconnected vertex - use angle pointing up as fallback
+            tips.append((i, v.pos[0], v.pos[1], -math.pi / 2))
+            continue
+
+        p = parent[i]
+        # Calculate angle of the edge from parent to this vertex
+        # This is the "outward" direction along the edge
+        parent_v = pattern.vertices[p]
+        dx = v.pos[0] - parent_v.pos[0]
+        dy = v.pos[1] - parent_v.pos[1]
+        angle = math.atan2(dy, dx)
+        tips.append((i, v.pos[0], v.pos[1], angle))
+
+    return tips
+
+
+def _find_root_vertex(pattern) -> int:
+    """Find the vertex closest to the pattern origin (0,0) - this is the root.
+
+    Pattern vertices are in local coordinates relative to the anchor,
+    so the root is the vertex closest to (0, 0) in pattern space.
+    """
+    if not pattern or not pattern.vertices:
+        return 0
+
+    best_idx = 0
+    best_dist = float('inf')
+
+    for i, v in enumerate(pattern.vertices):
+        # Distance from pattern origin (0, 0)
+        dist = v.pos[0] * v.pos[0] + v.pos[1] * v.pos[1]
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
+
+    return best_idx
 
 
 def _get_fern_state(level: "LevelState") -> FernState:
     """Get or initialize fern state."""
     if not hasattr(level, "_fern_state") or level._fern_state is None:
-        state = FernState()
-        # Start with main rachis growing upward with slight curve
+        level._fern_state = FernState()
+    return level._fern_state
+
+
+def _initialize_from_pattern(
+    state: FernState,
+    pattern,
+    rng: random.Random,
+) -> None:
+    """Initialize fern growth tips from all NON-ROOT pattern vertices.
+
+    Each vertex becomes a growth tip pointing away from the root
+    (the vertex closest to pattern origin 0,0).
+    The root vertex is excluded - no growth starts from it.
+    """
+    if state.initialized:
+        return
+
+    state.initialized = True
+
+    if not pattern or not pattern.vertices:
+        # Fallback: create a single tip at origin
         state.tips.append(GrowthTip(
             x=0.0, y=0.0,
-            angle=-math.pi / 2,  # Pointing up (negative Y)
-            curvature=0.02,  # Gentle curve to the right
+            angle=-math.pi / 2,
+            curvature=0.02,
             generation=0,
             length=0.0,
-            max_length=20.0,  # Main rachis can grow long
+            max_length=20.0,
             steps_since_branch=0,
             branch_side=1,
             vertex_id=None,
         ))
-        level._fern_state = state
-    return level._fern_state
+        return
+
+    # Find the root vertex (closest to pattern origin 0,0)
+    root_idx = _find_root_vertex(pattern)
+
+    # Get all NON-ROOT vertices with outward angles (away from root)
+    # Root is excluded - no growth starts from the root vertex
+    all_vertices = _find_nonroot_vertices_with_outward_angles(pattern, root_idx)
+
+    # Create growth tips from all non-root pattern vertices
+    for vertex_id, x, y, base_angle in all_vertices:
+        # Add some randomness to curvature direction
+        curvature_sign = 1 if rng.random() < 0.5 else -1
+
+        state.tips.append(GrowthTip(
+            x=x, y=y,
+            angle=base_angle,  # Grow away from root
+            curvature=0.02 * curvature_sign,  # Gentle curve
+            generation=0,
+            length=0.0,
+            max_length=20.0,
+            steps_since_branch=0,
+            branch_side=1 if rng.random() < 0.5 else -1,
+            vertex_id=vertex_id,  # Start from existing vertex
+        ))
 
 
 def _reset_fern_state(level: "LevelState") -> None:
@@ -132,7 +255,7 @@ def grow_tips(
         new_vertex_id = pattern.add_vertex((new_x, new_y), color="green")
         added += 1
 
-        # Add edge from old to new
+        # Add edge from old to new (this maintains graph connectivity)
         pattern.add_edge(tip.vertex_id, new_vertex_id, color="green")
 
         # Update tip position
@@ -330,6 +453,10 @@ def tick(game: "Game", level: "LevelState", delta: int) -> None:
     # Get fern state and RNG
     state = _get_fern_state(level)
     rng = getattr(game, "rng", random.Random())
+
+    # Initialize from existing pattern on first growth tick
+    if not state.initialized:
+        _initialize_from_pattern(state, pattern, rng)
 
     # Grow the fern
     for _ in range(steps_this_tick):
