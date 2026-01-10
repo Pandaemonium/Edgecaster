@@ -268,6 +268,12 @@ class Game:
         # initialize overmap parameters/grid eagerly (fixed bounds) and kick off async render
         self._init_overmap_params_and_grid()
 
+        # Site registry for biome-based POI placement.
+        # Populated after overmap_params/tile_julia_grid are set up.
+        from edgecaster.systems.sites import SiteRegistry
+        from edgecaster.systems.site_placement import place_all_sites
+        self.site_registry: SiteRegistry = place_all_sites(self)
+
         # Inventories: mapping from owner id to a list of carried Entities.
         # Initially empty; per-owner lists are created lazily via get_inventory().
         self.inventories: Dict[str, List[Entity]] = {}
@@ -1219,6 +1225,13 @@ class Game:
         )
         # Spawn NPCs/entities from any POIs for this level (e.g., starting NPCs)
         self._spawn_poi_contents(lvl, coord)
+
+        # Realize biome-based sites (if any) for this zone
+        if depth == 0 and not is_lab_zone and not is_lair_zone:
+            try:
+                mapgen_sites.realize_sites_in_zone(self, lvl, x, y, depth)
+            except Exception:
+                pass
 
         if coord == (0, 0, 0) and not getattr(self, "_academy_hint_shown", False):
             self._academy_hint_shown = True

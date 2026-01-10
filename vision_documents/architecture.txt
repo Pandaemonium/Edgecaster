@@ -66,6 +66,11 @@ Local map generation:
 - edgecaster/mapgen.py generates overworld zones (depth 0) and basic dungeon zones.
 - edgecaster/biome.py centralizes biome definitions shared by local and overmap rendering.
 
+Climate / Biome System:
+- edgecaster/climate.py: 21-biome Whittaker-style classification, ClimateConfig params,
+  temperature/wind/moisture field computation. Core exports: Biome enum, classify_biome().
+- game.py owns ClimateConfig; systems/overmap.py passes it via overmap_params.
+
 Overmap / world map rendering:
 - Orchestration + background rendering thread: edgecaster/systems/overmap.py
 - Fast numeric rendering path: edgecaster/overmap_accel.py (numpy)

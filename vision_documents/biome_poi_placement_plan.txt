@@ -1,0 +1,405 @@
+Biome-Aware POI Placement Plan
+===============================
+
+This plan builds on the newly integrated 21-biome climate system to place POIs
+based on environmental suitability. It follows the architecture from
+site_generation_strategy.txt: meaning-first placement via suitability maps.
+
+-------------------------------------------------------------------------------
+CURRENT STATE
+-------------------------------------------------------------------------------
+
+What we have:
+- 21-biome climate system in edgecaster/climate.py (Biome enum, classify_biome())
+- ClimateConfig in game.py with 25+ tunable parameters
+- Biome IDs stored on tiles via mapgen.py (tile.biome_id)
+- POI system in content/pois.yaml with coord-based placement
+- Spawning pipeline in systems/spawning.py + prototypes.py
+- Site generation strategy doc outlining SiteSpec + suitability maps
+
+What we need:
+- Procedural POI placement based on biome suitability
+- New faction/creature types for different biomes
+- Integration with the existing POI/discovery system
+
+-------------------------------------------------------------------------------
+BIOME-TO-POI MAPPING (Examples from User)
+-------------------------------------------------------------------------------
+
+High-Level Biome Categories:
+  WATER:      Ocean, Lake, River
+  COLD:       Ice, Tundra, Taiga, Snow
+  TEMPERATE:  Temperate Forest, Temperate Rainforest, Temperate Grassland, Shrubland
+  HOT/DRY:    Scorched, Subtropical Desert, Temperate Desert, Savanna, Bare
+  TROPICAL:   Tropical Forest, Tropical Rainforest
+  CORRUPTED:  Corrupted Wasteland, Corrupted Forest, Corrupted Water
+
+Proposed POI Types by Biome Affinity:
+
+1. Bird People Settlements (Aeries)
+   - Primary: Snow, Bare, Tundra (high elevation, cold, exposed)
+   - Secondary: Temperate Grassland (open sightlines)
+   - Suitability: E > 0.7, T < 0.4, moisture low-medium
+   - Structures: cliff towers, nest platforms, open arenas
+   - NPCs: bird_elder, bird_merchant, bird_scout
+   - Enemies: territorial bird_warrior, trained hunting_hawk
+
+2. Fishing Villages
+   - Primary: Shore tiles adjacent to Ocean/Lake/River
+   - Secondary: Temperate Rainforest coast (abundant seafood)
+   - Suitability: within 2 tiles of water, E in [0.15, 0.35]
+   - Structures: docks, fish_market, net_huts
+   - NPCs: fishmonger, boat_captain, net_mender
+   - Enemies (rare): sea creatures if corrupted water nearby
+
+3. Spriggan Elder Trees (Groves)
+   - Primary: Temperate Rainforest, Tropical Rainforest (high moisture forests)
+   - Secondary: Temperate Forest, Taiga (any significant forest)
+   - Suitability: M > 0.6, forest biome, low corruption
+   - Structures: elder_tree (central), saplings, fungal_circles
+   - NPCs: spriggan_elder (ancient tree spirit), moss_keeper
+   - Enemies: thorn_guardians, bark_golems (if disturbed)
+
+4. Desert Nomad Camps
+   - Primary: Subtropical Desert, Temperate Desert, Scorched
+   - Secondary: Savanna edges
+   - Suitability: M < 0.25, T > 0.5
+   - Structures: tent_cluster, oasis (if water nearby), trade_post
+   - NPCs: nomad_chief, caravan_merchant, water_diviner
+   - Enemies: sand_stalker, dust_wraith
+
+5. Taiga Hunter Lodges
+   - Primary: Taiga, Tundra edges
+   - Secondary: Temperate Forest (cold regions)
+   - Suitability: T in [0.2, 0.4], forest or shrubland
+   - Structures: lodge, fur_rack, trap_workshop
+   - NPCs: trapper, fur_trader, hunting_guide
+   - Enemies: wolves, bears (beast faction)
+
+6. Tropical Shaman Shrines
+   - Primary: Tropical Forest, Tropical Rainforest
+   - Secondary: Savanna (hot grasslands)
+   - Suitability: T > 0.6, M > 0.4
+   - Structures: shrine, ritual_circle, spirit_totem
+   - NPCs: shaman, spirit_speaker, offering_keeper
+   - Enemies: jungle_cat, venomous_snake
+
+7. Corruption Cult Outposts
+   - Primary: Corrupted Wasteland, Corrupted Forest
+   - Secondary: High-corruption zones of any biome
+   - Suitability: corruption > 0.15 (uses existing corruption field)
+   - Structures: obelisk, ritual_pit, caged_subjects
+   - NPCs: cult_leader, corrupted_merchant (sells cursed goods)
+   - Enemies: cultists, summoned demons
+
+(Dwarves removed - they will appear only underground)
+
+-------------------------------------------------------------------------------
+IMPLEMENTATION PLAN
+-------------------------------------------------------------------------------
+
+PHASE 1: Data Structures & Suitability API
+
+Step 1.1: Create SiteSpec dataclass
+  File: edgecaster/state/sites.py (new)
+
+  @dataclass
+  class SiteSpec:
+      id: str                    # Unique stable ID
+      kind: str                  # "bird_aerie", "fishing_village", etc.
+      coord: Tuple[int, int, int]  # (zx, zy, depth)
+      seed: int                  # Derived from world seed + coord + kind
+      biome: Biome               # Primary biome at this location
+      tags: Dict[str, Any]       # Faction, size tier, etc.
+      visibility: str = "hidden" # "hidden", "rumored", "discovered"
+
+Step 1.2: Create site type definitions
+  File: edgecaster/content/site_types.yaml (new)
+
+  bird_aerie:
+    name: "Bird People Aerie"
+    biome_affinity:
+      primary: [SNOW, BARE, TUNDRA]
+      secondary: [TEMPERATE_GRASSLAND, SHRUBLAND]
+    suitability:
+      elevation_min: 0.7
+      temperature_max: 0.4
+      moisture_max: 0.5
+      corruption_max: 0.1
+    spacing: 15  # Minimum tiles between same type
+    rarity: 0.3  # Probability multiplier
+    structures: [cliff_tower, nest_platform]
+    npc_pool: [bird_elder, bird_merchant]
+    enemy_pool: [bird_warrior, hunting_hawk]
+
+  fishing_village:
+    name: "Fishing Village"
+    biome_affinity:
+      primary: [TEMPERATE_FOREST, TEMPERATE_GRASSLAND]  # Near water
+      secondary: [TROPICAL_FOREST, SAVANNA]
+    suitability:
+      water_proximity: 2       # Must be within N tiles of water
+      elevation_min: 0.15
+      elevation_max: 0.35
+      corruption_max: 0.05
+    spacing: 12
+    structures: [dock, fish_market, net_hut]
+    npc_pool: [fishmonger, boat_captain]
+
+  # ... etc for each POI type
+
+Step 1.3: Add suitability computation functions
+  File: edgecaster/systems/site_placement.py (new)
+
+  def compute_suitability_map(
+      game: Game,
+      site_type: str,
+      bounds: Tuple[int, int, int, int],  # (x0, y0, x1, y1) in overmap coords
+  ) -> np.ndarray:
+      """Compute 0-1 suitability for a site type over a region."""
+      # Sample biome, elevation, temperature, moisture, corruption
+      # Return weighted suitability based on site_types.yaml config
+
+
+PHASE 2: Procedural Placement Algorithm
+
+Step 2.1: Poisson-disk sampling with weighted suitability
+  File: edgecaster/systems/site_placement.py
+
+  def place_sites(
+      game: Game,
+      site_type: str,
+      count: int,
+      bounds: Tuple[int, int, int, int],
+  ) -> List[SiteSpec]:
+      """Place sites using weighted Poisson-disk sampling."""
+      # 1. Compute suitability map
+      # 2. Sample candidates proportional to suitability
+      # 3. Apply spacing constraints (reject too-close)
+      # 4. Create SiteSpec for each placement
+      # 5. Inject into site registry
+
+Step 2.2: Site registry management
+  File: edgecaster/systems/sites.py (new)
+
+  class SiteRegistry:
+      """Runtime registry of all placed sites."""
+      def __init__(self):
+          self.sites: Dict[str, SiteSpec] = {}
+          self.by_coord: Dict[Tuple[int,int,int], SiteSpec] = {}
+
+      def add(self, spec: SiteSpec): ...
+      def get_at(self, coord) -> Optional[SiteSpec]: ...
+      def get_visible(self) -> List[SiteSpec]: ...
+      def mark_discovered(self, site_id: str): ...
+
+Step 2.3: Integration with game initialization
+  File: edgecaster/game.py
+
+  - Add self.site_registry: SiteRegistry
+  - Call place_sites() for each site type during world gen
+  - Sites generated deterministically from world seed
+
+
+PHASE 3: Local Zone Realization
+
+Step 3.1: Site-aware zone generation
+  File: edgecaster/mapgen.py
+
+  def generate_zone_with_sites(game, coord, ...):
+      # 1. Generate base terrain (existing)
+      # 2. Check site_registry for sites at this coord
+      # 3. If site exists, call site-specific generator
+      # 4. Stamp structures + spawn NPCs/enemies
+
+Step 3.2: Site generators (per type)
+  File: edgecaster/mapgen_sites.py (new)
+
+  def realize_bird_aerie(game, level, site: SiteSpec):
+      """Generate bird people settlement structures and spawn inhabitants."""
+      # Stamp cliff_tower prefab
+      # Spawn bird_elder NPC
+      # Spawn bird_warriors as guards
+
+  def realize_fishing_village(game, level, site: SiteSpec):
+      """Generate fishing village structures and spawn inhabitants."""
+      # Stamp dock near water edge
+      # Stamp fish_market building
+      # Spawn fishmonger NPC
+
+
+PHASE 4: New Creatures & NPCs
+
+Step 4.1: Add biome-specific enemies
+  File: edgecaster/content/enemies.yaml (extend)
+
+  - id: bird_warrior
+    name: Bird Warrior
+    glyph: B
+    color: [200, 220, 255]
+    faction: bird_people  # New faction
+    ai: territorial
+    base_hp: 8
+    tags:
+      biome_spawn: [SNOW, BARE, TUNDRA]
+      flying: true
+
+  - id: sand_stalker
+    name: Sand Stalker
+    glyph: s
+    color: [230, 200, 140]
+    faction: hostile
+    tags:
+      biome_spawn: [SUBTROPICAL_DESERT, TEMPERATE_DESERT, SCORCHED]
+      ambush: true
+
+  # ... etc
+
+Step 4.2: Add biome-specific NPCs
+  File: edgecaster/content/npcs.py (extend)
+
+  NPC_DEFS["bird_elder"] = {
+      "name": "Bird Elder",
+      "glyph": "B",
+      "color": (180, 200, 255),
+      "factions": ["bird_people"],
+      "dialogue_tree": "bird_elder_dialogue",
+      "services": ["quest", "lore"],
+  }
+
+  NPC_DEFS["fishmonger"] = {
+      "name": "Fishmonger",
+      "glyph": "@",
+      "color": (120, 180, 220),
+      "factions": ["neutral"],
+      "services": ["trade"],
+      "stock": ["fish", "bait", "rope"],
+  }
+
+Step 4.3: Biome-aware random spawning
+  File: edgecaster/systems/spawning.py (extend)
+
+  def get_biome_enemy_pool(biome: Biome) -> List[str]:
+      """Get enemy IDs appropriate for this biome."""
+      # Read enemies.yaml, filter by biome_spawn tag
+      # Fallback to generic enemies if no biome-specific
+
+  def spawn_enemies_for_biome(game, level, biome: Biome, count: int):
+      """Spawn enemies appropriate to the local biome."""
+
+
+PHASE 5: Discovery & World Map Integration
+
+Step 5.1: Site markers on world map
+  File: edgecaster/systems/overmap.py (extend)
+
+  - Draw markers for discovered/rumored sites
+  - Filter by visibility state
+  - Use distinct icons per site type
+
+Step 5.2: Discovery triggers
+  - Walking into a zone with a site -> discovered
+  - Hearing rumors from NPCs -> rumored
+  - Reading maps/scrolls -> rumored or discovered
+
+Step 5.3: Rumor system integration
+  File: edgecaster/systems/legendaries.py (extend or new module)
+
+  - NPCs can give rumors about nearby sites
+  - Rumors reveal approximate location (fuzzy coords)
+  - Full discovery on visit
+
+-------------------------------------------------------------------------------
+FILE CHANGES SUMMARY
+-------------------------------------------------------------------------------
+
+New files:
+  - edgecaster/state/sites.py          # SiteSpec dataclass
+  - edgecaster/systems/sites.py        # SiteRegistry
+  - edgecaster/systems/site_placement.py  # Suitability + placement
+  - edgecaster/mapgen_sites.py         # Site local realization
+  - edgecaster/content/site_types.yaml # Site type definitions
+
+Modified files:
+  - edgecaster/game.py                 # Add site_registry
+  - edgecaster/mapgen.py               # Site-aware zone gen
+  - edgecaster/systems/overmap.py      # Site markers
+  - edgecaster/systems/spawning.py     # Biome-aware spawning
+  - edgecaster/content/enemies.yaml    # New biome enemies
+  - edgecaster/content/npcs.py         # New biome NPCs
+
+-------------------------------------------------------------------------------
+IMPLEMENTATION ORDER (PR-sized steps)
+-------------------------------------------------------------------------------
+
+PR 1: Site Data Model
+  - SiteSpec dataclass
+  - SiteRegistry class
+  - site_types.yaml with 3 initial types
+  - Basic suitability computation
+
+PR 2: Procedural Placement
+  - Poisson-disk placement algorithm
+  - Integration with game initialization
+  - Debug overlay to show placed sites
+
+PR 3: Bird People End-to-End
+  - Bird aerie site realization
+  - bird_elder NPC + dialogue
+  - bird_warrior enemy
+  - Test placement + zone entry
+
+PR 4: Fishing Villages
+  - Fishing village site realization
+  - fishmonger NPC + trade stock
+  - Water proximity check in suitability
+
+PR 5: Spriggan Groves
+  - Spriggan grove site realization
+  - spriggan_elder NPC
+  - Forest suitability checks
+
+PR 6: Discovery & Markers
+  - Site markers on world map
+  - Visibility state management
+  - Rumor system basics
+
+PR 7: Remaining Site Types
+  - Desert camps, hunter lodges, shrines, corruption outposts
+  - Dwarf outposts (may need mine entrance handling)
+
+PR 8: Biome-Aware Random Spawning
+  - biome_spawn tags on existing enemies
+  - get_biome_enemy_pool() function
+  - spawn_enemies_for_biome() integration
+
+-------------------------------------------------------------------------------
+TESTING STRATEGY
+-------------------------------------------------------------------------------
+
+1. Unit tests for suitability computation
+   - Verify biome affinity scoring
+   - Verify spacing constraints
+
+2. Integration tests for placement
+   - Fixed seed -> deterministic site placement
+   - Sites placed in appropriate biomes
+
+3. Visual verification
+   - World map overlay showing site markers
+   - Zone-level structure stamps correct
+
+4. Gameplay testing
+   - NPCs spawn and are interactable
+   - Enemies have correct biome-appropriate behavior
+   - Discovery/rumor system works
+
+-------------------------------------------------------------------------------
+NOTES
+-------------------------------------------------------------------------------
+
+- Start simple: 3 site types end-to-end before expanding
+- Prefabs can be simple rectangle stamps initially
+- Faction system (bird_people, desert_nomads) needs design
+- Consider unique legendaries per site type (bird legendary, etc.)
+- Water proximity needs efficient BFS or distance field

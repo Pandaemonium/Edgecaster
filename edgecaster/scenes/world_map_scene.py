@@ -514,6 +514,39 @@ class WorldMapScene(Scene):
                     else:
                         color = (220, 220, 220) if not is_rumor else (110, 110, 140)
                         pygame.draw.circle(surf, color, (ox + px, oy + py), 2)
+
+                # Draw biome-based site markers
+                site_registry = getattr(self.game, "site_registry", None)
+                if site_registry:
+                    from edgecaster.systems.sites import load_site_types
+                    site_types = load_site_types()
+
+                    for site in site_registry.get_visible():
+                        zx, zy, zz = site.coord
+                        if int(zz) != 0:
+                            continue
+
+                        wx = int(zx) * zone_w + zone_w // 2
+                        wy = int(zy) * zone_h + zone_h // 2
+                        px, py = viewport.world_to_pixel(float(wx), float(wy))
+                        if not (0 <= px < map_w and 0 <= py < map_h):
+                            continue
+
+                        # Get site type config for color
+                        site_cfg = site_types.get(site.kind)
+                        if site_cfg:
+                            color = site_cfg.map_color
+                        else:
+                            color = (200, 200, 200)
+
+                        # Dim color for rumored sites
+                        from edgecaster.state.sites import SiteVisibility
+                        if site.visibility == SiteVisibility.RUMORED:
+                            color = (color[0] // 2, color[1] // 2, color[2] // 2)
+
+                        # Draw marker
+                        pygame.draw.circle(surf, color, (ox + px, oy + py), 3)
+
             except Exception:
                 pass
 

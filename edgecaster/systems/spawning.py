@@ -740,3 +740,116 @@ def spawn_npcs(
         placed += 1
 
     return placed
+
+
+# ---------------------------------------------------------------------------
+# Biome-Aware Spawning
+# ---------------------------------------------------------------------------
+
+def get_biome_enemy_pool(biome_id: int) -> List[str]:
+    """Get enemy template IDs appropriate for a specific biome.
+
+    Reads enemies.yaml and filters by biome_spawn tag.
+    Falls back to generic enemies if no biome-specific ones found.
+    """
+    from edgecaster.climate import Biome
+    from pathlib import Path
+
+    content_dir = Path(__file__).resolve().parent.parent / "content"
+    yaml_path = content_dir / "enemies.yaml"
+
+    try:
+        with yaml_path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or []
+    except FileNotFoundError:
+        return ["imp"]
+
+    # Get biome name
+    try:
+        biome = Biome(biome_id)
+        biome_name = biome.name
+    except (ValueError, KeyError):
+        biome_name = None
+
+    biome_enemies: List[str] = []
+    generic_enemies: List[str] = []
+
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        tid = entry.get("id")
+        if not tid:
+            continue
+
+        faction = entry.get("faction", "hostile")
+        if faction != "hostile":
+            continue
+
+        tags_raw = entry.get("tags", None)
+        if isinstance(tags_raw, dict):
+            tags = tags_raw
+        else:
+            tags = {}
+
+        # Skip no_random_spawn and template enemies
+        if tags.get("no_random_spawn") or tags.get("template") or tags.get("training_dummy"):
+            continue
+
+        # Check biome_spawn tag
+        biome_spawn = tags.get("biome_spawn", [])
+        if biome_spawn and biome_name:
+            if biome_name in biome_spawn:
+                biome_enemies.append(tid)
+        elif not biome_spawn:
+            # No biome restriction, can spawn anywhere
+            generic_enemies.append(tid)
+
+    if biome_enemies:
+        return biome_enemies
+    if generic_enemies:
+        return generic_enemies
+    return ["imp"]
+
+
+def spawn_enemies_for_biome(
+    game: "Game",
+    level: "LevelState",
+    biome_id: int,
+    count: int,
+) -> int:
+    """Spawn enemies appropriate for the local biome.
+
+    Args:
+        game: The Game instance
+        level: The LevelState to spawn in
+        biome_id: The biome ID at this location
+        count: Number of enemies to spawn
+
+    Returns:
+        Number of enemies actually spawned
+    """
+    from edgecaster.enemies import factory as enemy_factory
+
+    pool = get_biome_enemy_pool(biome_id)
+    if not pool:
+        return 0
+
+    spawned = 0
+    attempts = 0
+
+    while spawned < count and attempts < 200:
+        attempts += 1
+        pos = find_spawn_position(game, level, avoid_entities=False)
+        if pos is None:
+            continue
+
+        tmpl_id = game.rng.choice(pool)
+
+        try:
+            mob = enemy_factory.spawn_enemy(tmpl_id, pos)
+            register_actor(game, level, mob, schedule_ai=True)
+            spawned += 1
+        except Exception:
+            continue
+
+    return spawned
