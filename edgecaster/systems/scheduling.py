@@ -77,6 +77,10 @@ def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
     # Acidic pattern damage (corrosive melt)
     acidic_pattern_tick(game, level)
 
+    # Fern growth tick (Barnsley fern auto-growth)
+    from edgecaster.systems import fern_growth
+    fern_growth.tick(game, level, delta)
+
 
 def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, interval: int) -> None:
     """
@@ -120,6 +124,10 @@ def coherence_tick(game: "Game", level: "LevelState", delta: int) -> None:
         level.pattern_anchor = None
         level.activation_points = []
         level.activation_ttl = 0
+        # Clear fern growth state
+        level.fern_active = False
+        level.fern_growth_tips = []
+        level.fern_accum = 0.0
         game.log.add("Your pattern loses coherence and unravels.")
         stats.coherence = stats.max_coherence
 

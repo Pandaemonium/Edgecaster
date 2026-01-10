@@ -131,6 +131,10 @@ def try_place_terminus(game: "Game", target: Tuple[int, int]) -> None:
         lvl.pattern_anchor = (px, py)
         lvl.pattern_motion = None
         lvl.acidic_pattern = False  # Clear corrosive melt on new pattern
+        # Clear fern growth state on new pattern
+        lvl.fern_active = False
+        lvl.fern_growth_tips = []
+        lvl.fern_accum = 0.0
         game.log.add(f"Terminus placed at {target}.")
 
     game._schedule(lvl, game.cfg.place_time_ticks, do_place)
@@ -150,6 +154,10 @@ def reset_pattern(game: "Game") -> None:
     lvl.activation_points = []
     lvl.activation_ttl = 0
     lvl.acidic_pattern = False  # Clear corrosive melt
+    # Clear fern growth state
+    lvl.fern_active = False
+    lvl.fern_growth_tips = []
+    lvl.fern_accum = 0.0
     # restore coherence to max when manually resetting
     player = game._player()
     player.stats.coherence = player.stats.max_coherence

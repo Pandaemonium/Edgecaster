@@ -837,6 +837,19 @@ def _action_corrosive_melt(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_corrosive_melt(actor_id)
 
 
+@register_action("start_fern", label="Fern Growth", speed="fast", show_in_bar=True)
+def _action_start_fern(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Toggle Barnsley fern auto-growth on the current pattern.
+
+    When active, the pattern grows outward from existing vertices using
+    the classic Barnsley fern IFS transforms. Growth consumes coherence
+    and oldest vertices are pruned when over capacity.
+    """
+    if hasattr(game, "act_start_fern"):
+        game.act_start_fern(actor_id)
+
+
 @register_action("winter_hue", label="Winter Hue", speed=5, show_in_bar=True)
 def _action_winter_hue(game: Any, actor_id: str, **kwargs: Any) -> None:
     """

@@ -128,6 +128,10 @@ class LevelState:
     coord: Tuple[int, int, int] = (0, 0, 0)  # (x, y, depth)
     lab_state: Optional["LabState"] = None  # lab-specific state if this is a lab zone
     acidic_pattern: bool = False  # True when Corrosive Melt is active
+    # Fern growth state (Barnsley fern auto-growth system)
+    fern_active: bool = False  # Is fern growth enabled?
+    fern_growth_tips: List[int] = field(default_factory=list)  # Vertex indices that can spawn growth
+    fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
 
 
 
@@ -404,6 +408,7 @@ class Game:
             actions.append("rainbow_edges")
             actions.append("verdant_edges")
             actions.append("corrosive_melt")
+            actions.append("start_fern")
             actions.append("winter_hue")
             actions.append("freeze")
             actions.append("ignite")
@@ -3275,6 +3280,10 @@ class Game:
         level.activation_points = []
         level.activation_ttl = 0
         level.acidic_pattern = False  # Clear corrosive melt on new pattern
+        # Clear fern growth state on new pattern
+        level.fern_active = False
+        level.fern_growth_tips = []
+        level.fern_accum = 0.0
 
         self.log.add(f"Polygon ({num_sides} sides, radius {radius}) placed.")
 
@@ -3308,6 +3317,10 @@ class Game:
         level.activation_points = []
         level.activation_ttl = 0
         level.acidic_pattern = False  # Clear corrosive melt on new pattern
+        # Clear fern growth state on new pattern
+        level.fern_active = False
+        level.fern_growth_tips = []
+        level.fern_accum = 0.0
 
         self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
@@ -3346,6 +3359,42 @@ class Game:
         level.acidic_pattern = True
 
         self.log.add("Pattern becomes acidic! Edges will dissolve on enemy contact.")
+
+    def act_start_fern(self, actor_id: str) -> None:
+        """Toggle Barnsley fern auto-growth on the current pattern.
+
+        When active, the fern grows as a connected tree using Barnsley affine
+        transforms. Growth consumes coherence and oldest vertices are pruned
+        when over capacity.
+        """
+        from edgecaster.systems import fern_growth
+
+        level = self._level()
+
+        # Check if there's a pattern anchor
+        if not level.pattern_anchor:
+            self.log.add("Need a pattern anchor to grow the fern from.")
+            return
+
+        # Toggle fern growth
+        if level.fern_active:
+            level.fern_active = False
+            level.fern_accum = 0.0
+            # Reset fern state for next activation
+            fern_growth._reset_fern_state(level)
+            if hasattr(level, "_fern_node_to_vertex"):
+                del level._fern_node_to_vertex
+            self.log.add("Fern growth stopped.")
+            return
+
+        # Activate fern growth
+        level.fern_active = True
+        level.fern_accum = 0.0
+        # Reset fern state to start fresh
+        fern_growth._reset_fern_state(level)
+        if hasattr(level, "_fern_node_to_vertex"):
+            del level._fern_node_to_vertex
+        self.log.add("Fern begins to grow...")
 
     def _apply_fractal_op(self, lvl: LevelState, kind: str) -> None:
         if not lvl.pattern.vertices:

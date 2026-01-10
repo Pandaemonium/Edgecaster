@@ -20,7 +20,7 @@ from edgecaster.visuals import VisualProfile
 
 from .keybinds_scene import KeybindsScene
 from .base import MenuFrameWidget
-from edgecaster.ui.widgets import TwoColumnListWidget
+from edgecaster.ui.widgets import TwoColumnListWidget, StatEditListWidget
 
 
 # ---------------------------------------------------------------------------#
@@ -550,7 +550,7 @@ class DeveloperOptionsScene(PopupMenuScene):
     """
 
     FOOTER_TEXT = (
-        "↑/↓ select • ←/→ adjust • Enter/Space bump • Esc back • F11 fullscreen"
+        "↑/↓ select • Click value to edit • Enter confirm • Esc back"
     )
 
     _FIELDS: List[Tuple[str, float]] = [
@@ -630,16 +630,17 @@ class DeveloperOptionsScene(PopupMenuScene):
         return list(items)
 
     def _build_widgets(self, items: list[Any]) -> None:
-        # Use TwoColumnListWidget so values show in the right column.
+        # Use StatEditListWidget for editable stat values.
         super()._build_widgets(items)
 
-        self._list = TwoColumnListWidget(
+        self._list = StatEditListWidget(
             items,
             selected_index=self.selected_idx,
-            on_activate=self._on_list_activate,
+            on_stat_change=self._on_stat_change,
+            on_action=self._on_action_click,
             line_spacing=4,
             padding=4,
-            value_gap=24,
+            input_width=60,
         )
         self._list.rect = pygame.Rect(0, 0, 0, 0)
 
@@ -662,6 +663,22 @@ class DeveloperOptionsScene(PopupMenuScene):
             fill_list_width=True,
         )
         self.root.rect = pygame.Rect(0, 0, 0, 0)
+
+    def _on_stat_change(self, key: str, value: int) -> None:
+        """Handle stat value changes from text input."""
+        self._set_stat(key, value)
+
+    def _on_action_click(self, key: str) -> None:
+        """Handle action button clicks."""
+        if key == "back":
+            # Get manager from stored reference
+            manager = getattr(self, "_last_manager", None)
+            if manager:
+                self.on_back(manager)
+        else:
+            manager = getattr(self, "_last_manager", None)
+            if manager:
+                self._do_action(key, manager)
 
     def _handle_action(self, action: Optional[str], manager: "SceneManager") -> None:  # type: ignore[name-defined]
         if action is None:
@@ -792,6 +809,11 @@ class DeveloperOptionsScene(PopupMenuScene):
                     self._list.ensure_visible(self.selected_idx)
             except Exception:
                 pass
+
+    def update(self, dt_ms: int, manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        # Store manager for use by callbacks
+        self._last_manager = manager
+        super().update(dt_ms, manager)
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
         # Mouse click should behave like "bump forward" (legacy Enter behavior).

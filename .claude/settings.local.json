@@ -8,7 +8,9 @@
       "Bash(python:*)",
       "Bash(ls -la \"c:\\\\Games\\\\Edgecaster\\\\edgecaster\"\" | grep -E \"^d \")",
       "Bash(ls -la \"C:\\\\Games\\\\Edgecaster\\\\tools\"\" 2>/dev/null || dir \"C:GamesEdgecastertools\"\")",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(dir \"c:\\\\Games\\\\Edgecaster\" /s /b)",
+      "Bash(dir \"c:\\\\Games\\\\Edgecaster\")"
     ]
   }
 }

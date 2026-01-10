@@ -225,6 +225,32 @@ def default_param_defs() -> Dict[str, Dict[str, dict]]:
                 "label": "Inner Radius",
             },
         },
+        "fern": {
+            "growth_rate": {
+                "values": [1, 2, 3, 4, 5],  # vertices per 10 ticks
+                "thresholds": [0, 2, 4, 6, 8],
+                "stat": "int",
+                "label": "Growth Rate",
+            },
+            "max_vertices": {
+                "values": [50, 75, 100, 150, 200],  # soft cap before pruning
+                "thresholds": [0, 3, 6, 9, 12],
+                "stat": "int",
+                "label": "Max Vertices",
+            },
+            "coherence_cost": {
+                "values": [2.0, 1.5, 1.0, 0.75, 0.5],  # coherence per vertex grown
+                "thresholds": [0, 2, 4, 6, 8],
+                "stat": "res",
+                "label": "Coherence Cost",
+            },
+            "prune_batch": {
+                "values": [1, 2, 3],  # vertices pruned per cycle
+                "thresholds": [0, 4, 8],
+                "stat": "int",
+                "label": "Prune Speed",
+            },
+        },
     }
 
 

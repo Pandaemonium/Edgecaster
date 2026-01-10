@@ -1335,3 +1335,421 @@ class SpacerWidget(Widget):
     def draw(self, ctx: WidgetContext) -> None:
         # Intentionally draws nothing.
         return
+
+
+class TextInputWidget(Widget):
+    """
+    A simple text input widget that allows clicking to edit a value.
+
+    When focused, captures keyboard input. Press Enter or click outside to confirm.
+    Press Escape to cancel and revert to previous value.
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        on_change: Optional[Callable[[str], None]] = None,
+        width: int = 80,
+        padding_x: int = 6,
+        padding_y: int = 2,
+        numeric_only: bool = False,
+        allow_negative: bool = False,
+    ) -> None:
+        super().__init__()
+        self.text = str(text)
+        self._original_text = self.text  # For cancel/revert
+        self.on_change = on_change
+        self._width = width
+        self.padding_x = padding_x
+        self.padding_y = padding_y
+        self.numeric_only = numeric_only
+        self.allow_negative = allow_negative
+        self.focused = False
+        self._cursor_pos = len(self.text)
+        self._cursor_blink_timer = 0
+        self._cursor_visible = True
+
+    def set_text(self, text: str) -> None:
+        """Set the text without triggering on_change."""
+        self.text = str(text)
+        self._original_text = self.text
+        self._cursor_pos = len(self.text)
+
+    def focus(self) -> None:
+        """Give focus to this input."""
+        self.focused = True
+        self._original_text = self.text
+        self._cursor_pos = len(self.text)
+        self._cursor_visible = True
+        self._cursor_blink_timer = 0
+
+    def unfocus(self, confirm: bool = True) -> None:
+        """Remove focus. If confirm=False, reverts to original text."""
+        if not confirm:
+            self.text = self._original_text
+        elif self.text != self._original_text:
+            if self.on_change:
+                self.on_change(self.text)
+        self.focused = False
+
+    def layout(self, ctx: WidgetContext) -> None:
+        font = _menu_font(ctx)
+        h = font.get_height()
+        self.rect.width = self._width
+        self.rect.height = h + 2 * self.padding_y
+        super().layout(ctx)
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        font = _menu_font(ctx)
+        fg = getattr(ctx.renderer, "fg", (255, 255, 255))
+        sel = getattr(ctx.renderer, "sel", (255, 255, 0))
+        dim = getattr(ctx.renderer, "dim", (100, 100, 100))
+
+        # Background
+        bg_col = (40, 40, 60) if self.focused else (25, 25, 35)
+        pygame.draw.rect(ctx.surface, bg_col, self.rect)
+
+        # Border
+        border_col = sel if self.focused else dim
+        pygame.draw.rect(ctx.surface, border_col, self.rect, 1)
+
+        # Text
+        text_col = fg if self.focused else dim
+        text_surf = font.render(self.text, True, text_col)
+        tx = self.rect.x + self.padding_x
+        ty = self.rect.y + self.padding_y
+        ctx.surface.blit(text_surf, (tx, ty))
+
+        # Cursor (when focused)
+        if self.focused and self._cursor_visible:
+            cursor_x = tx + font.size(self.text[:self._cursor_pos])[0]
+            cursor_y1 = ty
+            cursor_y2 = ty + font.get_height()
+            pygame.draw.line(ctx.surface, sel, (cursor_x, cursor_y1), (cursor_x, cursor_y2), 1)
+
+        super().draw(ctx)
+
+    def update(self, dt_ms: int, ctx: WidgetContext) -> None:
+        if self.focused:
+            self._cursor_blink_timer += dt_ms
+            if self._cursor_blink_timer >= 500:
+                self._cursor_blink_timer = 0
+                self._cursor_visible = not self._cursor_visible
+        super().update(dt_ms, ctx)
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        if not (self.visible and self.enabled):
+            return False
+
+        # Click to focus/unfocus
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                if not self.focused:
+                    self.focus()
+                return True
+            else:
+                if self.focused:
+                    self.unfocus(confirm=True)
+                return False
+
+        # Keyboard input when focused
+        if self.focused and event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+                self.unfocus(confirm=True)
+                return True
+            elif event.key == pygame.K_ESCAPE:
+                self.unfocus(confirm=False)
+                return True
+            elif event.key == pygame.K_BACKSPACE:
+                if self._cursor_pos > 0:
+                    self.text = self.text[:self._cursor_pos - 1] + self.text[self._cursor_pos:]
+                    self._cursor_pos -= 1
+                return True
+            elif event.key == pygame.K_DELETE:
+                if self._cursor_pos < len(self.text):
+                    self.text = self.text[:self._cursor_pos] + self.text[self._cursor_pos + 1:]
+                return True
+            elif event.key == pygame.K_LEFT:
+                self._cursor_pos = max(0, self._cursor_pos - 1)
+                return True
+            elif event.key == pygame.K_RIGHT:
+                self._cursor_pos = min(len(self.text), self._cursor_pos + 1)
+                return True
+            elif event.key == pygame.K_HOME:
+                self._cursor_pos = 0
+                return True
+            elif event.key == pygame.K_END:
+                self._cursor_pos = len(self.text)
+                return True
+            elif event.unicode:
+                char = event.unicode
+                # Filter input for numeric-only mode
+                if self.numeric_only:
+                    if char == '-' and self.allow_negative and self._cursor_pos == 0 and '-' not in self.text:
+                        pass  # Allow minus at start
+                    elif not char.isdigit():
+                        return True  # Ignore non-digit
+                self.text = self.text[:self._cursor_pos] + char + self.text[self._cursor_pos:]
+                self._cursor_pos += 1
+                return True
+
+        return super().handle_event(event, ctx)
+
+
+class StatEditListWidget(Widget):
+    """
+    A list widget with editable text boxes for stat values.
+
+    Each item has a label (left) and a text input (right).
+    Used by DeveloperOptionsScene for editing stats.
+    """
+
+    def __init__(
+        self,
+        items: List[Any],
+        *,
+        selected_index: int = 0,
+        on_stat_change: Optional[Callable[[str, int], None]] = None,
+        on_action: Optional[Callable[[str], None]] = None,
+        line_spacing: int = 4,
+        padding: int = 4,
+        input_width: int = 60,
+    ) -> None:
+        super().__init__()
+        self.items = items
+        self.selected_index = selected_index
+        self.on_stat_change = on_stat_change
+        self.on_action = on_action
+        self.line_spacing = line_spacing
+        self.padding = padding
+        self.input_width = input_width
+
+        self._line_height: int = 0
+        self._inputs: dict[str, TextInputWidget] = {}
+        self._font: pygame.font.Font | None = None
+        self.scroll_offset: int = 0
+
+    def _item_label(self, item: Any) -> str:
+        if isinstance(item, str):
+            return item
+        return getattr(item, "label", getattr(item, "name", str(item)))
+
+    def _item_key(self, item: Any) -> Optional[str]:
+        return getattr(item, "key", None)
+
+    def _item_value(self, item: Any) -> str:
+        v = getattr(item, "value", "")
+        return "" if v is None else str(v)
+
+    def _item_kind(self, item: Any) -> str:
+        return getattr(item, "kind", "label")
+
+    def _get_input(self, key: str, initial_value: str) -> TextInputWidget:
+        """Get or create a text input for a stat key."""
+        if key not in self._inputs:
+            def make_change_handler(k: str):
+                def handler(new_text: str):
+                    try:
+                        val = int(new_text) if new_text else 0
+                        if self.on_stat_change:
+                            self.on_stat_change(k, val)
+                    except ValueError:
+                        pass
+                return handler
+
+            inp = TextInputWidget(
+                initial_value,
+                on_change=make_change_handler(key),
+                width=self.input_width,
+                numeric_only=True,
+                allow_negative=False,
+            )
+            self._inputs[key] = inp
+        return self._inputs[key]
+
+    def _pick_font(self, ctx: WidgetContext) -> pygame.font.Font:
+        if self._font is not None:
+            return self._font
+        self._font = _menu_font(ctx)
+        return self._font
+
+    def _visible_capacity(self) -> int:
+        if self._line_height <= 0:
+            return max(1, len(self.items))
+        usable_h = max(0, self.rect.height - 2 * self.padding)
+        return max(1, usable_h // self._line_height)
+
+    def ensure_visible(self, index: int) -> None:
+        cap = self._visible_capacity()
+        if index < self.scroll_offset:
+            self.scroll_offset = index
+        elif index >= self.scroll_offset + cap:
+            self.scroll_offset = max(0, index - cap + 1)
+        max_off = max(0, len(self.items) - cap)
+        self.scroll_offset = max(0, min(self.scroll_offset, max_off))
+
+    def update_values(self) -> None:
+        """Update input values from items (call after external changes)."""
+        for item in self.items:
+            key = self._item_key(item)
+            if key and key in self._inputs:
+                new_val = self._item_value(item)
+                inp = self._inputs[key]
+                if not inp.focused:
+                    inp.set_text(new_val)
+
+    def set_items(self, items: List[Any]) -> None:
+        """Update the items list (called by base scene on refresh)."""
+        self.items = items
+        self.selected_index = max(0, min(self.selected_index, max(0, len(items) - 1)))
+        self.scroll_offset = max(0, min(self.scroll_offset, max(0, len(items) - 1)))
+        # Update input values from new items
+        self.update_values()
+        # Clear font cache to force re-layout
+        self._font = None
+
+    def layout(self, ctx: WidgetContext) -> None:
+        self._font = None
+        font = self._pick_font(ctx)
+
+        base_h = font.get_height()
+        self._line_height = base_h + self.line_spacing + 4  # Extra padding for inputs
+
+        # Layout all inputs
+        for item in self.items:
+            key = self._item_key(item)
+            kind = self._item_kind(item)
+            if key and kind == "label":
+                value = self._item_value(item)
+                inp = self._get_input(key, value)
+                inp.layout(ctx)
+
+        if self.rect.width == 0:
+            max_label_w = 0
+            for item in self.items:
+                label = self._item_label(item)
+                w = font.size("▶ " + label)[0]
+                max_label_w = max(max_label_w, w)
+            self.rect.width = max_label_w + 24 + self.input_width + 2 * self.padding
+
+        if self.rect.height == 0:
+            total_h = len(self.items) * self._line_height + 2 * self.padding
+            self.rect.height = total_h
+
+        self.ensure_visible(self.selected_index)
+        super().layout(ctx)
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        font = self._pick_font(ctx)
+        fg = getattr(ctx.renderer, "fg", (255, 255, 255))
+        sel = getattr(ctx.renderer, "player_color", getattr(ctx.renderer, "sel", (255, 255, 0)))
+
+        cap = self._visible_capacity()
+        start = self.scroll_offset
+        end = min(len(self.items), start + cap)
+
+        x_left = self.rect.x + self.padding
+        x_right = self.rect.right - self.padding
+        y = self.rect.y + self.padding
+
+        for idx in range(start, end):
+            item = self.items[idx]
+            label = self._item_label(item)
+            key = self._item_key(item)
+            kind = self._item_kind(item)
+
+            selected = (idx == self.selected_index)
+            color = sel if selected else fg
+            prefix = "▶ " if selected else "  "
+
+            # Draw label
+            left_surf = font.render(prefix + label, True, color)
+            ctx.surface.blit(left_surf, (x_left, y + 2))
+
+            # Draw input for stat items, or just value text for actions/back
+            if key and kind == "label":
+                inp = self._get_input(key, self._item_value(item))
+                inp.rect.x = x_right - self.input_width
+                inp.rect.y = y
+                inp.draw(ctx)
+            elif kind in ("action", "back"):
+                # No input, but show indicator for clickable items
+                pass
+
+            y += self._line_height
+
+        super().draw(ctx)
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        if not (self.visible and self.enabled):
+            return False
+
+        # Let focused inputs handle events first
+        for inp in self._inputs.values():
+            if inp.focused:
+                if inp.handle_event(event, ctx):
+                    return True
+
+        # Mouse wheel scrolling
+        if event.type == pygame.MOUSEWHEEL:
+            if self.rect.collidepoint(getattr(pygame.mouse, "get_pos", lambda: (0, 0))()):
+                cap = self._visible_capacity()
+                max_off = max(0, len(self.items) - cap)
+                self.scroll_offset = max(0, min(self.scroll_offset - int(event.y), max_off))
+                return True
+
+        # Mouse motion for hover selection
+        if event.type == pygame.MOUSEMOTION:
+            if self.rect.collidepoint(event.pos):
+                rel_y = event.pos[1] - self.rect.y - self.padding
+                if self._line_height > 0:
+                    idx = self.scroll_offset + (rel_y // self._line_height)
+                    if 0 <= idx < len(self.items):
+                        self.selected_index = int(idx)
+                        self.ensure_visible(self.selected_index)
+
+        # Mouse click
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                rel_y = event.pos[1] - self.rect.y - self.padding
+                if self._line_height > 0:
+                    idx = self.scroll_offset + (rel_y // self._line_height)
+                    if 0 <= idx < len(self.items):
+                        self.selected_index = int(idx)
+                        self.ensure_visible(self.selected_index)
+                        item = self.items[idx]
+                        key = self._item_key(item)
+                        kind = self._item_kind(item)
+
+                        # Check if click is on the input box area
+                        x_right = self.rect.right - self.padding
+                        if key and kind == "label":
+                            inp = self._get_input(key, self._item_value(item))
+                            if inp.rect.collidepoint(event.pos):
+                                # Unfocus other inputs
+                                for other in self._inputs.values():
+                                    if other is not inp and other.focused:
+                                        other.unfocus(confirm=True)
+                                inp.focus()
+                                return True
+
+                        # For action/back items, trigger on_action
+                        if kind in ("action", "back") and self.on_action:
+                            self.on_action(key or kind)
+                            return True
+
+                        return True
+
+        return super().handle_event(event, ctx)
+
+    def update(self, dt_ms: int, ctx: WidgetContext) -> None:
+        for inp in self._inputs.values():
+            inp.update(dt_ms, ctx)
+        super().update(dt_ms, ctx)
