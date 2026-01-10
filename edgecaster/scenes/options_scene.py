@@ -340,9 +340,10 @@ class OptionsScene(PopupMenuScene):
             return
 
         if item.label == "Developer mode":
+            current_game = getattr(manager, "current_game", None)
             target_char = getattr(manager, "character", None)
-            if target_char is None and getattr(manager, "current_game", None):
-                target_char = getattr(manager.current_game, "character", None)
+            if target_char is None and current_game:
+                target_char = getattr(current_game, "character", None)
             if target_char is None:
                 return
 
@@ -351,6 +352,7 @@ class OptionsScene(PopupMenuScene):
                     base_rect=self._compute_child_rect(),
                     depth=self.depth + 1,
                     character=target_char,
+                    game=current_game,
                 )
             )
             return
@@ -558,10 +560,11 @@ class DeveloperOptionsScene(PopupMenuScene):
         ("agi", 1.0),
     ]
 
-    def __init__(self, *, base_rect: pygame.Rect, depth: int, character: Any) -> None:
+    def __init__(self, *, base_rect: pygame.Rect, depth: int, character: Any, game: Any = None) -> None:
         self.base_rect = base_rect
         self.depth = int(depth)
         self.character = character
+        self._game = game  # Store game reference for god vision toggle
         self._items: List[OptionItem] = []
 
         super().__init__(window_rect=base_rect, dim_background=False, scale=0.7)
@@ -617,6 +620,11 @@ class DeveloperOptionsScene(PopupMenuScene):
             items.append(OptionItem("label", label, key=key, value=str(val)))
         # Action items for dev tools
         items.append(OptionItem("action", "Reveal All Sites", key="reveal_sites"))
+        # God Vision toggle - shows current state
+        game = getattr(self, "_game", None)
+        god_vision_on = getattr(game, "god_vision", False) if game else False
+        god_vision_label = "God Vision: ON" if god_vision_on else "God Vision: OFF"
+        items.append(OptionItem("action", god_vision_label, key="toggle_god_vision"))
         items.append(OptionItem("back", "Back"))
         self._items = items
         return list(items)
@@ -756,6 +764,34 @@ class DeveloperOptionsScene(PopupMenuScene):
             # Log to game if available
             if hasattr(game, "log") and hasattr(game.log, "add"):
                 game.log.add(f"[DEV] Revealed {count} of {total_sites} sites on the world map.")
+
+        elif key == "toggle_god_vision":
+            game = getattr(manager, "current_game", None)
+            if game is None:
+                return
+            # Toggle god vision
+            current = getattr(game, "god_vision", False)
+            game.god_vision = not current
+            # Force FOV update to apply change immediately
+            try:
+                level = game._level()
+                level.need_fov = True
+                game._update_fov(level)
+            except Exception:
+                pass
+            # Log the change
+            state = "ON" if game.god_vision else "OFF"
+            if hasattr(game, "log") and hasattr(game.log, "add"):
+                game.log.add(f"[DEV] God Vision: {state}")
+            # Refresh menu to update the label
+            try:
+                items = self.get_menu_items()
+                self._build_widgets(items)
+                if self._list is not None:
+                    self._list.selected_index = self.selected_idx
+                    self._list.ensure_visible(self.selected_idx)
+            except Exception:
+                pass
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
         # Mouse click should behave like "bump forward" (legacy Enter behavior).

@@ -888,6 +888,7 @@ class AsciiRenderer:
         zone_offset_x = 0
         zone_offset_y = 0
         fov_radius = 8  # Match the FOV radius from _update_fov
+        god_vision = getattr(game, "god_vision", False)  # Developer mode: show all tiles
         try:
             player = game.actors[game.player_id]
             player_pos = player.pos
@@ -949,7 +950,10 @@ class AsciiRenderer:
                 # - cell_w_tiles == 1: 1:1 mapping (normal zoom)
                 # - cell_w_tiles > 1: one cell covers multiple tiles (zoomed out)
                 color = orig_color  # Start with cached color
-                if player_pos is not None and world is not None:
+                if god_vision:
+                    # God Vision mode: render all tiles at full brightness, no visibility checks
+                    pass
+                elif player_pos is not None and world is not None:
                     # For zoomed out (cell > 1 tile), sample center of cell
                     # For zoomed in (cell < 1 tile), sample the tile containing this cell
                     if cell_w_tiles >= 1.0:

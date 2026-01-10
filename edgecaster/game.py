@@ -221,6 +221,8 @@ class Game:
         # Optional prototype parity: random spline-based distortion field.
         # Keep disabled by default so the landscape field remains canonical until tuned.
         self.corruption_spline_weight: float = 0.0
+        # Developer mode: God Vision reveals entire map (no FOV restrictions)
+        self.god_vision: bool = False
         # Climate configuration for biome generation.
         # Controls land_boost, sea_level, and temperature/moisture parameters.
         from edgecaster.climate import ClimateConfig
@@ -3688,16 +3690,11 @@ class Game:
         radius = radius + view_bonus
         px, py = level.actors[self.player_id].pos
         level.world.clear_visibility()
-        r2 = radius * radius
-        for y in range(py - radius, py + radius + 1):
-            for x in range(px - radius, px + radius + 1):
-                if not level.world.in_bounds(x, y):
-                    continue
-                dx = x - px
-                dy = y - py
-                if dx * dx + dy * dy > r2:
-                    continue
-                if _los(level.world, (px, py), (x, y)):
+
+        # God Vision mode: reveal entire map, no FOV restrictions
+        if getattr(self, "god_vision", False):
+            for y in range(level.world.height):
+                for x in range(level.world.width):
                     tile = level.world.get_tile(x, y)
                     if tile:
                         tile.visible = True
@@ -3705,8 +3702,27 @@ class Game:
                     actor = self._actor_at(level, (x, y))
                     if actor and actor.id not in level.spotted:
                         level.spotted.add(actor.id)
-                        if actor.id != self.player_id:
-                            self.log.add(f"You spot a {actor.name}.")
+        else:
+            # Normal FOV calculation
+            r2 = radius * radius
+            for y in range(py - radius, py + radius + 1):
+                for x in range(px - radius, px + radius + 1):
+                    if not level.world.in_bounds(x, y):
+                        continue
+                    dx = x - px
+                    dy = y - py
+                    if dx * dx + dy * dy > r2:
+                        continue
+                    if _los(level.world, (px, py), (x, y)):
+                        tile = level.world.get_tile(x, y)
+                        if tile:
+                            tile.visible = True
+                            tile.explored = True
+                        actor = self._actor_at(level, (x, y))
+                        if actor and actor.id not in level.spotted:
+                            level.spotted.add(actor.id)
+                            if actor.id != self.player_id:
+                                self.log.add(f"You spot a {actor.name}.")
 
         # Apply lighting from light-emitting entities (e.g., dropped Glowing Band)
         from edgecaster.systems import lighting
