@@ -276,7 +276,7 @@ def _stamp_walls_site(
             if not world.in_bounds(x, y):
                 continue
 
-            tile = world.tile(x, y)
+            tile = world.get_tile(x, y)
             if tile is None:
                 continue
 
@@ -301,7 +301,7 @@ def _stamp_walls_site(
         door_pos = (x0, y0 + h // 2)
 
     if door_pos and world.in_bounds(*door_pos):
-        tile = world.tile(*door_pos)
+        tile = world.get_tile(*door_pos)
         if tile:
             tile.walkable = True
             tile.glyph = "+"
@@ -326,7 +326,7 @@ def _stamp_platform_site(
             if not world.in_bounds(x, y):
                 continue
 
-            tile = world.tile(x, y)
+            tile = world.get_tile(x, y)
             if tile:
                 tile.walkable = True
                 tile.glyph = glyph
@@ -343,7 +343,7 @@ def _stamp_landmark_site(
     """Stamp a single landmark tile."""
     world = level.world
     if world.in_bounds(x, y):
-        tile = world.tile(x, y)
+        tile = world.get_tile(x, y)
         if tile:
             tile.walkable = walkable
             tile.glyph = glyph
@@ -464,7 +464,7 @@ def realize_fishing_village(
     water_tiles = []
     for y in range(world.height):
         for x in range(world.width):
-            tile = world.tile(x, y)
+            tile = world.get_tile(x, y)
             if tile and tile.glyph == "~":
                 water_tiles.append((x, y))
 
@@ -682,7 +682,7 @@ def realize_corruption_outpost(
         for dy in range(-2, 3):
             px, py = obelisk_x + dx, obelisk_y + dy
             if (dx != 0 or dy != 0) and world.in_bounds(px, py):
-                tile = world.tile(px, py)
+                tile = world.get_tile(px, py)
                 if tile:
                     tile.glyph = "."
                     tile.color = (60, 40, 70)
@@ -737,16 +737,32 @@ def realize_site(
 
     Returns True if realization succeeded.
     """
+    debug = getattr(game, "_debug", None)
+
+    # Check if site has already been realized (to prevent double-realization)
+    if getattr(site, "_realized", False):
+        if debug:
+            debug(f"[realize_site] {site.kind} at {site.coord} already realized, skipping")
+        return False
+
     realizer = _SITE_REALIZERS.get(site.kind)
     if realizer is None:
+        if debug:
+            debug(f"[realize_site] No realizer found for site kind '{site.kind}'")
         return False
 
     rng = random.Random(site.seed)
 
     try:
         realizer(game, level, site, rng)
+        # Mark as realized to prevent double-realization
+        site._realized = True  # type: ignore[attr-defined]
+        if debug:
+            debug(f"[realize_site] Successfully realized {site.kind} at {site.coord}")
         return True
-    except Exception:
+    except Exception as e:
+        if debug:
+            debug(f"[realize_site] Exception realizing {site.kind} at {site.coord}: {e!r}")
         return False
 
 
@@ -756,22 +772,31 @@ def realize_sites_in_zone(
     zx: int,
     zy: int,
     depth: int = 0,
-) -> int:
+) -> Tuple[int, Optional["SiteSpec"]]:
     """
     Realize all sites at a zone coordinate.
 
-    Returns the number of sites realized.
+    Returns a tuple of (count of sites realized, the site spec if realized).
     """
     from edgecaster.systems.site_placement import get_site_at_zone, discover_site_at_zone
 
+    debug = getattr(game, "_debug", None)
     site = get_site_at_zone(game, zx, zy, depth)
+    if debug:
+        registry = getattr(game, "site_registry", None)
+        registry_len = len(registry) if registry else 0
+        debug(f"[realize_sites] get_site_at_zone({zx}, {zy}, {depth}) -> {site}, registry has {registry_len} sites")
+
     if site is None:
-        return 0
+        return (0, None)
 
     success = realize_site(game, level, site)
+    if debug:
+        debug(f"[realize_sites] realize_site for {site.kind} at ({zx}, {zy}) -> success={success}")
+
     if success:
         discover_site_at_zone(game, zx, zy, depth)
-        return 1
+        return (1, site)
 
-    return 0
+    return (0, None)
 

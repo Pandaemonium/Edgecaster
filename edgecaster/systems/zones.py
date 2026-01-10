@@ -66,6 +66,34 @@ def get_zone(
     except Exception:
         pass
 
+    # Try to realize biome-based sites for zones that were created before site
+    # placement completed. This handles the race condition where zones are cached
+    # before sites are placed.
+    zx, zy, depth = coord
+    if depth == 0 and getattr(game, "site_placement_complete", False):
+        try:
+            w = lvl.world
+            is_special = bool(getattr(w, "is_lab", False) or getattr(w, "is_lair", False))
+            if not is_special:
+                from edgecaster import mapgen_sites
+                from edgecaster.systems.sites import load_site_types
+                count, discovered_site = mapgen_sites.realize_sites_in_zone(game, lvl, zx, zy, depth)
+                if count > 0 and discovered_site is not None:
+                    if hasattr(game, "_debug"):
+                        game._debug(f"[zones] Late-realized {count} site(s) at zone ({zx}, {zy}): {discovered_site.kind}")
+                    # Show discovery message
+                    site_types = load_site_types()
+                    site_config = site_types.get(discovered_site.kind)
+                    site_name = site_config.name if site_config else discovered_site.kind.replace("_", " ").title()
+                    game.set_urgent(
+                        f"You have found a {site_name}!",
+                        title="Discovery!",
+                        choices=["Continue..."]
+                    )
+        except Exception as e:
+            if hasattr(game, "_debug"):
+                game._debug(f"[zones] Error late-realizing sites at ({zx}, {zy}): {e!r}")
+
     return game.levels[coord]
 
 

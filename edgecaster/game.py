@@ -1229,9 +1229,27 @@ class Game:
         # Realize biome-based sites (if any) for this zone
         if depth == 0 and not is_lab_zone and not is_lair_zone:
             try:
-                mapgen_sites.realize_sites_in_zone(self, lvl, x, y, depth)
-            except Exception:
-                pass
+                # Check if site placement is complete
+                placement_complete = getattr(self, "site_placement_complete", False)
+                self._debug(f"[mapgen] Zone ({x}, {y}): site_placement_complete={placement_complete}")
+
+                count, discovered_site = mapgen_sites.realize_sites_in_zone(self, lvl, x, y, depth)
+                self._debug(f"[mapgen] Zone ({x}, {y}): realize_sites_in_zone returned count={count}, site={discovered_site}")
+
+                if count > 0 and discovered_site is not None:
+                    self._debug(f"[mapgen] Realized {count} site(s) at zone ({x}, {y}): {discovered_site.kind}")
+                    # Show discovery message for newly discovered sites
+                    from edgecaster.systems.sites import load_site_types
+                    site_types = load_site_types()
+                    site_config = site_types.get(discovered_site.kind)
+                    site_name = site_config.name if site_config else discovered_site.kind.replace("_", " ").title()
+                    self.set_urgent(
+                        f"You have found a {site_name}!",
+                        title="Discovery!",
+                        choices=["Continue..."]
+                    )
+            except Exception as e:
+                self._debug(f"[mapgen] Error realizing sites at ({x}, {y}): {e!r}")
 
         if coord == (0, 0, 0) and not getattr(self, "_academy_hint_shown", False):
             self._academy_hint_shown = True
