@@ -615,6 +615,8 @@ class DeveloperOptionsScene(PopupMenuScene):
             val = self._get_stat(key)
             label = f"Base[{key.upper()}]"
             items.append(OptionItem("label", label, key=key, value=str(val)))
+        # Action items for dev tools
+        items.append(OptionItem("action", "Reveal All Sites", key="reveal_sites"))
         items.append(OptionItem("back", "Back"))
         self._items = items
         return list(items)
@@ -695,7 +697,16 @@ class DeveloperOptionsScene(PopupMenuScene):
                 self.on_back(manager)
                 return
 
+            # Handle action items (buttons that do something on activate)
+            if item.kind == "action" and action == MENU_ACTION_ACTIVATE:
+                self._do_action(item.key, manager)
+                return
+
             if not item.key:
+                return
+
+            # Skip stat bumping for action items
+            if item.kind == "action":
                 return
 
             delta = -1 if action == MENU_ACTION_LEFT else 1
@@ -713,6 +724,38 @@ class DeveloperOptionsScene(PopupMenuScene):
             return
 
         super()._handle_action(action, manager)
+
+    def _do_action(self, key: Optional[str], manager: "SceneManager") -> None:  # type: ignore[name-defined]
+        """Handle action button presses in developer mode."""
+        if key == "reveal_sites":
+            game = getattr(manager, "current_game", None)
+            if game is None:
+                return
+            site_registry = getattr(game, "site_registry", None)
+            if site_registry is None:
+                if hasattr(game, "log") and hasattr(game.log, "add"):
+                    game.log.add("[DEV] No site registry found.")
+                return
+            # Check if site placement is complete
+            placement_complete = getattr(game, "site_placement_complete", True)
+            if not placement_complete:
+                if hasattr(game, "log") and hasattr(game.log, "add"):
+                    game.log.add("[DEV] Sites still being placed, try again in a moment.")
+                return
+            # Check total sites in registry
+            total_sites = len(site_registry)
+            if total_sites == 0:
+                if hasattr(game, "log") and hasattr(game.log, "add"):
+                    game.log.add("[DEV] No sites in registry - placement may have failed.")
+                return
+            # Reveal all sites on the world map
+            count = 0
+            for site in site_registry:
+                site_registry.mark_discovered(site.id)
+                count += 1
+            # Log to game if available
+            if hasattr(game, "log") and hasattr(game.log, "add"):
+                game.log.add(f"[DEV] Revealed {count} of {total_sites} sites on the world map.")
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:  # type: ignore[name-defined]
         # Mouse click should behave like "bump forward" (legacy Enter behavior).

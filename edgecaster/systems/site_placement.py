@@ -285,14 +285,23 @@ def place_sites_for_type(
     Returns:
         List of placed SiteSpec objects
     """
+    debug = getattr(game, "_debug", None)
     suit = compute_suitability(site_cfg, climate)
 
     # Convert suitability to world coordinates
     resolution = climate.get("resolution", 1)
-    total_x = climate.get("total_x", 1)
-    total_y = climate.get("total_y", 1)
+    total_x = climate.get("total_x", 1)  # Total tiles in world (e.g., 6000)
+    total_y = climate.get("total_y", 1)  # Total tiles in world (e.g., 4000)
     px_w = climate.get("px_w", 1)
     px_h = climate.get("px_h", 1)
+
+    # Get zone dimensions to convert tile coords to zone coords
+    cfg = getattr(game, "cfg", None)
+    zone_w = int(getattr(cfg, "world_width", 60) or 60) if cfg else 60
+    zone_h = int(getattr(cfg, "world_height", 40) or 40) if cfg else 40
+    # Number of zones in each direction
+    num_zones_x = max(1, total_x // zone_w)
+    num_zones_y = max(1, total_y // zone_h)
 
     # Get biome array for recording which biome each site is in
     biome_arr = climate.get("biome")
@@ -310,6 +319,8 @@ def place_sites_for_type(
     suit_flat = suit.flatten()
     total_suit = suit_flat.sum()
     if total_suit < 0.01:
+        if debug:
+            debug(f"[site_placement] {site_cfg.kind}: no suitable locations (total_suit={total_suit:.4f})")
         return []
 
     probs = suit_flat / total_suit
@@ -323,13 +334,15 @@ def place_sites_for_type(
         py = idx // px_w
         px = idx % px_w
 
-        # Convert to world zone coordinates
-        zx = int(px * resolution)
-        zy = int(py * resolution)
+        # Convert pixel position to tile position, then to zone coordinates
+        tile_x = int(px * resolution)
+        tile_y = int(py * resolution)
+        zx = tile_x // zone_w
+        zy = tile_y // zone_h
 
-        # Clamp to world bounds
-        zx = min(zx, total_x - 1)
-        zy = min(zy, total_y - 1)
+        # Clamp to zone bounds
+        zx = min(zx, num_zones_x - 1)
+        zy = min(zy, num_zones_y - 1)
 
         coord_2d = (zx, zy)
         coord_3d = (zx, zy, 0)  # Surface level
@@ -381,26 +394,37 @@ def place_sites_for_type(
     return placed
 
 
-def place_all_sites(game: "Game") -> SiteRegistry:
+def _place_all_sites_sync(game: "Game", registry: SiteRegistry) -> None:
     """
-    Place all site types across the world.
+    Place all site types across the world (synchronous implementation).
 
-    This should be called during world initialization, after
-    overmap_params and tile_julia_grid are set up.
-
-    Returns a populated SiteRegistry.
+    This populates the given registry with sites based on climate suitability.
     """
-    registry = SiteRegistry()
+    debug = getattr(game, "_debug", None)
 
     # Sample climate at reduced resolution for efficiency
-    climate = _sample_climate_grid(game, resolution=4)
+    # Use resolution=8 for faster startup (coarser sampling is fine for site placement)
+    climate = _sample_climate_grid(game, resolution=8)
     if not climate:
-        return registry
+        if debug:
+            debug("[site_placement] No climate data available")
+        return
 
     # Load site type definitions
     site_types = load_site_types()
     if not site_types:
-        return registry
+        if debug:
+            debug("[site_placement] No site types loaded")
+        return
+
+    if debug:
+        debug(f"[site_placement] Loaded {len(site_types)} site types, climate grid: {climate.get('px_w')}x{climate.get('px_h')}")
+        # Log biome distribution
+        biome_arr = climate.get("biome")
+        if biome_arr is not None:
+            unique, counts = np.unique(biome_arr, return_counts=True)
+            biome_names = [Biome(int(b)).name for b in unique]
+            debug(f"[site_placement] Biome distribution: {dict(zip(biome_names, counts.tolist()))}")
 
     # Use world seed for reproducibility
     world_seed = getattr(game, "seed", 1337)
@@ -410,11 +434,52 @@ def place_all_sites(game: "Game") -> SiteRegistry:
     existing_coords: Set[Tuple[int, int]] = set()
 
     # Place each site type
+    total_placed = 0
     for kind, site_cfg in site_types.items():
         sites = place_sites_for_type(game, site_cfg, climate, existing_coords, rng)
         for spec in sites:
             registry.add(spec)
             existing_coords.add(spec.zone_coord)
+        total_placed += len(sites)
+        if debug and len(sites) > 0:
+            debug(f"[site_placement] Placed {len(sites)} {kind}")
+
+    if debug:
+        debug(f"[site_placement] Total sites placed: {total_placed}")
+
+    # Mark placement as complete
+    game.site_placement_complete = True
+
+
+def place_all_sites(game: "Game") -> SiteRegistry:
+    """
+    Place all site types across the world.
+
+    This should be called during world initialization, after
+    overmap_params and tile_julia_grid are set up.
+
+    Returns an empty SiteRegistry immediately, with sites populated
+    asynchronously in a background thread.
+    """
+    registry = SiteRegistry()
+
+    # Mark placement as in-progress
+    game.site_placement_complete = False
+
+    # Start background thread for site placement
+    import threading
+
+    def _background_place():
+        try:
+            _place_all_sites_sync(game, registry)
+        except Exception as e:
+            # Log error but don't crash
+            if hasattr(game, "_debug"):
+                game._debug(f"[site_placement] Background error: {e!r}")
+            game.site_placement_complete = True  # Mark complete even on error
+
+    thread = threading.Thread(target=_background_place, daemon=True)
+    thread.start()
 
     return registry
 

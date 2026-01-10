@@ -521,15 +521,21 @@ class WorldMapScene(Scene):
                     from edgecaster.systems.sites import load_site_types
                     site_types = load_site_types()
 
-                    for site in site_registry.get_visible():
+                    visible_sites = site_registry.get_visible()
+                    sites_drawn = 0
+                    sites_skipped_depth = 0
+                    sites_skipped_bounds = 0
+                    for site in visible_sites:
                         zx, zy, zz = site.coord
                         if int(zz) != 0:
+                            sites_skipped_depth += 1
                             continue
 
                         wx = int(zx) * zone_w + zone_w // 2
                         wy = int(zy) * zone_h + zone_h // 2
                         px, py = viewport.world_to_pixel(float(wx), float(wy))
                         if not (0 <= px < map_w and 0 <= py < map_h):
+                            sites_skipped_bounds += 1
                             continue
 
                         # Get site type config for color
@@ -544,11 +550,24 @@ class WorldMapScene(Scene):
                         if site.visibility == SiteVisibility.RUMORED:
                             color = (color[0] // 2, color[1] // 2, color[2] // 2)
 
-                        # Draw marker
-                        pygame.draw.circle(surf, color, (ox + px, oy + py), 3)
+                        # Draw marker - larger circle with outline for visibility
+                        pygame.draw.circle(surf, (0, 0, 0), (ox + px, oy + py), 5)  # Black outline
+                        pygame.draw.circle(surf, color, (ox + px, oy + py), 4)
+                        sites_drawn += 1
 
-            except Exception:
-                pass
+                    # Debug: log site drawing stats (once per 5 seconds max)
+                    if hasattr(self.game, "_debug") and len(visible_sites) > 0:
+                        now = time.time()
+                        last_log = getattr(self, "_last_site_log", 0)
+                        if now - last_log > 5.0:
+                            self._last_site_log = now
+                            self.game._debug(f"[world_map] Sites: {len(visible_sites)} visible, {sites_drawn} drawn, {sites_skipped_depth} skipped (depth), {sites_skipped_bounds} skipped (bounds)")
+
+            except Exception as e:
+                # Log marker drawing errors to game debug log
+                if hasattr(self.game, "_debug"):
+                    import traceback
+                    self.game._debug(f"[world_map] Error drawing markers: {e!r}\n{traceback.format_exc()}")
 
             title = renderer.big_label("World Map")
             surf.blit(title, (ox, oy - 36))
