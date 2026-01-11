@@ -113,6 +113,7 @@
   tags:
     container: true
     item_type: inventory
+    not_stackable: true
 
 # --- DESTABILIZER --------------------------------------------
 - id: destabilizer

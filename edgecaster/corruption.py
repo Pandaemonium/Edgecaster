@@ -16,9 +16,12 @@ class CorruptionParams:
 
     The distortion vector d(z) is a deterministic, Perlin-like value-noise vector
     field sampled in the complex plane.
+
+    Note: The `seed` should be set to `game.corruption_seed` (derived from the
+    world seed) when constructing params. The default 0 is a fallback only.
     """
 
-    seed: int = 1337
+    seed: int = 0  # Should be game.corruption_seed; 0 is a fallback
     # Global frequency multiplier for the landscape heightfield used to build
     # the distortion vector field (see _noise_lut). 1.0 matches the reference
     # "Landscape" feel from distorted_Julia.py when combined with base_res/detail_res.

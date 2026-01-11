@@ -146,7 +146,7 @@ def handle_player_death(game: "Game", attacker: "Actor") -> None:
     cause = attacker.name
     game.set_urgent(
         f"by way of {cause}",
-        title="You unravel...",
+        title="You die. This world, now doomed, spirals infinitely toward decay and despair...",
         choices=["Continue..."],
     )
 
