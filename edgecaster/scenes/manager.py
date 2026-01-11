@@ -74,7 +74,7 @@ class SceneManager:
             "aire": "assets/music/aire.wav",
             "majesty": "assets/music/majesty.wav",
             "kemet": "assets/music/kemet.ogg",
-
+            "john_bismuth": "assets/music/john_bismuth.ogg",
             # Event stingers
             "imp_cackle": "assets/music/imp_cackle.wav",
             "slot_machine": "assets/music/slot_machine.wav",
