@@ -649,6 +649,13 @@ class DungeonScene(Scene):
             manager.push_scene(QuestScene(game))
             return
 
+        # 4b) Factions requested -> push factions overlay
+        if getattr(game, "factions_requested", False):
+            game.factions_requested = False
+            from .factions_scene import FactionsScene
+            manager.push_scene(FactionsScene(game))
+            return
+
         # 5) Fractal editor requested -> open editor scene
         if getattr(game, "fractal_editor_requested", False):
             game.fractal_editor_requested = False
@@ -892,6 +899,13 @@ class DungeonScene(Scene):
                 if hp_txt:
                     lines.append("")
                     lines.append(str(hp_txt))
+                # Faction standings are already included in description, but add
+                # explicitly if passed separately (for fallback completeness)
+                faction_lines = info.get("faction_standings")
+                if faction_lines and "\nFaction Standings:" not in desc:
+                    lines.append("")
+                    lines.append("Faction Standings:")
+                    lines.extend(faction_lines)
                 body = "\n".join(lines)
             else:
                 # No entities here: fall back to a tile description if available.
@@ -1735,6 +1749,12 @@ class DungeonScene(Scene):
         if kind == "open_quest_journal":
             if not in_aim_mode:
                 setattr(game, "quest_journal_requested", True)
+                renderer.quit_requested = True
+            return
+
+        if kind == "open_factions":
+            if not in_aim_mode:
+                setattr(game, "factions_requested", True)
                 renderer.quit_requested = True
             return
 

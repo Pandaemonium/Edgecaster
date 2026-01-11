@@ -73,7 +73,7 @@ def resolve_entity_description(ent: Any) -> str | None:
 
 
 def describe_entity_for_look(ent: Any) -> Dict[str, Any]:
-    """Return name, glyph, color, and description for an entity."""
+    """Return name, glyph, color, description, and faction standings for an entity."""
 
     proto_id = _lookup_proto_id_for_entity(ent)
     proto = prototypes.resolve_proto(proto_id) if proto_id else {}
@@ -99,14 +99,28 @@ def describe_entity_for_look(ent: Any) -> Dict[str, Any]:
     except Exception:
         hp_text = None
 
+    # Get faction standings for display (e.g., for legendaries)
+    faction_lines = []
+    try:
+        faction_lines = reputation_system.describe_faction_standings(ent)
+    except Exception:
+        faction_lines = []
+
+    # Append faction standings to the description if present
+    full_desc = str(desc)
+    if faction_lines:
+        full_desc += "\n\nFaction Standings:\n" + "\n".join(faction_lines)
+
     info = {
         "name": str(name),
         "glyph": str(glyph),
         "color": tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
-        "description": str(desc),
+        "description": full_desc,
     }
     if hp_text:
         info["hp_text"] = hp_text
+    if faction_lines:
+        info["faction_standings"] = faction_lines
     return info
 
 

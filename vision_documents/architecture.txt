@@ -99,9 +99,10 @@ Key modules (non-exhaustive):
 - systems/targeting.py: aim prediction data (used by renderer only to draw)
 - systems/previews.py: non-committing previews for UI
 - systems/overmap.py: Julia grid, world map cache/threading, corruption/anchors
-- systems/spawning.py: spawn helpers for YAML prototypes and POI contents
+- systems/spawning.py: spawn helpers, biome-aware creature selection (tile.biome_id + biome_spawn tags)
 - systems/trade.py: trade rules and transaction commit
 - systems/reputation.py: faction reputation and hostility hooks
+- systems/fern_growth.py: procedural fern pattern growth (coherence-fueled, pruning)
 - systems/legendaries.py: legendary registry, lairs, POI discovery/rumors
 - systems/lorenz_aura.py: Strange Attractor aura simulation (game-side)
 - systems/lighting.py: light emission from entities (illumination, visibility)
@@ -137,6 +138,7 @@ Integration:
 Prototypes:
 - edgecaster/content/entities.yaml: non-actor entities (items, doors, signs, etc.)
 - edgecaster/content/enemies.yaml: actor templates (enemies, bosses, some NPC-like actors)
+- edgecaster/content/factions.yaml: faction definitions (opinions, hostility thresholds, rep deltas)
 - edgecaster/content/pois.yaml: POI definitions (npcs + structures per zone coord)
 
 Spawn pipeline:

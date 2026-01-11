@@ -70,6 +70,7 @@ COMMAND_CONTEXTS = {
     "ability_page_next": {"dungeon"},
     # UI / Meta
     "open_inventory": {"dungeon"},
+    "open_factions": {"dungeon"},
     "examine": {"dungeon"},
     "toggle_fullscreen": {"global"},
     "escape": {"global"},
@@ -111,6 +112,7 @@ BASE_KEYBIND_CATEGORIES: List[Tuple[str, List[Tuple[str, str]]]] = [
     ]),
     ("UI / Meta", [
         ("open_inventory", "Inventory"),
+        ("open_factions", "Factions & Reputation"),
         ("examine", "Examine"),
         ("toggle_fullscreen", "Toggle Fullscreen"),
         ("escape", "Back / Cancel"),

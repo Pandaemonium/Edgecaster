@@ -395,7 +395,7 @@
   base_attack: 2
   base_defense: 1
   speed: 1.3
-  faction: bird_people
+  faction: high_society
   ai: territorial
   xp: 9
   parent: humanoid
@@ -416,7 +416,7 @@
   base_attack: 3
   base_defense: 0
   speed: 1.6
-  faction: bird_people
+  faction: high_society
   ai: skirmisher
   xp: 6
   parent: beast
@@ -439,7 +439,7 @@
   base_attack: 2
   base_defense: 2
   speed: 0.7
-  faction: spriggan
+  faction: natures_chosen
   ai: territorial
   xp: 10
   parent: humanoid
@@ -459,7 +459,7 @@
   base_attack: 3
   base_defense: 3
   speed: 0.5
-  faction: spriggan
+  faction: natures_chosen
   ai: skirmisher
   xp: 12
   parent: humanoid
@@ -633,4 +633,605 @@
     summoned_demon: true
     biome_spawn: [CORRUPTED_WASTELAND, CORRUPTED_FOREST]
     no_random_spawn: true
+
+# ===========================================================================
+# NATURE'S CHOSEN - Woodland spirits and creatures
+# ===========================================================================
+
+- id: spriggan
+  name: Spriggan
+  glyph: Y
+  color: [60, 140, 60]
+  actions: [move, wait]
+  base_hp: 8
+  base_mana: 2
+  base_attack: 2
+  base_defense: 1
+  speed: 0.9
+  faction: natures_chosen
+  ai: territorial
+  xp: 8
+  parent: humanoid
+  description: A gnarled woodland spirit, twisted roots for limbs.
+  tags:
+    spriggan: true
+    biome_spawn: [TEMPERATE_FOREST, TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST]
+
+- id: dryad
+  name: Dryad
+  glyph: y
+  color: [100, 180, 100]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 4
+  base_attack: 1
+  base_defense: 0
+  speed: 1.1
+  faction: natures_chosen
+  ai: territorial
+  xp: 7
+  parent: humanoid
+  description: A lithe tree spirit whose bark-skin shifts like leaves in wind.
+  tags:
+    dryad: true
+    biome_spawn: [TEMPERATE_FOREST, TEMPERATE_RAINFOREST]
+
+- id: naiad
+  name: Naiad
+  glyph: n
+  color: [100, 180, 220]
+  actions: [move, wait]
+  base_hp: 5
+  base_mana: 5
+  base_attack: 1
+  base_defense: 0
+  speed: 1.2
+  faction: natures_chosen
+  ai: territorial
+  xp: 7
+  parent: humanoid
+  description: A water spirit bound to streams and pools, hair flowing like currents.
+  tags:
+    naiad: true
+    biome_spawn: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST, MARSH]
+
+- id: wild_stag
+  name: Wild Stag
+  glyph: S
+  color: [180, 150, 100]
+  actions: [move, wait]
+  base_hp: 7
+  base_mana: 0
+  base_attack: 2
+  base_defense: 1
+  speed: 1.3
+  faction: natures_chosen
+  ai: territorial
+  xp: 6
+  parent: beast
+  description: A proud stag with antlers like branching lightning.
+  tags:
+    wild_stag: true
+    biome_spawn: [TEMPERATE_FOREST, GRASSLAND, SHRUBLAND]
+
+- id: moss_crawler
+  name: Moss Crawler
+  glyph: m
+  color: [80, 120, 80]
+  actions: [move, wait]
+  base_hp: 4
+  base_mana: 0
+  base_attack: 1
+  base_defense: 2
+  speed: 0.7
+  faction: natures_chosen
+  ai: skirmisher
+  xp: 4
+  parent: beast
+  description: A slow creature armored in living moss and lichen.
+  tags:
+    moss_crawler: true
+    biome_spawn: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST, MARSH]
+
+- id: thorn_sprite
+  name: Thorn Sprite
+  glyph: t
+  color: [140, 100, 60]
+  actions: [move, wait]
+  base_hp: 3
+  base_mana: 2
+  base_attack: 2
+  base_defense: 0
+  speed: 1.4
+  faction: natures_chosen
+  ai: skirmisher
+  xp: 5
+  parent: humanoid
+  description: A tiny fey creature bristling with needle-sharp thorns.
+  tags:
+    thorn_sprite: true
+    biome_spawn: [TEMPERATE_FOREST, SHRUBLAND]
+
+# ===========================================================================
+# HIGH SOCIETY - Bird people and their avian kin
+# ===========================================================================
+
+- id: avian_noble
+  name: Avian Noble
+  glyph: A
+  color: [220, 200, 255]
+  actions: [move, wait]
+  base_hp: 7
+  base_mana: 3
+  base_attack: 2
+  base_defense: 1
+  speed: 1.2
+  faction: high_society
+  ai: territorial
+  xp: 9
+  parent: humanoid
+  description: A haughty bird aristocrat draped in iridescent plumage.
+  tags:
+    avian_noble: true
+    flying: true
+    currency_min: 15
+    currency_max: 40
+    biome_spawn: [SNOW, BARE, TUNDRA]
+    no_random_spawn: true
+
+- id: peacock_dandy
+  name: Peacock Dandy
+  glyph: P
+  color: [80, 200, 180]
+  actions: [move, wait]
+  base_hp: 5
+  base_mana: 2
+  base_attack: 1
+  base_defense: 0
+  speed: 1.0
+  faction: high_society
+  ai: territorial
+  xp: 6
+  parent: humanoid
+  description: A preening bird-person obsessed with displays of wealth.
+  tags:
+    peacock_dandy: true
+    flying: true
+    currency_min: 20
+    currency_max: 50
+    biome_spawn: [SNOW, BARE, TUNDRA]
+    no_random_spawn: true
+
+- id: talon_guard
+  name: Talon Guard
+  glyph: T
+  color: [180, 180, 200]
+  actions: [move, wait]
+  base_hp: 9
+  base_mana: 0
+  base_attack: 3
+  base_defense: 2
+  speed: 1.1
+  faction: high_society
+  ai: territorial
+  xp: 10
+  parent: humanoid
+  description: An elite bird warrior with razor-sharp talons and keen discipline.
+  tags:
+    talon_guard: true
+    flying: true
+    biome_spawn: [SNOW, BARE, TUNDRA]
+    no_random_spawn: true
+
+- id: messenger_swift
+  name: Messenger Swift
+  glyph: s
+  color: [150, 180, 220]
+  actions: [move, wait]
+  base_hp: 3
+  base_mana: 0
+  base_attack: 1
+  base_defense: 0
+  speed: 1.8
+  faction: high_society
+  ai: skirmisher
+  xp: 4
+  parent: beast
+  description: A small, lightning-fast bird trained to carry secrets.
+  tags:
+    messenger_swift: true
+    flying: true
+    biome_spawn: [SNOW, BARE, TUNDRA, GRASSLAND]
+
+- id: corvid_spy
+  name: Corvid Spy
+  glyph: c
+  color: [40, 40, 60]
+  actions: [move, wait]
+  base_hp: 4
+  base_mana: 1
+  base_attack: 1
+  base_defense: 0
+  speed: 1.3
+  faction: high_society
+  ai: skirmisher
+  xp: 5
+  parent: beast
+  description: A clever crow that reports back to its masters.
+  tags:
+    corvid_spy: true
+    flying: true
+    biome_spawn: [SNOW, BARE, TUNDRA, TEMPERATE_FOREST]
+
+# ===========================================================================
+# CULT OF THE BURNING SIGN - Pyromantic demon cult
+# ===========================================================================
+
+- id: flame_acolyte
+  name: Flame Acolyte
+  glyph: f
+  color: [255, 120, 40]
+  actions: [move, wait]
+  base_hp: 5
+  base_mana: 3
+  base_attack: 2
+  base_defense: 0
+  speed: 1.0
+  faction: demon_cult_flame
+  ai: skirmisher
+  xp: 6
+  parent: humanoid
+  description: A wild-eyed cultist with burn scars covering their arms.
+  tags:
+    flame_acolyte: true
+    biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
+
+- id: ember_priest
+  name: Ember Priest
+  glyph: E
+  color: [255, 80, 20]
+  actions: [move, wait]
+  base_hp: 7
+  base_mana: 5
+  base_attack: 2
+  base_defense: 0
+  speed: 0.9
+  faction: demon_cult_flame
+  ai: skirmisher
+  xp: 9
+  parent: humanoid
+  description: A senior cultist whose fingertips glow with perpetual heat.
+  tags:
+    ember_priest: true
+    biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
+
+- id: cinder_hound
+  name: Cinder Hound
+  glyph: h
+  color: [200, 80, 40]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 0
+  base_attack: 3
+  base_defense: 0
+  speed: 1.4
+  faction: demon_cult_flame
+  ai: skirmisher
+  xp: 7
+  parent: beast
+  description: A hellish dog wreathed in smoldering ash.
+  tags:
+    cinder_hound: true
+    biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
+    pack_animal: true
+
+- id: pyroclast
+  name: Pyroclast
+  glyph: P
+  color: [255, 50, 0]
+  actions: [move, wait]
+  base_hp: 10
+  base_mana: 4
+  base_attack: 4
+  base_defense: 1
+  speed: 0.8
+  faction: demon_cult_flame
+  ai: skirmisher
+  xp: 12
+  parent: demon
+  description: A walking volcanic spirit bound to the cult's service.
+  tags:
+    pyroclast: true
+    biome_spawn: [SCORCHED]
+    no_random_spawn: true
+
+# ===========================================================================
+# CULT OF THE EMPTY SPIRAL - Nihilistic pattern-haters
+# ===========================================================================
+
+- id: void_initiate
+  name: Void Initiate
+  glyph: v
+  color: [80, 60, 100]
+  actions: [move, wait]
+  base_hp: 4
+  base_mana: 4
+  base_attack: 1
+  base_defense: 0
+  speed: 1.1
+  faction: demon_cult_void
+  ai: skirmisher
+  xp: 6
+  parent: humanoid
+  description: A hollow-eyed cultist who whispers of the spaces between.
+  tags:
+    void_initiate: true
+    xp_drain: true
+    biome_spawn: [CORRUPTED_WASTELAND, BARE]
+
+- id: spiral_eraser
+  name: Spiral Eraser
+  glyph: S
+  color: [60, 40, 80]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 5
+  base_attack: 2
+  base_defense: 0
+  speed: 1.0
+  faction: demon_cult_void
+  ai: skirmisher
+  xp: 8
+  parent: humanoid
+  description: A cultist trained to unravel patterns with a touch.
+  tags:
+    spiral_eraser: true
+    biome_spawn: [CORRUPTED_WASTELAND, BARE]
+
+- id: null_shade
+  name: Null Shade
+  glyph: N
+  color: [40, 30, 50]
+  actions: [move, wait]
+  base_hp: 5
+  base_mana: 6
+  base_attack: 2
+  base_defense: 0
+  speed: 1.3
+  faction: demon_cult_void
+  ai: skirmisher
+  xp: 9
+  parent: demon
+  description: A demon of pure negation, absorbing light and hope.
+  tags:
+    null_shade: true
+    xp_drain: true
+    biome_spawn: [CORRUPTED_WASTELAND]
+
+- id: entropy_worm
+  name: Entropy Worm
+  glyph: w
+  color: [50, 40, 60]
+  actions: [move, wait]
+  base_hp: 8
+  base_mana: 3
+  base_attack: 2
+  base_defense: 1
+  speed: 0.8
+  faction: demon_cult_void
+  ai: skirmisher
+  xp: 8
+  parent: beast
+  description: A pallid worm that feeds on order and structure.
+  tags:
+    entropy_worm: true
+    biome_spawn: [CORRUPTED_WASTELAND, BARE]
+
+# ===========================================================================
+# CULT OF TWISTED FORMS - Body-warping cultists
+# ===========================================================================
+
+- id: flesh_shaper
+  name: Flesh Shaper
+  glyph: F
+  color: [200, 100, 120]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 4
+  base_attack: 2
+  base_defense: 0
+  speed: 1.0
+  faction: demon_cult_flesh
+  ai: skirmisher
+  xp: 8
+  parent: humanoid
+  description: A cultist whose own body ripples with unfinished modifications.
+  tags:
+    flesh_shaper: true
+    biome_spawn: [CORRUPTED_FOREST, MARSH]
+
+- id: graft_horror
+  name: Graft Horror
+  glyph: G
+  color: [180, 80, 100]
+  actions: [move, wait]
+  base_hp: 11
+  base_mana: 0
+  base_attack: 4
+  base_defense: 1
+  speed: 0.7
+  faction: demon_cult_flesh
+  ai: skirmisher
+  xp: 11
+  parent: beast
+  description: A shambling mass of grafted limbs and screaming faces.
+  tags:
+    graft_horror: true
+    biome_spawn: [CORRUPTED_FOREST, MARSH]
+    no_random_spawn: true
+
+- id: sinew_crawler
+  name: Sinew Crawler
+  glyph: s
+  color: [220, 140, 150]
+  actions: [move, wait]
+  base_hp: 4
+  base_mana: 0
+  base_attack: 2
+  base_defense: 0
+  speed: 1.3
+  faction: demon_cult_flesh
+  ai: skirmisher
+  xp: 5
+  parent: beast
+  description: A skittering thing made of twisted muscle and tendon.
+  tags:
+    sinew_crawler: true
+    biome_spawn: [CORRUPTED_FOREST, MARSH]
+
+- id: bone_weaver
+  name: Bone Weaver
+  glyph: B
+  color: [240, 230, 220]
+  actions: [move, wait]
+  base_hp: 7
+  base_mana: 3
+  base_attack: 2
+  base_defense: 2
+  speed: 0.9
+  faction: demon_cult_flesh
+  ai: skirmisher
+  xp: 9
+  parent: humanoid
+  description: A cultist who reshapes skeletons into art and armor.
+  tags:
+    bone_weaver: true
+    biome_spawn: [CORRUPTED_FOREST, MARSH]
+
+- id: maw_beast
+  name: Maw Beast
+  glyph: M
+  color: [160, 60, 80]
+  actions: [move, wait]
+  base_hp: 9
+  base_mana: 0
+  base_attack: 5
+  base_defense: 0
+  speed: 1.1
+  faction: demon_cult_flesh
+  ai: skirmisher
+  xp: 10
+  parent: beast
+  description: A creature that is mostly mouth, with rows of teeth spiraling inward.
+  tags:
+    maw_beast: true
+    lifesteal_frac: 0.3
+    biome_spawn: [CORRUPTED_FOREST]
+    no_random_spawn: true
+
+# ===========================================================================
+# PATTERNKEEPERS - Tattooed nomads friendly to the player
+# ===========================================================================
+
+- id: pattern_wanderer
+  name: Pattern Wanderer
+  glyph: p
+  color: [100, 140, 180]
+  actions: [move, wait]
+  base_hp: 6
+  base_mana: 3
+  base_attack: 2
+  base_defense: 0
+  speed: 1.1
+  faction: patternkeepers
+  ai: territorial
+  xp: 6
+  parent: humanoid
+  description: A nomad whose geometric tattoos shift subtly in the light.
+  tags:
+    pattern_wanderer: true
+    biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
+    no_random_spawn: true
+
+- id: ink_elder
+  name: Ink Elder
+  glyph: I
+  color: [60, 100, 140]
+  actions: [move, wait]
+  base_hp: 8
+  base_mana: 6
+  base_attack: 1
+  base_defense: 1
+  speed: 0.8
+  faction: patternkeepers
+  ai: territorial
+  xp: 10
+  parent: humanoid
+  description: An ancient keeper whose entire body is a living pattern-map.
+  tags:
+    ink_elder: true
+    biome_spawn: [GRASSLAND, SAVANNA]
+    no_random_spawn: true
+
+- id: line_dancer
+  name: Line Dancer
+  glyph: l
+  color: [140, 160, 200]
+  actions: [move, wait]
+  base_hp: 5
+  base_mana: 2
+  base_attack: 2
+  base_defense: 0
+  speed: 1.4
+  faction: patternkeepers
+  ai: territorial
+  xp: 7
+  parent: humanoid
+  description: A swift warrior who fights in geometric patterns.
+  tags:
+    line_dancer: true
+    biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
+    no_random_spawn: true
+
+- id: glyph_hound
+  name: Glyph Hound
+  glyph: g
+  color: [120, 140, 160]
+  actions: [move, wait]
+  base_hp: 5
+  base_mana: 1
+  base_attack: 2
+  base_defense: 0
+  speed: 1.3
+  faction: patternkeepers
+  ai: territorial
+  xp: 5
+  parent: beast
+  description: A loyal dog marked with protective symbols.
+  tags:
+    glyph_hound: true
+    pack_animal: true
+    biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
+    no_random_spawn: true
+
+- id: pattern_merchant
+  name: Pattern Merchant
+  glyph: "M"
+  color: [140, 180, 220]
+  actions: []
+  base_hp: 8
+  base_mana: 2
+  base_attack: 0
+  base_defense: 0
+  speed: 0.0
+  faction: patternkeepers
+  ai: none
+  xp: 0
+  parent: humanoid
+  description: A friendly trader who deals in inks, patterns, and stories.
+  tags:
+    pattern_merchant: true
+    no_random_spawn: true
+    currency_min: 30
+    currency_max: 80
 

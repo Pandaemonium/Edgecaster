@@ -52,3 +52,121 @@ hostile:
   kill_rep_delta: 6
   help_rep_delta: 4
 
+# ---------------------------------------------------------------------------
+# Nature's Chosen - woodland spirits and creatures
+# ---------------------------------------------------------------------------
+
+natures_chosen:
+  name: Nature's Chosen
+  description: "Spriggans, woodland creatures, dryads, and naiads who guard the wild places."
+  opinions:
+    natures_chosen: 250
+    player: 0           # Starts neutral
+    patternkeepers: 100 # Respect the nomads' harmony with nature
+    high_society: -50   # Wary of the civilized birds
+    hostile: -200
+    demon_cult_flame: -250
+    demon_cult_void: -250
+    demon_cult_flesh: -250
+  hostile_below: -125
+  kill_rep_delta: 8
+  help_rep_delta: 5
+
+# ---------------------------------------------------------------------------
+# High Society - bird people and their avian kin
+# ---------------------------------------------------------------------------
+
+high_society:
+  name: High Society
+  description: "The aristocratic bird people and their feathered cousins."
+  opinions:
+    high_society: 250
+    player: 0           # Starts neutral
+    edgecasters: 50     # Curious about pattern magic
+    natures_chosen: -25 # Consider them uncivilized
+    patternkeepers: 25  # Trading partners
+    hostile: -150
+    demon_cult_flame: -200
+    demon_cult_void: -200
+    demon_cult_flesh: -200
+  hostile_below: -125
+  kill_rep_delta: 6
+  help_rep_delta: 4
+
+# ---------------------------------------------------------------------------
+# Demon Cults - various hostile cults
+# ---------------------------------------------------------------------------
+
+demon_cult_flame:
+  name: Cult of the Burning Sign
+  description: "Pyromantic cultists who seek to unmake reality through fire."
+  opinions:
+    demon_cult_flame: 250
+    demon_cult_void: -50   # Rival cult
+    demon_cult_flesh: -100 # Rival cult
+    player: -200
+    edgecasters: -250
+    natures_chosen: -250
+    high_society: -200
+    patternkeepers: -250
+    neutral: -100
+  hostile_below: 125  # Hostile by default
+  kill_rep_delta: 4
+  help_rep_delta: 8
+
+demon_cult_void:
+  name: Cult of the Empty Spiral
+  description: "Nihilistic cultists who worship the spaces between patterns."
+  opinions:
+    demon_cult_void: 250
+    demon_cult_flame: -50  # Rival cult
+    demon_cult_flesh: -75  # Rival cult
+    player: -200
+    edgecasters: -250      # Hate pattern-weavers especially
+    natures_chosen: -200
+    high_society: -150
+    patternkeepers: -250
+    neutral: -100
+  hostile_below: 125  # Hostile by default
+  kill_rep_delta: 4
+  help_rep_delta: 8
+
+demon_cult_flesh:
+  name: Cult of Twisted Forms
+  description: "Body-warping cultists who reshape flesh into aberrations."
+  opinions:
+    demon_cult_flesh: 250
+    demon_cult_flame: -100 # Rival cult
+    demon_cult_void: -75   # Rival cult
+    player: -200
+    edgecasters: -200
+    natures_chosen: -250   # Abhor natural forms
+    high_society: -200
+    patternkeepers: -200
+    neutral: -125
+  hostile_below: 125  # Hostile by default
+  kill_rep_delta: 4
+  help_rep_delta: 8
+
+# ---------------------------------------------------------------------------
+# Patternkeepers - tattooed nomads friendly to the player
+# ---------------------------------------------------------------------------
+
+patternkeepers:
+  name: Patternkeepers
+  description: "Tattooed nomads who carry ancient patterns on their skin."
+  opinions:
+    patternkeepers: 250
+    player: 125          # Starts friendly - recognize a fellow pattern-bearer
+    edgecasters: 200     # Kindred spirits
+    natures_chosen: 100  # Live in harmony with nature
+    high_society: 50     # Trade with bird merchants
+    neutral: 50
+    hostile: -150
+    demon_cult_flame: -250
+    demon_cult_void: -250
+    demon_cult_flesh: -250
+  hostile_below: -125
+  kill_rep_delta: 10     # Tight-knit community, killing one is serious
+  help_rep_delta: 6
+

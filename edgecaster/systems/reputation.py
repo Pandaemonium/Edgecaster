@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Tuple
 
+import random as _random
+
 from edgecaster.content.factions import FACTIONS
 
 
@@ -77,7 +79,23 @@ def faction_opinion_toward_factions(observer_faction_id: str, target_factions: I
 
 
 def faction_opinion_toward_actor(observer_faction_id: str, actor: Any) -> int:
-    """How a faction feels about a specific actor."""
+    """How a faction feels about a specific actor.
+
+    Checks for explicit per-actor faction standings first (stored in
+    actor.tags["faction_standings"]), then falls back to the actor's
+    affiliations-based opinion.
+    """
+    observer_faction_id = str(observer_faction_id)
+
+    # Check for explicit per-actor faction standings (e.g., for legendaries)
+    tags = getattr(actor, "tags", None) or {}
+    standings = tags.get("faction_standings")
+    if isinstance(standings, dict) and observer_faction_id in standings:
+        try:
+            return int(standings[observer_faction_id])
+        except (TypeError, ValueError):
+            pass
+
     return faction_opinion_toward_factions(observer_faction_id, actor_factions(actor))
 
 
@@ -201,4 +219,122 @@ def apply_rep_event(game: Any, target_actor: Any, *, event: str) -> None:
                 adjust_player_reputation(game, fid, +mag)
             else:
                 adjust_player_reputation(game, fid, -mag)
+
+
+# ---------------------------------------------------------------------------
+# Procedural Faction Standings (Caves of Qud-style)
+# ---------------------------------------------------------------------------
+
+# Which factions can have procedural standings generated for NPCs.
+# Excludes player, neutral, and hostile (the base umbrella faction).
+PROCEDURAL_FACTIONS = (
+    "natures_chosen",
+    "high_society",
+    "demon_cult_flame",
+    "demon_cult_void",
+    "demon_cult_flesh",
+    "patternkeepers",
+    "edgecasters",
+)
+
+# Tier thresholds for generating standings
+STANDING_TIERS = {
+    "loved": 250,
+    "liked": 150,
+    "neutral": 0,
+    "disliked": -150,
+    "hated": -250,
+}
+
+
+def generate_procedural_standings(
+    rng: _random.Random | None = None,
+    *,
+    num_factions: int | None = None,
+    bias_positive: float = 0.5,
+) -> Dict[str, int]:
+    """Generate random faction standings for an NPC (e.g., legendary).
+
+    Args:
+        rng: Random number generator (uses default if None)
+        num_factions: How many factions to have opinions about (1-4, random if None)
+        bias_positive: Probability of a standing being positive (0.0-1.0)
+
+    Returns:
+        Dict mapping faction_id -> standing value (e.g., {"natures_chosen": 250})
+    """
+    if rng is None:
+        rng = _random.Random()
+
+    available = [f for f in PROCEDURAL_FACTIONS if f in FACTIONS]
+    if not available:
+        return {}
+
+    if num_factions is None:
+        num_factions = rng.randint(1, min(4, len(available)))
+    num_factions = max(1, min(num_factions, len(available)))
+
+    chosen = rng.sample(available, num_factions)
+    standings: Dict[str, int] = {}
+
+    for fid in chosen:
+        # Decide if positive or negative
+        if rng.random() < bias_positive:
+            # Positive: liked or loved
+            tier = rng.choice(["liked", "loved"])
+        else:
+            # Negative: disliked or hated
+            tier = rng.choice(["disliked", "hated"])
+
+        base = STANDING_TIERS[tier]
+        # Add some variance within the tier
+        variance = rng.randint(-25, 25)
+        standings[fid] = base + variance
+
+    return standings
+
+
+def get_actor_faction_standings(actor: Any) -> Dict[str, int]:
+    """Get the faction standings dict for an actor, if any.
+
+    Returns explicit standings from tags["faction_standings"], or
+    derives standings from affiliations if no explicit dict exists.
+    """
+    tags = getattr(actor, "tags", None) or {}
+    standings = tags.get("faction_standings")
+    if isinstance(standings, dict):
+        return dict(standings)
+
+    # Derive from affiliations if present
+    affiliations = actor_factions(actor)
+    if affiliations:
+        derived: Dict[str, int] = {}
+        for aff in affiliations:
+            if aff in FACTIONS:
+                # Affiliated faction loves this actor
+                derived[aff] = LOVED
+        return derived
+
+    return {}
+
+
+def describe_faction_standings(actor: Any) -> list[str]:
+    """Return human-readable lines describing an actor's faction standings.
+
+    Used by the look/examine display to show NPC faction relationships.
+    """
+    standings = get_actor_faction_standings(actor)
+    if not standings:
+        return []
+
+    lines = []
+    # Sort by standing value (loved first, hated last)
+    for fid, val in sorted(standings.items(), key=lambda x: -x[1]):
+        fdef = FACTIONS.get(fid)
+        fname = fdef.name if fdef else fid
+        tier = rep_tier(val)
+        tier_label = tier.capitalize()
+        lines.append(f"  {fname}: {tier_label}")
+
+    return lines
 

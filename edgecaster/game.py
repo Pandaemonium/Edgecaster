@@ -1453,6 +1453,14 @@ class Game:
                         if "legendary_id" in struct:
                             actor.tags["legendary_id"] = struct.get("legendary_id")
                         actor.tags["lair_poi_id"] = pid
+                        # Generate procedural faction standings for this legendary
+                        try:
+                            from edgecaster.systems.reputation import generate_procedural_standings
+                            actor.tags["faction_standings"] = generate_procedural_standings(
+                                self.rng, bias_positive=0.5
+                            )
+                        except Exception:
+                            pass
                         try:
                             base_hp = int(getattr(actor.stats, "max_hp", 1) or 1)
                             boosted = max(base_hp + 1, int(round(base_hp * hp_mult)))

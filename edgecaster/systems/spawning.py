@@ -370,17 +370,52 @@ def spawn_entities_near(
 # Specific Spawn Functions
 # ---------------------------------------------------------------------------
 
+def _get_biome_at_position(level: "LevelState", pos: Tuple[int, int]) -> Optional[int]:
+    """Get the biome ID at a given position, if available."""
+    x, y = pos
+    world = getattr(level, "world", None)
+    if world is None:
+        return None
+
+    # Try to get biome from tile
+    try:
+        tile = world.get_tile(x, y)
+        if tile is not None:
+            biome_id = getattr(tile, "biome_id", None)
+            if biome_id is not None:
+                return int(biome_id)
+    except Exception:
+        pass
+
+    return None
+
+
 def spawn_enemies(
     game: "Game",
     level: "LevelState",
     count: int,
+    use_biome_spawning: bool = True,
+    include_neutral_factions: bool = True,
 ) -> int:
     """Spawn random enemies using the data-driven enemy factory.
+
+    Args:
+        game: The Game instance
+        level: The LevelState to spawn in
+        count: Number of enemies to spawn
+        use_biome_spawning: If True, use biome-aware enemy selection
+        include_neutral_factions: If True, include neutral faction creatures
 
     Returns the number of enemies spawned.
     """
     spawned = 0
     attempts = 0
+
+    # Cache biome pools to avoid re-reading YAML for each spawn
+    biome_pool_cache: Dict[int, List[str]] = {}
+
+    # Fallback pool for when biome isn't available
+    fallback_pool: Optional[List[str]] = None
 
     while spawned < count and attempts < 200:
         attempts += 1
@@ -388,8 +423,31 @@ def spawn_enemies(
         if pos is None:
             continue
 
-        # Pick a random enemy template id from enemies.yaml
-        enemy_ids = get_enemy_template_ids(game)
+        # Determine which enemy pool to use
+        enemy_ids: List[str]
+
+        if use_biome_spawning:
+            biome_id = _get_biome_at_position(level, pos)
+
+            if biome_id is not None:
+                # Use cached pool or build new one
+                if biome_id not in biome_pool_cache:
+                    biome_pool_cache[biome_id] = get_biome_enemy_pool(
+                        biome_id, include_neutral_factions=include_neutral_factions
+                    )
+                enemy_ids = biome_pool_cache[biome_id]
+            else:
+                # No biome info, use fallback
+                if fallback_pool is None:
+                    fallback_pool = get_enemy_template_ids(game)
+                enemy_ids = fallback_pool
+        else:
+            # Biome spawning disabled, use classic behavior
+            enemy_ids = get_enemy_template_ids(game)
+
+        if not enemy_ids:
+            enemy_ids = ["imp"]
+
         tmpl_id = game.rng.choice(enemy_ids)
 
         mob = enemy_factory.spawn_enemy(tmpl_id, pos)
@@ -746,11 +804,19 @@ def spawn_npcs(
 # Biome-Aware Spawning
 # ---------------------------------------------------------------------------
 
-def get_biome_enemy_pool(biome_id: int) -> List[str]:
+def get_biome_enemy_pool(biome_id: int, include_neutral_factions: bool = False) -> List[str]:
     """Get enemy template IDs appropriate for a specific biome.
 
     Reads enemies.yaml and filters by biome_spawn tag.
     Falls back to generic enemies if no biome-specific ones found.
+
+    Args:
+        biome_id: The biome ID to get enemies for
+        include_neutral_factions: If True, include creatures from neutral factions
+            (like natures_chosen, high_society). If False, only hostile factions.
+
+    Returns:
+        List of enemy template IDs appropriate for the biome.
     """
     from edgecaster.climate import Biome
     from pathlib import Path
@@ -771,6 +837,26 @@ def get_biome_enemy_pool(biome_id: int) -> List[str]:
     except (ValueError, KeyError):
         biome_name = None
 
+    # Factions that are hostile by default (hostile_below >= 125)
+    hostile_factions = {
+        "hostile",
+        "demon_cult_flame",
+        "demon_cult_void",
+        "demon_cult_flesh",
+    }
+
+    # Factions that are neutral - may attack if provoked
+    neutral_factions = {
+        "natures_chosen",
+        "high_society",
+        "patternkeepers",
+    }
+
+    # Determine which factions to include
+    allowed_factions = set(hostile_factions)
+    if include_neutral_factions:
+        allowed_factions.update(neutral_factions)
+
     biome_enemies: List[str] = []
     generic_enemies: List[str] = []
 
@@ -782,7 +868,13 @@ def get_biome_enemy_pool(biome_id: int) -> List[str]:
             continue
 
         faction = entry.get("faction", "hostile")
-        if faction != "hostile":
+
+        # Skip templates, NPCs, player faction
+        if faction in ("template", "npc", "player", "neutral"):
+            continue
+
+        # Check if faction is allowed
+        if faction not in allowed_factions:
             continue
 
         tags_raw = entry.get("tags", None)
@@ -816,6 +908,7 @@ def spawn_enemies_for_biome(
     level: "LevelState",
     biome_id: int,
     count: int,
+    include_neutral_factions: bool = True,
 ) -> int:
     """Spawn enemies appropriate for the local biome.
 
@@ -824,13 +917,14 @@ def spawn_enemies_for_biome(
         level: The LevelState to spawn in
         biome_id: The biome ID at this location
         count: Number of enemies to spawn
+        include_neutral_factions: If True, include neutral faction creatures
 
     Returns:
         Number of enemies actually spawned
     """
     from edgecaster.enemies import factory as enemy_factory
 
-    pool = get_biome_enemy_pool(biome_id)
+    pool = get_biome_enemy_pool(biome_id, include_neutral_factions=include_neutral_factions)
     if not pool:
         return 0
 
