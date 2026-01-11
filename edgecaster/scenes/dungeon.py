@@ -1715,8 +1715,19 @@ class DungeonScene(Scene):
 
         if kind == "pickup":
             if not in_aim_mode:
-                if hasattr(game, "player_pick_up"):
-                    game.player_pick_up()
+                level = game._level()
+                player = level.actors.get(game.player_id)
+                if player:
+                    items = game._items_at(level, player.pos)
+                    if len(items) == 0:
+                        game.log.add("There's nothing here to pick up.")
+                    elif len(items) == 1:
+                        # Single item - pick up directly
+                        game.player_pick_up()
+                    else:
+                        # Multiple items - show selection scene
+                        from edgecaster.scenes.cache_items_scene import CacheItemsScene
+                        manager.push_scene(CacheItemsScene(game, items))
             return
 
         if kind == "possess_nearest":

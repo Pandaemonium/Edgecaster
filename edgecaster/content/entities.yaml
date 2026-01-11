@@ -263,6 +263,7 @@
     equip_grants_abilities: ["koch"]
     charges_min: 3
     charges_max: 5
+    not_stackable: true
 
 - id: wand_branch
   name: Wand of Branching
@@ -279,6 +280,7 @@
     equip_grants_abilities: ["branch"]
     charges_min: 3
     charges_max: 5
+    not_stackable: true
 
 - id: wand_zigzag
   name: Wand of Zigzag
@@ -295,6 +297,7 @@
     equip_grants_abilities: ["zigzag"]
     charges_min: 3
     charges_max: 5
+    not_stackable: true
 
 - id: wand_activate_n
   name: Wand of Neighbors
@@ -311,6 +314,7 @@
     equip_grants_abilities: ["activate_seed"]
     charges_min: 3
     charges_max: 5
+    not_stackable: true
 
 - id: wand_sparkle
   name: Wand of Sparkle
@@ -327,6 +331,7 @@
     equip_grants_abilities: ["sparkle"]
     charges_min: 3
     charges_max: 5
+    not_stackable: true
 
 # --- SIGN / DOOR FEATURES -------------------------------------------
 - id: sign

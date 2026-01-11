@@ -26,6 +26,78 @@ from edgecaster.systems import item_grants
 
 
 # ---------------------------------------------------------------------------
+# Item Stacking
+# ---------------------------------------------------------------------------
+
+STACK_MAX = 999
+
+
+def _stack_key(item: Any) -> Optional[str]:
+    """Return a key for stacking, or None if item cannot stack.
+
+    Items stack by default. Use tags["not_stackable"] = True to prevent stacking
+    (e.g., for wands with varying charges).
+    """
+    tags = getattr(item, "tags", {}) or {}
+    if tags.get("not_stackable"):
+        return None
+    # Use proto_id (template) as primary key, fall back to item_type tag
+    proto = getattr(item, "proto_id", None) or tags.get("item_type")
+    return str(proto) if proto else None
+
+
+def _find_stack_target(inv: List[Any], item: Any) -> Optional[Any]:
+    """Find an existing stack in inventory that item can join."""
+    key = _stack_key(item)
+    if key is None:
+        return None
+    for existing in inv:
+        # Don't stack into equipped items
+        etags = getattr(existing, "tags", {}) or {}
+        if etags.get("equipped_slot") or etags.get("equipped"):
+            continue
+        if _stack_key(existing) == key:
+            # Check if stack has room
+            if get_quantity(existing) < STACK_MAX:
+                return existing
+    return None
+
+
+def get_quantity(item: Any) -> int:
+    """Get the quantity of an item (default 1)."""
+    tags = getattr(item, "tags", {}) or {}
+    try:
+        return max(1, int(tags.get("quantity", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def set_quantity(item: Any, qty: int) -> None:
+    """Set the quantity of an item, clamped to [1, STACK_MAX]."""
+    qty = max(1, min(qty, STACK_MAX))
+    tags = getattr(item, "tags", None)
+    if tags is None:
+        tags = {}
+    tags["quantity"] = qty
+    try:
+        item.tags = tags
+    except Exception:
+        pass
+
+
+def _add_to_stack(target: Any, amount: int) -> int:
+    """Add amount to existing stack. Returns overflow (amount that didn't fit)."""
+    current = get_quantity(target)
+    total = current + amount
+    if total <= STACK_MAX:
+        set_quantity(target, total)
+        return 0
+    else:
+        set_quantity(target, STACK_MAX)
+        return total - STACK_MAX
+
+
+# ---------------------------------------------------------------------------
 # Inventory Access
 # ---------------------------------------------------------------------------
 
@@ -81,19 +153,53 @@ def player_pick_up(game: "Game") -> None:
         game.log.add("You can't pick that up.")
         return
 
-    # Remove from the level's entity list.
-    for eid, e in list(level.entities.items()):
-        if e is ent:
-            del level.entities[eid]
-            break
-
-    # Append the item to the current host's inventory.
-    inv = get_player_inventory(game)
-    inv.append(ent)
-
+    # Get the item's quantity and name before potentially merging
+    pickup_qty = get_quantity(ent)
     name = getattr(ent, "name", None) or "item"
-    article = "an" if name and name[0].lower() in "aeiou" else "a"
-    game.log.add(f"You pick up {article} {name.lower()}.")
+
+    # Check if this item can stack with an existing inventory item
+    inv = get_player_inventory(game)
+    stack_target = _find_stack_target(inv, ent)
+
+    if stack_target is not None:
+        # Try to merge into existing stack
+        overflow = _add_to_stack(stack_target, pickup_qty)
+        if overflow > 0:
+            # Partial pickup: keep remainder on ground
+            set_quantity(ent, overflow)
+            picked = pickup_qty - overflow
+            if picked > 1:
+                game.log.add(f"You pick up {picked} {name.lower()}s (stack full).")
+            else:
+                game.log.add(f"You pick up a {name.lower()} (stack full).")
+        else:
+            # Fully absorbed into stack - remove from world
+            for eid, e in list(level.entities.items()):
+                if e is ent:
+                    del level.entities[eid]
+                    break
+            if pickup_qty > 1:
+                game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
+            else:
+                article = "an" if name and name[0].lower() in "aeiou" else "a"
+                game.log.add(f"You pick up {article} {name.lower()}.")
+    else:
+        # No existing stack - add as new item
+        # Remove from the level's entity list.
+        for eid, e in list(level.entities.items()):
+            if e is ent:
+                del level.entities[eid]
+                break
+
+        # Ensure quantity tag is set
+        set_quantity(ent, pickup_qty)
+        inv.append(ent)
+
+        if pickup_qty > 1:
+            game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
+        else:
+            article = "an" if name and name[0].lower() in "aeiou" else "a"
+            game.log.add(f"You pick up {article} {name.lower()}.")
 
     # Item-granted actions (held/equipped) are computed from inventory state,
     # so they appear/disappear automatically when the item is moved.
@@ -116,6 +222,100 @@ def player_pick_up(game: "Game") -> None:
             game._update_fov(level)
         except Exception:
             pass
+
+
+def player_pick_up_item(game: "Game", item: Any) -> bool:
+    """Pick up a specific item from the ground (not just the 'top' one).
+
+    Used by CacheItemsScene for multi-item pickup selection.
+    Returns True if the item was picked up, False otherwise.
+    """
+    level = game._level()
+    if game.player_id not in level.actors:
+        return False
+
+    # Verify item is still in level entities
+    item_id = getattr(item, "id", None)
+    if item_id is None or item_id not in level.entities:
+        return False
+
+    ent = level.entities[item_id]
+    tags = getattr(ent, "tags", {}) or {}
+
+    # Currency piles are auto-absorbed
+    if tags.get("currency") == "bismuth":
+        amt = int(tags.get("amount", 0))
+        if amt > 0:
+            game.adjust_currency(amt, log=True)
+            game._play_sfx("assets/sfx/chaching.mp3", volume=0.7)
+        del level.entities[item_id]
+        return True
+
+    # Don't allow picking up actors or non-item entities
+    if hasattr(ent, "faction") or getattr(ent, "kind", None) != "item":
+        game.log.add("You can't pick that up.")
+        return False
+
+    # Get the item's quantity and name before potentially merging
+    pickup_qty = get_quantity(ent)
+    name = getattr(ent, "name", None) or "item"
+
+    # Check if this item can stack with an existing inventory item
+    inv = get_player_inventory(game)
+    stack_target = _find_stack_target(inv, ent)
+
+    if stack_target is not None:
+        # Try to merge into existing stack
+        overflow = _add_to_stack(stack_target, pickup_qty)
+        if overflow > 0:
+            # Partial pickup: keep remainder on ground
+            set_quantity(ent, overflow)
+            picked = pickup_qty - overflow
+            if picked > 1:
+                game.log.add(f"You pick up {picked} {name.lower()}s (stack full).")
+            else:
+                game.log.add(f"You pick up a {name.lower()} (stack full).")
+        else:
+            # Fully absorbed into stack - remove from world
+            del level.entities[item_id]
+            if pickup_qty > 1:
+                game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
+            else:
+                article = "an" if name and name[0].lower() in "aeiou" else "a"
+                game.log.add(f"You pick up {article} {name.lower()}.")
+    else:
+        # No existing stack - add as new item
+        del level.entities[item_id]
+        set_quantity(ent, pickup_qty)
+        inv.append(ent)
+
+        if pickup_qty > 1:
+            game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
+        else:
+            article = "an" if name and name[0].lower() in "aeiou" else "a"
+            game.log.add(f"You pick up {article} {name.lower()}.")
+
+    # Item-granted actions
+    try:
+        grants = item_grants.get_item_grants(ent)
+    except Exception:
+        grants = []
+    if grants:
+        game.refresh_actor_actions(game.player_id)
+        for action, mode in grants:
+            if mode != "held":
+                continue
+            game.log.add(f"You can {action.replace('_', ' ')} while holding it.")
+
+    # Refresh FOV if picked up item was emitting light
+    if tags.get("light_radius", 0) > 0:
+        level.need_fov = True
+        try:
+            game._update_fov(level)
+        except Exception:
+            pass
+
+    return True
 
 
 def drop_inventory_item(game: "Game", index: int) -> None:
@@ -157,6 +357,94 @@ def drop_inventory_item(game: "Game", index: int) -> None:
             pass
 
 
+def drop_inventory_item_qty(game: "Game", index: int, qty: Optional[int] = None) -> None:
+    """Drop a specified quantity from a stack at index.
+
+    Args:
+        game: The game instance
+        index: Index in player inventory
+        qty: Number to drop. None or >= current quantity drops entire stack.
+    """
+    inv = get_player_inventory(game)
+    if not (0 <= index < len(inv)):
+        return
+
+    level = game._level()
+    if game.player_id not in level.actors:
+        return
+    player = level.actors[game.player_id]
+
+    ent = inv[index]
+    current_qty = get_quantity(ent)
+    name = getattr(ent, "name", None) or "item"
+
+    # If qty is None or >= current, drop entire stack
+    if qty is None or qty >= current_qty:
+        # Use existing drop logic for full stack
+        drop_inventory_item(game, index)
+        return
+
+    # Partial drop: split the stack
+    qty = max(1, qty)
+
+    # Reduce quantity in inventory
+    set_quantity(ent, current_qty - qty)
+
+    # Create a clone for the ground
+    dropped = _clone_item_for_drop(game, ent, qty)
+    dropped.pos = player.pos
+    level.entities[dropped.id] = dropped
+
+    if qty > 1:
+        game.log.add(f"You drop {qty} {name.lower()}s.")
+    else:
+        article = "an" if name and name[0].lower() in "aeiou" else "a"
+        game.log.add(f"You drop {article} {name.lower()}.")
+
+    # Refresh FOV if dropped item emits light
+    tags = getattr(ent, "tags", {}) or {}
+    if tags.get("light_radius", 0) > 0:
+        level.need_fov = True
+        try:
+            game._update_fov(level)
+        except Exception:
+            pass
+
+
+def _clone_item_for_drop(game: "Game", item: Any, qty: int) -> Any:
+    """Create a copy of an item with a new ID and specified quantity.
+
+    Used when splitting a stack (dropping part of it).
+    """
+    from edgecaster.systems.spawning import spawn_entity_from_template
+
+    proto_id = getattr(item, "proto_id", None)
+    if proto_id is None:
+        tags = getattr(item, "tags", {}) or {}
+        proto_id = tags.get("item_type")
+
+    if proto_id:
+        # Spawn fresh from template
+        pos = getattr(item, "pos", (0, 0))
+        clone = spawn_entity_from_template(game, str(proto_id), pos)
+    else:
+        # Fallback: manual clone (shouldn't happen often)
+        from edgecaster.state.entities import Entity
+        clone = Entity(
+            id=game._new_id(),
+            name=getattr(item, "name", "item"),
+            pos=getattr(item, "pos", (0, 0)),
+            glyph=getattr(item, "glyph", "?"),
+            color=getattr(item, "color", (255, 255, 255)),
+            kind=getattr(item, "kind", "item"),
+        )
+        clone.tags = dict(getattr(item, "tags", {}) or {})
+
+    # Set the quantity on the clone
+    set_quantity(clone, qty)
+    return clone
+
+
 # ---------------------------------------------------------------------------
 # Eating / Consuming Items
 # ---------------------------------------------------------------------------
@@ -193,8 +481,14 @@ def eat_item_from_inventory(game: "Game", owner_id: str, index: int) -> None:
             game.log.add(f"You decide not to eat the {name.lower()}.")
         return
 
-    # Actually consume the item from that inventory.
-    inv.pop(index)
+    # Consume one from the stack
+    qty = get_quantity(ent)
+    if qty > 1:
+        # Decrement quantity instead of removing
+        set_quantity(ent, qty - 1)
+    else:
+        # Last one - remove from inventory
+        inv.pop(index)
 
     # Heal the player a bit for eating a berry.
     player = game._player()

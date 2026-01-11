@@ -116,6 +116,7 @@ def _apply_body_zoom_to_point(
 
 from .base import PopupMenuScene
 from .urgent_message_scene import UrgentMessageScene
+from .quantity_prompt_scene import QuantityPromptScene
 
 from edgecaster.systems.actions import describe_entity_for_look
 
@@ -1385,6 +1386,12 @@ class InventoryListWidget(ListWidget):
                         name = f"{name} ({cur}/{maxc} charges)"
                     else:
                         name = f"{name} ({cur} charges)"
+                else:
+                    # Show quantity for stacked items (if not showing charges)
+                    from edgecaster.systems.inventory import get_quantity
+                    qty = get_quantity(ent)
+                    if qty > 1:
+                        name = f"{name} ({qty})"
                 name_col = half_sel if drag_mark else (sel if selected else fg)
                 name_surf = font.render(str(name), True, name_col)
                 ctx.surface.blit(name_surf, (x, y))
@@ -3729,6 +3736,8 @@ class InventoryScene(PopupMenuScene):
     # ---------------------------------------------------------------------
 
     def _refresh_rows(self) -> None:
+        from edgecaster.systems.inventory import get_quantity
+
         owner_id = self._owner_id()
         inv = self.game.get_inventory(owner_id)
 
@@ -3744,7 +3753,10 @@ class InventoryScene(PopupMenuScene):
 
                 name = getattr(ent, "name", None) or "(unnamed item)"
                 glyph = getattr(ent, "glyph", None) or "?"
-                rows.append(_InvRow(f"{str(glyph)[:1]}  {name}", ent=ent))
+                # Show quantity for stacked items
+                qty = get_quantity(ent)
+                qty_suffix = f" ({qty})" if qty > 1 else ""
+                rows.append(_InvRow(f"{str(glyph)[:1]}  {name}{qty_suffix}", ent=ent))
         else:
             rows.append(_InvRow("(Empty)", ent=None))
 
@@ -4300,6 +4312,28 @@ class InventoryScene(PopupMenuScene):
             if choice == "Drop" and current_owner_id == self.game.player_id:
                 _ensure_unequipped(cur_ent)
 
+                from edgecaster.systems.inventory import get_quantity, drop_inventory_item_qty
+                qty = get_quantity(cur_ent)
+
+                if qty > 1:
+                    # Show quantity prompt for stacked items
+                    def on_drop_qty(amount: int) -> None:
+                        if amount > 0:
+                            try:
+                                drop_inventory_item_qty(self.game, cur_index, amount)
+                            except Exception:
+                                pass
+                        _refresh_ui()
+
+                    mgr.push_scene(QuantityPromptScene(
+                        self.game,
+                        qty,
+                        on_drop_qty,
+                        title="Drop how many?",
+                    ))
+                    return
+
+                # Single item - drop directly
                 if hasattr(self.game, "drop_inventory_item"):
                     try:
                         self.game.drop_inventory_item(cur_index)

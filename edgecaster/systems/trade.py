@@ -486,6 +486,218 @@ def try_buy(game: Any, merchant_actor_id: str, item_index: int) -> bool:
     return True
 
 
+def proposal_summary_with_qty(
+    game: Any,
+    merchant_actor_id: str,
+    buy_items: dict[str, int],  # entity_id -> quantity
+    sell_items: dict[str, int],  # entity_id -> quantity
+) -> ProposalSummary:
+    """Calculate proposal totals with quantity support for stacked items."""
+    from edgecaster.systems.inventory import get_quantity
+
+    level = game._level()  # type: ignore[attr-defined]
+    merchant = getattr(level, "actors", {}).get(merchant_actor_id)
+    if merchant is None:
+        return ProposalSummary(
+            buy_total=0,
+            sell_total=0,
+            net_player=0,
+            player_bismuth_before=_safe_int(getattr(game, "bismuth", 0), 0),
+            player_bismuth_after=_safe_int(getattr(game, "bismuth", 0), 0),
+            merchant_funds_before=0,
+            merchant_funds_after=0,
+            ok=False,
+            reason="Merchant unavailable.",
+        )
+
+    ensure_merchant_initialized(game, level, merchant)
+
+    player_before = _safe_int(getattr(game, "bismuth", 0), 0)
+    merchant_before = merchant_funds(merchant)
+
+    if not buy_items and not sell_items:
+        return ProposalSummary(
+            buy_total=0,
+            sell_total=0,
+            net_player=0,
+            player_bismuth_before=player_before,
+            player_bismuth_after=player_before,
+            merchant_funds_before=merchant_before,
+            merchant_funds_after=merchant_before,
+            ok=True,
+        )
+
+    minv = list(game.get_inventory(merchant_actor_id))  # type: ignore[attr-defined]
+    pinv = list(game.player_inventory)  # type: ignore[attr-defined]
+
+    by_id_minv = {getattr(ent, "id", ""): ent for ent in minv}
+    by_id_pinv = {getattr(ent, "id", ""): ent for ent in pinv}
+
+    buy_total = 0
+    sell_total = 0
+    reason: str | None = None
+
+    for ent_id, qty in buy_items.items():
+        ent = by_id_minv.get(ent_id)
+        if ent is None:
+            if reason is None:
+                reason = "One or more items are no longer available."
+            continue
+        available = get_quantity(ent)
+        if qty > available:
+            if reason is None:
+                reason = f"Not enough of {getattr(ent, 'name', 'item')} available."
+            continue
+        q = quote_prices(merchant, ent)
+        if q is None or int(q.buy_price) <= 0:
+            if reason is None:
+                reason = "One or more proposed purchases are not for sale."
+            continue
+        buy_total += int(q.buy_price) * qty
+
+    for ent_id, qty in sell_items.items():
+        ent = by_id_pinv.get(ent_id)
+        if ent is None:
+            if reason is None:
+                reason = "One or more items are no longer in your inventory."
+            continue
+        available = get_quantity(ent)
+        if qty > available:
+            if reason is None:
+                reason = f"Not enough of {getattr(ent, 'name', 'item')} in inventory."
+            continue
+        if equipment_system.is_equipped(ent):
+            if reason is None:
+                reason = "Unequip items before selling them."
+            continue
+        q = quote_prices(merchant, ent)
+        if q is None or int(q.sell_price) <= 0:
+            if reason is None:
+                reason = "The merchant isn't interested in one or more items."
+            continue
+        sell_total += int(q.sell_price) * qty
+
+    net_player = int(sell_total - buy_total)
+    player_after = player_before + net_player
+    merchant_after = merchant_before - net_player
+
+    ok = reason is None
+    if ok and player_after < 0:
+        ok = False
+        reason = "You don't have enough bismuth."
+    if ok and merchant_after < 0:
+        ok = False
+        reason = "The merchant can't afford that right now."
+
+    return ProposalSummary(
+        buy_total=int(buy_total),
+        sell_total=int(sell_total),
+        net_player=int(net_player),
+        player_bismuth_before=int(player_before),
+        player_bismuth_after=int(player_after),
+        merchant_funds_before=int(merchant_before),
+        merchant_funds_after=int(merchant_after),
+        ok=bool(ok),
+        reason=str(reason or ""),
+    )
+
+
+def apply_proposal_with_qty(
+    game: Any,
+    merchant_actor_id: str,
+    buy_items: dict[str, int],  # entity_id -> quantity
+    sell_items: dict[str, int],  # entity_id -> quantity
+) -> tuple[bool, str]:
+    """Execute a trade proposal with quantity support for stacked items."""
+    from edgecaster.systems.inventory import get_quantity, set_quantity, _clone_item_for_drop
+
+    summary = proposal_summary_with_qty(game, merchant_actor_id, buy_items, sell_items)
+    if not (buy_items or sell_items):
+        return True, ""
+    if not summary.ok:
+        return False, summary.reason or "Trade invalid."
+
+    level = game._level()  # type: ignore[attr-defined]
+    merchant = getattr(level, "actors", {}).get(merchant_actor_id)
+    if merchant is None:
+        return False, "Merchant unavailable."
+
+    ensure_merchant_initialized(game, level, merchant)
+
+    minv = game.get_inventory(merchant_actor_id)  # type: ignore[attr-defined]
+    pinv = game.player_inventory  # type: ignore[attr-defined]
+
+    by_id_minv = {getattr(ent, "id", ""): ent for ent in list(minv)}
+    by_id_pinv = {getattr(ent, "id", ""): ent for ent in list(pinv)}
+
+    # Process buys: move from merchant to player
+    for ent_id, qty in buy_items.items():
+        ent = by_id_minv.get(ent_id)
+        if ent is None:
+            continue
+        available = get_quantity(ent)
+        q = quote_prices(merchant, ent)
+        price = int(q.buy_price) if q else 0
+
+        if qty >= available:
+            # Take entire stack
+            minv.remove(ent)
+            pinv.append(ent)
+            try:
+                game.log.add(f"You buy {ent.name} x{available} for {price * available} bismuth.")
+            except Exception:
+                pass
+        else:
+            # Split stack: reduce merchant's, create new for player
+            set_quantity(ent, available - qty)
+            bought = _clone_item_for_drop(game, ent, qty)
+            pinv.append(bought)
+            try:
+                game.log.add(f"You buy {ent.name} x{qty} for {price * qty} bismuth.")
+            except Exception:
+                pass
+
+    # Process sells: move from player to merchant
+    for ent_id, qty in sell_items.items():
+        ent = by_id_pinv.get(ent_id)
+        if ent is None:
+            continue
+        available = get_quantity(ent)
+        q = quote_prices(merchant, ent)
+        payout = int(q.sell_price) if q else 0
+
+        if qty >= available:
+            # Sell entire stack
+            pinv.remove(ent)
+            minv.append(ent)
+            try:
+                game.log.add(f"You sell {ent.name} x{available} for {payout * available} bismuth.")
+            except Exception:
+                pass
+        else:
+            # Split stack: reduce player's, create new for merchant
+            set_quantity(ent, available - qty)
+            sold = _clone_item_for_drop(game, ent, qty)
+            minv.append(sold)
+            try:
+                game.log.add(f"You sell {ent.name} x{qty} for {payout * qty} bismuth.")
+            except Exception:
+                pass
+
+    # Transfer funds
+    try:
+        game.adjust_currency(int(summary.net_player), log=False)  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            game.bismuth = int(getattr(game, "bismuth", 0)) + int(summary.net_player)
+        except Exception:
+            pass
+
+    set_merchant_funds(merchant, int(summary.merchant_funds_after))
+
+    return True, ""
+
+
 def try_sell(game: Any, merchant_actor_id: str, item_index: int) -> bool:
     level = game._level()  # type: ignore[attr-defined]
     merchant = getattr(level, "actors", {}).get(merchant_actor_id)

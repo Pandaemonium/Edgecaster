@@ -6,8 +6,10 @@ from typing import Any, Optional
 import pygame
 
 from .base import PanelScene
+from .quantity_prompt_scene import QuantityPromptScene
 
 from edgecaster.systems import trade
+from edgecaster.systems.inventory import get_quantity
 from edgecaster.systems import equipment as equipment_system
 from edgecaster.ui.widgets import (
     ButtonWidget,
@@ -63,10 +65,12 @@ class MerchantScene(PanelScene):
         self.sell_index: int = 0
 
         # Proposed trades (staged until Accept)
-        self.pending_buy_ids: set[str] = set()
-        self.pending_sell_ids: set[str] = set()
+        # Maps entity_id -> quantity to trade
+        self.pending_buy_qtys: dict[str, int] = {}
+        self.pending_sell_qtys: dict[str, int] = {}
 
         self._close_requested: str | None = None  # "accept" | "cancel" | None
+        self._current_manager: Any = None  # Set during event handling for quantity prompts
 
         self._header: ScaledLabelWidget | None = None
         self._buy_list: TwoColumnListWidget | None = None
@@ -152,27 +156,77 @@ class MerchantScene(PanelScene):
     def _request_close(self, kind: str) -> None:
         self._close_requested = str(kind)
 
-    def _toggle_pending_buy(self, ent_id: str) -> None:
+    def _toggle_pending_buy(self, ent_id: str, ent: Any = None, manager: Any = None) -> None:
+        """Toggle or adjust quantity for a buy proposal."""
         ent_id = str(ent_id)
         if not ent_id:
             return
-        if ent_id in self.pending_buy_ids:
-            self.pending_buy_ids.remove(ent_id)
-        else:
-            self.pending_buy_ids.add(ent_id)
-        if self._status is not None:
-            self._status.text = ""
 
-    def _toggle_pending_sell(self, ent_id: str) -> None:
+        # If already in proposal, remove it
+        if ent_id in self.pending_buy_qtys:
+            del self.pending_buy_qtys[ent_id]
+            if self._status is not None:
+                self._status.text = ""
+            return
+
+        # Check quantity of the item
+        qty = get_quantity(ent) if ent else 1
+
+        if qty > 1 and manager is not None:
+            # Show quantity prompt
+            def on_qty(amount: int) -> None:
+                if amount > 0:
+                    self.pending_buy_qtys[ent_id] = amount
+                if self._status is not None:
+                    self._status.text = ""
+
+            manager.push_scene(QuantityPromptScene(
+                self.game,
+                qty,
+                on_qty,
+                title="Buy how many?",
+            ))
+        else:
+            # Single item - add directly
+            self.pending_buy_qtys[ent_id] = qty
+            if self._status is not None:
+                self._status.text = ""
+
+    def _toggle_pending_sell(self, ent_id: str, ent: Any = None, manager: Any = None) -> None:
+        """Toggle or adjust quantity for a sell proposal."""
         ent_id = str(ent_id)
         if not ent_id:
             return
-        if ent_id in self.pending_sell_ids:
-            self.pending_sell_ids.remove(ent_id)
+
+        # If already in proposal, remove it
+        if ent_id in self.pending_sell_qtys:
+            del self.pending_sell_qtys[ent_id]
+            if self._status is not None:
+                self._status.text = ""
+            return
+
+        # Check quantity of the item
+        qty = get_quantity(ent) if ent else 1
+
+        if qty > 1 and manager is not None:
+            # Show quantity prompt
+            def on_qty(amount: int) -> None:
+                if amount > 0:
+                    self.pending_sell_qtys[ent_id] = amount
+                if self._status is not None:
+                    self._status.text = ""
+
+            manager.push_scene(QuantityPromptScene(
+                self.game,
+                qty,
+                on_qty,
+                title="Sell how many?",
+            ))
         else:
-            self.pending_sell_ids.add(ent_id)
-        if self._status is not None:
-            self._status.text = ""
+            # Single item - add directly
+            self.pending_sell_qtys[ent_id] = qty
+            if self._status is not None:
+                self._status.text = ""
 
     def _refresh_rows(self) -> None:
         level = self.game._level()
@@ -185,41 +239,59 @@ class MerchantScene(PanelScene):
         buy_rows: list[_TradeRow] = []
         minv = list(self.game.get_inventory(self.merchant_actor_id))
         valid_buy = {str(getattr(ent, "id", "")) for ent in minv}
-        self.pending_buy_ids.intersection_update({x for x in valid_buy if x})
+        # Remove invalid entries from pending
+        for eid in list(self.pending_buy_qtys.keys()):
+            if eid not in valid_buy:
+                del self.pending_buy_qtys[eid]
         for i, ent in enumerate(minv):
+            ent_id = str(getattr(ent, "id", ""))
             q = trade.quote_prices(merchant, ent)
             price = int(q.buy_price) if q else 0
             name = str(getattr(ent, "name", "Item"))
-            prefix = "+ " if str(getattr(ent, "id", "")) in self.pending_buy_ids else ""
+            qty = get_quantity(ent)
+            qty_suffix = f" ({qty})" if qty > 1 else ""
+            pending_qty = self.pending_buy_qtys.get(ent_id, 0)
+            if pending_qty > 0:
+                prefix = f"+{pending_qty} "
+            else:
+                prefix = ""
             buy_rows.append(
                 _TradeRow(
-                    label=f"{prefix}{name}",
+                    label=f"{prefix}{name}{qty_suffix}",
                     value=f"{price}b" if price else "",
                     index=i,
-                    ent_id=str(getattr(ent, "id", "")),
+                    ent_id=ent_id,
                 )
             )
 
         sell_rows: list[_TradeRow] = []
         pinv = list(getattr(self.game, "player_inventory", []) or [])
         valid_sell = {str(getattr(ent, "id", "")) for ent in pinv}
-        self.pending_sell_ids.intersection_update({x for x in valid_sell if x})
+        # Remove invalid entries from pending
+        for eid in list(self.pending_sell_qtys.keys()):
+            if eid not in valid_sell:
+                del self.pending_sell_qtys[eid]
         for i, ent in enumerate(pinv):
             ent_id = str(getattr(ent, "id", ""))
             equipped = equipment_system.is_equipped(ent)
             if equipped and ent_id:
                 # Equipped items can't be sold; don't allow them in the proposal.
-                self.pending_sell_ids.discard(ent_id)
+                self.pending_sell_qtys.pop(ent_id, None)
             q = trade.quote_prices(merchant, ent)
             price = int(q.sell_price) if q else 0
             name = str(getattr(ent, "name", "Item"))
+            qty = get_quantity(ent)
+            qty_suffix = f" ({qty})" if qty > 1 else ""
+            pending_qty = self.pending_sell_qtys.get(ent_id, 0)
             if equipped:
                 prefix = "[E] "
+            elif pending_qty > 0:
+                prefix = f"-{pending_qty} "
             else:
-                prefix = "- " if ent_id in self.pending_sell_ids else ""
+                prefix = ""
             sell_rows.append(
                 _TradeRow(
-                    label=f"{prefix}{name}",
+                    label=f"{prefix}{name}{qty_suffix}",
                     value=f"{price}b" if price else "",
                     index=i,
                     ent_id=ent_id,
@@ -254,18 +326,20 @@ class MerchantScene(PanelScene):
             self._header.text = f"Trade - {mname} ({m}b)  |  You ({p}b)"
 
         if self._summary is not None:
-            summary = trade.proposal_summary(
+            summary = trade.proposal_summary_with_qty(
                 self.game,
                 self.merchant_actor_id,
-                list(self.pending_buy_ids),
-                list(self.pending_sell_ids),
+                self.pending_buy_qtys,
+                self.pending_sell_qtys,
             )
-            if not self.pending_buy_ids and not self.pending_sell_ids:
+            buy_count = sum(self.pending_buy_qtys.values())
+            sell_count = sum(self.pending_sell_qtys.values())
+            if not self.pending_buy_qtys and not self.pending_sell_qtys:
                 self._summary.text = "No proposed trades."
             else:
                 self._summary.text = (
-                    f"Proposed: buy {len(self.pending_buy_ids)} (cost {summary.buy_total}b)  |  "
-                    f"sell {len(self.pending_sell_ids)} (earn {summary.sell_total}b)  |  "
+                    f"Proposed: buy {buy_count} (cost {summary.buy_total}b)  |  "
+                    f"sell {sell_count} (earn {summary.sell_total}b)  |  "
                     f"net {summary.net_player:+d}b  |  "
                     f"after: you {summary.player_bismuth_after}b, merchant {summary.merchant_funds_after}b"
                 )
@@ -280,7 +354,10 @@ class MerchantScene(PanelScene):
         self.focus = "buy"
         self.buy_index = int(idx)
         if isinstance(item, _TradeRow):
-            self._toggle_pending_buy(item.ent_id)
+            # Get the entity for quantity check
+            minv = list(self.game.get_inventory(self.merchant_actor_id))
+            ent = minv[item.index] if 0 <= item.index < len(minv) else None
+            self._toggle_pending_buy(item.ent_id, ent=ent, manager=self._current_manager)
 
     def _on_sell_click(self, idx: int, item: Any) -> None:
         self.focus = "sell"
@@ -290,7 +367,10 @@ class MerchantScene(PanelScene):
                 if self._status is not None:
                     self._status.text = "Unequip that item before selling."
                 return
-            self._toggle_pending_sell(item.ent_id)
+            # Get the entity for quantity check
+            pinv = list(getattr(self.game, "player_inventory", []) or [])
+            ent = pinv[item.index] if 0 <= item.index < len(pinv) else None
+            self._toggle_pending_sell(item.ent_id, ent=ent, manager=self._current_manager)
 
     def _activate_focused(self) -> None:
         if self.focus == "sell":
@@ -304,7 +384,10 @@ class MerchantScene(PanelScene):
                     if self._status is not None:
                         self._status.text = "Unequip that item before selling."
                     return
-                self._toggle_pending_sell(row.ent_id)
+                # Get entity for quantity check
+                pinv = list(getattr(self.game, "player_inventory", []) or [])
+                ent = pinv[row.index] if 0 <= row.index < len(pinv) else None
+                self._toggle_pending_sell(row.ent_id, ent=ent, manager=self._current_manager)
             return
 
         if self._buy_list is None:
@@ -313,15 +396,21 @@ class MerchantScene(PanelScene):
             return
         row = self._buy_list.items[int(self.buy_index)]
         if isinstance(row, _TradeRow):
-            self._toggle_pending_buy(row.ent_id)
+            # Get entity for quantity check
+            minv = list(self.game.get_inventory(self.merchant_actor_id))
+            ent = minv[row.index] if 0 <= row.index < len(minv) else None
+            self._toggle_pending_buy(row.ent_id, ent=ent, manager=self._current_manager)
 
     def _panel_event(self, event, manager) -> None:
+        # Store manager for quantity prompts
+        self._current_manager = manager
+
         if event.type != pygame.KEYDOWN:
             return
 
         if event.key == pygame.K_ESCAPE:
-            self.pending_buy_ids.clear()
-            self.pending_sell_ids.clear()
+            self.pending_buy_qtys.clear()
+            self.pending_sell_qtys.clear()
             manager.pop_scene()
             return
 
@@ -363,30 +452,32 @@ class MerchantScene(PanelScene):
 
     def update(self, dt_ms: int, manager) -> None:
         super().update(dt_ms, manager)
+        # Store manager for quantity prompts (in case update is called before event)
+        self._current_manager = manager
 
         if self._close_requested == "cancel":
             self._close_requested = None
-            self.pending_buy_ids.clear()
-            self.pending_sell_ids.clear()
+            self.pending_buy_qtys.clear()
+            self.pending_sell_qtys.clear()
             manager.pop_scene()
             return
 
         if self._close_requested == "accept":
             self._close_requested = None
 
-            if not self.pending_buy_ids and not self.pending_sell_ids:
+            if not self.pending_buy_qtys and not self.pending_sell_qtys:
                 manager.pop_scene()
                 return
 
-            ok, msg = trade.apply_proposal(
+            ok, msg = trade.apply_proposal_with_qty(
                 self.game,
                 self.merchant_actor_id,
-                list(self.pending_buy_ids),
-                list(self.pending_sell_ids),
+                self.pending_buy_qtys,
+                self.pending_sell_qtys,
             )
             if ok:
-                self.pending_buy_ids.clear()
-                self.pending_sell_ids.clear()
+                self.pending_buy_qtys.clear()
+                self.pending_sell_qtys.clear()
                 manager.pop_scene()
             else:
                 if self._status is not None:

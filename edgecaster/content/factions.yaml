@@ -5,6 +5,7 @@
 # - hostile_below: default hostility threshold (standing < hostile_below => hostile)
 # - rep deltas: how much the player's reputation with *this faction* changes
 #   when killing/helping an entity that this faction likes or dislikes.
+#   note: rep kill deltas are set to zero for now - only killing legendaries affects rep.
 #
 # Standing tiers (used for "likes/dislikes" semantics, not hostility):
 #   <= -250: hated
@@ -26,8 +27,8 @@ neutral:
   opinions:
     neutral: 250
   hostile_below: -999999
-  kill_rep_delta: 2
-  help_rep_delta: 2
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 edgecasters:
   name: Edgecasters
@@ -36,8 +37,8 @@ edgecasters:
     edgecasters: 250
     hostile: -250
   hostile_below: -125
-  kill_rep_delta: 6
-  help_rep_delta: 4
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 hostile:
   name: Hostiles
@@ -49,8 +50,8 @@ hostile:
     neutral: -125
   # Hostile until the target is at least "liked".
   hostile_below: 125
-  kill_rep_delta: 6
-  help_rep_delta: 4
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 # ---------------------------------------------------------------------------
 # Nature's Chosen - woodland spirits and creatures
@@ -69,8 +70,8 @@ natures_chosen:
     demon_cult_void: -250
     demon_cult_flesh: -250
   hostile_below: -125
-  kill_rep_delta: 8
-  help_rep_delta: 5
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 # ---------------------------------------------------------------------------
 # High Society - bird people and their avian kin
@@ -90,8 +91,8 @@ high_society:
     demon_cult_void: -200
     demon_cult_flesh: -200
   hostile_below: -125
-  kill_rep_delta: 6
-  help_rep_delta: 4
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 # ---------------------------------------------------------------------------
 # Demon Cults - various hostile cults
@@ -111,8 +112,8 @@ demon_cult_flame:
     patternkeepers: -250
     neutral: -100
   hostile_below: 125  # Hostile by default
-  kill_rep_delta: 4
-  help_rep_delta: 8
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 demon_cult_void:
   name: Cult of the Empty Spiral
@@ -128,8 +129,8 @@ demon_cult_void:
     patternkeepers: -250
     neutral: -100
   hostile_below: 125  # Hostile by default
-  kill_rep_delta: 4
-  help_rep_delta: 8
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 demon_cult_flesh:
   name: Cult of Twisted Forms
@@ -145,8 +146,8 @@ demon_cult_flesh:
     patternkeepers: -200
     neutral: -125
   hostile_below: 125  # Hostile by default
-  kill_rep_delta: 4
-  help_rep_delta: 8
+  kill_rep_delta: 0
+  help_rep_delta: 0
 
 # ---------------------------------------------------------------------------
 # Patternkeepers - tattooed nomads friendly to the player
@@ -167,6 +168,6 @@ patternkeepers:
     demon_cult_void: -250
     demon_cult_flesh: -250
   hostile_below: -125
-  kill_rep_delta: 10     # Tight-knit community, killing one is serious
-  help_rep_delta: 6
+  kill_rep_delta: 0
+  help_rep_delta: 0
 

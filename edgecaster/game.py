@@ -1920,6 +1920,14 @@ class Game:
         # Prefer items, but fall back to actors if no items present.
         return item_candidate or actor_candidate
 
+    def _items_at(self, level: LevelState, pos: Tuple[int, int]) -> List[Entity]:
+        """Return all non-actor items at the given position."""
+        return [
+            e for e in level.entities.values()
+            if getattr(e, "pos", None) == pos
+            and getattr(e, "kind", None) == "item"
+        ]
+
     def _all_entities(self, level: LevelState) -> List[Entity]:
         return list(level.entities.values())
         
@@ -2067,12 +2075,32 @@ class Game:
         - auto=True: 'auto-observe' (e.g. stepping onto a tile)
         - auto=False: manual usage (normally routed through describe_current_tile)
         """
-        ent = self._entity_at(level, pos)
-        if not ent:
+        from edgecaster.systems.inventory import get_quantity
+
+        # Get all items at this position
+        items = self._items_at(level, pos)
+        if not items:
             return
 
-        tags = getattr(ent, "tags", {}) or {}
-        if tags.get("currency") == "bismuth":
+        # Filter out observer from auto-observe
+        if auto and observer_id is not None:
+            items = [i for i in items if getattr(i, "id", None) != observer_id]
+            if not items:
+                return
+
+        # Check for bismuth currency first (special handling)
+        bismuth_items = []
+        regular_items = []
+        for item in items:
+            tags = getattr(item, "tags", {}) or {}
+            if tags.get("currency") == "bismuth":
+                bismuth_items.append(item)
+            else:
+                regular_items.append(item)
+
+        # Describe bismuth separately
+        for bitem in bismuth_items:
+            tags = getattr(bitem, "tags", {}) or {}
             amt = 0
             try:
                 amt = int(tags.get("amount", 0))
@@ -2094,16 +2122,31 @@ class Game:
                 size = "enormous"
             article = "an" if size[0].lower() in "aeiou" else "a"
             self.log.add(f"You see {article} {size} bismuth crystal.")
+
+        # Describe regular items
+        if not regular_items:
             return
 
-        # If this is an auto-observe and the only thing here is the observer,
-        # don't spam the log with "You see yourself" messages.
-        if auto and observer_id is not None and getattr(ent, "id", None) == observer_id:
-            return
-
-        name = getattr(ent, "name", None) or "thing"
-        article = "an" if name and name[0].lower() in "aeiou" else "a"
-        self.log.add(f"You see here {article} {name.lower()}.")
+        if len(regular_items) == 1:
+            # Single item - original behavior
+            item = regular_items[0]
+            name = getattr(item, "name", None) or "thing"
+            qty = get_quantity(item)
+            if qty > 1:
+                self.log.add(f"You see here {qty} {name.lower()}s.")
+            else:
+                article = "an" if name and name[0].lower() in "aeiou" else "a"
+                self.log.add(f"You see here {article} {name.lower()}.")
+        else:
+            # Multiple items - list them
+            self.log.add(f"You see here {len(regular_items)} items:")
+            for item in regular_items[:5]:
+                name = getattr(item, "name", "something")
+                qty = get_quantity(item)
+                qty_suffix = f" ({qty})" if qty > 1 else ""
+                self.log.add(f"  - {name}{qty_suffix}")
+            if len(regular_items) > 5:
+                self.log.add(f"  ... and {len(regular_items) - 5} more.")
 
     def show_help(self) -> None:
         """Show a brief help / keybind summary as an urgent popup."""
