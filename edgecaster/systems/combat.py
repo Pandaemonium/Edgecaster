@@ -249,9 +249,17 @@ def kill_actor(
     game._on_enemy_killed(actor)
 
     # Reputation: only the player currently tracks dynamic reputation.
+    rep_changes = []
     if killer_is_player or (killer_id == game.player_id):
         try:
-            reputation_system.apply_rep_event(game, actor, event="kill")
+            rep_changes = reputation_system.apply_rep_event(game, actor, event="kill")
+        except Exception:
+            pass
+
+    # Show UrgentMessage for legendary kills with reputation changes
+    if rep_changes and reputation_system.is_legendary(actor):
+        try:
+            _show_legendary_kill_popup(game, actor, rep_changes)
         except Exception:
             pass
 
@@ -282,6 +290,35 @@ def kill_actor(
     try:
         if actor_pos and actor_pos[0] is not None and actor_pos[1] is not None:
             game._spawn_legendary_reward(level, (int(actor_pos[0]), int(actor_pos[1])), actor)
+    except Exception:
+        pass
+
+
+def _show_legendary_kill_popup(
+    game: "Game",
+    actor: "Actor",
+    rep_changes: list,
+) -> None:
+    """Show an UrgentMessage popup for a legendary kill with reputation changes."""
+    actor_name = getattr(actor, "name", "the legendary")
+
+    # Build message body
+    lines = [f"You have slain {actor_name}!", ""]
+    lines.append("Reputation changes:")
+    for faction_name, delta in rep_changes:
+        if delta > 0:
+            lines.append(f"  {faction_name}: +{delta}")
+        else:
+            lines.append(f"  {faction_name}: {delta}")
+
+    message = "\n".join(lines)
+
+    # Queue the urgent message for display
+    # The scene manager will pick this up and show UrgentMessageScene
+    try:
+        game.urgent_message = "Legendary Slain!"
+        game.urgent_body = message
+        game.urgent_resolved = False
     except Exception:
         pass
 

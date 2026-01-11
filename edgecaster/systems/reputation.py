@@ -1,16 +1,28 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Tuple
+import logging
+from typing import Any, Dict, Iterable, List, Tuple
 
 import random as _random
 
 from edgecaster.content.factions import FACTIONS
+
+# Debug logging for reputation changes
+_log = logging.getLogger(__name__)
 
 
 HATED: int = -250
 DISLIKED: int = -125
 LIKED: int = 125
 LOVED: int = 250
+
+# Reputation deltas for killing legendaries (big swings!)
+LEGENDARY_KILL_DELTAS = {
+    "hated": 100,    # Killing a hated legendary = +100 with factions that hate them
+    "disliked": 50,  # Killing a disliked legendary = +50
+    "liked": 50,     # Killing a liked legendary = -50 (negative applied in code)
+    "loved": 100,    # Killing a loved legendary = -100
+}
 
 
 def rep_tier(score: int) -> str:
@@ -28,6 +40,12 @@ def rep_tier(score: int) -> str:
     if s >= LIKED:
         return "liked"
     return "neutral"
+
+
+def is_legendary(actor: Any) -> bool:
+    """Return True if the actor is a legendary creature."""
+    tags = getattr(actor, "tags", None) or {}
+    return bool(tags.get("legendary_id"))
 
 
 def actor_factions(actor: Any) -> Tuple[str, ...]:
@@ -186,39 +204,87 @@ def adjust_player_reputation(game: Any, faction_id: str, delta: int) -> None:
     rep[faction_id] = int(rep.get(faction_id, 0)) + dv
 
 
-def apply_rep_event(game: Any, target_actor: Any, *, event: str) -> None:
+def apply_rep_event(game: Any, target_actor: Any, *, event: str) -> List[Tuple[str, int]]:
     """Apply player reputation changes from an event involving `target_actor`.
 
     `event` is currently one of:
     - "kill": target_actor was killed by the player (directly or indirectly)
     - "help": player helped target_actor (quests/dialogue can call this later)
+
+    Legendary kills use big fixed deltas from LEGENDARY_KILL_DELTAS.
+    Regular kills use faction-defined kill_rep_delta (0 = no change).
+
+    Returns:
+        List of (faction_name, delta) tuples for changes that were applied.
     """
+    changes: List[Tuple[str, int]] = []
+
     if target_actor is None:
-        return
+        return changes
     event = str(event)
     if event not in ("kill", "help"):
-        return
+        return changes
+
+    # Check if this is a legendary kill (big reputation swings!)
+    target_is_legendary = is_legendary(target_actor)
+    is_legendary_kill = event == "kill" and target_is_legendary
+    target_name = getattr(target_actor, "name", "unknown")
+
+    _log.debug(
+        f"apply_rep_event: event={event}, target={target_name}, "
+        f"is_legendary={target_is_legendary}"
+    )
 
     # Adjust reputation with every known faction based on how that faction
     # feels about the target actor.
     for fid, fdef in FACTIONS.items():
         opinion = faction_opinion_toward_actor(fid, target_actor)
         tier = rep_tier(opinion)
+
+        _log.debug(f"  faction={fid}, opinion={opinion}, tier={tier}")
+
         if tier == "neutral":
             continue
 
         if event == "kill":
-            mag = int(getattr(fdef, "kill_rep_delta", 5) or 5)
-            if tier in ("liked", "loved"):
-                adjust_player_reputation(game, fid, -mag)
+            if is_legendary_kill:
+                # Legendary kills use fixed big deltas
+                mag = LEGENDARY_KILL_DELTAS.get(tier, 0)
+                _log.debug(f"    legendary kill: mag={mag}")
+                if mag == 0:
+                    continue
             else:
-                adjust_player_reputation(game, fid, +mag)
+                # Regular kills use faction-defined delta (0 = no change)
+                raw_delta = getattr(fdef, "kill_rep_delta", None)
+                mag = int(raw_delta) if raw_delta is not None else 5
+                _log.debug(f"    regular kill: raw_delta={raw_delta}, mag={mag}")
+                if mag == 0:
+                    continue
+
+            if tier in ("liked", "loved"):
+                delta = -mag
+            else:
+                delta = +mag
+
+            _log.debug(f"    applying delta={delta} to {fid}")
+            adjust_player_reputation(game, fid, delta)
+            fname = getattr(fdef, "name", fid)
+            changes.append((fname, delta))
         else:
-            mag = int(getattr(fdef, "help_rep_delta", 5) or 5)
+            raw_delta = getattr(fdef, "help_rep_delta", None)
+            mag = int(raw_delta) if raw_delta is not None else 5
+            if mag == 0:
+                continue  # Skip if faction doesn't care about help
             if tier in ("liked", "loved"):
-                adjust_player_reputation(game, fid, +mag)
+                delta = +mag
             else:
-                adjust_player_reputation(game, fid, -mag)
+                delta = -mag
+            adjust_player_reputation(game, fid, delta)
+            fname = getattr(fdef, "name", fid)
+            changes.append((fname, delta))
+
+    _log.debug(f"  total changes: {changes}")
+    return changes
 
 
 # ---------------------------------------------------------------------------

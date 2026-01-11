@@ -49,14 +49,20 @@ def _load_factions() -> Dict[str, FactionDef]:
                 except Exception:
                     continue
 
+        # Parse rep deltas carefully - 0 is a valid value (means "no change")
+        raw_kill = spec.get("kill_rep_delta")
+        raw_help = spec.get("help_rep_delta")
+        kill_delta = int(raw_kill) if raw_kill is not None else 5
+        help_delta = int(raw_help) if raw_help is not None else 5
+
         out[str(fid)] = FactionDef(
             id=str(fid),
             name=str(spec.get("name") or fid),
             description=str(spec.get("description") or ""),
             opinions=opinions,
             hostile_below=int(spec.get("hostile_below", 125) or 125),
-            kill_rep_delta=int(spec.get("kill_rep_delta", 5) or 5),
-            help_rep_delta=int(spec.get("help_rep_delta", 5) or 5),
+            kill_rep_delta=kill_delta,
+            help_rep_delta=help_delta,
         )
     return out
 
