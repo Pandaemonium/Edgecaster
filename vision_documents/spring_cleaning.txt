@@ -19,6 +19,35 @@ SLICE 2 - MENU & UI SYSTEM
 SLICE 3 - VISUAL EFFECTS & PRESENTATION
 [unchanged]
 
+
+===============================================================================
+INVENTORY_SCENE / LOOK_SCENE FOLLOW-UPS (edgecaster/scenes/inventory_scene.py)
+
+Status:
+- Deep body zoom + diagrammatic open/close zoom mostly stable (do not regress alignment + fade invariants).
+
+[CLEANUP] Safe refactor targets (behavior-preserving)
+- Extract and centralize repeated state-reset logic:
+  - _clear_drag_state() / _clear_pending_actions() helpers (reduce repeated blocks, lower bug surface).
+- Deduplicate small inner helpers inside render paths (e.g., repeated u->px mapping closures) and remove dead locals.
+- Reduce nested "fail-soft" try/except where already inside a fail-soft region (keep optional render guardrails, but avoid redundant nesting).
+- Identify "public entry points" referenced externally (e.g., LookScene) before deleting anything else.
+
+[BEHAVIOR] UI / interaction wishlist
+- Tile examine UX: when a tile contains multiple entities, allow cycling through entities (and/or a list) without leaving the examine flow.
+- When viewing a tile, show underlying terrain beneath entities (ties into broader "entity vs terrain yoga" + eventual tile renderer rework).
+
+[CLEANUP] Sprite/glyph clipping (cross-cutting)
+- Top of glyphs/sprites still clipped in inventory_scene and dungeon scene; address later as part of larger dungeon tile rendering overhaul.
+
+[VISION] Visual effects correctness + scoping
+- Inventory right-panel entity VFX:
+  - Fix VFX rectangles that extend beyond glyph/sprite bounds.
+  - Improve diagrammatic zoom compatibility (effects like "clockwise" are currently awkward in transition space).
+- Scope of entity VFX:
+  - Default: apply entity VFX to the entity preview only (not the entire inventory_scene).
+  - Special-case: full-scene VFX only for true inventory-entities / explicitly "screen-affecting" entities.
+
 ===============================================================================
 SLICE 4 - MAP & CAMERA SYSTEMS
 

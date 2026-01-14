@@ -13,6 +13,34 @@ SCENES (edgecaster/scenes/)
 - Declare visual effects by NAME (but do not implement simulation rules).
 - Do not do low-level rendering or camera math.
 
+INVENTORY / LOOK SCENES (edgecaster/scenes/inventory_scene.py)
+- Purpose: a two-pane "inspect + manipulate" UI for an entity.
+  - Left pane: inventory list / container navigation (supports nesting into sub-containers).
+  - Right pane: embodied preview (glyph/sprite) + body-plan node skeleton overlay + equip-slot interaction.
+
+- Two zoom systems (both intentionally supported):
+  1) Diagrammatic zoom (scene open/close):
+     - The entire inventory UI eases in/out, anchored to the source glyph (world glyph or parent-inventory glyph).
+     - UI panels fade, but the entity preview glyph/sprite is drawn at full opacity for the full transition.
+     - Goal: match the settled framing exactly at the end of the transition (no scale/position discontinuity).
+
+  2) Deep body zoom (subnode dive):
+     - Double-click body nodes to "dive" (body -> arm -> hand -> finger...) with smooth camera center/scale animation.
+     - Invariant: preview glyph/sprite and node skeleton must remain aligned across zoom depth.
+
+- Key internal contract:
+  - BodyViewState: single authoritative bundle of body-view camera state + projected node positions.
+  - PreviewCameraCache: caches the LoD0 framing used to make diagrammatic zoom land pixel-identically on the settled view.
+
+- Interaction architecture:
+  - Widgets do not control scene transitions directly. They emit "pending" requests (open container, zoom into node,
+    activate node context menu). InventoryScene flushes these because it owns the SceneManager.
+  - Single-click actions may be delayed to let double-click win; pending actions are flushed even without new input
+    events so delayed clicks still fire.
+
+- Slot identity:
+  - Equip slots are canonicalized by prefixing the current zoom path so node-local IDs remain stable across depth.
+
 RENDERERS (edgecaster/render/)
 - Pure view layer ("TV unplug test"): if the renderer is removed, the game should still run.
 - Do not read input events, mutate game state, or re-implement game rules.
