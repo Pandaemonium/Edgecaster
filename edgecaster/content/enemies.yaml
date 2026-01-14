@@ -295,7 +295,7 @@
   ai: skirmisher
   xp: 9
   parent: demon
-  description: A finely-attired demon who sports a sage cap.
+  description: Your clothes may be Beau Brummelly, but you're never fully dressed without a smile!
   drop_items: ["sage_cap"]
   tags:
     devilish_dandy: true

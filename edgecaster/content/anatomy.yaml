@@ -101,7 +101,7 @@
         children: []
         layout:
           x: 0.0
-          y: -0.25
+          y: -0.1
         props:
           size: 0.6
 - id: skull
@@ -125,12 +125,12 @@
           x: 0.0
           y: 0.0
         props:
-          size: 0.6
+          size: 0.2
       ear:
         proto: ear
         children: []
         layout:
-          x: -0.4
+          x: -0.2
           y: 0.0
         props:
           size: 0.12
@@ -142,7 +142,7 @@
         children: []
         layout:
           x: 0.0
-          y: -0.6
+          y: -0.3
         props:
           size: 0.2
 - id: face
@@ -223,8 +223,8 @@
         children:
         - elbow
         layout:
-          x: -0.12
-          y: 0.23
+          x: -0.02
+          y: 0.13
         props:
           size: 0.3
       elbow:
@@ -232,8 +232,8 @@
         children:
         - forearm
         layout:
-          x: -0.22
-          y: 0.52
+          x: -0.05
+          y: 0.25
         props:
           size: 0.24
       forearm:
@@ -241,18 +241,18 @@
         children:
         - hand
         layout:
-          x: -0.18
-          y: 0.78
+          x: -0.1
+          y: 0.35
         props:
           size: 0.28
       hand:
         proto: hand
         children: []
         layout:
-          x: -0.1
-          y: 0.9
+          x: -0.12
+          y: 0.45
         props:
-          size: 0.6
+          size: 0.3
 - id: leg
   name: Leg
   parent: limb
@@ -274,8 +274,8 @@
         children:
         - calf
         layout:
-          x: -0.1
-          y: 0.45
+          x: -0.05
+          y: 0.25
         props:
           size: 0.5
       calf:
@@ -283,8 +283,8 @@
         children:
         - foot
         layout:
-          x: -0.05
-          y: 0.75
+          x: -0.06
+          y: 0.35
         props:
           size: 0.5
       foot:
@@ -292,7 +292,7 @@
         children: []
         layout:
           x: 0
-          y: 0.9
+          y: 0.4
         props:
           size: 1
 - id: hand
@@ -321,49 +321,49 @@
         - pinky
         layout:
           x: 0.0
-          y: 0.55
+          y: 0.25
         props:
-          size: 1
+          size: 0.3
       thumb:
         proto: thumb_finger
         children: []
         layout:
-          x: 0.52
-          y: 0.6
+          x: 0.26
+          y: 0.3
         props:
-          size: 1
+          size: 0.3
       index:
         proto: index_finger
         children: []
         layout:
-          x: 0.26
-          y: 0.98
+          x: 0.13
+          y: 0.49
         props:
-          size: 1
+          size: 0.3
       middle:
         proto: middle_finger
         children: []
         layout:
           x: 0.05
-          y: 1.05
+          y: 0.55
         props:
-          size: 1
+          size: 0.3
       ring:
         proto: ring_finger
         children: []
         layout:
           x: -0.15
-          y: 0.98
+          y: 0.48
         props:
-          size: 1
+          size: 0.3
       pinky:
         proto: pinky_finger
         children: []
         layout:
-          x: -0.34
-          y: 0.86
+          x: -0.17
+          y: 0.46
         props:
-          size: 1
+          size: 0.3
 - id: foot
   name: Foot
   parent: limb
@@ -391,7 +391,7 @@
         - pinky_toe
         layout:
           x: 0.03
-          y: 0.55
+          y: 0.25
         props:
           size: 0.2
       heel:
@@ -399,7 +399,7 @@
         children: []
         layout:
           x: 0.3
-          y: 0.22
+          y: 0.12
         props:
           size: 0.14
       big_toe:
@@ -407,7 +407,7 @@
         children: []
         layout:
           x: 0.28
-          y: 1.05
+          y: 0.45
         props:
           size: 0.11
       index_toe:
@@ -415,7 +415,7 @@
         children: []
         layout:
           x: 0.12
-          y: 0.98
+          y: 0.49
         props:
           size: 0.1
       middle_toe:
@@ -423,7 +423,7 @@
         children: []
         layout:
           x: -0.04
-          y: 0.98
+          y: 0.49
         props:
           size: 0.1
       ring_toe:
@@ -431,7 +431,7 @@
         children: []
         layout:
           x: -0.18
-          y: 0.94
+          y: 0.47
         props:
           size: 0.09
       pinky_toe:
@@ -439,7 +439,7 @@
         children: []
         layout:
           x: -0.32
-          y: 0.94
+          y: 0.47
         props:
           size: 0.08
 - id: shoulder

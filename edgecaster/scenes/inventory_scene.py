@@ -23,9 +23,8 @@ def _body_zoom_pan_t(obj: object, zoom_scale: float) -> float:
     Returns 0..1 and is used to blend the camera pivot between the region center
     (0) and the current focus position (1).
 
-    Important: during an active zoom animation we must *reverse* the blend when
-    zooming out, so that pan+zoom are the exact inverse of zoom-in (no snap/
-    boomerang on offset nodes).
+    During an active camera-state animation we reverse the blend when zooming out,
+    so that zoom-in and zoom-out are exact inverses (prevents snap/boomerang).
     """
     try:
         # Default when idle: if zoomed in (scale != 1), pivot fully on focus.
@@ -38,12 +37,13 @@ def _body_zoom_pan_t(obj: object, zoom_scale: float) -> float:
         if anim is None:
             return float(idle_pan)
 
-        # Phase 1.5: camera-state anim no longer encodes focus ids.
-        # Keep focus_pos stable (or None) to avoid coupling focus UI to camera animation.
-        zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
-        focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
-        setattr(scene, "_body_zoom_focus_pos", focus_pos)
+        if not (isinstance(anim, tuple) and len(anim) >= 6):
+            return float(idle_pan)
+
+        # anim = (from_center_u, from_scale, to_center_u, to_scale, start_ms, dur_ms)
+        _from_c, from_s, _to_c, to_s, start_ms, dur_ms = anim[:6]
         now = int(pygame.time.get_ticks())
+
         if int(dur_ms) <= 0:
             t = 1.0
         else:
@@ -343,19 +343,6 @@ def _embed_positions(pos_local_u: dict[str, tuple[float, float]], offset_u: tupl
     return out
 
 
-def _project_point_with_camera(
-    point_u: tuple[float, float],
-    region_rect_local: pygame.Rect,
-    *,
-    center_u: tuple[float, float],
-    scale: float,
-) -> tuple[float, float]:
-    """Project a single world-space point into region-local pixel coordinates."""
-    x_u, y_u = float(point_u[0]), float(point_u[1])
-    cx_u, cy_u = float(center_u[0]), float(center_u[1])
-    px = (x_u - cx_u) * float(scale) + (float(region_rect_local.w) * 0.5)
-    py = (y_u - cy_u) * float(scale) + (float(region_rect_local.h) * 0.5)
-    return (px, py)
 
 
 
@@ -376,6 +363,26 @@ def _lerp(a: float, b: float, t: float) -> float:
 # ---------------------------------------------------------------------------
 # Body-plan overlay helpers (read-only for now)
 # ---------------------------------------------------------------------------
+
+
+def _inset_rect_centered(r: "pygame.Rect", pad_frac: float) -> "pygame.Rect":
+    """Inset a rect by pad_frac (relative to width/height) on each side, staying centered."""
+    try:
+        pf = float(pad_frac)
+    except Exception:
+        pf = 0.0
+    pf = max(0.0, min(0.45, pf))
+    dx = int(round(float(r.w) * pf))
+    dy = int(round(float(r.h) * pf))
+    rr = pygame.Rect(int(r.x), int(r.y), int(r.w), int(r.h))
+    rr.inflate_ip(-2 * dx, -2 * dy)
+    if rr.w < 1:
+        rr.w = 1
+        rr.centerx = r.centerx
+    if rr.h < 1:
+        rr.h = 1
+        rr.centery = r.centery
+    return rr
 
 def _safe_float(v: Any) -> Optional[float]:
     try:
@@ -644,69 +651,6 @@ def _map_positions_to_rect(
     return out, scale
 
 
-def _fit_camera_to_positions(
-    positions: dict[str, tuple[float, float]],
-    target_rect: pygame.Rect,
-    *,
-    margin_frac: float = 0.12,
-    anchor_u: tuple[float, float] | None = None,
-) -> tuple[tuple[float, float], float]:
-    """
-    Fit a camera to a set of world-space (x,y) positions.
-
-    Returns:
-      (center_u_x, center_u_y), scale_px_per_unit
-
-    If anchor_u is provided, the camera is centered on anchor_u (NOT bbox center),
-    and the scale is chosen to fit all points relative to that anchor. This keeps
-    LoD0 stable even when anatomy becomes asymmetric (missing limbs, etc.).
-    """
-    if not positions:
-        return (0.0, 0.0), 1.0
-
-    xs = [float(p[0]) for p in positions.values()]
-    ys = [float(p[1]) for p in positions.values()]
-    minx, maxx = min(xs), max(xs)
-    miny, maxy = min(ys), max(ys)
-
-    m = int(min(target_rect.w, target_rect.h) * float(margin_frac))
-    inner = target_rect.inflate(-2 * m, -2 * m)
-    if inner.w <= 1 or inner.h <= 1:
-        inner = target_rect.copy()
-
-    # Choose center.
-    if anchor_u is not None:
-        cx_u, cy_u = float(anchor_u[0]), float(anchor_u[1])
-
-        # Fit extents around the anchor so all points remain visible.
-        max_dx = 0.0
-        max_dy = 0.0
-        for (x, y) in positions.values():
-            dx = abs(float(x) - cx_u)
-            dy = abs(float(y) - cy_u)
-            if dx > max_dx:
-                max_dx = dx
-            if dy > max_dy:
-                max_dy = dy
-
-        # Avoid zero spans. (Use symmetric spans around the anchor.)
-        spanx = max(1e-6, 2.0 * max_dx)
-        spany = max(1e-6, 2.0 * max_dy)
-    else:
-        cx_u = (minx + maxx) * 0.5
-        cy_u = (miny + maxy) * 0.5
-
-        # Avoid zero spans (bbox-based).
-        spanx = max(1e-6, (maxx - minx))
-        spany = max(1e-6, (maxy - miny))
-
-    # scale so it "mostly fills"
-    sx = inner.w / spanx
-    sy = inner.h / spany
-    scale = float(min(sx, sy))
-
-    return (float(cx_u), float(cy_u)), float(scale)
-
 
 
 def _project_positions_with_camera(
@@ -736,6 +680,8 @@ def _project_positions_with_camera(
         out[str(nid)] = (px, py)
     return out
 
+
+
 def _get_schema_anchor_u(schema: dict, positions_u: dict[str, tuple[float, float]]) -> tuple[float, float]:
     """
     Pick a stable anchor point for camera centering (in the SAME coord space as positions_u).
@@ -759,73 +705,179 @@ def _get_schema_anchor_u(schema: dict, positions_u: dict[str, tuple[float, float
 
 
 
+
+def _apply_body_graph_com_correction(
+    scene: object,
+    positions_u: dict[str, tuple[float, float]] | None,
+    frame_center_u: tuple[float, float],
+    frame_span_u: float,
+) -> tuple[tuple[float, float], float]:
+    """Optional aesthetic refinement for Philosophy C camera.
+
+    Philosophy C stays the *truth*:
+      - frame_center_u / frame_span_u define the selected node's canonical local frame.
+
+    This helper optionally nudges center/span toward the node graph's center-of-mass and
+    bounds so subgraphs like an arm (rooted at shoulder) can use the pane better.
+
+    Tunables (all optional scene attrs):
+      - _body_cam_com_strength: 0..1 (default 0.55)
+      - _body_cam_min_span_frac: clamp min span relative to frame_span_u (default 0.35)
+      - _body_cam_max_span_frac: clamp max span relative to frame_span_u (default 3.0)
+
+    Returns:
+      (effective_center_u, effective_span_u)
+    """
+    try:
+        strength = float(getattr(scene, "_body_cam_com_strength", 0.55) or 0.0)
+    except Exception:
+        strength = 0.55
+
+    if strength <= 1e-6 or not positions_u:
+        return (float(frame_center_u[0]), float(frame_center_u[1])), float(frame_span_u)
+
+    try:
+        n = 0
+        sx = 0.0
+        sy = 0.0
+        minx = 1e30
+        maxx = -1e30
+        miny = 1e30
+        maxy = -1e30
+        for (x, y) in positions_u.values():
+            fx = float(x)
+            fy = float(y)
+            sx += fx
+            sy += fy
+            n += 1
+            if fx < minx:
+                minx = fx
+            if fx > maxx:
+                maxx = fx
+            if fy < miny:
+                miny = fy
+            if fy > maxy:
+                maxy = fy
+        if n <= 0:
+            return (float(frame_center_u[0]), float(frame_center_u[1])), float(frame_span_u)
+
+        # If we only have one node position (or effectively no span), do NOT apply
+        # CoM/bbox refinement. Shrinking span toward ~0 would explode cam_scale and
+        # make bodyless entities render enormous. Philosophy C already provides a
+        # canonical frame; keep it.
+        if n < 2:
+            return (float(frame_center_u[0]), float(frame_center_u[1])), float(frame_span_u)
+
+        comx = sx / float(n)
+        comy = sy / float(n)
+        span_bbox = max(1e-6, max(maxx - minx, maxy - miny))
+    except Exception:
+        return (float(frame_center_u[0]), float(frame_center_u[1])), float(frame_span_u)
+
+    fx, fy = float(frame_center_u[0]), float(frame_center_u[1])
+    fs = float(frame_span_u)
+
+    # Blend center toward CoM.
+    cx = fx + (comx - fx) * strength
+    cy = fy + (comy - fy) * strength
+
+    # Blend span toward bbox span (allows both gentle zoom-in and zoom-out).
+    span = fs + (float(span_bbox) - fs) * strength
+
+    try:
+        min_frac = float(getattr(scene, "_body_cam_min_span_frac", 0.35) or 0.0)
+    except Exception:
+        min_frac = 0.35
+    try:
+        max_frac = float(getattr(scene, "_body_cam_max_span_frac", 3.0) or 0.0)
+    except Exception:
+        max_frac = 3.0
+
+    if min_frac <= 0.0:
+        min_frac = 0.01
+    if max_frac <= 0.0:
+        max_frac = 10.0
+    if max_frac < min_frac:
+        max_frac = min_frac
+
+    span = max(fs * min_frac, min(fs * max_frac, span))
+    span = max(1e-6, span)
+
+    return (float(cx), float(cy)), float(span)
+
+
 def _compute_body_graph_base_camera(
     scene: object,
-    positions_u: dict[str, tuple[float, float]],
     region_rect_local: pygame.Rect,
     *,
+    frame_center_u: tuple[float, float],
+    frame_span_u: float,
+    positions_u: dict[str, tuple[float, float]] | None = None,
     margin_frac: float = 0.12,
-    anchor_u: tuple[float, float] | None = None,
 ) -> tuple[tuple[float, float], float]:
+    """Compute the *non-animated* body-graph camera under Philosophy C (+ optional refinement).
+
+    Philosophy C invariant:
+      - The camera frames the selected node's local coordinate frame.
+      - Each node's local frame is a canonical 1×1 square: x,y ∈ [-0.5, +0.5].
+      - In world units, that square spans `frame_span_u` and is centered at `frame_center_u`.
+
+    This function optionally applies a presentation tweak (CoM/bbox blend) via
+    `_apply_body_graph_com_correction` while keeping sprite and skeleton in the same camera.
     """
-    Compute the *non-animated* body-graph camera.
+    # Optional aesthetic refinement: nudge center/span toward CoM/bounds.
+    eff_center_u, eff_span_u = _apply_body_graph_com_correction(
+        scene, positions_u, frame_center_u, float(frame_span_u)
+    )
 
-    LoD 0 is treated as a presentation/composition view:
-      - center is anchored (schema root if available)
-      - scale is fixed (NOT fit-to-bounds), so YAML coordinate tweaks actually matter.
-
-    LoD >= 1 remains fit-to-bounds for inspection.
-    """
-    stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
-
-    # LoD 0: fixed scale camera so skeleton can be composed against the glyph/sprite.
-    if stack_depth == 0:
-        cx_u, cy_u = (anchor_u if anchor_u is not None else (0.0, 0.0))
-
-        # Allow easy tuning from the scene if needed.
-        # Interpretation: the camera will fit a square of size `unit_span_u` (in world units)
-        # into the available rect (minus margins).
-        unit_span_u = float(getattr(scene, "_body_lod0_unit_span_u", 2.0))
-
-        # Mirror the margin behavior of _fit_camera_to_positions.
-        inner = region_rect_local.copy()
+    # Apply margins in pixels.
+    inner = region_rect_local.copy()
+    try:
         if inner.w > 0 and inner.h > 0:
             mx = int(inner.w * float(margin_frac))
             my = int(inner.h * float(margin_frac))
             inner = inner.inflate(-2 * mx, -2 * my)
             if inner.w <= 0 or inner.h <= 0:
                 inner = region_rect_local.copy()
+    except Exception:
+        inner = region_rect_local.copy()
 
-        denom = max(1e-6, unit_span_u)
-        scale = float(min(inner.w, inner.h) / denom) if inner.w > 0 and inner.h > 0 else 1.0
-        return (float(cx_u), float(cy_u)), float(scale)
+    denom = max(1e-6, float(eff_span_u))
+    if inner.w > 0 and inner.h > 0:
+        scale = float(min(inner.w, inner.h) / denom)
+    else:
+        scale = 1.0
 
-    # LoD >= 1: inspection mode (fit-to-bounds).
-    return _fit_camera_to_positions(
-        positions_u, region_rect_local, margin_frac=margin_frac, anchor_u=anchor_u
-    )
+    cx_u, cy_u = eff_center_u
+    return (float(cx_u), float(cy_u)), float(scale)
 
 
 def _compute_body_graph_camera(
     scene: object,
-    positions_u: dict[str, tuple[float, float]],
     region_rect_local: pygame.Rect,
     *,
+    frame_center_u: tuple[float, float],
+    frame_span_u: float,
+    positions_u: dict[str, tuple[float, float]] | None = None,
     margin_frac: float = 0.12,
-    anchor_u: tuple[float, float] | None = None,
 ) -> tuple[tuple[float, float], float]:
-    """
-    The single source of truth for the body-graph camera.
+    """Single source of truth for the body-graph camera (Philosophy C + compiled refinement).
 
     Returns:
-      center_u, scale_px_per_unit
+      (center_u, scale_px_per_unit)
 
-    - Base camera is a fit-to-positions camera (computed from active schema only).
-    - Optional Phase 1.5 animation interpolates BOTH center and scale together,
-      between two fully-defined camera states captured at the zoom event.
+    - Base camera frames the selected node's local coordinate frame (optionally refined
+      toward CoM/bounds as a *single* camera target).
+    - Optional zoom animation interpolates BOTH center and scale together between two
+      fully-defined camera states captured at the zoom event.
     """
     base_center_u, base_scale = _compute_body_graph_base_camera(
-        scene, positions_u, region_rect_local, margin_frac=margin_frac, anchor_u=anchor_u
+        scene,
+        region_rect_local,
+        frame_center_u=frame_center_u,
+        frame_span_u=float(frame_span_u),
+        positions_u=positions_u,
+        margin_frac=margin_frac,
     )
 
     anim = getattr(scene, "_body_zoom_anim", None)
@@ -880,6 +932,192 @@ def _compute_body_graph_camera(
 
 
 
+@dataclass(frozen=True)
+class BodyViewState:
+    """Authoritative body-view state for a given zoom stack and region.
+
+    This is the *single contract* that preview glyphs, skeleton overlays, and hit-testing
+    should all share to avoid drift and future regressions.
+    """
+    schema: dict
+    embed_off_u: tuple[float, float]
+    embed_scale_u: float
+    pos_u: dict[str, tuple[float, float]]
+    cam_center_u: tuple[float, float]
+    cam_scale: float
+    base_scale: float
+    anchor_u: tuple[float, float]
+    stack_depth: int
+
+
+
+@dataclass(frozen=True)
+class PreviewCameraCache:
+    """Cached authoritative LoD0 preview camera framing for the current owner.
+
+    This is the *single source of truth* for:
+      - how big/where the entity appears in the right preview pane at LoD0
+      - the destination state of the diagrammatic zoom (open/close transition)
+
+    If this cache is correct, the last frame of the transition and the first
+    settled frame of the inventory preview are pixel-identical.
+    """
+
+    owner_id: str | None
+    region_panel: pygame.Rect          # panel/logical coords
+    region_local: pygame.Rect          # local coords (0..w, 0..h)
+    view0: BodyViewState               # authoritative camera state for zoom_stack == []
+    base_glyph_px: int                 # canonical glyph cell px at zoom_mul == 1.0
+    anchor_panel: tuple[float, float]  # panel/logical coords (glyph center)
+    desc_present: bool
+
+
+def compute_body_view_state(
+    scene: object,
+    owner: object | None,
+    *,
+    region_local: pygame.Rect,
+    zoom_stack: list[str] | tuple[str, ...],
+    margin_frac: float = 0.12,
+) -> BodyViewState:
+    """Compute the authoritative body-view camera and anchor for the given zoom stack.
+
+    Policy:
+      - Camera: Philosophy C framing of the current schema's embedded 1×1 frame,
+        with optional CoM/bbox refinement inside `_compute_body_graph_camera`.
+      - LoD-0 pin: when stack_depth == 0 and no active zoom anim, keep center at (0,0)
+        so the entity's root frame remains a stable visual reference.
+      - Anchor (Option A): the preview glyph should be anchored to the same semantic
+        object as the skeleton view.
+          * LoD 0: anchor is the entity root frame origin (0,0).
+          * LoD >= 1: anchor is the current schema root node position in world units.
+    """
+    try:
+        schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, zoom_stack)
+    except Exception:
+        schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
+
+
+    # Enforce a canonical 1×1 LoD-0 frame span.
+    # This prevents stale/degenerate scales from leaking into the preview camera when switching
+    # between owners (especially owners with no body plan), which otherwise causes a visible
+    # snap in scale at the end of the diagrammatic zoom.
+    try:
+        if not zoom_stack:
+            embed_scale_u = 1.0
+    except Exception:
+        pass
+    pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+
+    # If this owner has no body-plan nodes, we still want a *stable* camera framing
+    # that matches the canonical 1×1 frame behavior (and avoids any post-transition
+    # snap in glyph scale/position).
+    # We achieve this by feeding the camera math a single synthetic point at the
+    # frame center, while keeping `pos_u` empty so we don't draw phantom nodes.
+    pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
+
+    base_center_u, base_scale = _compute_body_graph_base_camera(
+        scene,
+        region_local,
+        frame_center_u=embed_off_u,
+        frame_span_u=embed_scale_u,
+        positions_u=pos_u_cam,
+        margin_frac=margin_frac,
+    )
+    cam_center_u, cam_scale = _compute_body_graph_camera(
+        scene,
+        region_local,
+        frame_center_u=embed_off_u,
+        frame_span_u=embed_scale_u,
+        positions_u=pos_u_cam,
+        margin_frac=margin_frac,
+    )
+
+    stack_depth = len(list(zoom_stack) if zoom_stack else [])
+
+    if stack_depth == 0 and getattr(scene, "_body_zoom_anim", None) is None:
+        cam_center_u = (0.0, 0.0)
+
+    # ------------------------------------------------------------
+    # Semantic anchor (Option A) — with animation smoothing
+    # ------------------------------------------------------------
+    def _anchor_for_stack(_stack: tuple[str, ...] | list[str]) -> tuple[float, float]:
+        """Return the *embedded/world-space* root-node position for a zoom stack.
+
+        This must anchor to the schema's declared root node (schema['root']), not the
+        embedded chart origin. Otherwise the preview sprite/glyph will drift relative
+        to the node skeleton when descending into sub-schemas.
+        """
+        _depth = len(list(_stack) if _stack else [])
+        if _depth == 0:
+            return (0.0, 0.0)
+
+        try:
+            _schema, _embed_off_u, _embed_scale_u = _resolve_body_view_for_zoom_path(owner, list(_stack))
+
+            root_id = None
+            try:
+                root_id = _schema.get("root", None) if isinstance(_schema, dict) else None
+            except Exception:
+                root_id = None
+
+            pos_map = _compute_body_positions(_schema)
+            if root_id is not None:
+                root_id = str(root_id)
+
+            # Local root-node position in the schema's own coordinate chart.
+            _pos_local = pos_map.get(root_id, (0.0, 0.0)) if root_id else (0.0, 0.0)
+
+            ax = float(_embed_off_u[0]) + float(_pos_local[0]) * float(_embed_scale_u)
+            ay = float(_embed_off_u[1]) + float(_pos_local[1]) * float(_embed_scale_u)
+            return (ax, ay)
+        except Exception:
+            return (0.0, 0.0)
+
+
+    anchor_u: tuple[float, float]
+    anim = getattr(scene, "_body_zoom_anim", None)
+    fade = getattr(scene, "_body_zoom_fade", None)
+
+    # If a camera animation is active and we know the from/to stacks, smoothly
+    # interpolate the anchor so the preview glyph does not "teleport" at t=0.
+    if anim is not None and isinstance(fade, tuple) and len(fade) >= 5:
+        try:
+            _from_stack = tuple(str(x) for x in (fade[1] or ()))
+            _to_stack = tuple(str(x) for x in (fade[2] or ()))
+            _start_ms = int(fade[3])
+            _dur_ms = int(fade[4])
+            now = int(pygame.time.get_ticks())
+            if _dur_ms > 0:
+                t = (now - _start_ms) / float(_dur_ms)
+            else:
+                t = 1.0
+            if t < 0.0:
+                t = 0.0
+            if t > 1.0:
+                t = 1.0
+            # Smoothstep (match _compute_body_graph_camera)
+            t = t * t * (3.0 - 2.0 * t)
+
+            ax0, ay0 = _anchor_for_stack(_from_stack)
+            ax1, ay1 = _anchor_for_stack(_to_stack)
+            anchor_u = (ax0 * (1.0 - t) + ax1 * t, ay0 * (1.0 - t) + ay1 * t)
+        except Exception:
+            anchor_u = _anchor_for_stack(tuple(str(x) for x in (zoom_stack or ())))
+    else:
+        anchor_u = _anchor_for_stack(tuple(str(x) for x in (zoom_stack or ())))
+
+    return BodyViewState(
+        schema=schema,
+        embed_off_u=(float(embed_off_u[0]), float(embed_off_u[1])),
+        embed_scale_u=float(embed_scale_u),
+        pos_u=pos_u,
+        cam_center_u=(float(cam_center_u[0]), float(cam_center_u[1])),
+        cam_scale=float(cam_scale),
+        base_scale=float(base_scale),
+        anchor_u=(float(anchor_u[0]), float(anchor_u[1])),
+        stack_depth=int(stack_depth),
+    )
 
 def _render_entity_glyph_canvas(
     renderer,
@@ -940,8 +1178,19 @@ def _render_entity_glyph_canvas(
 
     # Render glyph at raster size (font itself is already raster-capped via _get_font()).
     gsurf = font.render(glyph, True, color)
-    gx = ox + (raster_px - gsurf.get_width()) // 2
-    gy = oy + (raster_px - gsurf.get_height()) // 2
+
+    # Center using the *ink* bounding box rather than the surface extents.
+    # This prevents tall glyphs like 'f' from clipping and keeps LoD0 framing consistent.
+    try:
+        bbox = gsurf.get_bounding_rect()
+        ink_cx = float(bbox.x) + float(bbox.w) * 0.5
+        ink_cy = float(bbox.y) + float(bbox.h) * 0.5
+        gx = int(round(float(ox) + float(raster_px) * 0.5 - ink_cx))
+        gy = int(round(float(oy) + float(raster_px) * 0.5 - ink_cy))
+    except Exception:
+        gx = ox + (raster_px - gsurf.get_width()) // 2
+        gy = oy + (raster_px - gsurf.get_height()) // 2
+
     canvas.blit(gsurf, (gx, gy))
 
     if eff:
@@ -1154,13 +1403,6 @@ class InventoryListWidget(ListWidget):
         self._press_pos = None
         self._press_ms = 0
         self._dragging = False
-
-
-
-
-
-
-
 
     def handle_event(self, event, ctx: WidgetContext) -> bool:
         # If we're currently dragging, eat mouse events and forward to scene.
@@ -1431,44 +1673,49 @@ class EntityPreviewWidget(Widget):
 
 
     def draw(self, ctx: WidgetContext) -> None:
-        if not self.visible or self.rect.width <= 0 or self.rect.height <= 0:
-            return
-
         scene = ctx.scene
         renderer = ctx.renderer
-        surf = ctx.surface
 
+        # Resolve owner entity (preview target).
         owner = getattr(scene, "_preview_entity", None)
         owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
-        info = describe_entity_for_look(owner) if owner is not None else {}
-        name = info.get("name") or getattr(owner, "name", None) or getattr(scene, "explicit_title", None) or "Entity"
-        glyph = str(info.get("glyph") or getattr(owner, "glyph", "@"))[:1]
+        if owner is None:
+            return
 
-        r = self.rect
-        card = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
-
-        # Clear any previous frame's body overlay (we'll set it again if we draw one).
+        # Describe (title/desc) — defensive.
         try:
-            setattr(scene, "_body_overlay_panel_surface", None)
+            info = describe_entity_for_look(owner) or {}
         except Exception:
-            pass
+            info = {}
 
-        bg = getattr(renderer, "bg", (10, 10, 20))
-        fg = getattr(renderer, "fg", (240, 240, 255))
+        # Colors/fonts
+        fg = (240, 240, 240)
+        bg = (22, 22, 26)
+        border = (60, 60, 70)
 
-        fill = (min(255, bg[0] + 12), min(255, bg[1] + 12), min(255, bg[2] + 18), 235)
-        card.fill(fill)
-        pygame.draw.rect(card, (*fg, 120), card.get_rect(), 2, border_radius=10)
-
-        title_font = getattr(renderer, "menu_title_font", None)
-        if title_font is None:
-            title_font = getattr(renderer, "menu_font", None)
+        title_font = getattr(renderer, "menu_title_font", None) or getattr(renderer, "menu_font", None)
         if title_font is None:
             title_font = pygame.font.SysFont("consolas", 22, bold=True)
 
-        # Title: entity name (no \"inhabiting\" label).
-        ts = title_font.render(str(name), True, fg)
-        card.blit(ts, (14, 12))
+        body_font = getattr(renderer, "menu_font", None)
+        if body_font is None:
+            body_font = pygame.font.SysFont("consolas", 16)
+
+        # Pane rect in panel coords.
+        r = self.rect
+
+        # Card surface (pane-local)
+        card = pygame.Surface((max(1, r.w), max(1, r.h)), pygame.SRCALPHA)
+        card.fill(bg)
+        pygame.draw.rect(card, border, pygame.Rect(0, 0, r.w, r.h), 2)
+
+        # Title: entity name (no "inhabiting" label).
+        name = info.get("name") or getattr(owner, "name", None) or getattr(owner, "id", "Unknown")
+        try:
+            ts = title_font.render(str(name), True, fg)
+            card.blit(ts, (14, 12))
+        except Exception:
+            pass
 
         # Glyph region matches BodyPlanGraphWidget's reserved header/footer space.
         desc = info.get("description") or getattr(owner, "description", None)
@@ -1476,180 +1723,308 @@ class EntityPreviewWidget(Widget):
         bottom_reserved = 80 if desc else 56
         region_w = max(1, int(r.w) - 28)
         region_h = max(1, int(r.h) - int(top_reserved) - int(bottom_reserved))
+        region = pygame.Rect(14, top_reserved, region_w, region_h)
 
-        # Local center within the reserved glyph region.
-        cx_local = float(region_w) * 0.5
-        cy_local = float(region_h) * 0.5
-
-        # Phase 5: body-graph "camera zoom" should pan/scale the background glyph rigidly with the skeleton.
+        # Also store this preview region in PANEL coords so BodyPlanGraphWidget can draw
+        # overlays aligned to the preview region (and avoid duplicate "pixel zoom" transforms
+        # becoming very noticeable at deep zoom).
         try:
-            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
-            focus_pos = getattr(scene, "_body_zoom_focus_pos", None)
-            pan_t = _body_zoom_pan_t(scene, zoom_scale)
-            cx_local, cy_local = _apply_body_zoom_to_point(
-                cx_local,
-                cy_local,
-                region_w=float(region_w),
-                region_h=float(region_h),
-                focus_pos=focus_pos,
-                zoom_scale=zoom_scale,
-                pan_t=pan_t,
-            )
+            region_panel = pygame.Rect(int(r.x) + int(region.x), int(r.y) + int(region.y), int(region.w), int(region.h))
+            setattr(scene, "_body_graph_region_panel", region_panel)
         except Exception:
-            zoom_scale = 1.0
+            pass
 
-        # Only draw the glyph here if the scene is NOT doing the external opaque overlay.
-        #
-        # Phase 5: when the body-graph camera zooms, the background glyph should zoom/pan
-        # in the SAME way as the node skeleton (and stay clipped inside this pane).
-        if not bool(getattr(scene, "_external_opaque_glyph", False)):
-            # Match BodyPlanGraphWidget's overlay region so the glyph and nodes share a space.
-            top_reserved = 70
-            bottom_reserved = 80 if info.get("description") or getattr(owner, "description", None) else 56
-            region_w = max(1, int(r.w) - 28)
-            region_h = max(1, int(r.h) - int(top_reserved) - int(bottom_reserved))
-            region = pygame.Rect(14, top_reserved, region_w, region_h)
-
-            # Resolve the currently viewed schema and its embedding transform in absolute world-space.
-            try:
-                schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
-                    owner, getattr(scene, "_body_zoom_stack", [])
-                )
-            except Exception:
-                schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
-
-            pos_local_u = _compute_body_positions(schema)
-            pos_u = _embed_positions(pos_local_u, embed_off_u, embed_scale_u)
-
-            # Unify preview + overlay: use the SAME world-space camera as BodyPlanGraphWidget.
+        # ------------------------------------------------------------
+        # Compute authoritative body-view state every frame
+        # (even during external overlay) so the rest of the UI remains consistent.
+        # ------------------------------------------------------------
+        view = None
+        zoom_mul = 1.0
+        focus_pos = None
+        pan_t = 0.0
+        try:
             region_local = pygame.Rect(0, 0, region.w, region.h)
-            # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
-            stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
-            anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
-            _base_center_u, base_scale = _compute_body_graph_base_camera(
-                scene, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u
-            )
-            cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u)
+            zoom_stack = getattr(scene, "_body_zoom_stack", []) or []
+
+            # Use the authoritative cached LoD0 camera state verbatim to avoid
+            # any chance of recomputation drift vs the diagrammatic transition.
+            cache = getattr(scene, "_preview_cam_cache", None)
+            if (not zoom_stack) and cache is not None and getattr(scene, "_body_zoom_anim", None) is None:
+                try:
+                    if int(cache.region_local.w) == int(region_local.w) and int(cache.region_local.h) == int(region_local.h):
+                        view = cache.view0
+                    else:
+                        view = None
+                except Exception:
+                    view = None
+
+            if view is None:
+                view = compute_body_view_state(
+                    scene,
+                    owner,
+                    region_local=region_local,
+                    zoom_stack=zoom_stack,
+                    margin_frac=0.12,
+                )
+            setattr(scene, "_last_body_view_state", view)
+            self._last_body_view_state = view
+
+            cam_center_u = view.cam_center_u
+            cam_scale = view.cam_scale
+            base_scale = view.base_scale
+            stack_depth = view.stack_depth
 
 
+            # Whether this owner actually has a non-empty body schema (affects preview scaling fallbacks).
+            has_body_nodes = False
+            try:
+                has_body_nodes = bool(getattr(view, 'schema', None) and isinstance(view.schema, dict) and (view.schema.get('nodes') or {}))
+            except Exception:
+                has_body_nodes = False
             # Cache last camera so zoom-in/out can animate cleanly without widget wiring.
             try:
                 setattr(scene, "_last_body_cam_center_u", tuple(cam_center_u))
                 setattr(scene, "_last_body_cam_scale", float(cam_scale))
                 setattr(scene, "_last_body_cam_region", (int(region.w), int(region.h)))
                 setattr(scene, "_last_body_cam_base_scale", float(base_scale))
+                try:
+                    setattr(scene, "_last_body_cam_stack_depth", int(stack_depth))
+                    setattr(scene, "_last_body_cam_owner_id", int(id(owner)) if owner is not None else 0)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
-            pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+            pos_px = _project_positions_with_camera(view.pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
-            # Derive a multiplicative zoom factor for glyph sizing.
-            #
-            # IMPORTANT: comparing cam_scale to *this layer's* base_scale will cancel out,
-            # because both are computed from the same filtered pos_u. So instead, we compare
-            # against a persistent "root" reference scale captured at stack depth 0.
-            zoom_mul = 1.0
             try:
-                stack = getattr(scene, "_body_zoom_stack", []) or []
-                root_scale = getattr(scene, "_body_zoom_root_cam_scale", None)
-
-                # Update the root reference whenever we're at the top level.
-                if len(stack) == 0 and getattr(scene, "_body_zoom_anim", None) is None:
-                    root_scale = float(cam_scale)
-                    setattr(scene, "_body_zoom_root_cam_scale", root_scale)
-
-                if root_scale is None or float(root_scale) <= 1e-6:
-                    root_scale = float(base_scale) if float(base_scale) > 1e-6 else 1.0
-
-                zoom_mul = float(cam_scale) / float(root_scale)
+                zoom_mul = float(cam_scale) / float(base_scale) if float(base_scale) != 0 else 1.0
             except Exception:
                 zoom_mul = 1.0
 
+            try:
+                if pos_px and len(pos_px) > 0:
+                    focus_pos = pos_px[0] if isinstance(pos_px[0], (tuple, list)) and len(pos_px[0]) >= 2 else None
+            except Exception:
+                focus_pos = None
 
+            try:
+                pan_t = float(getattr(scene, "_body_graph_pan_t", 0.0))
+            except Exception:
+                pan_t = 0.0
 
+        except Exception:
+            view = None
+            zoom_mul = 1.0
+            focus_pos = None
+            pan_t = 0.0
 
-            # Anchor the glyph to the *root entity frame* (world origin), not to the currently viewed sub-schema.
-            anchor = _project_point_with_camera((0.0, 0.0), region_local, center_u=cam_center_u, scale=cam_scale)
+        # ------------------------------------------------------------
+        # Only draw the preview image (glyph/sprite) here if NOT in external overlay mode.
+        # Pane chrome + text ALWAYS draw so the pane can fade.
+        # ------------------------------------------------------------
+        if not bool(getattr(scene, "_external_opaque_glyph", False)):
+            # Local center within the reserved glyph region.
+            # NOTE: region already has reserved top/bottom margins; additional insets
+            # here create a second framing source of truth and cause snaps.
+            region_draw = region
+            cx_local = float(region_draw.centerx)
+            cy_local = float(region_draw.centery)
+            anchor = (cx_local, cy_local)
+
+            # Apply body-zoom (legacy pixel-space) ONLY if no world-space body camera anim is active.
+            # (This avoids double-zoom pops.)
+            zoom_scale = 1.0
+            if getattr(scene, "_body_zoom_anim", None) is None and focus_pos is not None and abs(float(zoom_mul) - 1.0) > 1e-6:
+                try:
+                    anchor = _apply_body_zoom_to_point(
+                        float(anchor[0]),
+                        float(anchor[1]),
+                        region_w=float(region.w),
+                        region_h=float(region.h),
+                        focus_pos=focus_pos,
+                        zoom_scale=float(zoom_mul),
+                        pan_t=float(pan_t),
+                    )
+                except Exception:
+                    anchor = (cx_local, cy_local)
+
             # Use the scene-derived base glyph size so the "external opaque glyph" overlay and
             # the in-widget glyph match exactly at the moment we switch modes.
             base_px = int(getattr(scene, "_zoom_glyph_base_px", 0) or 0)
             if base_px <= 0:
-                # Make the glyph ~2× bigger, but keep a little breathing room.
-                base_px = max(12, int(min(region.w, region.h) * 0.50 * 2.0))
-                base_px = min(base_px, int(min(region.w, region.h) * 0.90))
+                base_px = max(12, int(min(region_draw.w, region_draw.h) * 0.50 * 2.0))
+                base_px = min(base_px, int(min(region_draw.w, region_draw.h) * 0.90))
 
-
-            # IMPORTANT: Even with a raster cap, scaling to absurd pixel sizes will stutter.
-            # We don't need more pixels than we can possibly see in the clipped preview region.
-            # Apply body-graph camera zoom here (this is the intended place for it).
+            # IMPORTANT: Even with a raster cap, scaling to absurd pixel sizes will stutter / explode VRAM.
+            # For sprite/icon previews, instead of allocating a huge surface, we render the *camera window*
+            # by cropping a fixed-resolution source sprite and scaling that crop to the preview region.
             want_px = float(base_px) * float(zoom_mul)
 
-            # NEW: only cap the DISPLAY size to something "safe" for allocations,
-            # not to a tiny multiple of the preview region.
-            # (4096 is usually plenty; 8192 if you want more.)
             DISPLAY_PX_MAX = 4096
-
             glyph_px = int(max(1, min(FONT_PX_MAX, want_px, DISPLAY_PX_MAX)))
-
-            # Optional: quantize to reduce "new scale every frame" churn
             glyph_px = int(round(float(glyph_px) / float(FONT_PX_STEP))) * int(FONT_PX_STEP)
             glyph_px = max(1, glyph_px)
-
-            font = self._get_font(glyph_px)   # NOTE: _get_font will raster-cap internally
-            gcanvas = _render_entity_glyph_canvas(
-                renderer,
-                owner if owner is not None else type("X", (), {"glyph": glyph})(),
-                font=font,
-                base_px=glyph_px,             # NOTE: base_px is DISPLAY size
-                scene_effects=list(getattr(scene, "visual_effects", []) or []),
-            )
-
-
-            # Fade the glyph when hovering the right pane so the node skeleton is easier to see.
-            hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
-            gcanvas.set_alpha(120 if hovered_right else 255)
-
-            # Clip to the glyph region (prevents spilling outside the right pane / over footer text).
-            old_clip = card.get_clip()
             try:
-                card.set_clip(region)
-                gx = int(region.x + float(anchor[0]) - gcanvas.get_width() // 2)
-                gy = int(region.y + float(anchor[1]) - gcanvas.get_height() // 2)
-                card.blit(gcanvas, (gx, gy))
-            finally:
-                card.set_clip(old_clip)
-
-
-        # --- Description footer (Magic-card style) -------------------------
-        if desc:
-            try:
-                # Italic + slightly grayed out
-                dfont = pygame.font.SysFont("consolas", 16, italic=True)
+                setattr(scene, "_last_preview_glyph_px", int(glyph_px))
             except Exception:
-                dfont = pygame.font.SysFont("consolas", 16)
+                pass
 
-            # Wrap to the inner card width
-            max_w = max(1, r.w - 28)
-            lines = _wrap_text_px(dfont, str(desc), max_w)
+            # Fade the glyph/sprite when hovering the right pane so the node skeleton is easier to see.
+            hovered_right = bool(getattr(scene, "_right_panel_hovered", False))
+            try:
+                p = float(getattr(scene, "_zoom_progress", 1.0) or 1.0)
+            except Exception:
+                p = 1.0
+            transition_active = bool(getattr(scene, "_closing", False)) or (p < 1.0)
+            preview_alpha = 255 if transition_active else (120 if hovered_right else 255)
 
-            # Draw from the bottom up so it hugs the bottom margin consistently
-            y = r.h - 16  # bottom padding
-            color = (185, 185, 195)  # gray-ish
-            alpha = 210
+            # -------------------------------------------------------------------
+            # Preferred path: sprite/icon camera window crop
+            # -------------------------------------------------------------------
+            try:
+                icon = None
+                try:
+                    icon = renderer.get_entity_icon_surface(owner, size_px=512)
+                except Exception:
+                    icon = None
 
-            # Render lines bottom-up
-            for line in reversed(lines):
-                if not line:
-                    y -= dfont.get_height()
-                    continue
-                s = dfont.render(line, True, color).convert_alpha()
-                s.set_alpha(alpha)
-                y -= s.get_height()
-                card.blit(s, (14, y))
+                if icon is not None:
+                    # Map camera window in "world u" into sprite pixel coords.
+                    # This uses the same camera (center/scale) as the skeleton projection.
+                    try:
+                        center_u = view.cam_center_u if view is not None else (0.0, 0.0)
+                        scale = float(view.cam_scale) if view is not None else 1.0
+                        # World window half-extents in u (view region size in px / camera scale).
+                        half_w_u = (float(region.w) * 0.5) / float(scale) if float(scale) != 0 else 0.5
+                        half_h_u = (float(region.h) * 0.5) / float(scale) if float(scale) != 0 else 0.5
 
-        # (Body-plan node overlay is drawn by BodyPlanGraphWidget.)
+                        # World window bounds in u.
+                        x0_u = float(center_u[0]) - half_w_u
+                        x1_u = float(center_u[0]) + half_w_u
+                        y0_u = float(center_u[1]) - half_h_u
+                        y1_u = float(center_u[1]) + half_h_u
 
-        surf.blit(card, r.topleft)
+                        # Sprite pixel mapping: assume icon spans a fixed world box.
+                        # (Your existing code defines this mapping; keep it consistent.)
+                        # Here we use a conventional [-0.5, +0.5] box in u.
+                        sx = icon.get_width()
+                        sy = icon.get_height()
+
+                        # Convert u -> sprite px
+                        def u_to_px_x(u: float) -> float:
+                            return (float(u) + 0.5) * float(sx)
+
+                        def u_to_px_y(v: float) -> float:
+                            return (float(v) + 0.5) * float(sy)
+
+
+                        # Desired (unclamped) crop in sprite px
+                        rx0d = int(math.floor(u_to_px_x(x0_u)))
+                        rx1d = int(math.ceil(u_to_px_x(x1_u)))
+                        ry0d = int(math.floor(u_to_px_y(y0_u)))
+                        ry1d = int(math.ceil(u_to_px_y(y1_u)))
+
+                        # Ensure non-empty desired crop
+                        if rx1d <= rx0d:
+                            rx1d = rx0d + 1
+                        if ry1d <= ry0d:
+                            ry1d = ry0d + 1
+
+                        desired_w = rx1d - rx0d
+                        desired_h = ry1d - ry0d
+
+                        # Clamp *source* rect to icon bounds, but preserve desired crop size by padding.
+                        src_x0 = max(0, min(rx0d, sx))
+                        src_y0 = max(0, min(ry0d, sy))
+                        src_x1 = max(0, min(rx1d, sx))
+                        src_y1 = max(0, min(ry1d, sy))
+
+                        src_w = max(0, src_x1 - src_x0)
+                        src_h = max(0, src_y1 - src_y0)
+
+                        # Build padded crop surface (transparent) at the desired size.
+                        crop = pygame.Surface((max(1, desired_w), max(1, desired_h)), pygame.SRCALPHA)
+
+                        # If anything intersects, blit the intersecting portion into the padded crop.
+                        if src_w > 0 and src_h > 0:
+                            sub = icon.subsurface(pygame.Rect(src_x0, src_y0, src_w, src_h))
+                            # Offset inside padded crop where the clamped subrect belongs:
+                            dx = src_x0 - rx0d
+                            dy = src_y0 - ry0d
+                            crop.blit(sub, (dx, dy))
+
+                        # Scale padded crop to fill region.
+                        if crop.get_width() > 0 and crop.get_height() > 0:
+                            scaled = pygame.transform.smoothscale(crop, (max(1, region_draw.w), max(1, region_draw.h)))
+                            if preview_alpha != 255:
+                                scaled.set_alpha(int(preview_alpha))
+                            card.blit(scaled, (region_draw.x, region_draw.y))
+
+                    except Exception:
+                        # If crop fails, fall back to glyph.
+                        icon = None
+
+                # -------------------------------------------------------------------
+                # Fallback path: ASCII glyph rendered at glyph_px
+                # -------------------------------------------------------------------
+                if icon is None:
+                    glyph = info.get("glyph") or getattr(owner, "glyph", "@")
+                    try:
+                        font = pygame.font.SysFont("consolas", int(glyph_px), bold=True)
+                    except Exception:
+                        font = pygame.font.SysFont("consolas", 64, bold=True)
+                    try:
+                        gs = font.render(str(glyph), True, fg).convert_alpha()
+                        if preview_alpha != 255:
+                            gs.set_alpha(int(preview_alpha))
+                        gx = int(region.x + float(anchor[0]) - float(gs.get_width()) * 0.5)
+                        gy = int(region.y + float(anchor[1]) - float(gs.get_height()) * 0.5)
+                        card.blit(gs, (gx, gy))
+                    except Exception:
+                        pass
+
+            except Exception:
+                # Never let preview errors kill the whole pane.
+                pass
+
+        # Description/footer text should ALWAYS render (part of fading UI).
+        try:
+            desc2 = desc
+            if desc2:
+                max_w = max(10, r.w - 28)
+
+                # Flavor-text font: slightly smaller, italic, softer color
+                try:
+                    flavor_size = max(12, body_font.get_height() - 3)
+                    flavor_font = pygame.font.SysFont(
+                        "consolas",
+                        flavor_size,
+                        italic=True,
+                    )
+                except Exception:
+                    flavor_font = body_font  # graceful fallback
+
+                lines = _wrap_text_px(flavor_font, str(desc2), max_w)
+
+                # Draw bottom-up so it hugs the bottom margin consistently
+                y = r.h - 16  # bottom padding
+                color = (160, 160, 170)   # softer gray
+                alpha = 190               # slightly more translucent
+
+                for line in reversed(lines):
+                    if not line:
+                        y -= flavor_font.get_height()
+                        continue
+                    s = flavor_font.render(line, True, color).convert_alpha()
+                    s.set_alpha(alpha)
+                    y -= s.get_height()
+                    card.blit(s, (14, y))
+        except Exception:
+            pass
+
+        # Final blit to panel.
+        ctx.surface.blit(card, (r.x, r.y))
 
 
 
@@ -1703,10 +2078,16 @@ class BodyPlanGraphWidget(Widget):
         desc = info.get("description") or getattr(owner, "description", None)
 
         # Reserve a region that mostly covers the glyph area, not the header/footer text.
+        # Prefer the exact region computed by InventoryScene.render() so glyph and overlay
+        # share pixel-identical framing (prevents deep-zoom drift from 1–2px mismatches).
         r = self.rect
         top_reserved = 70
         bottom_reserved = 80 if desc else 56
-        region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
+        region_from_scene = getattr(scene, "_body_graph_region_panel", None)
+        if isinstance(region_from_scene, pygame.Rect) and region_from_scene.w > 10 and region_from_scene.h > 10 and r.contains(region_from_scene):
+            region = region_from_scene
+        else:
+            region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
         if region.w <= 10 or region.h <= 10:
             try:
                 setattr(scene, "_body_overlay_panel_surface", None)
@@ -1725,20 +2106,72 @@ class BodyPlanGraphWidget(Widget):
         schema, embed_off_u, embed_scale_u = chain[-1]
 
         pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+        pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
 
         # Camera: active schema only (ghosts excluded by design).
         region_local = pygame.Rect(0, 0, region.w, region.h)
         # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
         stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
-        anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
-        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, anchor_u=anchor_u)
+        anchor_u = (0.0, 0.0) if stack_depth == 0 else _get_schema_anchor_u(schema, pos_u)
 
+        # Prefer the camera computed in InventoryScene.render() when available.
+        # This guarantees the overlay uses the exact same camera as the background glyph.
+        cam_center_u = None
+        cam_scale = None
+        try:
+            cached_region = getattr(scene, "_last_body_cam_region", None)
+            cached_depth = getattr(scene, "_last_body_cam_stack_depth", None)
+            cached_owner_id = getattr(scene, "_last_body_cam_owner_id", None)
+            if cached_region == (int(region.w), int(region.h)) and int(cached_depth or -1) == int(stack_depth) and int(cached_owner_id or 0) == (int(id(owner)) if owner is not None else 0):
+                cam_center_u = tuple(getattr(scene, "_last_body_cam_center_u", (0.0, 0.0)))
+                cam_scale = float(getattr(scene, "_last_body_cam_scale", 1.0) or 1.0)
+        except Exception:
+            cam_center_u = None
+            cam_scale = None
+
+        if cam_center_u is None or cam_scale is None:
+            cam_center_u, cam_scale = _compute_body_graph_camera(
+                scene,
+                region_local,
+                frame_center_u=embed_off_u,
+                frame_span_u=embed_scale_u,
+                positions_u=pos_u_cam,
+                margin_frac=0.12,
+            )
+
+        # IMPORTANT: keep LoD 0 camera center rule consistent with the preview glyph
+        # so the glyph and node skeleton never desync during the diagrammatic transition.
+        if stack_depth == 0 and getattr(scene, "_body_zoom_anim", None) is None:
+            cam_center_u = (0.0, 0.0)
 
         pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
         # Combined position map (active + any ghost layers).
         # Used for rendering optional cross-layer links (e.g. torso -> head ghost).
         all_pos_px: dict[str, tuple[float, float]] = dict(pos_px)
+
+        # Body-zoom (diagrammatic zoom) transform:
+        # keep glyph/sprite and node graph in the same screen-space during LoD transitions.
+        zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
+        zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+        focus_pos = pos_px.get(str(zoom_focus)) if zoom_focus is not None else None
+        setattr(scene, "_body_zoom_focus_pos", focus_pos)
+
+        pan_t = _body_zoom_pan_t(scene, zoom_scale)
+
+        def _bz_points(pmap: dict[str, tuple[float, float]]) -> dict[str, tuple[float, float]]:
+            return _apply_body_zoom_to_points(
+                pmap,
+                region_w=float(region_local.w),
+                region_h=float(region_local.h),
+                focus_pos=focus_pos,
+                zoom_scale=zoom_scale,
+                pan_t=pan_t,
+            )
+
+        if getattr(scene, "_body_zoom_anim", None) is None and focus_pos is not None and abs(float(zoom_scale) - 1.0) > 1e-6:
+            pos_px = _bz_points(pos_px)
+            all_pos_px = _bz_points(all_pos_px)
 
         scale = float(cam_scale)
         node_size = int(max(18, min(56, scale * 0.45)))
@@ -1808,8 +2241,14 @@ class BodyPlanGraphWidget(Widget):
             for i, (g_schema, g_off_u, g_scale_u) in enumerate(chain[:-1]):
                 dist = (len(chain) - 1) - i  # +1, +2, ...
                 if fade_dir == "in" and dist == 1:
-                    continue  # dist=1 handled by crossfade layer
-                g_alpha = _ghost_alpha(alpha_base, dist)
+                    # Crossfade the immediate parent layer out while the new active layer fades in.
+                    # (Previously this was 'handled elsewhere' but no dedicated crossfade layer existed,
+                    # which caused a visible one-frame discontinuity at zoom start.)
+                    g_alpha = int(round(float(alpha_base) * (1.0 - float(fade_t))))
+                    if g_alpha < 12:
+                        continue
+                if not (fade_dir == "in" and dist == 1):
+                    g_alpha = _ghost_alpha(alpha_base, dist)
                 if g_alpha < 12:
                     continue
 
@@ -1823,6 +2262,10 @@ class BodyPlanGraphWidget(Widget):
                 g_pos_px = _project_positions_with_camera(
                     g_pos_u, region_local, center_u=cam_center_u, scale=cam_scale
                 )
+
+                if getattr(scene, "_body_zoom_anim", None) is None and focus_pos is not None and abs(float(zoom_scale) - 1.0) > 1e-6:
+                    g_pos_px = _bz_points(g_pos_px)
+
 
                 # Merge ghost node positions into combined map (do not clobber active positions).
                 for _nid, _p in (g_pos_px or {}).items():
@@ -1925,6 +2368,10 @@ class BodyPlanGraphWidget(Widget):
                 p_schema, p_off_u, p_scale_u = chain[-2]
                 p_pos_u = _embed_positions(_compute_body_positions(p_schema), p_off_u, p_scale_u)
                 p_pos_px = _project_positions_with_camera(p_pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+
+                if getattr(scene, "_body_zoom_anim", None) is None and focus_pos is not None and abs(float(zoom_scale) - 1.0) > 1e-6:
+                    p_pos_px = _bz_points(p_pos_px)
+
 
                 g1 = _ghost_alpha(alpha_base, 1)
                 out_a = int(round(float(alpha_base) * (1.0 - float(fade_t)) + float(g1) * float(fade_t)))
@@ -2108,6 +2555,10 @@ class BodyPlanGraphWidget(Widget):
                 c_pos_u = _embed_positions(_compute_body_positions(c_schema), c_off_u, c_scale_u)
                 c_pos_px = _project_positions_with_camera(c_pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
 
+                if getattr(scene, "_body_zoom_anim", None) is None and focus_pos is not None and abs(float(zoom_scale) - 1.0) > 1e-6:
+                    c_pos_px = _bz_points(c_pos_px)
+
+
                 out_a = int(round(float(alpha_base) * (1.0 - float(fade_t))))
                 _draw_simple_layer(c_schema, c_pos_px, out_a)
 
@@ -2155,6 +2606,7 @@ class BodyPlanGraphWidget(Widget):
         if region.w <= 10 or region.h <= 10:
             return None
 
+        # Resolve currently-viewed schema (same as draw()).
         try:
             chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []))
             if not chain:
@@ -2163,16 +2615,44 @@ class BodyPlanGraphWidget(Widget):
             chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
 
         schema, embed_off_u, embed_scale_u = chain[-1]
-        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
 
+        # Use the same authoritative body-view camera policy as preview + overlay.
         region_local = pygame.Rect(0, 0, region.w, region.h)
-        # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
-        stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
-        anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
-        cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, anchor_u=anchor_u)
-        pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
+        zoom_stack = getattr(scene, "_body_zoom_stack", []) or []
+        view = compute_body_view_state(
+            scene,
+            owner,
+            region_local=region_local,
+            zoom_stack=zoom_stack,
+            margin_frac=0.12,
+        )
 
-        node_size = int(max(18, min(56, float(cam_scale) * 0.45)))
+        pos_px = _project_positions_with_camera(
+            view.pos_u,
+            region_local,
+            center_u=view.cam_center_u,
+            scale=view.cam_scale,
+        )
+
+        # Apply the same diagrammatic body-zoom transform that draw() applies to node positions.
+        try:
+            zoom_scale = float(getattr(scene, "_body_zoom_scale", 1.0) or 1.0)
+            zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+            focus_pos = pos_px.get(str(zoom_focus)) if zoom_focus is not None else None
+            pan_t = _body_zoom_pan_t(scene, zoom_scale)
+            if getattr(scene, "_body_zoom_anim", None) is None and focus_pos is not None and abs(float(zoom_scale) - 1.0) > 1e-6:
+                pos_px = _apply_body_zoom_to_points(
+                    pos_px,
+                    region_w=float(region_local.w),
+                    region_h=float(region_local.h),
+                    focus_pos=focus_pos,
+                    zoom_scale=zoom_scale,
+                    pan_t=pan_t,
+                )
+        except Exception:
+            pass
+
+        node_size = int(max(18, min(56, float(view.cam_scale) * 0.45)))
         half = node_size // 2
 
         mx, my = int(mp[0]), int(mp[1])
@@ -2184,7 +2664,7 @@ class BodyPlanGraphWidget(Widget):
 
         return None
 
-    # ----------------------------
+# ----------------------------
     # Event handling (unchanged)
     # ----------------------------
 
@@ -2399,6 +2879,10 @@ class RightPaneWidget(Widget):
         self.add_child(self.preview)
         self.add_child(self.body_graph)
 
+    def draw(self, ctx: WidgetContext) -> None:
+        return super().draw(ctx)
+
+
     def layout(self, ctx: WidgetContext) -> None:
         # Both layers occupy the same rect.
         self.preview.rect = pygame.Rect(self.rect)
@@ -2423,55 +2907,25 @@ class RightPaneWidget(Widget):
                 region = pygame.Rect(r.x + 14, r.y + top_reserved, r.w - 28, r.h - top_reserved - bottom_reserved)
 
                 if region.w > 10 and region.h > 10:
-                    try:
-                        schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
-                            owner, getattr(scene, "_body_zoom_stack", [])
-                        )
-                    except Exception:
-                        schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
-
-                    pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
-                    # Unify preview + overlay: use the SAME world-space camera as BodyPlanGraphWidget.
                     region_local = pygame.Rect(0, 0, region.w, region.h)
-                    # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
-                    stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
-                    anchor_u = _get_schema_anchor_u(schema, pos_u) if stack_depth == 0 else None
-                    cam_center_u, cam_scale = _compute_body_graph_camera(scene, pos_u, region_local, anchor_u=anchor_u)
-                    pos_px = _project_positions_with_camera(pos_u, region_local, center_u=cam_center_u, scale=cam_scale)
-
-                    # Match BodyPlanGraphWidget.draw(): interpolate focus when animating.
-                    focus_pos = None
-                    anim = getattr(scene, "_body_zoom_anim", None)
-                    if anim is not None:
-                        # Phase 1.5: camera-state anim no longer encodes focus ids.
-                        # Keep focus_pos stable (or None) to avoid coupling focus UI to camera animation.
-                        zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
-                        focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
-                        setattr(scene, "_body_zoom_focus_pos", focus_pos)
-                        now = int(pygame.time.get_ticks())
-                        if dur_ms <= 0:
-                            t = 1.0
-                        else:
-                            t = (now - int(start_ms)) / float(dur_ms)
-                            if t < 0.0:
-                                t = 0.0
-                            if t > 1.0:
-                                t = 1.0
-                        t = t * t * (3.0 - 2.0 * t)
-
-                        if from_focus and to_focus and from_focus in pos_px and to_focus in pos_px:
-                            x0, y0 = pos_px[from_focus]
-                            x1, y1 = pos_px[to_focus]
-                            focus_pos = (x0 * (1.0 - t) + x1 * t, y0 * (1.0 - t) + y1 * t)
-                        elif to_focus and to_focus in pos_px:
-                            focus_pos = pos_px[to_focus]
-                        elif from_focus and from_focus in pos_px:
-                            focus_pos = pos_px[from_focus]
-                    else:
-                        zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
-                        focus_pos = pos_px.get(zoom_focus) if zoom_focus else None
-
+                    zoom_stack = getattr(scene, "_body_zoom_stack", []) or []
+                    view = compute_body_view_state(
+                        scene,
+                        owner,
+                        region_local=region_local,
+                        zoom_stack=zoom_stack,
+                        margin_frac=0.12,
+                    )
+                    pos_px = _project_positions_with_camera(
+                        view.pos_u,
+                        region_local,
+                        center_u=view.cam_center_u,
+                        scale=view.cam_scale,
+                    )
+                    zoom_focus = getattr(scene, "_body_zoom_focus_nid", None)
+                    focus_pos = pos_px.get(str(zoom_focus)) if zoom_focus is not None else None
                     setattr(scene, "_body_zoom_focus_pos", focus_pos)
+
         except Exception:
             pass
 
@@ -2731,6 +3185,7 @@ class InventoryScene(PopupMenuScene):
         # ---- Phase 5 foundation: body-graph camera zoom ----
         self._body_zoom_stack: list[str] = []
         self._body_zoom_focus_nid: str | None = None
+        # Harness mode: minimal single-transform body-view debugger
         self._body_zoom_scale: float = 1.0
 
         # Phase 1.5: camera-state interpolation (pan + scale) ONLY.
@@ -2815,6 +3270,10 @@ class InventoryScene(PopupMenuScene):
 
         # Base pixel size of the *final* glyph inside the preview pane (panel space).
         self._zoom_glyph_base_px: int = 48
+        # Authoritative LoD0 preview camera cache (computed once per owner/layout).
+        self._preview_cam_cache: PreviewCameraCache | None = None
+        self._preview_cam_cache_key: tuple | None = None
+
 
         # If we can derive the initial panel scale from glyph sizes, store it here.
         self._zoom_start_scale: float | None = None
@@ -3124,16 +3583,31 @@ class InventoryScene(PopupMenuScene):
         region_local = pygame.Rect(0, 0, rw, rh)
 
         def _camera_for_stack(stack: list[str]) -> tuple[tuple[float, float], float]:
+            # IMPORTANT: match render camera inputs as closely as possible.
+            # Use the same chain resolver used by the overlay, and take the active layer (last).
             try:
-                schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, stack)
+                chain = _resolve_body_view_chain_for_zoom_path(owner, stack)
+                if not chain:
+                    chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
             except Exception:
-                schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
+                chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
+
+            schema, embed_off_u, embed_scale_u = chain[-1]
             pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
-            # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
-            anchor_u = _get_schema_anchor_u(schema, pos_u) if len(stack) == 0 else None
+            pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
+
             center_u, scale = _compute_body_graph_base_camera(
-                self, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u
+                self,
+                region_local,
+                frame_center_u=embed_off_u,
+                frame_span_u=embed_scale_u,
+                positions_u=pos_u_cam,
+                margin_frac=0.12,
             )
+
+            # Keep LoD 0 visually anchored to the root entity frame (world origin).
+            if len(stack) == 0:
+                center_u = (0.0, 0.0)
 
             return (float(center_u[0]), float(center_u[1])), float(scale)
 
@@ -3223,13 +3697,17 @@ class InventoryScene(PopupMenuScene):
 
             schema, embed_off_u, embed_scale_u = chain[-1]
             pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+            pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
 
             # IMPORTANT: match render camera logic (anchored fit) to avoid end-of-zoom snap.
             # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
             anchor_u = _get_schema_anchor_u(schema, pos_u) if len(stack) == 0 else None
-            center_u, scale = _compute_body_graph_base_camera(
-                self, pos_u, region_local, margin_frac=0.12, anchor_u=anchor_u
-            )
+            center_u, scale = _compute_body_graph_base_camera(self, region_local, frame_center_u=embed_off_u, frame_span_u=embed_scale_u, positions_u=pos_u, margin_frac=0.12)
+            # Keep LoD 0 visually anchored to the root entity frame (world origin).
+            # This must match the draw-time LoD 0 rule, or we get a tiny snap at the start/end of zoom.
+            if len(stack) == 0:
+                center_u = (0.0, 0.0)
+
             return (float(center_u[0]), float(center_u[1])), float(scale)
 
 
@@ -3660,6 +4138,116 @@ class InventoryScene(PopupMenuScene):
             "strawberry",
         }
 
+    # ---------------------------------------------------------------------
+    # Authoritative LoD0 preview camera cache
+    # ---------------------------------------------------------------------
+
+
+    def _ensure_preview_cam_cache(self) -> None:
+        """Compute and cache the authoritative LoD0 preview camera state.
+
+        This MUST be the single source of truth for:
+          - LoD0 preview glyph/sprite framing in the right pane
+          - the destination camera/anchor for the diagrammatic open/close zoom
+          - the canonical base glyph pixel size used by transition math
+        """
+        try:
+            preview = getattr(self, "_preview", None)
+            if preview is None or getattr(preview, "rect", None) is None:
+                return
+
+            owner = self._find_owner_entity()
+            owner_id = None
+            try:
+                owner_id = getattr(owner, "id", None) if owner is not None else None
+            except Exception:
+                owner_id = None
+
+            # Determine whether a description footer is present (affects reserved space).
+            desc_present = False
+            try:
+                info = describe_entity_for_look(owner) if owner is not None else {}
+                desc = info.get("description") or getattr(owner, "description", None)
+                desc_present = bool(desc)
+            except Exception:
+                desc_present = bool(getattr(owner, "description", None))
+
+            top_reserved = 70
+            bottom_reserved = 80 if desc_present else 56
+
+            region_w = max(1, int(preview.rect.w) - 28)
+            region_h = max(1, int(preview.rect.h) - int(top_reserved) - int(bottom_reserved))
+
+            # Region in panel/logical coords (exactly matching EntityPreviewWidget).
+            region_panel = pygame.Rect(
+                int(preview.rect.x) + 14,
+                int(preview.rect.y) + int(top_reserved),
+                int(region_w),
+                int(region_h),
+            )
+
+            region_local = pygame.Rect(0, 0, int(region_w), int(region_h))
+
+            key = (owner_id, int(region_panel.x), int(region_panel.y), int(region_panel.w), int(region_panel.h), bool(desc_present))
+            if self._preview_cam_cache_key == key and self._preview_cam_cache is not None:
+                # Keep the operational "single source of truth" fields in sync for legacy callers.
+                try:
+                    self._zoom_glyph_base_px = int(self._preview_cam_cache.base_glyph_px)
+                    self._zoom_anchor_panel = tuple(self._preview_cam_cache.anchor_panel)
+                    setattr(self, "_body_graph_region_panel", self._preview_cam_cache.region_panel)
+                except Exception:
+                    pass
+                return
+
+            # Compute authoritative LoD0 view state (zoom_stack == []).
+            view0 = compute_body_view_state(
+                self,
+                owner,
+                region_local=region_local,
+                zoom_stack=[],
+                margin_frac=0.12,
+            )
+
+            # Canonical glyph cell size (in panel/logical px) implied by the camera scale:
+            # for the canonical 1×1 frame, px_per_u == cam_scale. Quantize for stability.
+            try:
+                base_px = int(round(float(view0.cam_scale) / float(FONT_PX_STEP))) * int(FONT_PX_STEP)
+            except Exception:
+                base_px = int(view0.cam_scale)
+
+            # Clamp to sane font bounds (actual draw code clamps again; this is just the canonical base).
+            try:
+                base_px = int(max(1, min(int(FONT_PX_MAX), int(base_px))))
+            except Exception:
+                base_px = int(max(1, base_px))
+
+            anchor_panel = (float(region_panel.centerx), float(region_panel.centery))
+
+            cache = PreviewCameraCache(
+                owner_id=str(owner_id) if owner_id is not None else None,
+                region_panel=region_panel,
+                region_local=region_local,
+                view0=view0,
+                base_glyph_px=int(base_px),
+                anchor_panel=anchor_panel,
+                desc_present=bool(desc_present),
+            )
+            self._preview_cam_cache = cache
+            self._preview_cam_cache_key = key
+
+            # Synchronize legacy fields used by the transition/render paths.
+            self._zoom_glyph_base_px = int(base_px)
+            self._zoom_anchor_panel = anchor_panel
+            try:
+                setattr(self, "_body_graph_region_panel", region_panel)
+            except Exception:
+                pass
+
+        except Exception:
+            # On any unexpected failure, keep previous behavior (no cache / fallback heuristics).
+            return
+
+
     def _find_owner_entity(self):
         owner_id = self._owner_id()
 
@@ -3863,6 +4451,7 @@ class InventoryScene(PopupMenuScene):
         if self._closing:
             return
 
+
         # Phase 5: Esc zooms out of body-graph depth first (only if currently zoomed).
         try:
             if event.type == pygame.KEYDOWN and getattr(event, "key", None) == pygame.K_ESCAPE:
@@ -3888,7 +4477,7 @@ class InventoryScene(PopupMenuScene):
         except Exception:
             pass
 
-        # While dragging: update drag ghost from the scene's canonical panel-logical mouse.
+# While dragging: update drag ghost from the scene's canonical panel-logical mouse.
         # IMPORTANT: drag can be initiated from widgets (which may deliver panel-logical pos),
         # but scene events start as screen coords. Mixing these causes consistent hitbox drift.
         if self._drag_active and event.type == pygame.MOUSEMOTION:
@@ -4846,10 +5435,6 @@ class InventoryScene(PopupMenuScene):
 
         return (screen_px, size_px)
 
-    def _row_glyph_screen_px(self, row_index: int, manager: "SceneManager") -> tuple[int, int] | None:
-        """Backwards-compatible: return only the glyph screen pixel."""
-        px, _sz = self._row_glyph_screen_info(row_index, manager)
-        return px
 
     def update(self, dt_ms: int, manager: "SceneManager") -> None:
         # Phase 5: advance body-graph zoom animation.
@@ -5046,6 +5631,10 @@ class InventoryScene(PopupMenuScene):
           scale, rotation, flips, offsets (e.g. clockwise, mirror_x), plus time-varying effects.
         - keep the preview glyph anchor glued to the source point during the transition.
         """
+
+        # Ensure our authoritative LoD0 preview camera cache exists before any transition math
+        # tries to derive start scales from the "final glyph size".
+        self._ensure_preview_cam_cache()
         # Start with inherited scene effects (time-based too).
         base = build_visual_profile(VisualProfile(), self.visual_effects)
 
@@ -5248,7 +5837,11 @@ class InventoryScene(PopupMenuScene):
             p = float(getattr(self, "_zoom_progress", 0.0) or 0.0)
         except Exception:
             p = 0.0
-        self._external_opaque_glyph = bool(self._closing or p < 0.999)
+                # External glyph overlay: while the diagrammatic open/close transition runs,
+        # we draw the glyph *outside* the fading panel so it stays fully opaque.
+        # EntityPreviewWidget must therefore skip drawing the in-panel glyph during that time.
+        self._external_glyph_overlay_active = bool(self._closing or p < 0.999)
+        self._external_opaque_glyph = self._external_glyph_overlay_active
 
 
 
@@ -5271,28 +5864,24 @@ class InventoryScene(PopupMenuScene):
             if self._preview is not None:
                 owner = self._find_owner_entity()
 
-                # Determine whether a description footer will be drawn (affects reserved space).
-                try:
-                    info = describe_entity_for_look(owner) if owner is not None else {}
-                    desc = info.get("description") or getattr(owner, "description", None)
-                except Exception:
-                    desc = getattr(owner, "description", None)
-
-                # Match EntityPreviewWidget's internal layout margins/reserved header/footer.
-                top_reserved = 70
-                bottom_reserved = 80 if desc else 56
-                region_w = max(1, int(self._preview.rect.w) - 28)
-                region_h = max(1, int(self._preview.rect.h) - int(top_reserved) - int(bottom_reserved))
-
-                # IMPORTANT:
-                # _zoom_glyph_base_px should represent the *base* glyph-cell size for the preview region
-                # at zoom_scale == 1.0. The body-graph camera zoom is applied elsewhere (preview draw),
-                # so we do NOT bake it in here (otherwise we double-scale and create pop on mode handoff).
-                # Make the glyph ~2× bigger, but keep a little breathing room.
-                self._zoom_glyph_base_px = max(12, int(min(region_w, region_h) * 0.50 * 2.0))
-                self._zoom_glyph_base_px = min(int(self._zoom_glyph_base_px), int(min(region_w, region_h) * 0.90))
-
-
+                                # Authoritative LoD0 preview camera cache:
+                # compute once and reuse for transition destination + base glyph sizing.
+                self._ensure_preview_cam_cache()
+                cache = getattr(self, "_preview_cam_cache", None)
+                if cache is not None:
+                    try:
+                        region_w = int(cache.region_panel.w)
+                        region_h = int(cache.region_panel.h)
+                        self._zoom_glyph_base_px = int(cache.base_glyph_px)
+                        self._zoom_anchor_panel = tuple(cache.anchor_panel)
+                        setattr(self, "_body_graph_region_panel", cache.region_panel)
+                    except Exception:
+                        region_w = max(1, int(self._preview.rect.w) - 28)
+                        region_h = max(1, int(self._preview.rect.h) - 126)
+                else:
+                    # Fallback: legacy region sizing (should be rare; cache normally exists).
+                    region_w = max(1, int(self._preview.rect.w) - 28)
+                    region_h = max(1, int(self._preview.rect.h) - 126)
 
                 if owner is not None:
                     base_px = int(self._zoom_glyph_base_px)
@@ -5307,38 +5896,11 @@ class InventoryScene(PopupMenuScene):
                         scene_effects=list(getattr(self, "visual_effects", []) or []),
                     )
 
-                    # Place the glyph so that its *logical cell center* lands at the center of the
-                    # reserved glyph region (excluding header and description footer).
-                    # Base center within the reserved glyph region.
-                    local_cx = float(region_w) * 0.5
-                    local_cy = float(region_h) * 0.5
+                    # Anchor: provided by the authoritative preview camera cache.
+                    # DO NOT recompute anchor here (multiple sources of truth => pops/snaps).
+                    # self._ensure_preview_cam_cache() above already set self._zoom_anchor_panel.
+                    
 
-                    # Phase 5: pan with the same body-graph camera transform as the node skeleton.
-                    try:
-                        zoom_scale = float(getattr(self, "_body_zoom_scale", 1.0) or 1.0)
-                        focus_pos = getattr(self, "_body_zoom_focus_pos", None)
-                        pan_t = _body_zoom_pan_t(self, zoom_scale)
-                        local_cx, local_cy = _apply_body_zoom_to_point(
-                            local_cx,
-                            local_cy,
-                            region_w=float(region_w),
-                            region_h=float(region_h),
-                            focus_pos=focus_pos,
-                            zoom_scale=zoom_scale,
-                            pan_t=pan_t,
-                        )
-                    except Exception:
-                        zoom_scale = 1.0
-
-                    region_cx = float(self._preview.rect.x) + 14.0 + local_cx
-                    region_cy = float(self._preview.rect.y) + float(top_reserved) + local_cy
-
-
-                    # Store anchor as the *glyph cell center* in panel coords.
-                    # (Render() later positions gcanvas so this anchor lands at the same place.)
-                    self._zoom_anchor_panel = (region_cx, region_cy)
-                else:
-                    self._zoom_anchor_panel = (float(self._preview.rect.centerx), float(self._preview.rect.centery))
         except Exception:
             pass
 
@@ -5371,80 +5933,261 @@ class InventoryScene(PopupMenuScene):
             except Exception:
                 panel_to_blit = panel
                 logical_to_window = 1.0
-
         # Apply the diagrammatic zoom transform (fading + proportional scaling + anchor glue).
-        visual = self._current_visual_profile(logical_to_window_scale_x=float(self.window_rect.w) / float(max(1, panel.get_width())),
-            logical_to_window_scale_y=float(self.window_rect.h) / float(max(1, panel.get_height())))
-        apply_visual_panel(renderer.surface, panel_to_blit, self.window_rect, visual)
+        #
+        # Root cause of the "right pane invisible until the very end" bug:
+        # The panel's anchor glue was using the *preview glyph anchor* (in the right pane).
+        # When the panel is very small, gluing a *non-central* anchor to the dungeon glyph position
+        # can keep large portions of the panel (including most of the right pane chrome/text) outside
+        # the transformed footprint that lands on screen, making it look like it "pops in" at p→1.
+        #
+        # Fix:
+        #   - Glue the PANEL using its CENTER (so the whole UI stays inside the transformed footprint),
+        #     while still gluing to the same dungeon source pixel (_zoom_source_px).
+        #   - Keep the GLYPH OVERLAY glued using the real preview anchor so the glyph stays pinned.
+        sx = float(self.window_rect.w) / float(max(1, panel.get_width()))
+        sy = float(self.window_rect.h) / float(max(1, panel.get_height()))
 
-        # Redraw the glyph as an opaque overlay at the anchor point using the SAME transform.
+        saved_anchor = getattr(self, "_zoom_anchor_panel", None)
+
+        # Panel visual: force anchor to panel center by temporarily clearing _zoom_anchor_panel
+        # (but KEEP _zoom_source_px so the menu still flies in/out from the dungeon glyph).
+        try:
+            self._zoom_anchor_panel = None
+        except Exception:
+            pass
+
+        visual_panel = self._current_visual_profile(
+            logical_to_window_scale_x=sx,
+            logical_to_window_scale_y=sy,
+        )
+        old_clip = renderer.surface.get_clip()
+        try:
+            renderer.surface.set_clip(None)
+            apply_visual_panel(renderer.surface, panel_to_blit, self.window_rect, visual_panel)
+        finally:
+            renderer.surface.set_clip(old_clip)
+
+        # Restore the real anchor for any subsequent overlay work.
+        try:
+            self._zoom_anchor_panel = saved_anchor
+        except Exception:
+            pass
+
+        # Glyph/overlay visual: use the EXACT same transform as the panel so the preview
+        # stays perfectly aligned with the rest of the UI throughout the diagrammatic zoom.
+        # (We already solved the right-pane pop by anchoring/gluing the *panel* by its center.)
+        visual = visual_panel
+
+        # Redraw the preview (glyph/sprite) as an opaque overlay at the anchor point using the SAME transform.
         # (Only while the diagrammatic open/close animation is running.)
         owner = self._find_owner_entity()
-        if bool(getattr(self, "_external_opaque_glyph", False)) and owner is not None and self._zoom_anchor_panel is not None:
+        if bool(getattr(self, "_external_glyph_overlay_active", False)) and owner is not None and self._zoom_anchor_panel is not None:
 
             try:
                 glyph_layer = pygame.Surface(self.window_rect.size, pygame.SRCALPHA)
 
                 # Anchor location in the pre-transform panel space.
+                # NOTE: _zoom_anchor_panel is stored in *panel/logical* coords.
+                # We convert it to window_rect coords here because glyph_layer is window-sized.
                 ax = float(self._zoom_anchor_panel[0]) * float(self.window_rect.w) / float(max(1, panel.get_width()))
                 ay = float(self._zoom_anchor_panel[1]) * float(self.window_rect.h) / float(max(1, panel.get_height()))
 
-                # If we scaled the logical surface to window size, the anchor point lives in
-                # window_rect coords already (because we blit a window-sized panel_to_blit).
-                # So we do NOT rescale ax/ay here: they're panel_to_blit coords.
-                ltw_min = float(min(
-                    float(self.window_rect.w) / float(max(1, panel.get_width())),
-                    float(self.window_rect.h) / float(max(1, panel.get_height())),
-                ))
-                base_px = max(8, int(self._zoom_glyph_base_px * float(max(0.25, ltw_min))))
-                font = pygame.font.SysFont("consolas", max(10, int(base_px)), bold=True)
 
-                gcanvas, ganchor = _render_entity_glyph_canvas_with_anchor(
-                    renderer,
-                    owner,
-                    font=font,
-                    base_px=base_px,
-                    scene_effects=list(getattr(self, "visual_effects", []) or []),
-                )
-
-                # Place the canvas so that the *glyph cell center* lands on (ax, ay),
-                # not the canvas bounding-box center (which can be offset by effects).
-                gx = int(round(float(ax) - float(ganchor[0])))
-                gy = int(round(float(ay) - float(ganchor[1])))
-
-                # Clip glyph overlay to the preview pane (in window coords) so visual effects
-                # don't bleed into the left list.
+                                # Try sprite/icon preview first (camera-window crop), so sprites also stay fully opaque
+                # during the diagrammatic open/close. If this succeeds, we skip the glyph overlay.
+                drew_sprite = False
                 try:
-                    pr = getattr(self, "_preview", None)
-                    if pr is not None and getattr(pr, "rect", None) is not None:
-                        sx = float(self.window_rect.w) / float(max(1, panel.get_width()))
-                        sy = float(self.window_rect.h) / float(max(1, panel.get_height()))
-                        clip = pygame.Rect(
-                            int(round(float(pr.rect.x) * sx)),
-                            int(round(float(pr.rect.y) * sy)),
-                            int(round(float(pr.rect.w) * sx)),
-                            int(round(float(pr.rect.h) * sy)),
+                    src = None
+                    if owner is not None and hasattr(renderer, "get_entity_icon_surface"):
+                        src = renderer.get_entity_icon_surface(
+                            owner,
+                            size_px=512,
                         )
-                        glyph_layer.set_clip(clip)
+
+                    if isinstance(src, pygame.Surface):
+                        pr = getattr(self, "_preview", None)
+                        if pr is not None and getattr(pr, "rect", None) is not None:
+                            # Compute the same reserved sprite region as EntityPreviewWidget.
+                            try:
+                                info = describe_entity_for_look(owner) if owner is not None else {}
+                                desc = info.get("description") or getattr(owner, "description", None)
+                            except Exception:
+                                desc = getattr(owner, "description", None)
+
+                            top_reserved = 70
+                            bottom_reserved = 80 if desc else 56
+
+                            region_panel = pygame.Rect(
+                                int(pr.rect.x) + 14,
+                                int(pr.rect.y) + int(top_reserved),
+                                max(1, int(pr.rect.w) - 28),
+                                max(1, int(pr.rect.h) - int(top_reserved) - int(bottom_reserved)),
+                            )
+
+                            # Convert panel-space region to window-space region on our overlay surface.
+                            sx = float(self.window_rect.w) / float(max(1, panel.get_width()))
+                            sy = float(self.window_rect.h) / float(max(1, panel.get_height()))
+                            region_win = pygame.Rect(
+                                int(round(float(region_panel.x) * sx)),
+                                int(round(float(region_panel.y) * sy)),
+                                int(round(float(region_panel.w) * sx)),
+                                int(round(float(region_panel.h) * sy)),
+                            )
+
+                            if region_win.w > 1 and region_win.h > 1:
+                                region_local = pygame.Rect(0, 0, int(region_panel.w), int(region_panel.h))
+
+                                zoom_stack = getattr(self, "_body_zoom_stack", []) or []
+
+                                cache = getattr(self, "_preview_cam_cache", None)
+                                view = None
+                                if (not zoom_stack) and cache is not None and getattr(scene, "_body_zoom_anim", None) is None:
+                                    try:
+                                        view = cache.view0
+                                    except Exception:
+                                        view = None
+
+                                if view is None:
+                                    view = compute_body_view_state(
+                                    self,
+                                    owner,
+                                    region_local=region_local,
+                                    zoom_stack=zoom_stack,
+                                    margin_frac=0.12,
+                                )
+                                cam_center_u = view.cam_center_u
+                                cam_scale = float(view.cam_scale)
+
+                                half_w_u = float(region_local.w) * 0.5 / float(max(1e-6, cam_scale))
+                                half_h_u = float(region_local.h) * 0.5 / float(max(1e-6, cam_scale))
+                                u_left   = float(cam_center_u[0]) - half_w_u
+                                u_right  = float(cam_center_u[0]) + half_w_u
+                                u_top    = float(cam_center_u[1]) - half_h_u
+                                u_bottom = float(cam_center_u[1]) + half_h_u
+
+                                sw, sh = src.get_width(), src.get_height()
+
+                                # Convert camera window (u) -> desired sprite-pixel crop (may extend outside icon).
+                                def _u_to_px_xf(u: float) -> float:
+                                    return (float(u) + 0.5) * float(sw)
+                                def _u_to_px_yf(u: float) -> float:
+                                    return (float(u) + 0.5) * float(sh)
+
+                                rx0d = int(math.floor(_u_to_px_xf(u_left)))
+                                rx1d = int(math.ceil(_u_to_px_xf(u_right)))
+                                ry0d = int(math.floor(_u_to_px_yf(u_top)))
+                                ry1d = int(math.ceil(_u_to_px_yf(u_bottom)))
+
+                                if rx1d <= rx0d:
+                                    rx1d = rx0d + 1
+                                if ry1d <= ry0d:
+                                    ry1d = ry0d + 1
+
+                                desired_w = int(rx1d - rx0d)
+                                desired_h = int(ry1d - ry0d)
+
+                                # Clamp intersecting source region to icon bounds.
+                                src_x0 = max(0, min(rx0d, sw))
+                                src_y0 = max(0, min(ry0d, sh))
+                                src_x1 = max(0, min(rx1d, sw))
+                                src_y1 = max(0, min(ry1d, sh))
+                                src_w = max(0, int(src_x1 - src_x0))
+                                src_h = max(0, int(src_y1 - src_y0))
+
+                                # Build padded crop at the *desired* size so clamping doesn't change scale.
+                                crop = pygame.Surface((max(1, desired_w), max(1, desired_h)), pygame.SRCALPHA)
+                                if src_w > 0 and src_h > 0:
+                                    sub = src.subsurface(pygame.Rect(int(src_x0), int(src_y0), int(src_w), int(src_h)))
+                                    dx = int(src_x0 - rx0d)
+                                    dy = int(src_y0 - ry0d)
+                                    crop.blit(sub, (dx, dy))
+
+                                PREVIEW_PAD_FRAC = 0.06
+                                dst_win = _inset_rect_centered(region_win, PREVIEW_PAD_FRAC)
+
+                                if crop.get_size() != (dst_win.w, dst_win.h):
+                                    crop = pygame.transform.smoothscale(crop, (region_win.w, region_win.h))
+
+
+                                old_clip = glyph_layer.get_clip()
+                                try:
+                                    glyph_layer.set_clip(dst_win)
+                                    glyph_layer.blit(crop, dst_win.topleft)
+                                finally:
+                                    glyph_layer.set_clip(old_clip)
+
+                                drew_sprite = True
                 except Exception:
-                    pass
-
-                glyph_layer.blit(gcanvas, (gx, gy))
-                glyph_layer.set_clip(None)
+                    drew_sprite = False
 
 
-                # Apply the exact same transform but force alpha to 1.0.
-                hovered_right = bool(getattr(self, "_right_panel_hovered", False))
-                glyph_alpha = 0.72 if hovered_right else 1.0
-                # During diagrammatic open/close, keep the glyph fully opaque regardless of hover.
+                if not drew_sprite:
+                    # Use the exact glyph display size the preview widget would draw right now.
+                                    # If this is unavailable, fall back to the old heuristic based on logical->window scale.
+                                    stored_glyph_px = int(getattr(self, "_last_preview_glyph_px", 0) or 0)
+                                    if stored_glyph_px > 0:
+                                        glyph_px = int(stored_glyph_px)
+                                    else:
+                                        ltw_min = float(min(
+                                            float(self.window_rect.w) / float(max(1, panel.get_width())),
+                                            float(self.window_rect.h) / float(max(1, panel.get_height())),
+                                        ))
+                                        base_px = max(8, int(self._zoom_glyph_base_px * float(max(0.25, ltw_min))))
+                                        # Match in-panel glyph rendering exactly: quantize + raster-cap via _get_font.
+                                        glyph_px = int(round(float(base_px) / float(FONT_PX_STEP))) * int(FONT_PX_STEP)
+                                        glyph_px = max(1, glyph_px)
+                                    # Use the SAME font quantization/raster-cap logic as EntityPreviewWidget.
+                                    pr = getattr(self, "_preview", None)
+                                    if pr is not None and hasattr(pr, "_get_font"):
+                                        font = pr._get_font(glyph_px)
+                                    else:
+                                        raster_px = min(int(glyph_px), int(FONT_RASTER_PX_MAX))
+                                        font = pygame.font.SysFont("consolas", max(10, raster_px), bold=True)
+                                    gcanvas, ganchor = _render_entity_glyph_canvas_with_anchor(
+                                        renderer,
+                                        owner,
+                                        font=font,
+                                        base_px=glyph_px,
+                                        scene_effects=list(getattr(self, "visual_effects", []) or []),
+                                    )
+
+                                    # Place the canvas so that the *glyph cell center* lands on (ax, ay),
+                                    # not the canvas bounding-box center (which can be offset by effects).
+                                    gx = int(round(float(ax) - float(ganchor[0])))
+                                    gy = int(round(float(ay) - float(ganchor[1])))
+
+                                    # Clip glyph overlay to the preview pane (in window coords) so visual effects
+                                    # don't bleed into the left list.
+                                    try:
+                                        pr = getattr(self, "_preview", None)
+                                        if pr is not None and getattr(pr, "rect", None) is not None:
+                                            sx = float(self.window_rect.w) / float(max(1, panel.get_width()))
+                                            sy = float(self.window_rect.h) / float(max(1, panel.get_height()))
+                                            clip = pygame.Rect(
+                                                int(round(float(pr.rect.x) * sx)),
+                                                int(round(float(pr.rect.y) * sy)),
+                                                int(round(float(pr.rect.w) * sx)),
+                                                int(round(float(pr.rect.h) * sy)),
+                                            )
+                                            glyph_layer.set_clip(clip)
+                                    except Exception:
+                                        pass
+
+                                    glyph_layer.blit(gcanvas, (gx, gy))
+                                    glyph_layer.set_clip(None)
+
+
+                # Apply the exact same transform, but keep the glyph fully opaque during the
+                # diagrammatic open/close animation (panel can fade around it).
                 try:
-                    p = float(getattr(self, "_zoom_progress", 0.0) or 0.0)
+                    p = float(getattr(self, "_zoom_progress", 1.0) or 1.0)
                 except Exception:
-                    p = 0.0
-                if bool(getattr(self, "_closing", False)) or p < 0.99999:
-                    glyph_alpha = 1.0
-                else:
-                    glyph_alpha = 0.72 if hovered_right else 1.0
+                    p = 1.0
+                transition_active = bool(getattr(self, "_closing", False)) or (p < 1.0)
+
+                hovered_right = bool(getattr(self, "_right_panel_hovered", False))
+                glyph_alpha = 1.0 if transition_active else (0.72 if hovered_right else 1.0)
 
                 visual_g = VisualProfile(
                     scale_x=visual.scale_x,
@@ -5456,13 +6199,26 @@ class InventoryScene(PopupMenuScene):
                     flip_x=visual.flip_x,
                     flip_y=visual.flip_y,
                 )
-                apply_visual_panel(renderer.surface, glyph_layer, self.window_rect, visual_g)
+                old_clip = renderer.surface.get_clip()
+                try:
+                    renderer.surface.set_clip(None)
+                    apply_visual_panel(renderer.surface, glyph_layer, self.window_rect, visual_g)
+                finally:
+                    renderer.surface.set_clip(old_clip)
             except Exception:
                 pass
 
         # Draw body-plan overlay ABOVE the opaque glyph (so nodes/labels sit on top of the sprite).
         body_overlay = getattr(self, "_body_overlay_panel_surface", None)
-        if body_overlay is not None:
+        # Only draw the overlay in the special 'external glyph overlay' mode (diagrammatic open/close).
+        # In normal operation the body overlay is already drawn inside the panel;
+        # drawing it again here (in window space) can cause apparent drift/misalignment.
+        try:
+            p = float(getattr(self, "_zoom_progress", 1.0) or 1.0)
+        except Exception:
+            p = 1.0
+        overlay_needed = bool(getattr(self, "_external_glyph_overlay_active", False)) or bool(getattr(self, "_closing", False)) or (p < 1.0)
+        if overlay_needed and body_overlay is not None:
             try:
                 # Scale overlay to window size if needed (same as panel scaling).
                 overlay_to_blit = body_overlay
@@ -5475,11 +6231,16 @@ class InventoryScene(PopupMenuScene):
                     offset_x=visual.offset_x,
                     offset_y=visual.offset_y,
                     angle=visual.angle,
-                    alpha=1.0,  # overlay surface already encodes fade alpha
+                    alpha=float(getattr(visual, 'alpha', 1.0) or 1.0),  # fade with panel
                     flip_x=visual.flip_x,
                     flip_y=visual.flip_y,
                 )
-                apply_visual_panel(renderer.surface, overlay_to_blit, self.window_rect, visual_o)
+                old_clip = renderer.surface.get_clip()
+                try:
+                    renderer.surface.set_clip(None)
+                    apply_visual_panel(renderer.surface, overlay_to_blit, self.window_rect, visual_o)
+                finally:
+                    renderer.surface.set_clip(old_clip)
             except Exception:
                 pass
 
@@ -5531,3 +6292,4 @@ class LookScene(InventoryScene):
             animate_affine=False,
             mode="look",
         )
+
