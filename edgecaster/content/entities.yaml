@@ -1,18 +1,17 @@
-# edgecaster/content/entities.yaml
-
-# --- ROOT ENTITY TEMPLATE ------------------------------------
 - id: entity
   name: Entity
-  glyph: "?"
-  color: [255, 255, 255]
+  glyph: '?'
+  color:
+  - 255
+  - 255
+  - 255
   kind: generic
   render_layer: 1
   blocks_movement: false
   parent: null
-  description: "A thing. In a place. Don't like it? Try a new place. At a different time."
+  description: A thing. In a place. Don't like it? Try a new place. At a different
+    time.
   tags: {}
-
-
 - id: physical_object
   name: Physical Object
   parent: entity
@@ -23,7 +22,6 @@
     root: body
     nodes:
       body:
-        proto: body
         children: []
         layout:
           x: 0
@@ -31,344 +29,389 @@
         props:
           size: 1
   description: A physical object, possessed of mass and size.
-
-
-# --- BERRY TEMPLATE ------------------------------------------
 - id: berry
   name: Berry
-  glyph: "b"
-  color: [200, 80, 200]
+  glyph: b
+  color:
+  - 200
+  - 80
+  - 200
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: entity
-  description: "It's one of these things like, you think it's a berry but it's not, or vice versa. Is an orange a berry?"
+  description: It's one of these things like, you think it's a berry but it's not,
+    or vice versa. Is an orange a berry?
   tags:
     item_type: berry
-
-# --- BERRIES -------------------------------------------------
 - id: blueberry
   name: Blueberry
-  glyph: "b"
-  color: [80, 80, 200]
+  glyph: b
+  color:
+  - 80
+  - 80
+  - 200
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: berry
-  description: "Strangely blue. Not many other foods are blue."
+  description: Strangely blue. Not many other foods are blue.
   tags:
     item_type: blueberry
     test_berry: true
-
 - id: raspberry
   name: Raspberry
-  glyph: "b"
-  color: [200, 60, 120]
+  glyph: b
+  color:
+  - 200
+  - 60
+  - 120
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: berry
-  description: "Controversially tart. Prone to molding. Makes for excellent jam."
+  description: Controversially tart. Prone to molding. Makes for excellent jam.
   tags:
     item_type: raspberry
     test_berry: true
-
 - id: strawberry
   name: Strawberry
-  glyph: "b"
-  color: [230, 80, 80]
+  glyph: b
+  color:
+  - 230
+  - 80
+  - 80
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: berry
-  description: "The queen of berries. Succulent and dream-like."
+  description: The queen of berries. Succulent and dream-like.
   tags:
     item_type: strawberry
     test_berry: true
-
-# --- CURRENCY --------------------------------------------------------
 - id: bismuth_pile
   name: Bismuth
-  glyph: "$"
-  color: [180, 200, 255]
+  glyph: $
+  color:
+  - 180
+  - 200
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: entity
-  description: "A shimmering cluster of bismuth."
+  description: A shimmering cluster of bismuth.
   tags:
     currency: bismuth
     amount: 5
-
-# --- META-INVENTORY CONTAINER --------------------------------
 - id: debug_inventory
   name: Strange Inventory
-  glyph: "∞"
-  color: [200, 200, 255]
+  glyph: ∞
+  color:
+  - 200
+  - 200
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: entity
-  description: "No, it's not a bag. It's much more Platonic than that."
+  description: No, it's not a bag. It's much more Platonic than that.
   tags:
     container: true
     item_type: inventory
     not_stackable: true
-
-# --- DESTABILIZER --------------------------------------------
 - id: destabilizer
   name: Destabilizer
-  glyph: "*"
-  color: [180, 120, 255]
+  glyph: '*'
+  color:
+  - 180
+  - 120
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: entity
-  description: "Holy shit, don't touch that thing!"
+  description: Holy shit, don't touch that thing!
   tags:
     item_type: destabilizer
     grants_ability: destabilize
-
-# --- UTILITY ITEMS ---------------------------------------------------
 - id: healing_kit
   name: Healing Kit
-  glyph: "!"
-  color: [120, 220, 120]
+  glyph: '!'
+  color:
+  - 120
+  - 220
+  - 120
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: entity
-  description: "Bandages, tinctures, and a very small saw."
+  description: Bandages, tinctures, and a very small saw.
   tags:
     item_type: healing_kit
-
 - id: koch_knife
   name: Koch knife
-  glyph: "/"
-  color: [180, 180, 220]
+  glyph: /
+  color:
+  - 180
+  - 180
+  - 220
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "Seems to get sharper the closer you look. Ouch, not that close!"
+  description: Seems to get sharper the closer you look. Ouch, not that close!
   tags:
     item_type: koch_knife
-
 - id: whip
   name: Whip
-  glyph: "~"
-  color: [230, 160, 160]
+  glyph: '~'
+  color:
+  - 230
+  - 160
+  - 160
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A long leather whip, still wet with old blood."
+  description: A long leather whip, still wet with old blood.
   tags:
     item_type: whip
     value_bismuth: 12
-
-# --- SIMPLE EQUIPMENT (STAT MODS) ------------------------------------------
-# These items can be equipped into any slot for now.
-# Stat bonuses are read from `tags.equip_mods` while the item is equipped.
-
 - id: resonant_ring
   name: Resonant Ring
-  glyph: "o"
-  color: [180, 220, 255]
+  glyph: o
+  color:
+  - 180
+  - 220
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A ringing band that vibrates with sympathetic resonance."
+  description: A ringing band that vibrates with sympathetic resonance.
   tags:
     item_type: resonant_ring
     value_bismuth: 15
-    equip_mods: {res: 1}
-
+    equip_mods:
+      res: 1
 - id: sage_cap
   name: Sage Cap
-  glyph: "^"
-  color: [220, 220, 180]
+  glyph: ^
+  color:
+  - 220
+  - 220
+  - 180
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "When you wear it, the world feels slightly more legible."
+  description: When you wear it, the world feels slightly more legible.
   tags:
     item_type: sage_cap
     value_bismuth: 18
-    equip_mods: {int: 1}
-
+    equip_mods:
+      int: 1
 - id: fleet_boots
   name: Fleet Boots
-  glyph: "]"
-  color: [180, 255, 200]
+  glyph: ']'
+  color:
+  - 180
+  - 255
+  - 200
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "The soles barely touch the ground."
+  description: The soles barely touch the ground.
   tags:
     item_type: fleet_boots
     value_bismuth: 16
-    equip_mods: {agi: 1}
-
+    equip_mods:
+      agi: 1
 - id: vital_belt
   name: Vital Belt
-  glyph: "="
-  color: [255, 200, 200]
+  glyph: '='
+  color:
+  - 255
+  - 200
+  - 200
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "Cinches your organs into a more determined configuration."
+  description: Cinches your organs into a more determined configuration.
   tags:
     item_type: vital_belt
     value_bismuth: 14
-    equip_mods: {con: 1}
-
+    equip_mods:
+      con: 1
 - id: glowing_band
   name: Glowing Band
-  glyph: "o"
-  color: [255, 220, 80]
+  glyph: o
+  color:
+  - 255
+  - 220
+  - 80
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A band of luminescent metal that pulses with warm golden light, illuminating the darkness."
+  description: A band of luminescent metal that pulses with warm golden light, illuminating
+    the darkness.
   tags:
     item_type: glowing_band
     value_bismuth: 25
-    equip_mods: {view: 5}
-    visual_effects: ["radiant_yellow"]
+    equip_mods:
+      view: 5
+    visual_effects:
+    - radiant_yellow
     light_radius: 5
     light_intensity: 1.0
-    light_color: [255, 220, 80]
-
-# --- WANDS (EQUIP GRANTS + CHARGES) -----------------------------------------
-# Wands are normal items that grant an activated ability while equipped.
-# Charges are initialized at spawn-time from charges_min/charges_max.
-
+    light_color:
+    - 255
+    - 220
+    - 80
 - id: wand_koch
   name: Wand of Koch
-  glyph: "!"
-  color: [170, 210, 255]
+  glyph: '!'
+  color:
+  - 170
+  - 210
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A thin rod etched with sharp recursive angles."
+  description: A thin rod etched with sharp recursive angles.
   tags:
     item_type: wand_koch
     value_bismuth: 40
-    equip_grants_abilities: ["koch"]
+    equip_grants_abilities:
+    - koch
     charges_min: 3
     charges_max: 5
     not_stackable: true
-
 - id: wand_branch
   name: Wand of Branching
-  glyph: "!"
-  color: [180, 255, 200]
+  glyph: '!'
+  color:
+  - 180
+  - 255
+  - 200
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "It hums with the promise of bifurcation."
+  description: It hums with the promise of bifurcation.
   tags:
     item_type: wand_branch
     value_bismuth: 40
-    equip_grants_abilities: ["branch"]
+    equip_grants_abilities:
+    - branch
     charges_min: 3
     charges_max: 5
     not_stackable: true
-
 - id: wand_zigzag
   name: Wand of Zigzag
-  glyph: "!"
-  color: [255, 220, 180]
+  glyph: '!'
+  color:
+  - 255
+  - 220
+  - 180
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A wand that can't decide which way to go."
+  description: A wand that can't decide which way to go.
   tags:
     item_type: wand_zigzag
     value_bismuth: 40
-    equip_grants_abilities: ["zigzag"]
+    equip_grants_abilities:
+    - zigzag
     charges_min: 3
     charges_max: 5
     not_stackable: true
-
 - id: wand_activate_n
   name: Wand of Neighbors
-  glyph: "!"
-  color: [220, 200, 255]
+  glyph: '!'
+  color:
+  - 220
+  - 200
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A wand that seeks adjacency."
+  description: A wand that seeks adjacency.
   tags:
     item_type: wand_activate_n
     value_bismuth: 45
-    equip_grants_abilities: ["activate_seed"]
+    equip_grants_abilities:
+    - activate_seed
     charges_min: 3
     charges_max: 5
     not_stackable: true
-
 - id: wand_sparkle
   name: Wand of Sparkle
-  glyph: "!"
-  color: [255, 245, 180]
+  glyph: '!'
+  color:
+  - 255
+  - 245
+  - 180
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A glassy rod that twinkles with cruel, star-like light."
+  description: A glassy rod that twinkles with cruel, star-like light.
   tags:
     item_type: wand_sparkle
     value_bismuth: 55
-    equip_grants_abilities: ["sparkle"]
+    equip_grants_abilities:
+    - sparkle
     charges_min: 3
     charges_max: 5
     not_stackable: true
-
-# --- SIGN / DOOR FEATURES -------------------------------------------
 - id: sign
   name: Sign
-  glyph: "§"
-  color: [200, 200, 120]
+  glyph: §
+  color:
+  - 200
+  - 200
+  - 120
   kind: feature
   render_layer: 0
   blocks_movement: false
   parent: entity
-  description: "A sign with some text."
+  description: A sign with some text.
   tags:
-    sign_text: "A weathered sign."
-
+    sign_text: A weathered sign.
 - id: door
   name: Door
-  glyph: "+"
-  color: [180, 140, 80]
+  glyph: +
+  color:
+  - 180
+  - 140
+  - 80
   kind: feature
   render_layer: 0
   blocks_movement: true
   parent: entity
-  description: "A sturdy wooden door."
+  description: A sturdy wooden door.
   tags:
     door_state: closed
     door: true
-
-# --- RUNE ANCHOR FEATURE --------------------------------------------
 - id: rune_anchor
   name: Rune Anchor
-  glyph: "|"
-  color: [235, 235, 190]
+  glyph: '|'
+  color:
+  - 235
+  - 235
+  - 190
   kind: feature
   render_layer: 0
   blocks_movement: false
   parent: entity
-  description: "A runic pylon that holds corruption at bay."
+  description: A runic pylon that holds corruption at bay.
   tags:
     rune_anchor: true
