@@ -1384,6 +1384,7 @@ class Game:
                         "debug_inventory",
                         "koch_knife",
                         "whip",
+                        "energy_flask",
                         # Equipment (stat mods)
                         "resonant_ring",
                         "sage_cap",

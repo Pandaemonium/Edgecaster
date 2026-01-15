@@ -1558,21 +1558,10 @@ def _action_activate_all(game: Any, actor_id: str, **kwargs: Any) -> None:
 )
 def _action_throw_flask(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Throw an energy flask to activate nearby vertices."""
-    import logging
-    logging.debug(f"[throw_flask] Called with kwargs: {kwargs}")
-
     hover_vertex = kwargs.get("hover_vertex")
-    logging.debug(f"[throw_flask] hover_vertex={hover_vertex}")
-
-    # If no vertex yet, targeting mode will be entered by the UI
-    # This is just the action definition - actual targeting happens in the scene
     if hover_vertex is None:
-        # No target yet - the targeting UI will handle this
-        # Just return and let the targeting system do its thing
-        logging.debug(f"[throw_flask] No hover_vertex, returning (targeting should start)")
         return
 
-    # We have a target - convert vertex to tile position and throw
     level = game._level()
     origin = game._activation_origin(level)
     if origin is None or not level.pattern.vertices:

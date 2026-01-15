@@ -773,7 +773,6 @@ class DungeonScene(Scene):
                 self.ui_state.push_preview = None
 
     def cancel_target_mode(self, game: Game) -> None:
-        print(f"[FLASK DEBUG] cancel_target_mode called! ui_state.target was={self.ui_state.target}")
         t = self.ui_state.target
         self.ui_state.target = None
         self.ui_state.aim_action = None
@@ -789,16 +788,12 @@ class DungeonScene(Scene):
 
     def confirm_target(self, game: Game) -> None:
         """Apply the currently selected target to the action that requested it."""
-        print(f"[FLASK DEBUG] confirm_target called!")
         t = self.ui_state.target
-        print(f"[FLASK DEBUG] confirm_target: t={t}")
         if not t:
-            print(f"[FLASK DEBUG] confirm_target: No target, returning")
             return
 
         # TILE TARGETING (e.g. Kochbender 'place' / rune terminus)
         if t.kind == "tile":
-            print(f"[FLASK DEBUG] confirm_target: Tile targeting")
             if t.cursor_tile is None:
                 return
 
@@ -816,19 +811,15 @@ class DungeonScene(Scene):
 
         # VERTEX TARGETING (e.g. activate_all / activate_seed)
         elif t.kind == "vertex":
-            print(f"[FLASK DEBUG] confirm_target: Vertex targeting for action={t.action}")
             if t.cursor_vertex is None:
-                print(f"[FLASK DEBUG] confirm_target: No cursor_vertex, returning")
                 return
 
-            print(f"[FLASK DEBUG] confirm_target: Calling trigger_ability_effect with hover_vertex={t.cursor_vertex}")
             # Pass a generic vertex target; the action implementation decides how to use it.
             trigger_ability_effect(
                 game,
                 t.action,
                 hover_vertex=t.cursor_vertex,
             )
-            print(f"[FLASK DEBUG] confirm_target: trigger_ability_effect completed")
 
         # POSITION TARGETING (push_pattern)
         elif t.kind == "position":
@@ -1657,12 +1648,10 @@ class DungeonScene(Scene):
                     # Main ability click: delegate to Action metadata.
                     if hit.kind == "ability":
                         action_name = getattr(ability, "action", None)
-                        print(f"[FLASK DEBUG] Ability clicked: {action_name}")
                         if alt_held and isinstance(action_name, str) and is_previewable_action(action_name):
                             self.ui_state.action_preview = build_action_preview(game, action_name, game.player_id)
                             return
                         self.ui_state.action_preview = None
-                        print(f"[FLASK DEBUG] Calling _begin_action_from_def with ability={ability}")
                         self._begin_action_from_def(game, ability)
                         return
 
@@ -1886,56 +1875,41 @@ class DungeonScene(Scene):
         """
         import logging
         action_name = getattr(ability, "action", ability)
-        print(f"[FLASK DEBUG] _begin_action_from_def called with action_name={action_name}")
         logging.debug(f"[_begin_action_from_def] action_name={action_name}")
 
         # If we're already in targeting mode for this action, confirm the target
         if self.ui_state.target and self.ui_state.target.action == action_name:
-            print(f"[FLASK DEBUG] Already in targeting mode for {action_name}, confirming target")
             self.confirm_target(game)
             return
 
-        print(f"[FLASK DEBUG] About to call get_action({action_name})")
         try:
             action_def = get_action(action_name)
-            print(f"[FLASK DEBUG] Successfully got action_def: {action_def}")
             logging.debug(f"[_begin_action_from_def] Found action_def for {action_name}")
-        except KeyError as e:
-            print(f"[FLASK DEBUG] KeyError when getting action: {e}")
+        except KeyError:
             logging.debug(f"[_begin_action_from_def] KeyError for {action_name}, using trigger_ability_effect")
             trigger_ability_effect(game, action_name)
             return
-        except Exception as e:
-            print(f"[FLASK DEBUG] Unexpected exception when getting action: {type(e).__name__}: {e}")
-            return
 
-        print(f"[FLASK DEBUG] Getting targeting spec from action_def")
         spec = getattr(action_def, "targeting", None)
-        print(f"[FLASK DEBUG] spec={spec}")
         logging.debug(f"[_begin_action_from_def] spec={spec}")
 
         # No targeting metadata: fire immediately.
         if not spec or not spec.kind:
-            print(f"[FLASK DEBUG] No targeting spec, firing immediately")
             logging.debug(f"[_begin_action_from_def] No targeting spec, firing immediately")
             self.ui_state.aim_action = None
             self._refresh_aim_prediction(game)
             trigger_ability_effect(game, action_name)
             return
 
-        print(f"[FLASK DEBUG] Has targeting spec - kind={spec.kind}, mode={spec.mode}")
         logging.debug(f"[_begin_action_from_def] Entering target mode: kind={spec.kind}, mode={spec.mode}")
 
-        print(f"[FLASK DEBUG] Creating TargetConstraints")
         constraints = TargetConstraints(
             max_range=spec.max_range,
             neighbor_depth_param=spec.neighbor_depth_param,
             use_param_radius=getattr(spec, "radius_param", spec.use_param_radius if hasattr(spec, "use_param_radius") else None),
         )
-        print(f"[FLASK DEBUG] TargetConstraints created: {constraints}")
 
         # Enter unified TargetMode for this action.
-        print(f"[FLASK DEBUG] About to call begin_target_mode")
         self.begin_target_mode(
             game,
             action=action_name,
@@ -1943,8 +1917,4 @@ class DungeonScene(Scene):
             mode=spec.mode,           # "terminus", "aim", etc.
             constraints=constraints,
         )
-        print(f"[FLASK DEBUG] begin_target_mode called successfully")
-        print(f"[FLASK DEBUG] After begin_target_mode: ui_state.target={self.ui_state.target}")
-        print(f"[FLASK DEBUG] After begin_target_mode: ui_state.aim_action={self.ui_state.aim_action}")
-        print(f"[FLASK DEBUG] After begin_target_mode: ui_state.hover_vertex={self.ui_state.hover_vertex}")
         logging.debug(f"[_begin_action_from_def] begin_target_mode called")
