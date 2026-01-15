@@ -212,5 +212,8 @@ def trigger_ability_effect(
     # name of a registered action. If the action system is present,
     # we let it handle the details (e.g. imp_taunt, class abilities).
     if hasattr(game, "queue_player_action"):
+        if hover_vertex is not None and "hover_vertex" not in extra:
+            extra = dict(extra)
+            extra["hover_vertex"] = hover_vertex
         game.queue_player_action(action, **extra)
     # If not, we just no-op rather than crash.

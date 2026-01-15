@@ -2172,7 +2172,7 @@ class AsciiRenderer:
     def draw_aim_overlay(self, game: Game) -> None:
         pred = self._ui_attr("aim_prediction", None)
         aim_action = getattr(pred, "action", None) or self._ui_attr("aim_action", None)
-        if aim_action not in ("activate_all", "activate_seed"):
+        if aim_action not in ("activate_all", "activate_seed", "throw_flask"):
             return
         origin = game.pattern_anchor
         if origin is None or not game.pattern.vertices:
@@ -2184,14 +2184,25 @@ class AsciiRenderer:
         dmg_map: Dict[Tuple[int, int], int] = getattr(pred, "dmg_map", {}) if pred else {}
         fail_text: str | None = getattr(pred, "fail_text", None) if pred else None
 
-        if aim_action == "activate_all":
+        if aim_action in ("activate_all", "throw_flask"):
             radius = getattr(pred, "radius", None)
             if radius is None:
-                try:
-                    radius = game.get_param_value("activate_all", "radius")
-                except Exception:
-                    radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
-            center = verts[hover_vertex]
+                if aim_action == "throw_flask":
+                    radius = 3.0
+                else:
+                    try:
+                        radius = game.get_param_value("activate_all", "radius")
+                    except Exception:
+                        radius = game.cfg.pattern_damage_radius if hasattr(game, "cfg") else 1.25
+            if aim_action == "throw_flask":
+                center = getattr(pred, "center", None)
+                if center is None:
+                    hover = verts[hover_vertex]
+                    tx = int(round(hover[0]))
+                    ty = int(round(hover[1]))
+                    center = (tx + 0.5, ty + 0.5)
+            else:
+                center = verts[hover_vertex]
             cx = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
             cy = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)

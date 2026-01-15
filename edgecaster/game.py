@@ -2661,6 +2661,144 @@ class Game:
         level = self._level()
         self._activate_pattern_seed_neighbors(level, target_vertex)
 
+    def act_throw_flask(
+        self,
+        actor_id: str,
+        target_pos: Optional[Tuple[int, int]]
+    ) -> None:
+        """Throw an energy flask to activate nearby vertices with high damage.
+
+        Args:
+            actor_id: ID of the actor throwing the flask (usually player)
+            target_pos: (x, y) tile coordinates where the flask lands
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+
+        # Validate target position
+        if target_pos is None or not level.world.in_bounds(*target_pos):
+            self.log.add("Invalid target location.")
+            return
+
+        # Find the equipped flask
+        from edgecaster.systems.item_grants import find_grant_origin
+
+        inv = self.get_inventory(actor_id)
+        flask = find_grant_origin(inv, "throw_flask")
+
+        if flask is None:
+            self.log.add("No energy flask equipped.")
+            return
+
+        # Get pattern origin and vertices
+        origin = self._activation_origin(level)
+        if origin is None or not level.pattern.vertices:
+            self.log.add("No rune pattern active to energize.")
+            self._consume_flask(actor_id, flask)  # Still consume the flask
+            return
+
+        # Project vertices into world space
+        from edgecaster.patterns.activation import project_vertices
+        world_vertices = project_vertices(level.pattern, origin)
+
+        # Find vertices within flask radius
+        FLASK_RADIUS = 3.0  # 3-tile radius impact zone
+        PER_VERTEX_DAMAGE = 5
+        DAMAGE_CAP = 100
+
+        tx, ty = target_pos
+        center_x = tx + 0.5  # Tile center
+        center_y = ty + 0.5
+
+        active_verts = []
+        r2 = FLASK_RADIUS * FLASK_RADIUS
+
+        for vx, vy in world_vertices:
+            dx = vx - center_x
+            dy = vy - center_y
+            if dx*dx + dy*dy <= r2:
+                active_verts.append((vx, vy))
+
+        if not active_verts:
+            self.log.add("The flask shatters, but no vertices were in range.")
+            self._consume_flask(actor_id, flask)
+            return
+
+        # Apply damage to nearby enemies
+        from edgecaster.patterns.activation import damage_from_vertices
+
+        hit_count = 0
+        # Convert to list to avoid "dictionary changed size during iteration"
+        for enemy in list(level.actors.values()):
+            if not enemy.alive or enemy.id == actor_id:
+                continue
+            if enemy.faction == "player":
+                continue
+
+            # Calculate damage based on vertices near enemy
+            dmg = damage_from_vertices(
+                active_verts,
+                enemy.pos,
+                FLASK_RADIUS,
+                PER_VERTEX_DAMAGE,
+                cap=DAMAGE_CAP,
+            )
+
+            if dmg > 0:
+                enemy.stats.hp -= dmg
+                hit_count += 1
+                self.log.add(f"Arcane energy sears {enemy.name} for {dmg} damage!")
+
+                if enemy.stats.hp <= 0:
+                    self._kill_actor(level, enemy, killer_id=actor_id)
+
+        # Log result
+        if hit_count == 0:
+            self.log.add(f"The flask energizes {len(active_verts)} vertices, but no enemies are nearby.")
+        else:
+            self.log.add(f"Flask impact: {len(active_verts)} vertices activated!")
+
+        # Consume one flask from the stack
+        self._consume_flask(actor_id, flask)
+
+    def _consume_flask(self, actor_id: str, flask_item: Any) -> None:
+        """Consume one flask from the equipped stack.
+
+        Args:
+            actor_id: Owner of the flask
+            flask_item: The flask item entity
+        """
+        from edgecaster.systems.inventory import get_quantity, set_quantity
+        from edgecaster.systems import equipment as equipment_system
+
+        qty = get_quantity(flask_item)
+
+        if qty > 1:
+            # Reduce stack by 1
+            set_quantity(flask_item, qty - 1)
+            self.log.add(f"Flask thrown. {qty - 1} remaining.")
+        else:
+            # Last flask - remove from inventory and unequip
+            inv = self.get_inventory(actor_id)
+            try:
+                inv.remove(flask_item)
+            except ValueError:
+                pass  # Already removed
+
+            # Unequip if it was equipped
+            if equipment_system.is_equipped(flask_item):
+                try:
+                    self.unequip_item(actor_id, str(flask_item.id))
+                except Exception:
+                    pass
+
+            self.log.add("Last flask consumed.")
+
+        # Refresh actions (flask action may disappear if stack depleted)
+        self.refresh_actor_actions(actor_id)
+
     def act_push_pattern(self, actor_id: str, target_pos=None, rotation_deg: float = 0) -> None:
         level = self._level()
         pattern_ops.push_pattern(self, level, target_pos, rotation_deg)

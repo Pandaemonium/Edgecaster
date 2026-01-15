@@ -120,6 +120,24 @@
     container: true
     item_type: inventory
     not_stackable: true
+
+# --- ENERGY FLASK (Throwable) --------------------------------------------
+- id: energy_flask
+  name: Energy Flask
+  glyph: '∆'
+  color: [0, 255, 200]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: "A volatile flask of raw arcane energy. Throw it to activate nearby vertices."
+  tags:
+    item_type: energy_flask
+    equip_stacked: true
+    quantity: 10
+    grants_abilities: throw_flask
+    grant_requires: equipped
+
 - id: destabilizer
   name: Destabilizer
   glyph: '*'

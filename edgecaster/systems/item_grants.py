@@ -35,6 +35,7 @@ def get_item_grants(ent: Any) -> List[Tuple[str, GrantMode]]:
     - tags.equip_grants_abilities: ["..."]                    -> equipped
     - tags.grant_requires: "held" | "equipped"                -> mode for grants_abilities/grants_actions
     """
+    import logging
     tags = getattr(ent, "tags", None) or {}
 
     pairs: List[Tuple[str, GrantMode]] = []
@@ -42,15 +43,20 @@ def get_item_grants(ent: Any) -> List[Tuple[str, GrantMode]]:
     # Legacy single ability: always "held".
     legacy = tags.get("grants_ability")
     if legacy:
+        logging.debug(f"[get_item_grants] Found legacy grants_ability: {legacy} (ALWAYS HELD)")
         pairs.append((str(legacy), GRANT_MODE_HELD))
 
     default_mode = str(tags.get("grant_requires") or GRANT_MODE_HELD).lower()
     if default_mode not in (GRANT_MODE_HELD, GRANT_MODE_EQUIPPED):
         default_mode = GRANT_MODE_HELD
 
+    logging.debug(f"[get_item_grants] grant_requires={tags.get('grant_requires')}, default_mode={default_mode}")
+
     for action in _as_str_list(tags.get("grants_abilities")):
+        logging.debug(f"[get_item_grants] Adding from grants_abilities: {action} with mode {default_mode}")
         pairs.append((action, default_mode))
     for action in _as_str_list(tags.get("grants_actions")):
+        logging.debug(f"[get_item_grants] Adding from grants_actions: {action} with mode {default_mode}")
         pairs.append((action, default_mode))
 
     # Explicit equip-only grants.
@@ -77,12 +83,23 @@ def is_grant_active(ent: Any, mode: GrantMode) -> bool:
 
 def collect_active_granted_actions(inventory: Iterable[Any]) -> List[str]:
     """Collect active granted action names from an inventory."""
+    import logging
     out: List[str] = []
     for ent in inventory:
-        for action, mode in get_item_grants(ent):
-            if not is_grant_active(ent, mode):
+        ent_name = getattr(ent, "name", "unknown")
+        grants = get_item_grants(ent)
+        if grants:
+            print(f"[FLASK DEBUG] Item '{ent_name}' has grants: {grants}")
+            logging.debug(f"[collect_active_granted_actions] Item '{ent_name}' has grants: {grants}")
+        for action, mode in grants:
+            is_active = is_grant_active(ent, mode)
+            print(f"[FLASK DEBUG] Action '{action}' mode '{mode}' active={is_active} item='{ent_name}'")
+            logging.debug(f"[collect_active_granted_actions] Action '{action}' mode '{mode}' active={is_active}")
+            if not is_active:
                 continue
             out.append(action)
+    print(f"[FLASK DEBUG] Final active actions: {out}")
+    logging.debug(f"[collect_active_granted_actions] Final result: {out}")
     return out
 
 

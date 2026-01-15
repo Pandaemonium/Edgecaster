@@ -1546,6 +1546,51 @@ def _action_activate_all(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_activate_all(actor_id, target_vertex)
 
 
+@register_action(
+    "throw_flask",
+    label="Throw Flask",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(
+        kind="vertex",
+        mode="aim",
+    ),
+)
+def _action_throw_flask(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Throw an energy flask to activate nearby vertices."""
+    import logging
+    logging.debug(f"[throw_flask] Called with kwargs: {kwargs}")
+
+    hover_vertex = kwargs.get("hover_vertex")
+    logging.debug(f"[throw_flask] hover_vertex={hover_vertex}")
+
+    # If no vertex yet, targeting mode will be entered by the UI
+    # This is just the action definition - actual targeting happens in the scene
+    if hover_vertex is None:
+        # No target yet - the targeting UI will handle this
+        # Just return and let the targeting system do its thing
+        logging.debug(f"[throw_flask] No hover_vertex, returning (targeting should start)")
+        return
+
+    # We have a target - convert vertex to tile position and throw
+    level = game._level()
+    origin = game._activation_origin(level)
+    if origin is None or not level.pattern.vertices:
+        return
+
+    from edgecaster.patterns.activation import project_vertices
+    world_vertices = project_vertices(level.pattern, origin)
+
+    if hover_vertex >= len(world_vertices):
+        return
+
+    vx, vy = world_vertices[hover_vertex]
+    target_pos = (int(round(vx)), int(round(vy)))
+
+    if hasattr(game, "act_throw_flask"):
+        game.act_throw_flask(actor_id, target_pos)
+
+
 
 @register_action(
     "activate_seed",

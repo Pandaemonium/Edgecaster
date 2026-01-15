@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 
-from edgecaster.patterns.activation import project_vertices
+from edgecaster.patterns.activation import project_vertices, damage_from_vertices
 
 
 @dataclass
@@ -46,7 +46,7 @@ def predict_aim_preview(
     Returns an AimPrediction containing damage numbers + fail text only;
     caller/renderer can use pattern geometry to draw.
     """
-    if action not in ("activate_all", "activate_seed"):
+    if action not in ("activate_all", "activate_seed", "throw_flask"):
         return None
 
     origin = getattr(game, "pattern_anchor", None)
@@ -146,6 +146,58 @@ def predict_aim_preview(
             target_vertices=active_indices,
             per_actor_damage=per_actor_damage,
             fail_pct=fail_pct,
+        )
+
+    if action == "throw_flask":
+        radius = 3.0
+        dmg_per_vertex = 5
+        cap = 100
+
+        hover = verts[hover_idx]
+        tx = int(round(hover[0]))
+        ty = int(round(hover[1]))
+        center = (tx + 0.5, ty + 0.5)
+
+        r2 = radius * radius
+        target_vertices = [
+            i
+            for i, v in enumerate(verts)
+            if (v[0] - center[0]) ** 2 + (v[1] - center[1]) ** 2 <= r2
+        ]
+        active_verts = [verts[i] for i in target_vertices]
+
+        try:
+            level = game._level()
+            for actor in getattr(level, "actors", {}).values():
+                if not getattr(actor, "alive", False):
+                    continue
+                if actor.id == getattr(game, "player_id", None) or getattr(actor, "faction", None) == "player":
+                    continue
+                tile = level.world.get_tile(*actor.pos) if hasattr(level, "world") else None
+                if tile is not None and hasattr(tile, "visible") and not tile.visible:
+                    continue
+                dmg = damage_from_vertices(
+                    active_verts,
+                    actor.pos,
+                    radius,
+                    dmg_per_vertex,
+                    cap=cap,
+                )
+                if dmg > 0:
+                    per_actor_damage[actor.id] = dmg
+        except Exception:
+            pass
+
+        return AimPrediction(
+            action=action,
+            hover_vertex=hover_idx,
+            center=center,
+            radius=radius,
+            dmg_map=dmg_map,
+            fail_text=None,
+            target_vertices=target_vertices,
+            per_actor_damage=per_actor_damage,
+            fail_pct=None,
         )
 
     # activate_seed
