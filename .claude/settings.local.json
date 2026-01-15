@@ -12,7 +12,8 @@
       "Bash(dir \"c:\\\\Games\\\\Edgecaster\" /s /b)",
       "Bash(dir \"c:\\\\Games\\\\Edgecaster\")",
       "Bash(git fetch:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(python -m py_compile:*)"
     ]
   }
 }

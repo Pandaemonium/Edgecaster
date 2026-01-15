@@ -3903,7 +3903,9 @@ class InventoryScene(PopupMenuScene):
         ):
             try:
                 ent_id = str(getattr(dragged_ent, "id", ""))
-                if hasattr(self.game, "equip_item_to_slot"):
+                if hasattr(self.game, "equip_item_to_slot_qty"):
+                    self.game.equip_item_to_slot_qty(str(src_owner_id), ent_id, str(self._drag_target_node_id), qty=1)
+                elif hasattr(self.game, "equip_item_to_slot"):
                     self.game.equip_item_to_slot(str(src_owner_id), ent_id, str(self._drag_target_node_id))
                 else:
                     tags = getattr(dragged_ent, "tags", {}) or {}
@@ -5162,6 +5164,11 @@ class InventoryScene(PopupMenuScene):
                 return
 
             if choice == "Put into...":
+                from edgecaster.systems.inventory import get_quantity
+                from edgecaster.scenes.quantity_prompt_scene import QuantityPromptScene
+
+                qty = get_quantity(cur_ent)
+
                 targets = self._find_container_targets(exclude_id=getattr(cur_ent, "id", None))
                 if not targets:
                     return
@@ -5175,7 +5182,7 @@ class InventoryScene(PopupMenuScene):
 
                     _ensure_unequipped(cur_ent)
 
-
+                    # Get current index
                     src_inv = None
                     try:
                         src_inv = self.game.get_inventory(src_owner_id)
@@ -5189,16 +5196,41 @@ class InventoryScene(PopupMenuScene):
                         src_index = cur_index
                     if not (0 <= src_index < len(src_inv)):
                         return
-                    if hasattr(self.game, "move_item_between_inventories"):
-                        try:
-                            self.game.move_item_between_inventories(
-                                src_owner_id,
-                                src_index,
-                                dest_owner_id,
-                            )
-                        except Exception:
-                            pass
-                    _refresh_ui()
+
+                    # If qty > 1, prompt for amount
+                    if qty > 1:
+                        def on_qty_entered(amount: int) -> None:
+                            if amount > 0:
+                                if hasattr(self.game, "move_item_between_inventories_qty"):
+                                    try:
+                                        self.game.move_item_between_inventories_qty(
+                                            src_owner_id,
+                                            src_index,
+                                            dest_owner_id,
+                                            amount,
+                                        )
+                                    except Exception:
+                                        pass
+                            _refresh_ui()
+
+                        mgr2.push_scene(QuantityPromptScene(
+                            self.game,
+                            qty,
+                            on_qty_entered,
+                            title="Transfer how many?",
+                        ))
+                    else:
+                        # Single item - transfer directly
+                        if hasattr(self.game, "move_item_between_inventories"):
+                            try:
+                                self.game.move_item_between_inventories(
+                                    src_owner_id,
+                                    src_index,
+                                    dest_owner_id,
+                                )
+                            except Exception:
+                                pass
+                        _refresh_ui()
 
                 mgr.push_scene(
                     UrgentMessageScene(
@@ -5224,7 +5256,9 @@ class InventoryScene(PopupMenuScene):
                     slot_id, _lbl = targets[target_idx]
                     try:
                         ent_id = str(getattr(cur_ent, "id", ""))
-                        if hasattr(self.game, "equip_item_to_slot"):
+                        if hasattr(self.game, "equip_item_to_slot_qty"):
+                            self.game.equip_item_to_slot_qty(str(current_owner_id), ent_id, str(slot_id), qty=1)
+                        elif hasattr(self.game, "equip_item_to_slot"):
                             self.game.equip_item_to_slot(str(current_owner_id), ent_id, str(slot_id))
                         else:
                             t = getattr(cur_ent, "tags", {}) or {}

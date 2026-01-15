@@ -2210,6 +2210,28 @@ class Game:
     def equip_item_to_slot(self, owner_id: str, item_id: str, slot_id: str) -> None:
         inventory_system.equip_item_to_slot(self, owner_id, item_id, slot_id)
 
+    def equip_item_to_slot_qty(
+        self,
+        owner_id: str,
+        item_id: str,
+        slot_id: str,
+        qty: int = 1,
+    ) -> None:
+        """Equip a specific quantity from a stacked item to a slot."""
+        inventory_system.equip_item_to_slot_qty(self, owner_id, item_id, slot_id, qty)
+
+    def move_item_between_inventories_qty(
+        self,
+        src_owner_id: str,
+        index: int,
+        dest_owner_id: str,
+        qty: Optional[int] = None,
+    ) -> None:
+        """Move a specific quantity between inventories."""
+        inventory_system.move_item_between_inventories_qty(
+            self, src_owner_id, index, dest_owner_id, qty
+        )
+
 
     @property
     def has_lorenz_aura(self) -> bool:

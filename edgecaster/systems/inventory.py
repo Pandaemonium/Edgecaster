@@ -445,6 +445,93 @@ def _clone_item_for_drop(game: "Game", item: Any, qty: int) -> Any:
     return clone
 
 
+def _clone_item_for_equip(game: "Game", item: Any, qty: int) -> Any:
+    """Create a copy of an item for equipping (when splitting stacks).
+
+    Similar to _clone_item_for_drop but doesn't place on ground.
+    """
+    from edgecaster.systems.spawning import spawn_entity_from_template
+
+    proto_id = getattr(item, "proto_id", None)
+    if proto_id is None:
+        tags = getattr(item, "tags", {}) or {}
+        proto_id = tags.get("item_type")
+
+    if proto_id:
+        # Spawn fresh from template
+        pos = getattr(item, "pos", (0, 0))
+        clone = spawn_entity_from_template(game, str(proto_id), pos)
+    else:
+        # Fallback: manual clone
+        from edgecaster.state.entities import Entity
+        clone = Entity(
+            id=game._new_id(),
+            name=getattr(item, "name", "item"),
+            pos=getattr(item, "pos", (0, 0)),
+            glyph=getattr(item, "glyph", "?"),
+            color=getattr(item, "color", (255, 255, 255)),
+            kind=getattr(item, "kind", "item"),
+        )
+        clone.tags = dict(getattr(item, "tags", {}) or {})
+
+    # Set the quantity on the clone
+    set_quantity(clone, qty)
+
+    # Copy any relevant runtime state (charges, etc.)
+    src_tags = getattr(item, "tags", {}) or {}
+    clone_tags = getattr(clone, "tags", {}) or {}
+
+    # Copy charges for wands, etc.
+    if "charges" in src_tags:
+        clone_tags["charges"] = src_tags["charges"]
+
+    clone.tags = clone_tags
+    return clone
+
+
+def _clone_item_for_transfer(game: "Game", item: Any, qty: int) -> Any:
+    """Create a copy of an item for inventory transfer (when splitting stacks).
+
+    Similar to _clone_item_for_drop but for transfers.
+    """
+    from edgecaster.systems.spawning import spawn_entity_from_template
+
+    proto_id = getattr(item, "proto_id", None)
+    if proto_id is None:
+        tags = getattr(item, "tags", {}) or {}
+        proto_id = tags.get("item_type")
+
+    if proto_id:
+        # Spawn fresh from template
+        pos = getattr(item, "pos", (0, 0))
+        clone = spawn_entity_from_template(game, str(proto_id), pos)
+    else:
+        # Fallback: manual clone
+        from edgecaster.state.entities import Entity
+        clone = Entity(
+            id=game._new_id(),
+            name=getattr(item, "name", "item"),
+            pos=getattr(item, "pos", (0, 0)),
+            glyph=getattr(item, "glyph", "?"),
+            color=getattr(item, "color", (255, 255, 255)),
+            kind=getattr(item, "kind", "item"),
+        )
+        clone.tags = dict(getattr(item, "tags", {}) or {})
+
+    # Set the quantity on the clone
+    set_quantity(clone, qty)
+
+    # Copy runtime state
+    src_tags = getattr(item, "tags", {}) or {}
+    clone_tags = getattr(clone, "tags", {}) or {}
+
+    if "charges" in src_tags:
+        clone_tags["charges"] = src_tags["charges"]
+
+    clone.tags = clone_tags
+    return clone
+
+
 # ---------------------------------------------------------------------------
 # Eating / Consuming Items
 # ---------------------------------------------------------------------------
@@ -607,6 +694,103 @@ def move_item_between_inventories(
     game.refresh_actor_actions(dest_owner_id)
 
 
+def move_item_between_inventories_qty(
+    game: "Game",
+    src_owner_id: str,
+    index: int,
+    dest_owner_id: str,
+    qty: Optional[int] = None,
+) -> None:
+    """Move a specified quantity from one inventory to another.
+
+    Args:
+        qty: Number to move. None or >= current quantity moves entire stack.
+    """
+    # No-op if same inventory
+    if src_owner_id == dest_owner_id:
+        return
+
+    src_inv = get_inventory(game, src_owner_id)
+    if not (0 <= index < len(src_inv)):
+        return
+
+    ent = src_inv[index]
+
+    # Self-removal check (container recursion)
+    if getattr(ent, "id", None) == src_owner_id:
+        name = getattr(ent, "name", None) or "item"
+        game.log.add(
+            f"You turn the {name.lower()} inside out, but it remains itself."
+        )
+        return
+
+    current_qty = get_quantity(ent)
+
+    # If qty is None or >= current, move entire stack
+    if qty is None or qty >= current_qty:
+        move_item_between_inventories(game, src_owner_id, index, dest_owner_id)
+        return
+
+    # Partial transfer: split the stack
+    qty = max(1, qty)
+
+    # Unequip if equipped (whole stack gets unequipped before split)
+    try:
+        if equipment_system.is_equipped(ent):
+            tags = getattr(ent, "tags", {}) or {}
+            tags.pop("equipped_slot", None)
+            tags.pop("equipped", None)
+            ent.tags = tags
+    except Exception:
+        pass
+
+    # Reduce quantity in source
+    set_quantity(ent, current_qty - qty)
+
+    # Clone for destination
+    transferred = _clone_item_for_transfer(game, ent, qty)
+
+    # Add to destination inventory
+    dest_inv = get_inventory(game, dest_owner_id)
+    dest_inv.append(transferred)
+
+    # Logging
+    name = getattr(ent, "name", None) or "item"
+    article = "an" if name and name[0].lower() in "aeiou" else "a"
+
+    dest_label: str
+    dest_ent: Optional[Any] = None
+    if dest_owner_id == game.player_id:
+        dest_label = "your inventory"
+    else:
+        # Find destination entity for friendly name
+        level = game._level()
+        dest_ent = level.entities.get(dest_owner_id) or level.actors.get(dest_owner_id)
+
+        if dest_ent is None:
+            for inv_owner, items in game.inventories.items():
+                for it in items:
+                    if getattr(it, "id", None) == dest_owner_id:
+                        dest_ent = it
+                        break
+                if dest_ent is not None:
+                    break
+
+    if dest_ent is not None:
+        dest_name = getattr(dest_ent, "name", None)
+        if dest_name:
+            dest_label = dest_name
+
+    if qty > 1:
+        game.log.add(f"You put {qty} {name.lower()}s into {dest_label}.")
+    else:
+        game.log.add(f"You put {article} {name.lower()} into {dest_label}.")
+
+    # Refresh actions for both inventories
+    game.refresh_actor_actions(src_owner_id)
+    game.refresh_actor_actions(dest_owner_id)
+
+
 # ---------------------------------------------------------------------------
 # Equipment Tagging
 # ---------------------------------------------------------------------------
@@ -707,3 +891,67 @@ def equip_item_to_slot(
         # Refresh FOV in case equipment affected view radius
         _refresh_fov_if_player(game, oid)
         return
+
+
+def equip_item_to_slot_qty(
+    game: "Game",
+    owner_id: str,
+    item_id: str,
+    slot_id: str,
+    qty: int = 1,
+) -> None:
+    """Equip a specific quantity from a stacked item to a slot.
+
+    If qty is 1 and the item has quantity > 1, this will:
+    1. Split off one item from the stack
+    2. Equip the single item
+    3. Leave the rest in the inventory
+
+    Args:
+        qty: How many to equip (default 1). For future use with throwables.
+    """
+    oid = str(owner_id)
+    iid = str(item_id)
+    sid = str(slot_id)
+
+    # Find the item in inventory
+    inv = get_inventory(game, oid)
+    item = None
+    for ent in inv:
+        if str(getattr(ent, "id", "")) == iid:
+            item = ent
+            break
+
+    if item is None:
+        return
+
+    current_qty = get_quantity(item)
+
+    # Check if item allows stacked equipping (for future throwables)
+    tags = getattr(item, "tags", {}) or {}
+    allow_stack_equip = tags.get("equip_stacked", False)
+
+    # If single item OR stack equipping allowed, use original logic
+    if current_qty == 1 or allow_stack_equip:
+        equip_item_to_slot(game, oid, iid, sid)
+        return
+
+    # Stack with qty > 1: split it
+    qty_to_equip = min(qty, current_qty)
+    qty_remaining = current_qty - qty_to_equip
+
+    if qty_remaining > 0:
+        # Reduce the original stack
+        set_quantity(item, qty_remaining)
+
+        # Clone for the equipped item
+        equipped_item = _clone_item_for_equip(game, item, qty_to_equip)
+
+        # Add to inventory
+        inv.append(equipped_item)
+
+        # Equip the new single item
+        equip_item_to_slot(game, oid, str(equipped_item.id), sid)
+    else:
+        # Equipping the full stack (shouldn't happen with qty=1, but handle it)
+        equip_item_to_slot(game, oid, iid, sid)
