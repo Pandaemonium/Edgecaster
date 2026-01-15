@@ -12,10 +12,13 @@ FONT_PX_MIN = 1
 FONT_PX_MAX = 10000
 # Cap how big we ever rasterize a font glyph.
 # Anything bigger than this will be rendered at this size, then scaled up.
-FONT_RASTER_PX_MAX = 512
+FONT_RASTER_PX_MAX = 1024
 
 # Quantize font sizes so smooth zoom doesn't generate a new cached font every frame.
 FONT_PX_STEP = 4  # 1=exact, 2/4/8 reduces cache churn
+
+LOD0_EMBED_SCALE = 0.8  # LoD 0 *camera frame span* (unit-space). Node coords remain on +/-0.5.
+
 
 def _body_zoom_pan_t(obj: object, zoom_scale: float) -> float:
     """Blend factor for body-graph camera panning.
@@ -998,17 +1001,27 @@ def compute_body_view_state(
     except Exception:
         schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
 
-
-    # Enforce a canonical 1×1 LoD-0 frame span.
-    # This prevents stale/degenerate scales from leaking into the preview camera when switching
-    # between owners (especially owners with no body plan), which otherwise causes a visible
-    # snap in scale at the end of the diagrammatic zoom.
+    # LoD-0 framing policy:
+    #   - All node coordinates (base bodies and sub-schemas) live in the same canonical [-0.5,+0.5] square.
+    #   - At LoD 0 we may want the *view* a bit tighter/looser for the sprite tile (e.g. +20% bigger),
+    #     but we must NOT rescale node coordinates to achieve that, or LoD 0 will disagree with LoD -1+.
+    #
+    # Therefore we decouple:
+    #   * embed_scale_u_nodes: applied to node positions (always 1.0 at LoD 0)
+    #   * frame_span_u:        applied to camera framing (uses LOD0_EMBED_SCALE at LoD 0)
     try:
         if not zoom_stack:
-            embed_scale_u = 1.0
+            embed_scale_u_nodes = 1.0
+            frame_span_u = float(LOD0_EMBED_SCALE)
+        else:
+            embed_scale_u_nodes = float(embed_scale_u)
+            frame_span_u = float(embed_scale_u)
     except Exception:
-        pass
-    pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+        embed_scale_u_nodes = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+        frame_span_u = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+
+    pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u_nodes)
+
 
     # If this owner has no body-plan nodes, we still want a *stable* camera framing
     # that matches the canonical 1×1 frame behavior (and avoids any post-transition
@@ -1017,24 +1030,31 @@ def compute_body_view_state(
     # frame center, while keeping `pos_u` empty so we don't draw phantom nodes.
     pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
 
+    stack_depth = len(list(zoom_stack) if zoom_stack else [])
+
+    # LoD-0 framing policy:
+    # At stack_depth==0 we want the *glyph tile* to be framed consistently in the
+    # canonical [-0.5,+0.5] window, regardless of how tightly the body-plan nodes
+    # happen to cluster around the origin. The CoM/bbox refinement is therefore
+    # disabled at LoD 0 by omitting positions_u from the camera math.
+    cam_positions_u = pos_u_cam if stack_depth > 0 else None
+
     base_center_u, base_scale = _compute_body_graph_base_camera(
         scene,
         region_local,
         frame_center_u=embed_off_u,
-        frame_span_u=embed_scale_u,
-        positions_u=pos_u_cam,
+        frame_span_u=frame_span_u,
+        positions_u=cam_positions_u,
         margin_frac=margin_frac,
     )
     cam_center_u, cam_scale = _compute_body_graph_camera(
         scene,
         region_local,
         frame_center_u=embed_off_u,
-        frame_span_u=embed_scale_u,
-        positions_u=pos_u_cam,
+        frame_span_u=frame_span_u,
+        positions_u=cam_positions_u,
         margin_frac=margin_frac,
     )
-
-    stack_depth = len(list(zoom_stack) if zoom_stack else [])
 
     if stack_depth == 0 and getattr(scene, "_body_zoom_anim", None) is None:
         cam_center_u = (0.0, 0.0)
@@ -2068,6 +2088,13 @@ class BodyPlanGraphWidget(Widget):
 
         scene = ctx.scene
 
+        # Cache the exact blit rects of equipped node-slot glyphs so diagrammatic zoom can
+        # reuse the *true* on-panel position rather than re-deriving it.
+        try:
+            scene._node_slot_glyph_blit_cache = {}
+        except Exception:
+            pass
+
         owner = getattr(scene, "_preview_entity", None)
         owner = owner() if callable(owner) else getattr(scene, "_find_owner_entity", lambda: None)()
         if owner is None:
@@ -2112,15 +2139,34 @@ class BodyPlanGraphWidget(Widget):
 
         schema, embed_off_u, embed_scale_u = chain[-1]
 
-        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+        # LoD-0 framing policy:
+        #   - All node coordinates (base bodies and sub-schemas) live in the same canonical [-0.5,+0.5] square.
+        #   - At LoD 0 we may want the *view* a bit tighter/looser for the sprite tile (e.g. +20% bigger),
+        #     but we must NOT rescale node coordinates to achieve that, or LoD 0 will disagree with LoD -1+.
+        # Therefore we decouple:
+        #   * embed_scale_u_nodes: applied to node positions (always 1.0 at LoD 0)
+        #   * frame_span_u:        applied to camera framing (uses LOD0_EMBED_SCALE at LoD 0)
+        stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
+        try:
+            if stack_depth == 0:
+                embed_scale_u_nodes = 1.0
+                frame_span_u = float(LOD0_EMBED_SCALE)
+            else:
+                embed_scale_u_nodes = float(embed_scale_u)
+                frame_span_u = float(embed_scale_u)
+        except Exception:
+            embed_scale_u_nodes = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+            frame_span_u = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+
+        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u_nodes)
         pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
 
         # Camera: active schema only (ghosts excluded by design).
         region_local = pygame.Rect(0, 0, region.w, region.h)
-        # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
-        stack_depth = len(getattr(scene, "_body_zoom_stack", []) or [])
+        # Option A: LoD0 anchor at (0,0); deeper views anchor to schema root.
         anchor_u = (0.0, 0.0) if stack_depth == 0 else _get_schema_anchor_u(schema, pos_u)
-
+        # LoD-0 framing: ignore node positions for camera fit so glyph tile framing stays canonical.
+        cam_positions_u = pos_u_cam if stack_depth > 0 else None
         # Prefer the camera computed in InventoryScene.render() when available.
         # This guarantees the overlay uses the exact same camera as the background glyph.
         cam_center_u = None
@@ -2141,8 +2187,8 @@ class BodyPlanGraphWidget(Widget):
                 scene,
                 region_local,
                 frame_center_u=embed_off_u,
-                frame_span_u=embed_scale_u,
-                positions_u=pos_u_cam,
+                frame_span_u=frame_span_u,
+                positions_u=cam_positions_u,
                 margin_frac=0.12,
             )
 
@@ -2536,6 +2582,15 @@ class BodyPlanGraphWidget(Widget):
 
                     tmp = gcanvas.convert_alpha()
                     tmp.set_alpha(int(glyph_alpha))
+                    # Record the exact blit rect for this node-slot glyph (panel/window local coords).
+                    try:
+                        r = pygame.Rect(int(gx), int(gy), int(tmp.get_width()), int(tmp.get_height()))
+                        cache = getattr(scene, "_node_slot_glyph_blit_cache", None)
+                        if isinstance(cache, dict):
+                            cache[str(nid)] = ((int(r.centerx), int(r.centery)), (int(r.w), int(r.h)))
+                    except Exception:
+                        pass
+
                     overlay.blit(tmp, (gx, gy))
                 except Exception:
                     pass
@@ -3600,15 +3655,33 @@ class InventoryScene(PopupMenuScene):
                 chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
 
             schema, embed_off_u, embed_scale_u = chain[-1]
-            pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+
+            # Match the render policy:
+            #   - node coords stay canonical at LoD 0 (no rescale)
+            #   - camera framing uses LOD0_EMBED_SCALE at LoD 0
+            try:
+                if len(stack) == 0:
+                    embed_scale_u_nodes = 1.0
+                    frame_span_u = float(LOD0_EMBED_SCALE)
+                else:
+                    embed_scale_u_nodes = float(embed_scale_u)
+                    frame_span_u = float(embed_scale_u)
+            except Exception:
+                embed_scale_u_nodes = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+                frame_span_u = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+
+            pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u_nodes)
             pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
+
+            # LoD 0: disable CoM/bbox refinement so framing is independent of node clustering.
+            cam_positions_u = pos_u_cam if len(stack) > 0 else None
 
             center_u, scale = _compute_body_graph_base_camera(
                 self,
                 region_local,
                 frame_center_u=embed_off_u,
-                frame_span_u=embed_scale_u,
-                positions_u=pos_u_cam,
+                frame_span_u=frame_span_u,
+                positions_u=cam_positions_u,
                 margin_frac=0.12,
             )
 
@@ -3703,13 +3776,31 @@ class InventoryScene(PopupMenuScene):
                 chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
 
             schema, embed_off_u, embed_scale_u = chain[-1]
-            pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+
+            # Match the render policy:
+            #   - node coords stay canonical at LoD 0 (no rescale)
+            #   - camera framing uses LOD0_EMBED_SCALE at LoD 0
+            try:
+                if len(stack) == 0:
+                    embed_scale_u_nodes = 1.0
+                    frame_span_u = float(LOD0_EMBED_SCALE)
+                else:
+                    embed_scale_u_nodes = float(embed_scale_u)
+                    frame_span_u = float(embed_scale_u)
+            except Exception:
+                embed_scale_u_nodes = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+                frame_span_u = float(embed_scale_u) if isinstance(embed_scale_u, (int, float)) else 1.0
+
+            pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u_nodes)
             pos_u_cam = pos_u if (pos_u and len(pos_u) > 0) else {"__fake__": (float(embed_off_u[0]), float(embed_off_u[1]))}
+
+            # LoD 0: disable CoM/bbox refinement so framing is independent of node clustering.
+            cam_positions_u = pos_u_cam if len(stack) > 0 else None
 
             # IMPORTANT: match render camera logic (anchored fit) to avoid end-of-zoom snap.
             # Option A: only anchor to schema root at LoD 0; deeper views use bbox-centered framing.
             anchor_u = _get_schema_anchor_u(schema, pos_u) if len(stack) == 0 else None
-            center_u, scale = _compute_body_graph_base_camera(self, region_local, frame_center_u=embed_off_u, frame_span_u=embed_scale_u, positions_u=pos_u, margin_frac=0.12)
+            center_u, scale = _compute_body_graph_base_camera(self, region_local, frame_center_u=embed_off_u, frame_span_u=frame_span_u, positions_u=cam_positions_u, margin_frac=0.12)
             # Keep LoD 0 visually anchored to the root entity frame (world origin).
             # This must match the draw-time LoD 0 rule, or we get a tiny snap at the start/end of zoom.
             if len(stack) == 0:
@@ -4698,23 +4789,49 @@ class InventoryScene(PopupMenuScene):
     def _node_glyph_screen_info(
         self, node_id: str, manager: "SceneManager"
     ) -> tuple[tuple[int, int] | None, int | None]:
-        """Return (screen_px, approx_screen_size_px) for the glyph drawn inside a body node."""
+        """Return (screen_px, approx_screen_size_px) for the glyph drawn inside a body node.
+
+        v9 primary path: derive anchor from the exact render camera via compute_body_view_state().
+        Fallback: if that fails for any reason (None bvs / missing nid), use legacy v4-style
+        schema embedding + _map_positions_to_rect() so single-click context menus never silently fail.
+        """
         try:
             renderer = manager.renderer
         except Exception:
             return (None, None)
+
         self._ensure_window_rect(manager)
         if self.window_rect is None or self._body_graph is None:
             return (None, None)
+
         panel = self._get_panel(manager)
         try:
             # Layout widgets into the panel surface so self._body_graph.rect is up-to-date.
             self.draw_panel(panel, renderer, manager)
         except Exception:
             pass
-        region = pygame.Rect(getattr(self._body_graph, "rect", pygame.Rect(0, 0, 0, 0)))
-        if region.w <= 0 or region.h <= 0:
+
+        region_root = pygame.Rect(getattr(self._body_graph, "rect", pygame.Rect(0, 0, 0, 0)))
+        if region_root.w <= 0 or region_root.h <= 0:
             return (None, None)
+
+        # Fast path: reuse the exact on-panel blit rect recorded by BodyPlanGraphWidget.draw().
+        # These coords are already in the same window-local space the panel is rendered with, so we
+        # do NOT apply any additional logical->window scaling here.
+        try:
+            cache = getattr(self, "_node_slot_glyph_blit_cache", None)
+            if isinstance(cache, dict) and str(node_id) in cache:
+                (cx, cy), (gw, gh) = cache[str(node_id)]
+                visual = self._current_visual_profile(
+                    logical_to_window_scale_x=1.0, logical_to_window_scale_y=1.0
+                )
+                screen_px = self._project_point_window_to_screen((float(cx), float(cy)), visual)
+                approx = int(max(1, max(int(gw), int(gh))))
+                return (screen_px, approx)
+        except Exception:
+            pass
+
+        # Resolve owner entity (the entity whose body-plan we are viewing).
         owner = None
         try:
             owner = self._find_owner_entity()
@@ -4722,38 +4839,135 @@ class InventoryScene(PopupMenuScene):
             owner = None
         if owner is None:
             return (None, None)
+
+        # Match BodyPlanGraphWidget's *inner* layout region (fixed padding + reserved space).
         try:
-            schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
-                owner, getattr(self, "_body_zoom_stack", [])
+            info = describe_entity_for_look(owner) or {}
+        except Exception:
+            info = {}
+
+        desc = info.get("description") or getattr(owner, "description", None)
+        top_reserved = 70
+        bottom_reserved = 80 if desc else 56
+        region = pygame.Rect(
+            region_root.x + 14,
+            region_root.y + top_reserved,
+            region_root.w - 28,
+            region_root.h - top_reserved - bottom_reserved,
+        )
+        if region.w <= 10 or region.h <= 10:
+            return (None, None)
+
+
+        nid = str(node_id)
+
+        # ------------------------------------------------------------
+        # Primary path: use authoritative body-view state (camera + positions)
+        # ------------------------------------------------------------
+        screen_px = None
+        size_px: int | None = None
+
+        try:
+            bvs = compute_body_view_state(
+                self,
+                owner,
+                region_local=pygame.Rect(0, 0, region.w, region.h),
+                zoom_stack=getattr(self, "_body_zoom_stack", []),
+                margin_frac=0.12,
             )
         except Exception:
-            schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
-        pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
-        pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
-        nid = str(node_id)
-        if nid not in pos_px:
-            return (None, None)
-        node_size = int(max(18, min(56, scale * 0.45)))
-        cx, cy = pos_px[nid]
-        gx = float(region.x + int(cx))
-        gy = float(region.y + int(cy))
-        pw, ph = panel.get_size()
-        sx = float(self.window_rect.w) / float(max(1, pw))
-        sy = float(self.window_rect.h) / float(max(1, ph))
-        win_pt = (gx * sx, gy * sy)
-        visual = self._current_visual_profile(logical_to_window_scale_x=sx, logical_to_window_scale_y=sy)
-        screen_px = self._project_point_window_to_screen(win_pt, visual)
+            bvs = None
+
+        if bvs is not None:
+            try:
+                pos_u = bvs.positions_u
+                if isinstance(pos_u, dict) and nid in pos_u:
+                    pos_px = _project_positions_with_camera(
+                        pos_u,
+                        pygame.Rect(0, 0, region.w, region.h),
+                        center_u=bvs.cam_center_u,
+                        scale=bvs.cam_scale,
+                    )
+                    if isinstance(pos_px, dict) and nid in pos_px:
+                        # Approximate node size (screen-space) for "glyph inside node" scaling.
+                        scale = float(bvs.cam_scale)
+                        node_size = int(max(18, min(56, scale * 0.45)))
+                        cx, cy = pos_px[nid]
+                        gx = float(region.x + int(cx))
+                        gy = float(region.y + int(cy))
+
+                        pw, ph = panel.get_size()
+                        sx = float(self.window_rect.w) / float(max(1, pw))
+                        sy = float(self.window_rect.h) / float(max(1, ph))
+                        win_pt = (gx * sx, gy * sy)
+
+                        visual = self._current_visual_profile(
+                            logical_to_window_scale_x=sx, logical_to_window_scale_y=sy
+                        )
+                        screen_px = self._project_point_window_to_screen(win_pt, visual)
+
+                        try:
+                            base_px = int(node_size * 0.86)
+                            cell_w_win = float(base_px) * sx
+                            cell_h_win = float(base_px) * sy
+                            sw = cell_w_win * float(abs(getattr(visual, "scale_x", 1.0)))
+                            sh = cell_h_win * float(abs(getattr(visual, "scale_y", 1.0)))
+                            size_px = int(round(max(sw, sh)))
+                            size_px = max(4, min(1024, size_px))
+                        except Exception:
+                            size_px = None
+
+                        return (screen_px, size_px)
+            except Exception:
+                # fall through to legacy fallback
+                pass
+
+        # ------------------------------------------------------------
+        # Fallback path: legacy mapping using schema embedding (v4 behavior)
+        # ------------------------------------------------------------
         try:
-            base_px = int(node_size * 0.86)
-            cell_w_win = float(base_px) * sx
-            cell_h_win = float(base_px) * sy
-            sw = cell_w_win * float(abs(getattr(visual, "scale_x", 1.0)))
-            sh = cell_h_win * float(abs(getattr(visual, "scale_y", 1.0)))
-            size_px = int(round(max(sw, sh)))
-            size_px = max(4, min(1024, size_px))
+            zoom_stack = [str(x) for x in (getattr(self, "_body_zoom_stack", []) or [])]
         except Exception:
-            size_px = None
-        return (screen_px, size_px)
+            zoom_stack = []
+
+        try:
+            schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, zoom_stack)
+        except Exception:
+            schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
+
+        try:
+            pos_u = _embed_positions(_compute_body_positions(schema), embed_off_u, embed_scale_u)
+            pos_px, scale = _map_positions_to_rect(pos_u, pygame.Rect(0, 0, region.w, region.h))
+            if nid not in pos_px:
+                return (None, None)
+
+            node_size = int(max(18, min(56, float(scale) * 0.45)))
+            cx, cy = pos_px[nid]
+            gx = float(region.x + int(cx))
+            gy = float(region.y + int(cy))
+
+            pw, ph = panel.get_size()
+            sx = float(self.window_rect.w) / float(max(1, pw))
+            sy = float(self.window_rect.h) / float(max(1, ph))
+            win_pt = (gx * sx, gy * sy)
+
+            visual = self._current_visual_profile(logical_to_window_scale_x=sx, logical_to_window_scale_y=sy)
+            screen_px = self._project_point_window_to_screen(win_pt, visual)
+
+            try:
+                base_px = int(node_size * 0.86)
+                cell_w_win = float(base_px) * sx
+                cell_h_win = float(base_px) * sy
+                sw = cell_w_win * float(abs(getattr(visual, "scale_x", 1.0)))
+                sh = cell_h_win * float(abs(getattr(visual, "scale_y", 1.0)))
+                size_px = int(round(max(sw, sh)))
+                size_px = max(4, min(1024, size_px))
+            except Exception:
+                size_px = None
+
+            return (screen_px, size_px)
+        except Exception:
+            return (None, None)
 
     def _open_container_from_entity(
         self,

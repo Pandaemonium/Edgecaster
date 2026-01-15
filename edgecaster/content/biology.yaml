@@ -34,6 +34,7 @@
     children:
     - head
     - tail
+    proto: body
   description: An animal with a head and tail, oriented along a spine.
 - id: mammal
   name: Mammal
@@ -154,60 +155,43 @@
   name: Humanoid
   parent: ape
   description: A roughly bipedal ape in a paper-doll orientation.
-
   body_patch:
-    # Core body
-    - op: replace_node
-      node: body
-      layout:
-        x: 0.0
-        y: -0.2
-      props:
-        size: 0.1
-
-    # Head
-    - op: replace_node
-      node: head
-      layout:
-        x: 0.1
-        y: -0.32
-      props:
-        size: 0.2
-
-    # Arms
-    - op: replace_node
-      node: arm
-      layout:
-        x: -0.11
-        y: -0.15
-      props:
-        size: 0.4
-
-    - op: replace_node
-      node: arm_m
-
-
-    # Legs
-    - op: replace_node
-      node: leg
-      layout:
-        x: -0.05
-        y: 0.05
-      props:
-        size: 0.5
-
-    - op: replace_node
-      node: leg_m
-
-
-
-  description: A roughly bipedal ape in a paper-doll orientation.
+  - op: replace_node
+    node: body
+    layout:
+      x: 0.0
+      y: -0.1
+    props:
+      size: 0.3
+  - op: replace_node
+    node: head
+    layout:
+      x: 0.0
+      y: -0.32
+    props:
+      size: 0.3
+  - op: replace_node
+    node: arm
+    layout:
+      x: -0.15
+      y: -0.23
+    props:
+      size: 0.5
+  - op: replace_node
+    node: arm_m
+  - op: replace_node
+    node: leg
+    layout:
+      x: -0.1
+      y: 0.1
+    props:
+      size: 0.7
+  - op: replace_node
+    node: leg_m
 - id: human
   name: Human
   parent: humanoid
   description: Halfway between an ape and an angel.
-
-
 - id: actor
   name: Actor
   parent: entity
