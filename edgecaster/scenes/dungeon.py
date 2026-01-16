@@ -66,6 +66,8 @@ class DungeonUIState:
     push_target: tuple[float, float] | None = None
     push_rotation: float = 0.0
     push_preview: object | None = None
+    seal_snap_active: bool = False
+    seal_root_hint: tuple[int, int] | None = None
     # --- debug widget PoC state (safe, pure data) ---
     debug_widget_visible: bool = False
     debug_clicks: int = 0
@@ -404,6 +406,12 @@ class DungeonScene(Scene):
             self.game = Game(cfg, rng, character=char)
             # ability bar view-model
             self.game.ability_bar_state = AbilityBarState()
+            # Ensure any trial zone grants/layout are applied now that UI exists.
+            try:
+                from edgecaster.systems import seal_trials
+                seal_trials.sync_zone_trial(self.game, self.game._level(), self.game.zone_coord)
+            except Exception:
+                pass
 
             # Precompute world map cache in the background
             if not getattr(self.game, "world_map_thread_started", False):
@@ -782,6 +790,8 @@ class DungeonScene(Scene):
         self.ui_state.push_target = None
         self.ui_state.push_rotation = 0.0
         self.ui_state.push_preview = None
+        self.ui_state.seal_snap_active = False
+        self.ui_state.seal_root_hint = None
         # Clear legacy terminus flag for any tile/terminus targeting.
         if t and t.kind == "tile" and getattr(t, "mode", None) == "terminus":
             game.awaiting_terminus = False
@@ -936,6 +946,42 @@ class DungeonScene(Scene):
 
 
 
+    def _apply_seal_snap(
+        self,
+        game: Game,
+        t: TargetState | None,
+        cursor_tile: tuple[int, int],
+    ) -> tuple[int, int]:
+        """Snap terminus targeting to a sealing rune's canonical terminus."""
+        ui = self.ui_state
+        trial = getattr(game._level(), "seal_trial", None)
+
+        # Only snap in terminus targeting when a live trial exists.
+        if (
+            t is None
+            or t.kind != "tile"
+            or getattr(t, "mode", None) != "terminus"
+            or trial is None
+            or trial.sealed
+        ):
+            ui.seal_snap_active = False
+            ui.seal_root_hint = None
+            return cursor_tile
+
+        tx, ty = cursor_tile
+        sx, sy = trial.terminus_tile
+        dx = tx - sx
+        dy = ty - sy
+        if dx * dx + dy * dy <= trial.snap_radius * trial.snap_radius:
+            ui.seal_snap_active = True
+            ui.seal_root_hint = trial.root_tile
+            return trial.terminus_tile
+
+        ui.seal_snap_active = False
+        ui.seal_root_hint = None
+        return cursor_tile
+
+
     def _update_hover_from_mouse(
         self,
         game: Game,
@@ -958,8 +1004,14 @@ class DungeonScene(Scene):
             tx = int((mx - renderer.origin_x) // renderer.tile)
             ty = int((my - renderer.origin_y) // renderer.tile)
             if game.world.in_bounds(tx, ty):
-                t.cursor_tile = (tx, ty)
-                self.ui_state.target_cursor = (tx, ty)
+                cursor = (tx, ty)
+                if t.kind == "tile" and getattr(t, "mode", None) == "terminus":
+                    cursor = self._apply_seal_snap(game, t, cursor)
+                else:
+                    self.ui_state.seal_snap_active = False
+                    self.ui_state.seal_root_hint = None
+                t.cursor_tile = cursor
+                self.ui_state.target_cursor = cursor
                 if getattr(t, "action", None) == "push_pattern":
                     lvl = game._level()
                     pattern = getattr(lvl, "pattern", None)
@@ -1251,8 +1303,9 @@ class DungeonScene(Scene):
                 dx, dy = vec
                 nt = (tx + dx, ty + dy)
                 if game.world.in_bounds(*nt):
-                    t.cursor_tile = nt
-                    self.ui_state.target_cursor = nt
+                    cursor = self._apply_seal_snap(game, t, nt)
+                    t.cursor_tile = cursor
+                    self.ui_state.target_cursor = cursor
                 return
 
             if kind == "confirm" and in_target_mode:

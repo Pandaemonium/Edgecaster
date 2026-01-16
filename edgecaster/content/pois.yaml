@@ -45,6 +45,8 @@ starting_zone:
       description: "A hulking demon chained and pitted for training."
   structures:
     - kind: item_depot
+    - kind: sealing_rune_trial
+      trial_id: starter_seal
 inventor_workshop:
   coord: [55, 48, 0]  # Within 5 screens of starting_zone (50, 50)
   npcs:

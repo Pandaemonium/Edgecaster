@@ -80,6 +80,12 @@ def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
     # Fern growth tick (Barnsley fern auto-growth)
     from edgecaster.systems import fern_growth
     fern_growth.tick(game, level, delta)
+    # Sealing rune trials (match evaluation)
+    try:
+        from edgecaster.systems import seal_trials
+        seal_trials.update_trial(game, level)
+    except Exception:
+        pass
 
 
 def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, interval: int) -> None:

@@ -66,6 +66,13 @@ def get_zone(
     except Exception:
         pass
 
+    # Sealing rune trials: apply or revoke temporary grants on zone enter.
+    try:
+        from edgecaster.systems import seal_trials
+        seal_trials.sync_zone_trial(game, lvl, coord)
+    except Exception:
+        pass
+
     # Try to realize biome-based sites for zones that were created before site
     # placement completed. This handles the race condition where zones are cached
     # before sites are placed.

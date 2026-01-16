@@ -1,0 +1,34 @@
+starter_seal:
+  name: Starter Seal
+  # Root tile offset from the zone entry (player should stand here to place).
+  root_offset: [0, 0]
+  # Terminus offset relative to the root (cursor snaps to this).
+  terminus_offset: [10, 0]
+  # Missing chunk selection in pattern-space (relative to root).
+  missing_center: [5.0, 0.0]
+  missing_radius: 2.5
+  # Cursor snap radius in tiles.
+  snap_radius: 3
+  # How "good" the match must be to enable sealing.
+  score_threshold: 0.65
+  # Blur passes for spatial match scoring (higher = softer).
+  blur_radius: 2
+  # Generators granted during the trial.
+  required_generators: [subdivide, koch, branch]
+  # Multi-generator chain used to build the target pattern.
+  pattern_chain:
+    - gen: subdivide
+      times: 1
+      params:
+        parts: 3
+    - gen: koch
+      times: 1
+      params:
+        height: 0.35
+        flip: false
+    - gen: branch
+      times: 1
+      params:
+        angle: 25
+        count: 2
+        length: 0.45

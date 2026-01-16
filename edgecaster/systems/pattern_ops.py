@@ -117,18 +117,33 @@ def try_place_terminus(game: "Game", target: Tuple[int, int]) -> None:
     if not lvl.awaiting_terminus:
         return
 
-    px, py = game._player().pos
-    dx = target[0] - px
-    dy = target[1] - py
+    trial = getattr(lvl, "seal_trial", None)
+    use_trial_anchor = False
+    anchor_x: int
+    anchor_y: int
+
+    if trial is not None and not getattr(trial, "sealed", False):
+        # Trial placement: when snapped to the canonical terminus,
+        # force the pattern anchor to the canonical root so alignment is exact.
+        if target == tuple(trial.terminus_tile):
+            use_trial_anchor = True
+            anchor_x, anchor_y = trial.root_tile
+        else:
+            anchor_x, anchor_y = game._player().pos
+    else:
+        anchor_x, anchor_y = game._player().pos
+
+    dx = target[0] - anchor_x
+    dy = target[1] - anchor_y
     dist2 = dx * dx + dy * dy
 
-    if dist2 > game.place_range * game.place_range:
+    if not use_trial_anchor and dist2 > game.place_range * game.place_range:
         game.log.add("Out of range.")
         return
 
     def do_place() -> None:
         lvl.pattern = builder.line_pattern((0.0, 0.0), (dx, dy))
-        lvl.pattern_anchor = (px, py)
+        lvl.pattern_anchor = (anchor_x, anchor_y)
         lvl.pattern_motion = None
         lvl.acidic_pattern = False  # Clear corrosive melt on new pattern
         # Clear fern growth state on new pattern

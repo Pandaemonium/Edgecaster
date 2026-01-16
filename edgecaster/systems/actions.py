@@ -1508,6 +1508,13 @@ def _action_place_rune_anchor(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_place_rune_anchor(actor_id)
 
 
+@register_action("seal_rune", label="Seal Rune", speed="fast", show_in_bar=True)
+def _action_seal_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Bind a sealing rune (trial zones only)."""
+    if hasattr(game, "act_seal_rune"):
+        game.act_seal_rune(actor_id)
+
+
 @register_action(
     "push_pattern",
     label="Push",

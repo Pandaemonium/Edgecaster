@@ -129,6 +129,8 @@ class AsciiRenderer:
         # pattern layers
         self.edges_surface = pygame.Surface((width, height), pygame.SRCALPHA)
         self.verts_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        # sealing rune overlay
+        self.seal_surface = pygame.Surface((width, height), pygame.SRCALPHA)
         # Lorenz attractor overlay
         self.lorenz_surface = pygame.Surface((width, height), pygame.SRCALPHA)
         # Lorenz view defaults; simulation state now lives in game/lorenz.py
@@ -2017,6 +2019,90 @@ class AsciiRenderer:
         self.surface.blit(self.edges_surface, (0, 0))
         self.surface.blit(self.verts_surface, (0, 0))
 
+    def draw_seal_trial_overlay(self, game: Game) -> None:
+        """Draw the target seal pattern + highlight the missing chunk.
+
+        Intact edges are rendered dimly so players can see the full target.
+        Missing edges pulse brighter to call attention to the damaged segment.
+        """
+        self.seal_surface.fill((0, 0, 0, 0))
+        level = game._level()
+        trial = getattr(level, "seal_trial", None)
+        if trial is None or trial.sealed:
+            return
+
+        origin = trial.target_anchor
+        try:
+            verts = project_vertices(trial.target_pattern, origin)
+        except Exception:
+            verts = []
+
+        if not verts:
+            # Throttle debug output so we only log once per second.
+            now = pygame.time.get_ticks()
+            last = getattr(self, "_seal_overlay_debug_tick", 0)
+            if now - last > 1000 and hasattr(game, "_debug"):
+                self._seal_overlay_debug_tick = now
+                game._debug(
+                    "[seal_trials] overlay skipped "
+                    f"verts=0 edges={len(getattr(trial.target_pattern, 'edges', []) or [])} "
+                    f"root={trial.root_tile} term={trial.terminus_tile}"
+                )
+            return
+
+        # Pulse speed/strength for the missing edges.
+        t = pygame.time.get_ticks() / 1000.0
+        pulse = 0.5 + 0.5 * math.sin(t * (math.tau / 1.4))
+
+        intact_col = (80, 120, 180, 70)
+        missing_dim = (40, 40, 60, 140)
+        missing_bright = (255, 210, 140, int(120 + 120 * pulse))
+
+        for edge in trial.target_pattern.edges:
+            try:
+                a = verts[edge.a]
+                b = verts[edge.b]
+            except Exception:
+                continue
+            ax = a[0] * self.tile + self.tile * 0.5 + self.origin_x
+            ay = a[1] * self.tile + self.tile * 0.5 + self.origin_y
+            bx = b[0] * self.tile + self.tile * 0.5 + self.origin_x
+            by = b[1] * self.tile + self.tile * 0.5 + self.origin_y
+
+            edge_key = (min(edge.a, edge.b), max(edge.a, edge.b))
+            if edge_key in trial.missing_edge_keys:
+                # Missing chunk: draw a dark baseline + a pulsing highlight.
+                pygame.draw.aaline(self.seal_surface, missing_dim, (ax, ay), (bx, by))
+                pygame.draw.aaline(self.seal_surface, missing_bright, (ax, ay), (bx, by))
+            else:
+                pygame.draw.aaline(self.seal_surface, intact_col, (ax, ay), (bx, by))
+
+        self.surface.blit(self.seal_surface, (0, 0))
+
+    def draw_seal_root_hint(self, game: Game) -> None:
+        """Draw a pulsing border on the root tile while snapped to the terminus."""
+        if not self._ui_attr("seal_snap_active", False):
+            return
+        root = self._ui_attr("seal_root_hint", None)
+        if not root:
+            return
+
+        rx, ry = root
+        tile_px = max(1, int(round(self.tile)))
+        x = int(rx * self.tile + self.origin_x)
+        y = int(ry * self.tile + self.origin_y)
+
+        t = pygame.time.get_ticks() / 1000.0
+        pulse = 0.5 + 0.5 * math.sin(t * (math.tau / 1.6))
+        alpha = int(80 + 140 * pulse)
+        col = (255, 220, 140, alpha)
+
+        # Two-pass border for a readable "stand here" target.
+        pygame.draw.rect(self.surface, col, pygame.Rect(x, y, tile_px, tile_px), width=2)
+        inner = tile_px - 4
+        if inner > 0:
+            pygame.draw.rect(self.surface, col, pygame.Rect(x + 2, y + 2, inner, inner), width=1)
+
     def draw_action_preview_underlay(self, game: Game) -> None:
         """Draw a scene-provided action preview under entities (pure view)."""
         preview = self._ui_attr("action_preview", None)
@@ -3109,6 +3195,7 @@ class AsciiRenderer:
         self.draw_world_zoomed(game)
         self.draw_lorenz_overlay(game)
 
+        self.draw_seal_trial_overlay(game)
         self.draw_pattern_overlay(game)
         self.draw_sparkle_overlay(game)
         self.draw_lightning_overlay(game)
@@ -3122,6 +3209,7 @@ class AsciiRenderer:
         self.draw_entities(game.world, renderables)
         self.draw_action_preview_overlay(game)
         self.draw_target_cursor(game)
+        self.draw_seal_root_hint(game)
         self.draw_look_overlay(game)
 
         # HUD (status header, log panel, ability bar) is now routed
@@ -3232,6 +3320,7 @@ class AsciiRenderer:
         # Refresh helper surfaces
         self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        self.seal_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
         # Map font scales with clamped glyph size; UI fonts remain constant.
         self.map_font = pygame.font.SysFont("consolas", int(self.glyph_px), bold=False)

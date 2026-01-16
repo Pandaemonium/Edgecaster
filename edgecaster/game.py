@@ -132,6 +132,7 @@ class LevelState:
     fern_active: bool = False  # Is fern growth enabled?
     fern_growth_tips: List[int] = field(default_factory=list)  # Vertex indices that can spawn growth
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
+    seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
 
 
 
@@ -299,6 +300,12 @@ class Game:
 
         # create starting zone
         self.levels[self.zone_coord] = self._make_zone(coord=self.zone_coord, up_pos=None)
+        # Apply sealing trial grants if the starting zone contains one.
+        try:
+            from edgecaster.systems import seal_trials
+            seal_trials.sync_zone_trial(self, self._level(), self.zone_coord)
+        except Exception:
+            pass
         # Starting zone is immediately discovered.
         try:
             self._discover_pois_for_level(self.levels[self.zone_coord])
@@ -1387,6 +1394,7 @@ class Game:
                         "energy_flask",
                         # Equipment (stat mods)
                         "resonant_ring",
+                        "resonance_crystal",
                         "sage_cap",
                         "fleet_boots",
                         "vital_belt",
@@ -1426,6 +1434,14 @@ class Game:
                             level.entities[ent.id] = ent
                         except Exception:
                             pass
+                elif struct.get("kind") == "sealing_rune_trial":
+                    # Attach a sealing rune trial to this level (visual overlay + logic).
+                    try:
+                        from edgecaster.systems import seal_trials
+                        trial_id = str(struct.get("trial_id") or "starter_seal")
+                        seal_trials.attach_trial_to_level(self, level, trial_id)
+                    except Exception as e:
+                        self._debug(f"[seal_trials] Failed to attach trial: {e!r}")
                 elif struct.get("kind") == "legendary_lair":
                     base_proto = str(struct.get("template_id") or struct.get("proto_id") or "imp")
                     legend_name = struct.get("name")
@@ -3447,6 +3463,14 @@ class Game:
             self.log.add(f"(sigma={sigma:.3f} ~ {approx_tiles:.0f} tiles; strength={strength:.2f})")
             if pid:
                 self.log.add(f"Anchor marked on the world map as {pid}.")
+
+    def act_seal_rune(self, actor_id: str) -> None:
+        """Bind a sealing rune using a resonance crystal (trial zones only)."""
+        try:
+            from edgecaster.systems import seal_trials
+            seal_trials.seal_rune(self, actor_id)
+        except Exception:
+            self.log.add("The seal refuses to bind.")
 
     def act_fractal(self, actor_id: str, kind: str) -> None:
         """Generic action entry point: apply a fractal generator to the current pattern."""
