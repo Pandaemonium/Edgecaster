@@ -6,7 +6,7 @@ This module owns:
 - Removing a "missing chunk" (stored as removed edges).
 - Scoring the player's pattern against the missing region (blurred overlap).
 - Temporary ability grants while inside a trial zone.
-- Sealing logic using a resonance crystal.
+- Sealing logic using a coherence crystal.
 """
 from __future__ import annotations
 
@@ -241,7 +241,7 @@ def update_trial(game: "Game", level: "LevelState") -> None:
         trial.ready_to_seal = True
         if not trial.announced_ready:
             trial.announced_ready = True
-            game.log.add("The seal aligns. A resonance crystal can bind it.")
+            game.log.add("The seal aligns. A coherence crystal can bind it.")
 
 
 def compute_match_score(
@@ -311,7 +311,7 @@ def compute_match_score(
 
 
 def seal_rune(game: "Game", actor_id: str) -> None:
-    """Attempt to seal the rune by consuming a resonance crystal."""
+    """Attempt to seal the rune by consuming a coherence crystal."""
     level = game._level()
     trial = getattr(level, "seal_trial", None)
     if trial is None:
@@ -330,22 +330,34 @@ def seal_rune(game: "Game", actor_id: str) -> None:
             )
         return
 
-    if not _consume_resonance_crystal(game, actor_id):
-        game.log.add("You need a resonance crystal to bind the seal.")
+    if not _consume_coherence_crystal(game, actor_id):
+        game.log.add("You need a coherence crystal to bind the seal.")
         return
 
     trial.sealed = True
     trial.ready_to_seal = True
     revoke_trial_grants(game, actor_id)
     game.log.add("The rune locks into place, and the corruption recedes.")
+    try:
+        from edgecaster.systems import quests as quest_system
+
+        messages = quest_system.update_quest_progress(
+            game,
+            "seal_rune",
+            trial_id=trial.trial_id,
+        )
+        for msg in messages:
+            game.log.add(msg)
+    except Exception:
+        pass
 
 
-def _consume_resonance_crystal(game: "Game", actor_id: str) -> bool:
-    """Consume one resonance crystal from an inventory if present."""
+def _consume_coherence_crystal(game: "Game", actor_id: str) -> bool:
+    """Consume one coherence crystal from an inventory if present."""
     inv = inventory_system.get_inventory(game, actor_id)
     for idx, item in enumerate(list(inv)):
         tags = getattr(item, "tags", {}) or {}
-        if tags.get("item_type") != "resonance_crystal":
+        if tags.get("item_type") != "coherence_crystal":
             continue
         qty = inventory_system.get_quantity(item)
         if qty > 1:

@@ -166,6 +166,15 @@ def _matches_objective(obj: QuestObjective, event_type: str, context: dict) -> b
     elif event_type == "pattern_placement":
         return True  # Simple check for now
 
+    elif event_type == "seal_rune":
+        trial_id = obj.params.get("trial_id")
+        poi_id = obj.params.get("poi_id")
+        if trial_id and context.get("trial_id") != trial_id:
+            return False
+        if poi_id and context.get("poi_id") != poi_id:
+            return False
+        return True
+
     return False
 
 

@@ -2028,8 +2028,9 @@ class AsciiRenderer:
         self.seal_surface.fill((0, 0, 0, 0))
         level = game._level()
         trial = getattr(level, "seal_trial", None)
-        if trial is None or trial.sealed:
+        if trial is None:
             return
+        sealed = bool(getattr(trial, "sealed", False))
 
         origin = trial.target_anchor
         try:
@@ -2050,13 +2051,18 @@ class AsciiRenderer:
                 )
             return
 
-        # Pulse speed/strength for the missing edges.
+        # Pulse speed/strength for the missing edges (skip pulsing if sealed).
         t = pygame.time.get_ticks() / 1000.0
-        pulse = 0.5 + 0.5 * math.sin(t * (math.tau / 1.4))
+        pulse = 1.0 if sealed else (0.5 + 0.5 * math.sin(t * (math.tau / 1.4)))
 
-        intact_col = (80, 120, 180, 70)
-        missing_dim = (40, 40, 60, 140)
-        missing_bright = (255, 210, 140, int(120 + 120 * pulse))
+        if sealed:
+            intact_col = (120, 190, 255, 140)
+            missing_dim = intact_col
+            missing_bright = intact_col
+        else:
+            intact_col = (80, 120, 180, 70)
+            missing_dim = (40, 40, 60, 140)
+            missing_bright = (255, 210, 140, int(120 + 120 * pulse))
 
         for edge in trial.target_pattern.edges:
             try:

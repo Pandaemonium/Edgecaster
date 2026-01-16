@@ -25,6 +25,16 @@ def _has_active_quest(game: Any, proto_id: str) -> bool:
         return False
 
 
+def _get_active_quest(game: Any, proto_id: str):
+    try:
+        for quest in getattr(game, "active_quests", {}).values():
+            if quest.proto_id == proto_id and getattr(quest, "status", None) == "active":
+                return quest
+    except Exception:
+        return None
+    return None
+
+
 def _has_completed_quest(game: Any, proto_id: str) -> bool:
     try:
         return proto_id in (getattr(game, "completed_quests", []) or [])
@@ -76,7 +86,13 @@ def _effect_grant_generator(gen: str) -> Callable[[Any], None]:
     return effect
 
 
-def _effect_accept_quest(proto_id: str, *, quest_location: tuple[int, int] | None, dialogue_tail: str | None) -> Callable[[Any], None]:
+def _effect_accept_quest(
+    proto_id: str,
+    *,
+    quest_location: tuple[int, int] | None,
+    dialogue_tail: str | None,
+    poi_id: str | None = None,
+) -> Callable[[Any], None]:
     def effect(game: Any) -> None:
         try:
             # Don't duplicate the quest if already active.
@@ -93,6 +109,12 @@ def _effect_accept_quest(proto_id: str, *, quest_location: tuple[int, int] | Non
             game.active_quests[quest.id] = quest
             game.log.add(f"Quest accepted: {quest.name}")
             game.log.add("Press J to view your journal for active quests.")
+            if poi_id and hasattr(game, "add_poi_rumor"):
+                try:
+                    game.add_poi_rumor(str(poi_id), log=False)
+                    game.log.add("A location has been marked on your world map.")
+                except Exception:
+                    pass
         except Exception as e:
             try:
                 game.log.add(f"(Quest error: {e!r})")
@@ -226,13 +248,26 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
     base_body = _npc_dialogue_body(npc, npc_def)
 
     quest_proto_id = str(npc_def.get("quest_trigger") or "")
-    quest_loc = npc_def.get("quest_location")
     quest_loc_t = None
-    if isinstance(quest_loc, (list, tuple)) and len(quest_loc) >= 2:
+    if hasattr(game, "inventor_zone"):
         try:
-            quest_loc_t = (int(quest_loc[0]), int(quest_loc[1]))
+            quest_loc_t = (int(game.inventor_zone[0]), int(game.inventor_zone[1]))  # type: ignore[attr-defined]
         except Exception:
             quest_loc_t = None
+    if quest_loc_t is None:
+        quest_loc = npc_def.get("quest_location")
+        if isinstance(quest_loc, (list, tuple)) and len(quest_loc) >= 2:
+            try:
+                quest_loc_t = (int(quest_loc[0]), int(quest_loc[1]))
+            except Exception:
+                quest_loc_t = None
+
+    failing_loc_t = None
+    if hasattr(game, "failing_rune_zone"):
+        try:
+            failing_loc_t = (int(game.failing_rune_zone[0]), int(game.failing_rune_zone[1]))  # type: ignore[attr-defined]
+        except Exception:
+            failing_loc_t = None
 
     if not quest_proto_id:
         return DialogueTree(
@@ -248,7 +283,8 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
             },
         )
 
-    active = _has_active_quest(game, quest_proto_id)
+    quest = _get_active_quest(game, quest_proto_id)
+    active = quest is not None
     completed = _has_completed_quest(game, quest_proto_id)
 
     nodes: dict[str, DialogueNode] = {}
@@ -263,6 +299,39 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
         return DialogueTree(id=f"npc:{npc_id}", start_id="start", nodes=nodes)
 
     if active:
+        stage = int(getattr(quest, "stage", 0) or 0)
+
+        def reveal_failing_rune(game: Any) -> None:
+            if quest is None or failing_loc_t is None:
+                return
+            try:
+                tags = getattr(quest, "tags", {}) or {}
+                if tags.get("failing_rune_revealed"):
+                    return
+                from edgecaster.systems import quests as quest_system
+
+                quest_system.add_quest_location(quest, failing_loc_t)
+                quest_system.add_quest_note(
+                    quest,
+                    f"The guide marked the failing rune at ({failing_loc_t[0]}, {failing_loc_t[1]}).",
+                )
+                tags["failing_rune_revealed"] = True
+                quest.tags = tags
+                if hasattr(game, "add_poi_rumor"):
+                    game.add_poi_rumor("failing_rune", log=True)
+            except Exception:
+                pass
+
+        if stage >= 2 and failing_loc_t is not None:
+            hint = f"\n\nThe failing rune is at ({failing_loc_t[0]}, {failing_loc_t[1]})."
+            nodes["start"] = DialogueNode(
+                id="start",
+                title=title,
+                body=base_body + "\n\nYou have the crystal. Time to bind the seal." + hint,
+                choices=[DialogueChoice(text="Mark it for me.", next_id=None, effect=reveal_failing_rune)],
+            )
+            return DialogueTree(id=f"npc:{npc_id}", start_id="start", nodes=nodes)
+
         hint = ""
         if quest_loc_t is not None:
             hint = f"\n\nTheir workshop is marked near ({quest_loc_t[0]}, {quest_loc_t[1]})."
@@ -286,6 +355,7 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
         quest_proto_id,
         quest_location=quest_loc_t,
         dialogue_tail=(npc_def.get("dialogue") or [None])[-1],
+        poi_id="inventor_workshop",
     )
 
     nodes["start"] = DialogueNode(
@@ -314,7 +384,8 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
     body = _npc_dialogue_body(npc, npc_def)
 
     quest_proto_id = str(npc_def.get("quest_complete") or "")
-    active = bool(quest_proto_id) and _has_active_quest(game, quest_proto_id)
+    quest = _get_active_quest(game, quest_proto_id) if quest_proto_id else None
+    active = quest is not None
 
     if not active:
         return DialogueTree(
@@ -332,30 +403,130 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
             },
         )
 
-    # Active quest: let the dialogue choice complete objective progress.
-    head_line = None
-    try:
-        head_line = (npc_def.get("dialogue") or [None])[0]
-    except Exception:
-        head_line = None
+    def _count_item(game: Any, item_type: str) -> int:
+        try:
+            from edgecaster.systems import inventory as inventory_system
 
-    complete_effect = _effect_complete_quest_dialogue(npc_id, dialogue_head=str(head_line) if head_line else None)
+            inv = inventory_system.get_player_inventory(game)
+            total = 0
+            for it in inv:
+                tags = getattr(it, "tags", {}) or {}
+                if tags.get("item_type") == item_type:
+                    total += inventory_system.get_quantity(it)
+            return total
+        except Exception:
+            return 0
+
+    def _consume_item(game: Any, item_type: str) -> bool:
+        try:
+            from edgecaster.systems import inventory as inventory_system
+
+            inv = inventory_system.get_player_inventory(game)
+            for idx, it in enumerate(list(inv)):
+                tags = getattr(it, "tags", {}) or {}
+                if tags.get("item_type") != item_type:
+                    continue
+                qty = inventory_system.get_quantity(it)
+                if qty > 1:
+                    inventory_system.set_quantity(it, qty - 1)
+                else:
+                    inv.pop(idx)
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _grant_coherence_crystal(game: Any) -> None:
+        try:
+            player = game._player()
+            ent = game._spawn_entity_from_template("coherence_crystal", player.pos)
+            inv = game.get_inventory(player.id)
+            inv.append(ent)
+            game.log.add("You receive a Coherence Crystal.")
+            game.refresh_actor_actions(player.id)
+        except Exception:
+            pass
+
+    def _complete_talk_effect(game: Any) -> None:
+        try:
+            from edgecaster.systems import quests as quest_system
+
+            messages = quest_system.update_quest_progress(game, "dialogue", npc_id=npc_id)
+            for msg in messages:
+                game.log.add(msg)
+        except Exception:
+            pass
+
+    def _deliver_destabilizer(game: Any) -> None:
+        if not _consume_item(game, "destabilizer"):
+            game.log.add("You don't have a destabilizer.")
+            return
+        _grant_coherence_crystal(game)
+        try:
+            from edgecaster.systems import quests as quest_system
+
+            messages = quest_system.update_quest_progress(game, "collect_item", item_type="destabilizer")
+            for msg in messages:
+                game.log.add(msg)
+            quest = _get_active_quest(game, quest_proto_id)
+            if quest is not None:
+                quest_system.add_quest_note(
+                    quest,
+                    "The inventor handed you a Coherence Crystal. Show it to the guide.",
+                )
+        except Exception:
+            pass
+
+    stage = int(getattr(quest, "stage", 0) or 0) if quest is not None else 0
+    has_destabilizer = _count_item(game, "destabilizer") > 0
+
+    nodes: dict[str, DialogueNode] = {}
+
+    if stage == 0:
+        nodes["start"] = DialogueNode(
+            id="start",
+            title=title,
+            body=body,
+            choices=[
+                DialogueChoice(text="What do you need?", next_id="task", effect=_complete_talk_effect),
+                DialogueChoice(text="Not now.", next_id=None),
+            ],
+        )
+    else:
+        nodes["start"] = DialogueNode(
+            id="start",
+            title=title,
+            body=body,
+            choices=[DialogueChoice(text="Continue...", next_id="task")],
+        )
+
+    if stage >= 2:
+        nodes["task"] = DialogueNode(
+            id="task",
+            title=title,
+            body="You have the crystal. Go bind the seal and try not to fumble it.",
+            choices=[DialogueChoice(text="I'll handle it.", next_id=None)],
+        )
+    elif has_destabilizer:
+        nodes["task"] = DialogueNode(
+            id="task",
+            title=title,
+            body="You actually brought a destabilizer? Huh. Hand it over.",
+            choices=[DialogueChoice(text="Here.", next_id=None, effect=_deliver_destabilizer)],
+        )
+    else:
+        nodes["task"] = DialogueNode(
+            id="task",
+            title=title,
+            body="Bring me a destabilizer. No destabilizer, no crystal. Simple.",
+            choices=[DialogueChoice(text="I'll return.", next_id=None)],
+        )
 
     return DialogueTree(
         id=f"npc:{npc_id}",
         start_id="start",
         music_key="polka",
-
-        nodes={
-            "start": DialogueNode(
-                id="start",
-                title=title,
-                body=body,
-                choices=[
-                    DialogueChoice(text="Continue...", next_id=None, effect=complete_effect),
-                ],
-            )
-        },
+        nodes=nodes,
     )
 
 

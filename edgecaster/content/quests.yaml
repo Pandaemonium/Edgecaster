@@ -11,7 +11,7 @@
 - id: find_the_inventor
   parent: quest_base
   name: "Find the Inventor"
-  description: "A local guide mentioned an inventor who might be able to help you understand the corruption patterns. They've marked the inventor's workshop on your map."
+  description: "A local guide pointed you to a brash inventor who might help stabilize a failing seal. Track her down and earn her trust."
 
   related_npcs:
     - guide_npc
@@ -25,11 +25,27 @@
     - stage: 0
       objectives:
         - id: talk_to_inventor
-          description: "Travel to the inventor's workshop and speak with them"
+          description: "Travel to the inventor's workshop and speak with her"
           type: dialogue
           target: 1
           params:
             target_npc: inventor_npc
+    - stage: 1
+      objectives:
+        - id: fetch_destabilizer
+          description: "Bring the inventor a destabilizer"
+          type: collect_item
+          target: 1
+          params:
+            item_type: destabilizer
+    - stage: 2
+      objectives:
+        - id: seal_failing_rune
+          description: "Use the coherence crystal to bind the failing rune"
+          type: seal_rune
+          target: 1
+          params:
+            trial_id: starter_seal
 
   rewards:
     xp: 100

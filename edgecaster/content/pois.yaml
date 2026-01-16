@@ -45,18 +45,22 @@ starting_zone:
       description: "A hulking demon chained and pitted for training."
   structures:
     - kind: item_depot
-    - kind: sealing_rune_trial
-      trial_id: starter_seal
 inventor_workshop:
-  coord: [55, 48, 0]  # Within 5 screens of starting_zone (50, 50)
+  coord: [0, 0, 0]  # overwritten at runtime (near starting_zone)
   npcs:
     - npc_id: inventor_npc
       name: The Inventor
       glyph: "@"
       color: [200, 180, 255]
       offsets: [[0, 0], [1, 0], [-1, 0]]
-      description: "An eccentric inventor studying corruption patterns."
+      description: "A brash inventor whose tower crackles with experimental light."
   structures: []
+failing_rune:
+  coord: [0, 0, 0]  # overwritten at runtime (near starting_zone)
+  npcs: []
+  structures:
+    - kind: sealing_rune_trial
+      trial_id: starter_seal
 lab:
   coord: [0, 0, 0]   # overwritten at runtime by the chosen lab zone
   npcs: []

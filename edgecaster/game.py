@@ -537,6 +537,66 @@ class Game:
                 structures=lab_poi.structures,
             )
 
+        # Choose nearby quest POIs (inventor tower + failing rune) for this run.
+        # These are placed close to the starting zone so the early quest is reachable.
+        start_zx, start_zy, _ = self.zone_coord
+        max_screen = max(0, int(self.cfg.world_map_screens) - 1)
+
+        reserved_coords = {
+            tuple(poi.coord)
+            for poi in poi_content.POIS.values()
+            if tuple(poi.coord) != (0, 0, 0)
+        }
+        reserved_coords.add(tuple(self.zone_coord))
+        reserved_coords.add((self.lab_zone[0], self.lab_zone[1], 0))
+
+        def pick_near(max_radius: int, *, avoid: set[tuple[int, int, int]]) -> tuple[int, int, int]:
+            for _ in range(400):
+                dx = int(self.rng.randint(-max_radius, max_radius))
+                dy = int(self.rng.randint(-max_radius, max_radius))
+                if dx == 0 and dy == 0:
+                    continue
+                if dx * dx + dy * dy > max_radius * max_radius:
+                    continue
+                zx = max(0, min(max_screen, start_zx + dx))
+                zy = max(0, min(max_screen, start_zy + dy))
+                coord = (zx, zy, 0)
+                if coord in avoid:
+                    continue
+                return coord
+            # Fallback: clamp to bounds near start (may overlap if RNG is unlucky).
+            return (max(0, min(max_screen, start_zx + max_radius)), start_zy, 0)
+
+        self.inventor_zone = pick_near(5, avoid=reserved_coords)
+        reserved_coords.add(tuple(self.inventor_zone))
+        self.failing_rune_zone = pick_near(8, avoid=reserved_coords)
+        reserved_coords.add(tuple(self.failing_rune_zone))
+
+        inventor_poi = poi_content.POIS.get("inventor_workshop")
+        if inventor_poi:
+            poi_content.POIS["inventor_workshop"] = poi_content.POI(
+                id=inventor_poi.id,
+                coord=tuple(self.inventor_zone),
+                npcs=inventor_poi.npcs,
+                structures=inventor_poi.structures,
+            )
+
+        failing_poi = poi_content.POIS.get("failing_rune")
+        if failing_poi:
+            poi_content.POIS["failing_rune"] = poi_content.POI(
+                id=failing_poi.id,
+                coord=tuple(self.failing_rune_zone),
+                npcs=failing_poi.npcs,
+                structures=failing_poi.structures,
+            )
+
+        # Keep the guide's quest location in sync with the inventor placement.
+        try:
+            guide_def = npcs.NPC_DEFS.get("guide_npc", {})
+            guide_def["quest_location"] = [self.inventor_zone[0], self.inventor_zone[1]]
+        except Exception:
+            pass
+
         # Lab is a known rumor from the start of the run.
         self.add_poi_rumor("lab", log=False)
 
@@ -1394,7 +1454,7 @@ class Game:
                         "energy_flask",
                         # Equipment (stat mods)
                         "resonant_ring",
-                        "resonance_crystal",
+                        "coherence_crystal",
                         "sage_cap",
                         "fleet_boots",
                         "vital_belt",
@@ -3465,7 +3525,7 @@ class Game:
                 self.log.add(f"Anchor marked on the world map as {pid}.")
 
     def act_seal_rune(self, actor_id: str) -> None:
-        """Bind a sealing rune using a resonance crystal (trial zones only)."""
+        """Bind a sealing rune using a coherence crystal (trial zones only)."""
         try:
             from edgecaster.systems import seal_trials
             seal_trials.seal_rune(self, actor_id)

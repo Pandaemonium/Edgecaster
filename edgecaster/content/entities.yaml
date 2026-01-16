@@ -213,8 +213,8 @@
     value_bismuth: 15
     equip_mods:
       res: 1
-- id: resonance_crystal
-  name: Resonance Crystal
+- id: coherence_crystal
+  name: Coherence Crystal
   glyph: C
   color:
   - 200
@@ -224,9 +224,9 @@
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: A humming crystal attuned to dormant runes.
+  description: A humming crystal that stabilizes damaged runes.
   tags:
-    item_type: resonance_crystal
+    item_type: coherence_crystal
     value_bismuth: 25
 - id: sage_cap
   name: Sage Cap
