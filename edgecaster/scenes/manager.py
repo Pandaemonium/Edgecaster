@@ -46,7 +46,14 @@ class SceneManager:
             "Vicious dog trigger warning": False,
             "Show FPS": False,
             "Big Text": False,
+            "Tiles": True,
         }
+        # Default rendering mode (tiles on): allow sprite/icon rendering when available.
+        try:
+            setattr(self.renderer, "prefer_sprite_icons", bool(self.options.get("Tiles", True)))
+        except Exception:
+            pass
+
         # Keybindings (persisted to disk): {"bindings": ..., "move_bindings": ...}
         binds, moves = load_bindings_full()
         self.keybindings = {"bindings": binds, "move_bindings": moves}
@@ -105,6 +112,13 @@ class SceneManager:
         # (Optional but good to keep consistent for the future)
         if hasattr(self.audio, "set_sfx_enabled"):
             self.audio.set_sfx_enabled(bool(self.options.get("Sound", True)))
+
+        # Rendering mode: tiles vs pure ASCII glyphs
+        # (Renderer will still fall back to glyphs when a sprite/icon is missing.)
+        try:
+            setattr(self.renderer, "prefer_sprite_icons", bool(self.options.get("Tiles", True)))
+        except Exception:
+            pass
 
         # If music was re-enabled, re-resolve what should be playing
         if bool(self.options.get("Music", True)):
