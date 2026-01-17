@@ -221,7 +221,7 @@
   ai: none
   xp: 0
   parent: demon
-  description: A hulking demon chained for training bouts. It regenerates rapidly.
+  description: Disturbingly, it doesn't seem to mind its punishment.
   tags:
     training_dummy: true
     no_random_spawn: true
@@ -240,7 +240,7 @@
   ai: none
   xp: 0
   parent: human
-  description: A trader who deals in bismuth and gossip.
+  description: Bismuth makes the world go round.
   tags:
     no_random_spawn: true
 
@@ -258,7 +258,7 @@
   ai: skirmisher
   xp: 8
   parent: humanoid
-  description: A cruel handler dragging chained brutes behind.
+  description: In a very real sense, then, the slave controls the slave driver, the communicant the priest, the student the teacher.
   tags:
     slaver: true
 
@@ -276,7 +276,7 @@
   ai: shackled_brute
   xp: 10
   parent: humanoid
-  description: A hulking brute bound in chains, swinging with brutal force.
+  description: It would probably choose to kill you even unshackled.
   tags:
     shackled_brute: true
     no_random_spawn: true
@@ -314,7 +314,7 @@
   ai: gory_ascetic
   xp: 10
   parent: humanoid
-  description: A bloody self-flagellating fanatic who whips themself into a frenzy.
+  description: Only one thing to do when your blood is poisoned with sin.
   drop_items: ["whip"]
   tags:
     gory_ascetic: true
@@ -333,7 +333,7 @@
   ai: war_drummer
   xp: 9
   parent: humanoid
-  description: A martial drummer whose rhythms spur nearby foes into a frenzy.
+  description: Like the Little Drummer Boy, but for the antichrist.
   tags:
     war_drummer: true
     drum_radius: 6
@@ -354,7 +354,7 @@
   ai: skirmisher
   xp: 7
   parent: humanoid
-  description: A bitter aristocrat turned brigand, still heavy with bismuth.
+  description: They say an excess of bismuth can have a corrupting effect on the mind.
   tags:
     disgraced_noble: true
     currency_min: 25
@@ -374,7 +374,7 @@
   ai: skirmisher
   xp: 8
   parent: demon
-  description: A hungry demon that drinks strength from every wound it inflicts.
+  description: Be careful, that berry's got fangs!
   tags:
     blood_sipper: true
     lifesteal_frac: 0.5
@@ -399,7 +399,7 @@
   ai: territorial
   xp: 9
   parent: humanoid
-  description: A fierce avian warrior guarding the aerie with keen eyes.
+  description: In bird culture, this is considered a dick move.
   tags:
     bird_warrior: true
     biome_spawn: [SNOW, BARE, TUNDRA]
@@ -420,7 +420,7 @@
   ai: skirmisher
   xp: 6
   parent: beast
-  description: A trained raptor that strikes from above.
+  description: The most elevated of seagull deterrents.
   tags:
     hunting_hawk: true
     biome_spawn: [SNOW, BARE, TUNDRA]
@@ -443,7 +443,7 @@
   ai: territorial
   xp: 10
   parent: humanoid
-  description: A bark-covered guardian bristling with thorns.
+  description: I thought thorns were supposed to be a defensive measure.
   tags:
     thorn_guardian: true
     biome_spawn: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST]
@@ -463,7 +463,7 @@
   ai: skirmisher
   xp: 12
   parent: humanoid
-  description: An ancient tree spirit animated to defend the grove.
+  description: More bark than bite.
   tags:
     bark_golem: true
     biome_spawn: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST]
@@ -485,7 +485,7 @@
   ai: skirmisher
   xp: 7
   parent: beast
-  description: A swift desert predator that bursts from the sand.
+  description: Your footing is unsure on these shifting sands. It knows.
   tags:
     sand_stalker: true
     biome_spawn: [SUBTROPICAL_DESERT, TEMPERATE_DESERT, SCORCHED]
@@ -505,7 +505,7 @@
   ai: skirmisher
   xp: 8
   parent: demon
-  description: A spectral wind that haunts the dry wastes.
+  description: When your bones are pulverized, you'll be dust too.
   tags:
     dust_wraith: true
     biome_spawn: [SUBTROPICAL_DESERT, TEMPERATE_DESERT, SCORCHED]
@@ -526,7 +526,7 @@
   ai: skirmisher
   xp: 5
   parent: beast
-  description: A grey wolf prowling the cold forests.
+  description: Distinctly undomesticated.
   tags:
     wolf: true
     biome_spawn: [TAIGA, TUNDRA, TEMPERATE_FOREST]
@@ -546,7 +546,7 @@
   ai: skirmisher
   xp: 12
   parent: beast
-  description: A massive bear defending its territory.
+  description: The true name of the bear must never be uttered.
   tags:
     bear: true
     biome_spawn: [TAIGA, TEMPERATE_FOREST]
@@ -567,7 +567,7 @@
   ai: skirmisher
   xp: 7
   parent: beast
-  description: A spotted feline that stalks the undergrowth.
+  description: Its patterns of stripes and spots seem to shift hypnotically.
   tags:
     jungle_cat: true
     biome_spawn: [TROPICAL_FOREST, TROPICAL_RAINFOREST]
@@ -587,7 +587,7 @@
   ai: skirmisher
   xp: 5
   parent: beast
-  description: A deadly serpent coiled near the shrine.
+  description: This one really gets in your amygdala.
   tags:
     venomous_snake: true
     biome_spawn: [TROPICAL_FOREST, TROPICAL_RAINFOREST, SAVANNA]
@@ -609,7 +609,7 @@
   ai: skirmisher
   xp: 6
   parent: humanoid
-  description: A robed figure devoted to the spreading corruption.
+  description: Radicalized by an unholy sect, although they haven't decided which one yet.
   tags:
     cultist: true
     biome_spawn: [CORRUPTED_WASTELAND, CORRUPTED_FOREST]
@@ -628,7 +628,7 @@
   ai: skirmisher
   xp: 11
   parent: demon
-  description: A lesser demon called forth by cultist rituals.
+  description: Let's just hope they don't figure out how to summon us.
   tags:
     summoned_demon: true
     biome_spawn: [CORRUPTED_WASTELAND, CORRUPTED_FOREST]
@@ -652,7 +652,7 @@
   ai: territorial
   xp: 8
   parent: humanoid
-  description: A gnarled woodland spirit, twisted roots for limbs.
+  description: Their concept of jokes doesn't always translate well.
   tags:
     spriggan: true
     biome_spawn: [TEMPERATE_FOREST, TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST]
@@ -671,7 +671,7 @@
   ai: territorial
   xp: 7
   parent: humanoid
-  description: A lithe tree spirit whose bark-skin shifts like leaves in wind.
+  description: The beauty of the forst made manifest, fervently guarded.
   tags:
     dryad: true
     biome_spawn: [TEMPERATE_FOREST, TEMPERATE_RAINFOREST]
@@ -690,7 +690,7 @@
   ai: territorial
   xp: 7
   parent: humanoid
-  description: A water spirit bound to streams and pools, hair flowing like currents.
+  description: Her form is sometimes difficult to discern as she ripples and flows within the currents.
   tags:
     naiad: true
     biome_spawn: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST, MARSH]
@@ -709,7 +709,7 @@
   ai: territorial
   xp: 6
   parent: beast
-  description: A proud stag with antlers like branching lightning.
+  description: A fractal elk.
   tags:
     wild_stag: true
     biome_spawn: [TEMPERATE_FOREST, GRASSLAND, SHRUBLAND]
@@ -728,7 +728,7 @@
   ai: skirmisher
   xp: 4
   parent: beast
-  description: A slow creature armored in living moss and lichen.
+  description: Surprisingly agile, for a lichen.
   tags:
     moss_crawler: true
     biome_spawn: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST, MARSH]
@@ -747,7 +747,7 @@
   ai: skirmisher
   xp: 5
   parent: humanoid
-  description: A tiny fey creature bristling with needle-sharp thorns.
+  description: Death by splinters is an agonizing end.
   tags:
     thorn_sprite: true
     biome_spawn: [TEMPERATE_FOREST, SHRUBLAND]
@@ -770,7 +770,7 @@
   ai: territorial
   xp: 9
   parent: humanoid
-  description: A haughty bird aristocrat draped in iridescent plumage.
+  description: Genetically superior to his shabby underlings.
   tags:
     avian_noble: true
     flying: true
@@ -816,7 +816,7 @@
   ai: territorial
   xp: 10
   parent: humanoid
-  description: An elite bird warrior with razor-sharp talons and keen discipline.
+  description: He's watching you very carefully.
   tags:
     talon_guard: true
     flying: true
@@ -837,7 +837,7 @@
   ai: skirmisher
   xp: 4
   parent: beast
-  description: A small, lightning-fast bird trained to carry secrets.
+  description: A homing carrier trained to speak a single code message.
   tags:
     messenger_swift: true
     flying: true
@@ -857,7 +857,7 @@
   ai: skirmisher
   xp: 5
   parent: beast
-  description: A clever crow that reports back to its masters.
+  description: The shrewdness of the crow is not to be underestimated.
   tags:
     corvid_spy: true
     flying: true
@@ -881,7 +881,7 @@
   ai: skirmisher
   xp: 6
   parent: humanoid
-  description: A wild-eyed cultist with burn scars covering their arms.
+  description: Only one thing to do when your meat is raw with sin.
   tags:
     flame_acolyte: true
     biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
@@ -900,7 +900,7 @@
   ai: skirmisher
   xp: 9
   parent: humanoid
-  description: A senior cultist whose fingertips glow with perpetual heat.
+  description: Standing so close to the flame that they bite at the coals.
   tags:
     ember_priest: true
     biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
@@ -919,7 +919,7 @@
   ai: skirmisher
   xp: 7
   parent: beast
-  description: A hellish dog wreathed in smoldering ash.
+  description: A dog's loyalty becomes terrifying when it is in service of hell.
   tags:
     cinder_hound: true
     biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
@@ -939,7 +939,7 @@
   ai: skirmisher
   xp: 12
   parent: demon
-  description: A walking volcanic spirit bound to the cult's service.
+  description: Was this a fragment of a fallen star, taken refuge in this furnace?
   tags:
     pyroclast: true
     biome_spawn: [SCORCHED]
@@ -963,7 +963,7 @@
   ai: skirmisher
   xp: 6
   parent: humanoid
-  description: A hollow-eyed cultist who whispers of the spaces between.
+  description: Only one thing to do when your existence is bloated with sin.
   tags:
     void_initiate: true
     xp_drain: true
@@ -983,7 +983,7 @@
   ai: skirmisher
   xp: 8
   parent: humanoid
-  description: A cultist trained to unravel patterns with a touch.
+  description: There's a reason that the runecasters went extinct.
   tags:
     spiral_eraser: true
     biome_spawn: [CORRUPTED_WASTELAND, BARE]
@@ -1002,7 +1002,7 @@
   ai: skirmisher
   xp: 9
   parent: demon
-  description: A demon of pure negation, absorbing light and hope.
+  description: Penser -- c'est dire non.
   tags:
     null_shade: true
     xp_drain: true
@@ -1022,7 +1022,7 @@
   ai: skirmisher
   xp: 8
   parent: beast
-  description: A pallid worm that feeds on order and structure.
+  description: An inevitable but loathesome consequence of any ordered ecosystem.
   tags:
     entropy_worm: true
     biome_spawn: [CORRUPTED_WASTELAND, BARE]
@@ -1045,7 +1045,7 @@
   ai: skirmisher
   xp: 8
   parent: humanoid
-  description: A cultist whose own body ripples with unfinished modifications.
+  description: Only one thing to do when your bones are malformed with sin.
   tags:
     flesh_shaper: true
     biome_spawn: [CORRUPTED_FOREST, MARSH]
@@ -1064,7 +1064,7 @@
   ai: skirmisher
   xp: 11
   parent: beast
-  description: A shambling mass of grafted limbs and screaming faces.
+  description: An extra arm or two can be pretty useful. But it's a dangerous addiction.
   tags:
     graft_horror: true
     biome_spawn: [CORRUPTED_FOREST, MARSH]
@@ -1084,7 +1084,7 @@
   ai: skirmisher
   xp: 5
   parent: beast
-  description: A skittering thing made of twisted muscle and tendon.
+  description: Is this a mistake or a triumph of the flash shapers' art?
   tags:
     sinew_crawler: true
     biome_spawn: [CORRUPTED_FOREST, MARSH]
@@ -1103,7 +1103,7 @@
   ai: skirmisher
   xp: 9
   parent: humanoid
-  description: A cultist who reshapes skeletons into art and armor.
+  description: The skeleton is a block of clay, incomplete, desperate to be molded.
   tags:
     bone_weaver: true
     biome_spawn: [CORRUPTED_FOREST, MARSH]
@@ -1122,7 +1122,7 @@
   ai: skirmisher
   xp: 10
   parent: beast
-  description: A creature that is mostly mouth, with rows of teeth spiraling inward.
+  description: All mouth, and no stomach? Where does it go?
   tags:
     maw_beast: true
     lifesteal_frac: 0.3
@@ -1147,7 +1147,7 @@
   ai: territorial
   xp: 6
   parent: humanoid
-  description: A nomad whose geometric tattoos shift subtly in the light.
+  description: They wander this earth, experiences writ upon their skin.
   tags:
     pattern_wanderer: true
     biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
@@ -1167,7 +1167,7 @@
   ai: territorial
   xp: 10
   parent: humanoid
-  description: An ancient keeper whose entire body is a living pattern-map.
+  description: As her body runs short of canvas, so too does her life. Her memories must be preserved.
   tags:
     ink_elder: true
     biome_spawn: [GRASSLAND, SAVANNA]
@@ -1187,7 +1187,7 @@
   ai: territorial
   xp: 7
   parent: humanoid
-  description: A swift warrior who fights in geometric patterns.
+  description: Do not interrupt the patternkeepers when they are dancing.
   tags:
     line_dancer: true
     biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
@@ -1207,7 +1207,7 @@
   ai: territorial
   xp: 5
   parent: beast
-  description: A loyal dog marked with protective symbols.
+  description: This chill dog loves getting tattoos, he's down for whatever.
   tags:
     glyph_hound: true
     pack_animal: true
@@ -1228,7 +1228,7 @@
   ai: none
   xp: 0
   parent: humanoid
-  description: A friendly trader who deals in inks, patterns, and stories.
+  description: Patterns are not free. You don't want to skimp on second-rate patterns.
   tags:
     pattern_merchant: true
     no_random_spawn: true
