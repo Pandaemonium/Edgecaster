@@ -61,6 +61,15 @@ failing_rune:
   structures:
     - kind: sealing_rune_trial
       trial_id: starter_seal
+destabilizer_ruin:
+  coord: [0, 0, 0]  # overwritten at runtime (near starting_zone)
+  npcs: []
+  structures:
+    - kind: destabilizer_ruin
+      layout: multi_room
+      boss_id: corrupted_thug
+      enemy_pool: [mana_viper, shadow, raving_lunatic, goblin]
+      enemy_count: 5
 lab:
   coord: [0, 0, 0]   # overwritten at runtime by the chosen lab zone
   npcs: []

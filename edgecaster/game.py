@@ -571,6 +571,8 @@ class Game:
         reserved_coords.add(tuple(self.inventor_zone))
         self.failing_rune_zone = pick_near(8, avoid=reserved_coords)
         reserved_coords.add(tuple(self.failing_rune_zone))
+        self.destabilizer_ruin_zone = pick_near(6, avoid=reserved_coords)
+        reserved_coords.add(tuple(self.destabilizer_ruin_zone))
 
         inventor_poi = poi_content.POIS.get("inventor_workshop")
         if inventor_poi:
@@ -588,6 +590,15 @@ class Game:
                 coord=tuple(self.failing_rune_zone),
                 npcs=failing_poi.npcs,
                 structures=failing_poi.structures,
+            )
+
+        ruin_poi = poi_content.POIS.get("destabilizer_ruin")
+        if ruin_poi:
+            poi_content.POIS["destabilizer_ruin"] = poi_content.POI(
+                id=ruin_poi.id,
+                coord=tuple(self.destabilizer_ruin_zone),
+                npcs=ruin_poi.npcs,
+                structures=ruin_poi.structures,
             )
 
         # Keep the guide's quest location in sync with the inventor placement.
@@ -1406,6 +1417,108 @@ class Game:
                         return (tx, ty)
             return None
 
+        def build_ruin_structure(*, layout: str = "multi_room") -> Optional[Dict[str, object]]:
+            world = level.world
+            wall_color = (110, 90, 80)
+            floor_color = (70, 60, 50)
+
+            for _ in range(80):
+                w = int(self.rng.randint(9, 13))
+                h = int(self.rng.randint(7, 11))
+                x0 = int(self.rng.randint(1, max(1, world.width - w - 1)))
+                y0 = int(self.rng.randint(1, max(1, world.height - h - 1)))
+
+                walkable = 0
+                total = w * h
+                for dy in range(h):
+                    for dx in range(w):
+                        if world.is_walkable(x0 + dx, y0 + dy):
+                            walkable += 1
+                if walkable < int(total * 0.7):
+                    continue
+
+                interior: set[Tuple[int, int]] = set()
+                for dy in range(h):
+                    for dx in range(w):
+                        x = x0 + dx
+                        y = y0 + dy
+                        tile = world.get_tile(x, y)
+                        if tile is None:
+                            continue
+                        border = (dx == 0 or dx == w - 1 or dy == 0 or dy == h - 1)
+                        if border:
+                            tile.walkable = False
+                            tile.glyph = "#"
+                            tile.color = wall_color
+                        else:
+                            tile.walkable = True
+                            tile.glyph = "."
+                            tile.color = floor_color
+                            interior.add((x, y))
+
+                door_pos = (x0 + w // 2, y0 + h - 1)
+
+                if layout == "multi_room" and w >= 10 and h >= 8:
+                    if self.rng.random() < 0.5:
+                        wall_x = x0 + w // 2
+                        gap_y = y0 + h // 2
+                        for yy in range(y0 + 1, y0 + h - 1):
+                            tile = world.get_tile(wall_x, yy)
+                            if tile is None:
+                                continue
+                            if yy == gap_y:
+                                tile.walkable = True
+                                tile.glyph = "."
+                                tile.color = floor_color
+                                interior.add((wall_x, yy))
+                            else:
+                                tile.walkable = False
+                                tile.glyph = "#"
+                                tile.color = wall_color
+                                interior.discard((wall_x, yy))
+                    else:
+                        wall_y = y0 + h // 2
+                        gap_x = x0 + w // 2
+                        for xx in range(x0 + 1, x0 + w - 1):
+                            tile = world.get_tile(xx, wall_y)
+                            if tile is None:
+                                continue
+                            if xx == gap_x:
+                                tile.walkable = True
+                                tile.glyph = "."
+                                tile.color = floor_color
+                                interior.add((xx, wall_y))
+                            else:
+                                tile.walkable = False
+                                tile.glyph = "#"
+                                tile.color = wall_color
+                                interior.discard((xx, wall_y))
+
+                for _ in range(int(self.rng.randint(2, 5))):
+                    if self.rng.random() < 0.5:
+                        bx = x0 + self.rng.randint(1, w - 2)
+                        by = y0 if self.rng.random() < 0.5 else (y0 + h - 1)
+                    else:
+                        bx = x0 if self.rng.random() < 0.5 else (x0 + w - 1)
+                        by = y0 + self.rng.randint(1, h - 2)
+                    if (bx, by) == door_pos:
+                        continue
+                    tile = world.get_tile(bx, by)
+                    if tile:
+                        tile.walkable = True
+                        tile.glyph = "."
+                        tile.color = floor_color
+
+                center = (x0 + w // 2, y0 + h // 2)
+                return {
+                    "rect": (x0, y0, w, h),
+                    "door_pos": door_pos,
+                    "interior": list(interior),
+                    "center": center,
+                }
+
+            return None
+
         for pid in poi_ids:
             poi = poi_content.POIS.get(pid)
             if not poi:
@@ -1502,6 +1615,84 @@ class Game:
                         seal_trials.attach_trial_to_level(self, level, trial_id)
                     except Exception as e:
                         self._debug(f"[seal_trials] Failed to attach trial: {e!r}")
+                elif struct.get("kind") == "destabilizer_ruin":
+                    layout = str(struct.get("layout") or "multi_room")
+                    ruin_info = build_ruin_structure(layout=layout)
+                    if ruin_info is None:
+                        ruin_info = {"center": entry, "interior": []}
+
+                    door_pos = ruin_info.get("door_pos")
+                    if isinstance(door_pos, tuple):
+                        try:
+                            ent = self._spawn_entity_from_template("door", door_pos)
+                            level.entities[ent.id] = ent
+                            tile = level.world.get_tile(*door_pos)
+                            if tile:
+                                tile.walkable = False
+                                tile.glyph = "#"
+                        except Exception:
+                            pass
+
+                    interior_tiles = list(ruin_info.get("interior") or [])
+                    self.rng.shuffle(interior_tiles)
+                    dest_pos = None
+                    for pos in interior_tiles:
+                        if self._actor_at(level, pos) or self._entity_at(level, pos):
+                            continue
+                        dest_pos = pos
+                        break
+                    if dest_pos is None:
+                        dest_pos = nearest_walkable(tuple(ruin_info.get("center", entry)))
+                    if dest_pos:
+                        try:
+                            ent = self._spawn_entity_from_template("destabilizer", dest_pos)
+                            level.entities[ent.id] = ent
+                        except Exception:
+                            pass
+
+                    enemy_pool = struct.get("enemy_pool") or [
+                        "corrupted_thug",
+                        "mana_viper",
+                        "shadow",
+                        "raving_lunatic",
+                        "goblin",
+                    ]
+                    if not isinstance(enemy_pool, list):
+                        enemy_pool = list(enemy_pool)
+                    try:
+                        enemy_count = int(struct.get("enemy_count", 5))
+                    except Exception:
+                        enemy_count = 5
+                    enemy_count = max(0, enemy_count)
+                    boss_id = struct.get("boss_id")
+                    spawn_ids: List[str] = []
+                    if boss_id:
+                        spawn_ids.append(str(boss_id))
+                    for _ in range(max(0, enemy_count - len(spawn_ids))):
+                        try:
+                            spawn_ids.append(str(self.rng.choice(enemy_pool)))
+                        except Exception:
+                            pass
+
+                    center = tuple(ruin_info.get("center", entry))
+                    for enemy_id in spawn_ids:
+                        pos = spawning_system.find_spawn_position(
+                            self,
+                            level,
+                            near=center,
+                            radius=6,
+                            avoid_actors=True,
+                            avoid_entities=True,
+                        )
+                        if pos is None:
+                            continue
+                        try:
+                            mob = enemy_factory.spawn_enemy(enemy_id, pos)
+                            mob.tags = getattr(mob, "tags", None) or {}
+                            mob.tags["poi_id"] = pid
+                            spawning_system.register_actor(self, level, mob, schedule_ai=True)
+                        except Exception:
+                            continue
                 elif struct.get("kind") == "legendary_lair":
                     base_proto = str(struct.get("template_id") or struct.get("proto_id") or "imp")
                     legend_name = struct.get("name")

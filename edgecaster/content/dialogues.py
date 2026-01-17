@@ -454,6 +454,19 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
             messages = quest_system.update_quest_progress(game, "dialogue", npc_id=npc_id)
             for msg in messages:
                 game.log.add(msg)
+            quest = _get_active_quest(game, quest_proto_id)
+            if quest is None:
+                return
+            coord = getattr(game, "destabilizer_ruin_zone", None)
+            if coord:
+                zx, zy = int(coord[0]), int(coord[1])
+                quest_system.add_quest_location(quest, (zx, zy))
+                quest_system.add_quest_note(
+                    quest,
+                    f"The inventor marked a ruin at ({zx}, {zy}) rumored to hold a destabilizer.",
+                )
+                if hasattr(game, "add_poi_rumor"):
+                    game.add_poi_rumor("destabilizer_ruin", log=True)
         except Exception:
             pass
 

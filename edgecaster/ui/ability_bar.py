@@ -787,6 +787,7 @@ class AbilityBarRenderer:
             # Reset per-frame hit-test maps (safe even if newly created).
             ab.sub_button_rects = {}  # type: ignore[attr-defined]
             ab.group_member_rects = {}  # type: ignore[attr-defined]
+            ab.group_member_sub_rects = {}  # type: ignore[attr-defined]
 
             # Slot/group metadata (renderer-owned, for click routing)
             ab._bar_slot_index = None  # type: ignore[attr-defined]
@@ -1024,6 +1025,7 @@ class AbilityBarRenderer:
             # Expanded group popup (stack members vertically above the slot)
             if is_group and bar_state.expanded_slot_index == slot_view.slot_index:
                 popup_member_rects: Dict[str, pygame.Rect] = {}
+                popup_member_sub_rects: Dict[str, Dict[str, pygame.Rect]] = {}
                 popup_h = rect.h
                 # Display in the group's member order; first item sits directly above the slot.
                 for i, member in enumerate(slot_view.group_members):
@@ -1046,7 +1048,7 @@ class AbilityBarRenderer:
                         except Exception:
                             m_label = "Activate R"
 
-                    # Popup: icon centered, name along bottom (same style as the main bar).
+                    # Popup: icon centered, name along bottom, sub-buttons at the top-right.
                     m_label_h = small_font.get_height()
                     m_label_y = m_rect.bottom - m_label_h - 2
                     blit_fit_text(
@@ -1056,17 +1058,54 @@ class AbilityBarRenderer:
                         max_w=max(0, m_rect.w - 8),
                     )
 
+                    m_sub_specs = ACTION_SUB_BUTTONS.get(member.action, [])
+                    m_sub_size = 0
+                    if m_sub_specs:
+                        m_sub_size = min(m_rect.height - 10, 22)
+                        m_sub_size = max(14, m_sub_size)
+                    m_sub_gap = 4
+
                     m_inner_top = m_rect.y + 4
                     m_inner_bottom = m_label_y - 2
                     m_inner_h = max(0, m_inner_bottom - m_inner_top)
                     m_inner_w = max(0, m_rect.w - 8)
-                    m_icon = pygame.Rect(m_rect.x + 4, m_inner_top, max(0, m_rect.w - 8), m_inner_h)
+                    m_icon_left = m_rect.x + 4
+                    m_icon_right = m_rect.right - 4
+
+                    if m_sub_specs and m_sub_size > 0:
+                        reserved_w = len(m_sub_specs) * m_sub_size + (len(m_sub_specs) - 1) * m_sub_gap + 4
+                        candidate_right = m_rect.right - reserved_w - 2
+                        min_icon_w = max(28, int(m_rect.w * 0.35))
+                        if candidate_right - m_icon_left >= min_icon_w:
+                            m_icon_right = candidate_right
+                        else:
+                            m_inner_top += m_sub_size + m_sub_gap
+                            m_inner_h = max(0, m_inner_bottom - m_inner_top)
+
+                    m_icon = pygame.Rect(m_icon_left, m_inner_top, max(0, m_icon_right - m_icon_left), m_inner_h)
                     if icon_drawer is not None and m_icon.w > 0 and m_icon.h > 0:
                         icon_drawer(surface, m_icon, member, game)
                     elif m_icon.w > 0 and m_icon.h > 0:
                         pygame.draw.rect(surface, (90, 90, 120), m_icon, 1)
 
+                    if m_sub_specs:
+                        cur_x = m_rect.right - 4
+                        sub_map: Dict[str, pygame.Rect] = {}
+                        for spec in reversed(m_sub_specs):
+                            cur_x -= m_sub_size
+                            sub_rect = pygame.Rect(cur_x, m_rect.y + 4, m_sub_size, m_sub_size)
+                            pygame.draw.rect(surface, (35, 35, 65), sub_rect)
+                            pygame.draw.rect(surface, (150, 150, 200), sub_rect, 1)
+                            icon_txt = getattr(spec, "icon", getattr(spec, "glyph", "")) or ""
+                            if icon_txt:
+                                icon_surf = small_font.render(icon_txt, True, fg)
+                                surface.blit(icon_surf, icon_surf.get_rect(center=sub_rect.center))
+                            sub_map[spec.id] = sub_rect
+                            cur_x -= m_sub_gap
+                        popup_member_sub_rects[member.action] = sub_map
+
                 ability.group_member_rects = popup_member_rects  # type: ignore[attr-defined]
+                ability.group_member_sub_rects = popup_member_sub_rects  # type: ignore[attr-defined]
 
         # After drawing the base bar, optionally paint the reorder overlay on top.
         if getattr(game, "ability_reorder_open", False):
@@ -1329,6 +1368,26 @@ class AbilityBarWidget:
         for slot_view in bar_state.visible_slots():
             ability = slot_view.ability
             member_rects = getattr(ability, "group_member_rects", None) or {}
+            member_sub_rects = getattr(ability, "group_member_sub_rects", None) or {}
+            if member_sub_rects:
+                for action, sub_map in member_sub_rects.items():
+                    for sub_id, sub_rect in sub_map.items():
+                        if sub_rect and sub_rect.collidepoint((x, y)):
+                            member_ability = None
+                            for m in slot_view.group_members:
+                                if m.action == action:
+                                    member_ability = m
+                                    break
+                            meta = None
+                            for spec in ACTION_SUB_BUTTONS.get(action, []):
+                                if getattr(spec, "id", None) == sub_id:
+                                    meta = spec
+                                    break
+                            return AbilityBarHit(
+                                kind="sub_button",
+                                ability=member_ability or ability,
+                                sub_meta=meta,
+                            )
             for action, rect in member_rects.items():
                 if rect and rect.collidepoint((x, y)):
                     return AbilityBarHit(kind="group_pick", ability=ability, group_action=action)

@@ -45,6 +45,7 @@ class SealTrialState:
     sealed: bool = False
     last_score: float = 0.0
     announced_ready: bool = False
+    seal_prompted: bool = False
     grants_applied: bool = False
     granted_actions: List[str] = field(default_factory=list)
     check_interval: int = 5
@@ -237,11 +238,41 @@ def update_trial(game: "Game", level: "LevelState") -> None:
     score = compute_match_score(game, level, trial, debug=log_debug)
     trial.last_score = score
 
-    if score >= trial.score_threshold and not trial.ready_to_seal:
+    if score < trial.score_threshold:
+        if trial.ready_to_seal:
+            trial.ready_to_seal = False
+            trial.announced_ready = False
+            trial.seal_prompted = False
+        return
+
+    if not trial.ready_to_seal:
         trial.ready_to_seal = True
-        if not trial.announced_ready:
-            trial.announced_ready = True
-            game.log.add("The seal aligns. A coherence crystal can bind it.")
+        trial.announced_ready = False
+        trial.seal_prompted = False
+
+    if not trial.announced_ready:
+        trial.announced_ready = True
+        game.log.add("The seal aligns. A coherence crystal can bind it.")
+
+    if not trial.seal_prompted and hasattr(game, "set_urgent"):
+        trial.seal_prompted = True
+
+        def _on_choice(choice_idx: int, g: "Game") -> None:
+            if choice_idx != 0:
+                # Allow re-prompt after the player breaks alignment.
+                return
+            seal_rune(g, g.player_id)
+            cur_trial = getattr(g._level(), "seal_trial", None)
+            if cur_trial is trial and not trial.sealed:
+                # Failed to seal (missing crystal) -> allow another prompt later.
+                trial.seal_prompted = False
+
+        game.set_urgent(
+            "The seal aligns. Bind it with your Coherence Crystal now?",
+            title="Seal the Rune?",
+            choices=["Seal it", "Not yet"],
+            on_choice_effect=_on_choice,
+        )
 
 
 def compute_match_score(
@@ -375,7 +406,6 @@ def _trial_grant_actions(trial: SealTrialState) -> List[str]:
     for name in trial.required_generators:
         if name not in actions:
             actions.append(name)
-    actions.append("seal_rune")
     return actions
 
 
@@ -814,6 +844,9 @@ def _apply_trial_bar_layout(game: "Game", trial: SealTrialState) -> None:
     if not trial_actions:
         return
 
+    generator_actions = [a for a in trial.required_generators if a]
+    utility_actions = [a for a in trial_actions if a in {"place", "reset"}]
+
     # Remove trial actions from existing slots/groups to avoid duplicates.
     new_slots: List[AbilitySlot] = []
     for slot in bar_state.slots:
@@ -832,15 +865,31 @@ def _apply_trial_bar_layout(game: "Game", trial: SealTrialState) -> None:
 
     bar_state.slots = new_slots
 
-    # Add a dedicated Trial group at the front of the bar.
-    bar_state.groups["trial"] = AbilityGroup(
-        id="trial",
-        label="Trial",
-        members=trial_actions,
-        active=trial_actions[0],
-    )
-    bar_state.slots.insert(0, AbilitySlot(kind="group", group_id="trial"))
-    bar_state.active_action = trial_actions[0]
+    insert_slots: List[AbilitySlot] = []
+    for action in utility_actions:
+        insert_slots.append(AbilitySlot(kind="action", action=action))
+
+    if generator_actions:
+        bar_state.groups["trial"] = AbilityGroup(
+            id="trial",
+            label="Trial",
+            members=generator_actions,
+            active=generator_actions[0],
+        )
+        insert_slots.append(AbilitySlot(kind="group", group_id="trial"))
+    else:
+        bar_state.groups.pop("trial", None)
+
+    if insert_slots:
+        bar_state.slots = insert_slots + bar_state.slots
+
+    if generator_actions:
+        bar_state.active_action = generator_actions[0]
+    elif utility_actions:
+        bar_state.active_action = utility_actions[0]
+    else:
+        bar_state.active_action = None
+
     bar_state.selected_index = 0
     bar_state.page = 0
     bar_state.expanded_slot_index = None

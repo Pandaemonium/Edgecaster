@@ -10,7 +10,7 @@ starter_seal:
   # Cursor snap radius in tiles.
   snap_radius: 3
   # How "good" the match must be to enable sealing.
-  score_threshold: 0.65
+  score_threshold: 0.98
   # Blur passes for spatial match scoring (higher = softer).
   blur_radius: 2
   # Generators granted during the trial.
