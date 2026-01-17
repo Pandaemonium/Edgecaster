@@ -1536,7 +1536,7 @@ class AsciiRenderer:
             self._entity_icon_cache_raw = {}  # path -> Surface
 
         path = None
-        if prefer_sprite:
+        if prefer_sprite and bool(getattr(self, "prefer_sprite_icons", True)):
             for attr in ("sprite_path", "sprite", "icon_path"):
                 v = getattr(ent, attr, None)
                 if isinstance(v, str) and v.strip():
@@ -1899,7 +1899,7 @@ class AsciiRenderer:
                 if isinstance(cur, str) and cur.strip():
                     has_sprite_hint = True  # convention assets/icons/<currency>.png
 
-            if has_sprite_hint:
+            if has_sprite_hint and bool(getattr(self, "prefer_sprite_icons", True)):
                 icon = self.get_entity_icon_surface(
                     ent,
                     size_px=want_px,

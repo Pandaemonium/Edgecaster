@@ -100,12 +100,12 @@
   render_layer: 1
   blocks_movement: false
   parent: entity
-  description: A shimmering cluster of bismuth.
+  description: Almost universally agreed to be just the best stuff.
   tags:
     currency: bismuth
     amount: 5
 - id: debug_inventory
-  name: Strange Inventory
+  name: Inventory
   glyph: ∞
   color:
   - 200
@@ -164,7 +164,7 @@
   render_layer: 1
   blocks_movement: false
   parent: entity
-  description: Bandages, tinctures, and a very small saw.
+  description: Even includes fractal bandages for those nasty Koch wounds.
   tags:
     item_type: healing_kit
 - id: koch_knife
@@ -192,7 +192,7 @@
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: A long leather whip, still wet with old blood.
+  description: Essential for lion taming.
   tags:
     item_type: whip
     value_bismuth: 12

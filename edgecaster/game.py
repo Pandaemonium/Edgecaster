@@ -264,6 +264,7 @@ class Game:
 
         # debug flags
         self.debug_no_fog: bool = True
+        self.debug_spawn_inventories: bool = False
 
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
@@ -503,7 +504,8 @@ class Game:
 
         # DEBUG: spawn a few Inventory entities near the starting position so we
         # can pick them up and test nested containers / recursion.
-        self.debug_spawn_inventory_near_player()
+        if getattr(self, "debug_spawn_inventories", False):
+            self.debug_spawn_inventory_near_player()
 
 
 
