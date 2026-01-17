@@ -48,6 +48,17 @@ class AsciiRenderer:
         self.origin_y = 0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        # Camera interaction timestamp (used to defer expensive sampling while actively panning/zooming)
+        self._last_camera_input_ms = 0
+
+        # Cache rendered glyph surfaces so we don"t call font.render() per cell per frame.
+        # Key: (font_px, ch, r, g, b, alpha)
+        self._glyph_surf_cache = {}
+        self._glyph_surf_cache_max = 4096
+
+        # Cache scaled bismuth icons by glyph_px (map icon scaling is surprisingly expensive).
+        self._bismuth_icon_map_cache = {}
+        self._last_zoom_glyph_px = int(self.glyph_px)
         # Global-zone glyph density tuning (for local->global zoom blend).
         # More slots => less dead space inside each global zone-cell.
         # You can tweak these live in a debug console if you expose them.
@@ -289,6 +300,11 @@ class AsciiRenderer:
         self.pan_x += float(dx)
         self.pan_y += float(dy)
 
+        try:
+            self._last_camera_input_ms = pygame.time.get_ticks()
+        except Exception:
+            self._last_camera_input_ms = 0
+
     def center_camera_on_player(self, game: Game, *, snap_zoom: bool = True) -> None:
         """Center the camera on the player.
 
@@ -363,6 +379,17 @@ class AsciiRenderer:
         """Hard-reset pan/zoom to sane defaults and center on player."""
         self.pan_x = 0.0
         self.pan_y = 0.0
+        # Camera interaction timestamp (used to defer expensive sampling while actively panning/zooming)
+        self._last_camera_input_ms = 0
+
+        # Cache rendered glyph surfaces so we don"t call font.render() per cell per frame.
+        # Key: (font_px, ch, r, g, b, alpha)
+        self._glyph_surf_cache = {}
+        self._glyph_surf_cache_max = 4096
+
+        # Cache scaled bismuth icons by glyph_px (map icon scaling is surprisingly expensive).
+        self._bismuth_icon_map_cache = {}
+        self._last_zoom_glyph_px = int(self.glyph_px)
 
         cam = getattr(self, "camera", None)
         if cam is not None:
@@ -714,7 +741,7 @@ class AsciiRenderer:
             else:
                 view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
 
-                cell_w_tiles = max(1e-6, float(cell_w_tiles))
+        cell_w_tiles = max(1e-6, float(cell_w_tiles))
         cell_h_tiles = max(1e-6, float(cell_h_tiles))
 
         # Snap view_min to cell boundaries so the grid is rigid/stable.
@@ -781,6 +808,16 @@ class AsciiRenderer:
             cache = {}
             self._lod_cell_cache = cache
 
+
+        # Consider the camera 'interactive' for a short window after pan/zoom input.
+        # While interactive, we try hard to avoid expensive overmap sampling; we will
+        # still render 1:1 local dungeon tiles correctly, and fill gaps with cheap
+        # placeholders until the cache warms.
+        try:
+            now_ms = pygame.time.get_ticks()
+            interactive = (now_ms - int(getattr(self, '_last_camera_input_ms', 0))) < 120
+        except Exception:
+            interactive = False
         # Decide whether we must sample this viewport into the per-cell cache.
         #
         # IMPORTANT: we must not only check the top-left cell. When panning slightly,
@@ -810,7 +847,7 @@ class AsciiRenderer:
         else:
             need_sample = True
 
-        if need_sample:
+        if need_sample and (not interactive):
             try:
                 from edgecaster.overmap_accel import render_overmap_buffers_numpy
                 import numpy as np
@@ -890,17 +927,41 @@ class AsciiRenderer:
         zone_offset_x = 0
         zone_offset_y = 0
         fov_radius = 8  # Match the FOV radius from _update_fov
-        god_vision = getattr(game, "god_vision", False)  # Developer mode: show all tiles
+        god_vision = bool(getattr(game, "god_vision", False))  # Developer mode: show all tiles
+
+        # IMPORTANT: game state has shifted a bit over time (actors dict vs game.player,
+        # world map vs zone). We support both so FOV/visibility stays correct.
         try:
+            # Newer/most common path
             player = game.actors[game.player_id]
-            player_pos = player.pos
-            world = game._level().world
-            # Get zone coordinates to convert global -> local tile coords
-            zone_x, zone_y, _zone_z = game.zone_coord
-            zone_offset_x = zone_x * zone_w
-            zone_offset_y = zone_y * zone_h
-        except (Exception, KeyError, AttributeError):
-            pass  # No player/world available, render everything at full brightness
+            player_pos = getattr(player, 'pos', None)
+            lvl = game._level()
+            world = getattr(lvl, 'world', None)
+        except Exception:
+            player = None
+
+        if player_pos is None:
+            try:
+                player = getattr(game, 'player', None)
+                player_pos = getattr(player, 'xy', None) or getattr(player, 'pos', None)
+            except Exception:
+                player_pos = None
+
+        if world is None:
+            try:
+                # Some builds expose a current zone on game.world
+                wobj = getattr(game, 'world', None)
+                world = getattr(wobj, 'zone', None) or getattr(game, 'zone', None) or wobj
+            except Exception:
+                world = None
+
+        try:
+            zone_x, zone_y, _zone_z = getattr(game, 'zone_coord', (0, 0, 0))
+            zone_offset_x = int(zone_x) * int(zone_w)
+            zone_offset_y = int(zone_y) * int(zone_h)
+        except Exception:
+            zone_offset_x = 0
+            zone_offset_y = 0
 
         # When rendering at 1 world-tile per cell, prefer the *actual* local-map glyphs
         # (walls, stairs, site structures, etc.) over the overmap/biome sampler output.
@@ -942,9 +1003,12 @@ class AsciiRenderer:
 
                 k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
                 val = cache.get(k)
-                if not val:
-                    continue
-                ch, orig_color = val
+                if val:
+                    ch, orig_color = val
+                else:
+                    # Cache miss (often during active panning/zooming before sampling runs).
+                    # Use a cheap placeholder glyph so the viewport never goes blank.
+                    ch, orig_color = ('·', getattr(self, 'dim', (140, 140, 150)))
 
                 # Apply FOV-based dimming using the same tile.visible flags as entities.
                 # This works at all zoom levels:
@@ -1001,7 +1065,7 @@ class AsciiRenderer:
                         # Out-of-zone cells should behave like unexplored tiles: render nothing.
                         continue
 
-                surf = font.render(ch, True, color)
+                surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
                 gx = px + (cell_px_w - surf.get_width()) // 2
                 gy = py + (cell_px_h - surf.get_height()) // 2
                 out.blit(surf, (gx, gy))
@@ -1262,7 +1326,7 @@ class AsciiRenderer:
                         continue
 
                     # render centered
-                    surf = font.render(ch, True, color)
+                    surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
                     gx = px + (cell_px_w - surf.get_width()) // 2
                     gy = py + (cell_px_h - surf.get_height()) // 2
                     grid_surf.blit(surf, (gx, gy))
@@ -1314,6 +1378,48 @@ class AsciiRenderer:
             f = pygame.font.SysFont("consolas", px, bold=False)
             self._map_font_cache[px] = f
         return f
+
+
+    def _get_cached_glyph_surface(
+        self,
+        *,
+        font: 'pygame.font.Font',
+        font_px: int,
+        ch: str,
+        color: tuple[int, int, int],
+        alpha_u8: int = 255,
+    ) -> 'pygame.Surface':
+        """Return a cached glyph surface.
+
+        This is a major performance win for zoomed-out LOD grids where we may
+        draw thousands of glyphs per frame.
+
+        Key includes alpha so blended layers can reuse surfaces too.
+        """
+        try:
+            r, g, b = int(color[0]), int(color[1]), int(color[2])
+        except Exception:
+            r, g, b = 255, 255, 255
+        key = (int(font_px), str(ch), r, g, b, int(alpha_u8))
+        surf = self._glyph_surf_cache.get(key)
+        if surf is not None:
+            return surf
+
+        surf = font.render(ch, True, (r, g, b))
+        if int(alpha_u8) < 255:
+            surf = surf.copy()
+            surf.set_alpha(int(alpha_u8))
+
+        self._glyph_surf_cache[key] = surf
+        if len(self._glyph_surf_cache) > int(self._glyph_surf_cache_max):
+            drop_n = max(64, len(self._glyph_surf_cache) - int(self._glyph_surf_cache_max))
+            for _ in range(drop_n):
+                try:
+                    self._glyph_surf_cache.pop(next(iter(self._glyph_surf_cache)))
+                except Exception:
+                    break
+
+        return surf
 
 
 
@@ -3311,34 +3417,39 @@ class AsciiRenderer:
 
         self.zoom = float(new_zoom)
 
+        # Mark camera as 'interactive' for a short window so expensive sampling can be deferred.
+        try:
+            self._last_camera_input_ms = pygame.time.get_ticks()
+        except Exception:
+            self._last_camera_input_ms = 0
+
         # True world scale for ALL placement math (terrain + entities + targeting).
         new_scale = float(self.base_tile) * float(self.zoom)
         new_scale = max(1e-6, new_scale)
         self.tile_px = float(new_scale)
 
         # CRITICAL: self.tile must remain WORLD scale (not clamped glyph size).
-        # A lot of targeting/overlay math still uses self.tile.
         self.tile = float(self.tile_px)
 
         # Clamped render glyph size (fonts/icons) for legibility.
-        self.glyph_px = int(max(8, min(96, round(new_scale))))
-
-        # Refresh helper surfaces
-        self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        self.seal_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        new_glyph_px = int(max(8, min(96, round(new_scale))))
+        self.glyph_px = new_glyph_px
 
         # Map font scales with clamped glyph size; UI fonts remain constant.
-        self.map_font = pygame.font.SysFont("consolas", int(self.glyph_px), bold=False)
+        if int(getattr(self, '_last_zoom_glyph_px', -1)) != int(new_glyph_px):
+            self.map_font = self._get_cached_map_font(int(new_glyph_px))
+            self._last_zoom_glyph_px = int(new_glyph_px)
 
-        # Rescale currency icon for map tiles when zoom changes (use clamped glyph size).
-        if getattr(self, "bismuth_icon", None) is not None:
-            try:
-                self.bismuth_icon_map = pygame.transform.smoothscale(
-                    self.bismuth_icon, (int(self.glyph_px), int(self.glyph_px))
-                )
-            except Exception:
-                self.bismuth_icon_map = None
+            # Rescale currency icon for map tiles when zoom changes (use clamped glyph size).
+            if getattr(self, 'bismuth_icon', None) is not None:
+                try:
+                    cached = self._bismuth_icon_map_cache.get(int(new_glyph_px))
+                    if cached is None:
+                        cached = pygame.transform.smoothscale(self.bismuth_icon, (int(new_glyph_px), int(new_glyph_px)))
+                        self._bismuth_icon_map_cache[int(new_glyph_px)] = cached
+                    self.bismuth_icon_map = cached
+                except Exception:
+                    self.bismuth_icon_map = None
 
         # Adjust pan so world point under cursor stays under cursor (use TRUE scale).
         target_origin_x = mx - wx * new_scale
@@ -3347,7 +3458,7 @@ class AsciiRenderer:
         self.pan_y = float(target_origin_y - base_y)
 
         # Keep TileCamera in sync if present.
-        cam = getattr(self, "camera", None)
+        cam = getattr(self, 'camera', None)
         if cam is not None:
             try:
                 cam.zoom = float(self.zoom)
