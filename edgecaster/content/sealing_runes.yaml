@@ -4,9 +4,27 @@ starter_seal:
   root_offset: [0, 0]
   # Terminus offset relative to the root (cursor snaps to this).
   terminus_offset: [10, 0]
+  # Full rune span (fraction of the max line that fits inside the zone).
+  full_span_ratio: 0.75
+  # Angle in degrees for the full rune baseline (0 = horizontal).
+  full_angle_deg: 0.0
+  # Optional jitter to add variety; keep 0.0 for now to preserve integer snapping.
+  full_angle_jitter_deg: 0.0
+  # Keep the full rune away from the edges so the seal fills the screen cleanly.
+  full_margin_tiles: 2
+  # Small center jitter so the rune isn't perfectly centered every time.
+  center_jitter_tiles: 2
   # Missing chunk selection in pattern-space (relative to root).
-  missing_center: [5.0, 0.0]
+  # (0,0) -> auto-pick a repair chunk near the center of the full rune.
+  missing_center: [0.0, 0.0]
   missing_radius: 2.5
+  # Choose the missing chunk after this many generator passes.
+  # 1 = pick from the subdivided segments, then apply koch+branch to repair.
+  repair_start_step: 1
+  # Target length as a multiple of the base placement range.
+  repair_target_scale: 1.0
+  # Acceptable relative error when choosing a repair segment.
+  repair_len_tolerance: 0.35
   # Cursor snap radius in tiles.
   snap_radius: 3
   # How "good" the match must be to enable sealing.
@@ -14,13 +32,13 @@ starter_seal:
   # Blur passes for spatial match scoring (higher = softer).
   blur_radius: 2
   # Generators granted during the trial.
-  required_generators: [subdivide, koch, branch]
+  required_generators: [koch, branch]
   # Multi-generator chain used to build the target pattern.
   pattern_chain:
     - gen: subdivide
       times: 1
       params:
-        parts: 3
+        parts: 5
     - gen: koch
       times: 1
       params:

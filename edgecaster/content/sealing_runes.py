@@ -20,8 +20,16 @@ class SealTrialDef:
     name: str
     root_offset: Tuple[int, int]
     terminus_offset: Tuple[int, int]
+    full_span_ratio: float | None
+    full_angle_deg: float
+    full_angle_jitter_deg: float
+    full_margin_tiles: int
+    center_jitter_tiles: int
     missing_center: Tuple[float, float]
     missing_radius: float
+    repair_start_step: int
+    repair_target_scale: float
+    repair_len_tolerance: float
     snap_radius: int
     score_threshold: float
     blur_radius: int
@@ -53,9 +61,21 @@ def load_seal_trials() -> Dict[str, SealTrialDef]:
 
         root_offset = tuple(spec.get("root_offset", (0, 0)))
         terminus_offset = tuple(spec.get("terminus_offset", (8, 0)))
+        full_span_ratio = spec.get("full_span_ratio", None)
+        if full_span_ratio is not None:
+            full_span_ratio = float(full_span_ratio)
+
+        full_angle_deg = float(spec.get("full_angle_deg", 0.0))
+        full_angle_jitter_deg = float(spec.get("full_angle_jitter_deg", 0.0))
+        full_margin_tiles = int(spec.get("full_margin_tiles", 1))
+        center_jitter_tiles = int(spec.get("center_jitter_tiles", 0))
 
         missing_center = tuple(spec.get("missing_center", (0.0, 0.0)))
         missing_radius = float(spec.get("missing_radius", 2.0))
+
+        repair_start_step = int(spec.get("repair_start_step", -1))
+        repair_target_scale = float(spec.get("repair_target_scale", 1.0))
+        repair_len_tolerance = float(spec.get("repair_len_tolerance", 0.35))
 
         snap_radius = int(spec.get("snap_radius", 3))
         score_threshold = float(spec.get("score_threshold", 0.65))
@@ -78,8 +98,16 @@ def load_seal_trials() -> Dict[str, SealTrialDef]:
             name=str(spec.get("name", str(trial_id))),
             root_offset=(int(root_offset[0]), int(root_offset[1])),
             terminus_offset=(int(terminus_offset[0]), int(terminus_offset[1])),
+            full_span_ratio=full_span_ratio,
+            full_angle_deg=full_angle_deg,
+            full_angle_jitter_deg=full_angle_jitter_deg,
+            full_margin_tiles=full_margin_tiles,
+            center_jitter_tiles=center_jitter_tiles,
             missing_center=(float(missing_center[0]), float(missing_center[1])),
             missing_radius=missing_radius,
+            repair_start_step=repair_start_step,
+            repair_target_scale=repair_target_scale,
+            repair_len_tolerance=repair_len_tolerance,
             snap_radius=snap_radius,
             score_threshold=score_threshold,
             blur_radius=blur_radius,

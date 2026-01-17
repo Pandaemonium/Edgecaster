@@ -16,8 +16,7 @@ from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from edgecaster.content.sealing_runes import SealPatternStep, SealTrialDef, get_seal_trial
 from edgecaster.patterns import builder
-from edgecaster.patterns.activation import project_vertices
-from edgecaster.state.patterns import Edge, Pattern
+from edgecaster.state.patterns import Edge, Pattern, Segment
 from edgecaster.systems import inventory as inventory_system
 
 if TYPE_CHECKING:
@@ -60,38 +59,84 @@ def attach_trial_to_level(game: "Game", level: "LevelState", trial_id: str) -> N
             game._debug(f"[seal_trials] Unknown trial id {trial_id!r}")
         return
 
-    root_tile = _resolve_root_tile(level, trial_def.root_offset)
-    root_tile, terminus_tile = _resolve_terminus_tile(level, root_tile, trial_def.terminus_offset)
-
     norm_steps, overrides = _normalize_trial_chain(game, trial_def)
-    target_pattern = _build_target_pattern(game, root_tile, terminus_tile, norm_steps)
+    expanded_steps = _expand_chain_steps(norm_steps)
+
+    # Cache the *baseline* place range before trials start adjusting it.
+    try:
+        base_place_range = float(getattr(game, "place_range", 0.0))
+    except Exception:
+        base_place_range = float(getattr(game.cfg, "place_range", 0.0))
+
+    if trial_def.full_span_ratio is not None:
+        full_root, full_term = _resolve_full_rune_line(
+            game,
+            level,
+            trial_def,
+            expanded_steps,
+        )
+    else:
+        full_root = _resolve_root_tile(level, trial_def.root_offset)
+        full_root, full_term = _resolve_terminus_tile(level, full_root, trial_def.terminus_offset)
+
+    target_pattern = _build_target_pattern(game, full_root, full_term, norm_steps)
+
+    # Defaults: missing chunk defined by the legacy center/radius (fallback path).
+    repair_root = full_root
+    repair_term = full_term
+    missing_center = trial_def.missing_center
+    missing_radius = trial_def.missing_radius
     missing_edges, missing_keys = _pick_missing_edges(
         target_pattern,
-        trial_def.missing_center,
-        trial_def.missing_radius,
+        missing_center,
+        missing_radius,
     )
+
+    required_generators = list(trial_def.required_generators) or _unique_generators(norm_steps)
+
+    # New path: pick a repairable chunk from the full rune that the player can rebuild.
+    repair_info = _pick_repairable_chunk(
+        game,
+        level,
+        trial_def,
+        target_pattern,
+        full_root,
+        full_term,
+        expanded_steps,
+        base_place_range,
+    )
+    if repair_info is not None:
+        repair_root = repair_info["root_tile"]
+        repair_term = repair_info["terminus_tile"]
+        missing_center = repair_info["missing_center"]
+        missing_radius = repair_info["missing_radius"]
+        missing_edges = repair_info["missing_edges"]
+        missing_keys = repair_info["missing_keys"]
+        if repair_info.get("required_generators"):
+            required_generators = list(repair_info["required_generators"])
 
     level.seal_trial = SealTrialState(
         trial_id=trial_def.id,
         name=trial_def.name,
         target_pattern=target_pattern,
-        target_anchor=root_tile,
-        root_tile=root_tile,
-        terminus_tile=terminus_tile,
-        missing_center=trial_def.missing_center,
-        missing_radius=trial_def.missing_radius,
+        target_anchor=full_root,
+        root_tile=repair_root,
+        terminus_tile=repair_term,
+        missing_center=missing_center,
+        missing_radius=missing_radius,
         missing_edge_keys=missing_keys,
         missing_edges=missing_edges,
         snap_radius=trial_def.snap_radius,
         score_threshold=trial_def.score_threshold,
         blur_radius=trial_def.blur_radius,
-        required_generators=list(trial_def.required_generators),
+        required_generators=required_generators,
         param_overrides=overrides,
     )
     if hasattr(game, "_debug"):
         game._debug(
             "[seal_trials] attached "
-            f"id={trial_def.id} root={root_tile} term={terminus_tile} "
+            f"id={trial_def.id} full_root={full_root} full_term={full_term} "
+            f"repair_root={repair_root} repair_term={repair_term} "
             f"edges={len(target_pattern.edges)} missing={len(missing_edges)} "
             f"chain={[s.gen for s in norm_steps]}"
         )
@@ -287,53 +332,45 @@ def compute_match_score(
 
     if debug and hasattr(game, "_debug"):
         # Helpful for diagnosing misalignment: the trial expects the pattern
-        # to be anchored at the canonical root tile.
+        # to be anchored at the *repair* root tile (not necessarily the full rune root).
         anchor = level.pattern_anchor
-        if anchor != trial.target_anchor:
-            dx = anchor[0] - trial.target_anchor[0]
-            dy = anchor[1] - trial.target_anchor[1]
+        if anchor != trial.root_tile:
+            dx = anchor[0] - trial.root_tile[0]
+            dy = anchor[1] - trial.root_tile[1]
             game._debug(
                 "[seal_trials] anchor mismatch "
-                f"player_anchor={anchor} expected={trial.target_anchor} "
+                f"player_anchor={anchor} expected={trial.root_tile} "
                 f"delta=({dx},{dy})"
             )
 
     mask, total_weight = _build_missing_mask(level, trial)
-    if total_weight <= 0.0:
-        if debug and hasattr(game, "_debug"):
-            game._debug(
-                f"[seal_trials] score=0.0 total_weight=0 "
-                f"missing_edges={len(trial.missing_edges)} "
-                f"pattern_edges={len(trial.target_pattern.edges)}"
-            )
-        return 0.0
-
-    player_tiles = _edge_tiles_for_pattern(level.pattern, level.pattern_anchor, level.world)
-    if not player_tiles:
-        if debug and hasattr(game, "_debug"):
-            game._debug(
-                "[seal_trials] score=0.0 player_tiles=0 "
-                f"total_weight={total_weight:.3f}"
-            )
-        return 0.0
-
-    hit = 0.0
+    mask_score = 0.0
     outside = 0
-    for (tx, ty) in player_tiles:
-        w = mask[ty][tx]
-        hit += w
-        if w < 0.05:
-            outside += 1
 
-    score = hit / total_weight
-    penalty = outside / max(1, len(player_tiles))
-    score = max(0.0, min(1.0, score - penalty * 0.15))
+    if total_weight > 0.0:
+        player_tiles = _edge_tiles_for_pattern(level.pattern, level.pattern_anchor, level.world)
+        if player_tiles:
+            hit = 0.0
+            for (tx, ty) in player_tiles:
+                w = mask[ty][tx]
+                hit += w
+                if w < 0.05:
+                    outside += 1
+            mask_score = hit / total_weight
+            penalty = outside / max(1, len(player_tiles))
+            mask_score = max(0.0, min(1.0, mask_score - penalty * 0.15))
+
+    # Secondary score: exact edge overlap in world-space (tolerant rounding).
+    edge_score = _edge_overlap_score(level, trial)
+
+    score = max(mask_score, edge_score)
+
     if debug and hasattr(game, "_debug"):
         game._debug(
             "[seal_trials] "
-            f"score={score:.3f} thresh={trial.score_threshold:.3f} "
-            f"hit={hit:.3f} total={total_weight:.3f} "
-            f"outside={outside}/{len(player_tiles)} "
+            f"score={score:.3f} (mask={mask_score:.3f} edge={edge_score:.3f}) "
+            f"thresh={trial.score_threshold:.3f} "
+            f"total={total_weight:.3f} outside={outside} "
             f"missing_edges={len(trial.missing_edges)} "
             f"pattern_edges={len(trial.target_pattern.edges)} "
             f"root={trial.root_tile} term={trial.terminus_tile}"
@@ -633,6 +670,174 @@ def _resolve_terminus_tile(
     return (rx, ry), (tx, ty)
 
 
+def _expand_chain_steps(steps: List[SealPatternStep]) -> List[SealPatternStep]:
+    """Expand pattern steps so each entry represents a single generator pass."""
+    expanded: List[SealPatternStep] = []
+    for step in steps:
+        count = max(1, int(step.times))
+        for _ in range(count):
+            expanded.append(SealPatternStep(gen=step.gen, times=1, params=dict(step.params or {})))
+    return expanded
+
+
+def _unique_generators(steps: List[SealPatternStep]) -> List[str]:
+    """Return the generators in order without duplicates (preserves chain order)."""
+    out: List[str] = []
+    for step in steps:
+        if step.gen and step.gen not in out:
+            out.append(step.gen)
+    return out
+
+
+def _resolve_full_rune_line(
+    game: "Game",
+    level: "LevelState",
+    trial_def: SealTrialDef,
+    expanded_steps: List[SealPatternStep],
+) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """Compute the large, screen-filling rune baseline (root + terminus).
+
+    The line is centered in the zone (optionally jittered), then rotated
+    by full_angle_deg. We clamp the span to the map bounds and optionally
+    quantize the length so subdivide segments land on integer tiles.
+    """
+    w = level.world.width
+    h = level.world.height
+
+    margin = max(0, int(trial_def.full_margin_tiles))
+    min_x = margin
+    min_y = margin
+    max_x = max(min_x, w - 1 - margin)
+    max_y = max(min_y, h - 1 - margin)
+
+    # Center in the zone with optional jitter so we can vary the rune slightly.
+    cx = (w - 1) * 0.5
+    cy = (h - 1) * 0.5
+    jitter = int(trial_def.center_jitter_tiles)
+    if jitter > 0:
+        try:
+            cx += float(game.rng.randint(-jitter, jitter))
+            cy += float(game.rng.randint(-jitter, jitter))
+        except Exception:
+            pass
+    cx = max(min_x, min(max_x, cx))
+    cy = max(min_y, min(max_y, cy))
+
+    # Angle (degrees) -> direction unit vector.
+    angle_deg = float(trial_def.full_angle_deg)
+    angle_jitter = float(trial_def.full_angle_jitter_deg)
+    if angle_jitter > 0:
+        try:
+            angle_deg += float(game.rng.uniform(-angle_jitter, angle_jitter))
+        except Exception:
+            pass
+    angle = math.radians(angle_deg)
+    ux = math.cos(angle)
+    uy = math.sin(angle)
+    if abs(ux) < 1e-6 and abs(uy) < 1e-6:
+        ux, uy = 1.0, 0.0
+
+    # Maximum half-span that stays inside the bounds.
+    max_half = _max_half_length(cx, cy, ux, uy, min_x, max_x, min_y, max_y)
+    if max_half <= 0:
+        # Fallback to a short horizontal line if bounds are degenerate.
+        root = (int(round(cx)), int(round(cy)))
+        term = (min(max_x, root[0] + 1), root[1])
+        return root, term
+
+    span_ratio = 0.75 if trial_def.full_span_ratio is None else float(trial_def.full_span_ratio)
+    span_ratio = max(0.05, min(1.0, span_ratio))
+    half_len = max_half * span_ratio
+
+    # If we are axis-aligned and the chain begins with subdivides, quantize the
+    # length so the repair segments land on integer tiles (better snapping).
+    axis_aligned = abs(ux) < 1e-6 or abs(uy) < 1e-6
+    divisor = 1
+    if axis_aligned and trial_def.repair_start_step >= 0:
+        divisor = _prefix_subdivide_divisor(expanded_steps, trial_def.repair_start_step)
+
+    if axis_aligned and divisor > 1:
+        max_full = int(math.floor((max_half * 2.0) / divisor)) * divisor
+        max_full = max(divisor, max_full)
+        full_len = int(round(half_len * 2.0))
+        full_len = max(divisor, int(round(full_len / divisor)) * divisor)
+        full_len = min(full_len, max_full)
+        half_len = full_len / 2.0
+
+    rx = cx - ux * half_len
+    ry = cy - uy * half_len
+    tx = cx + ux * half_len
+    ty = cy + uy * half_len
+
+    root = (int(round(rx)), int(round(ry)))
+    term = (int(round(tx)), int(round(ty)))
+
+    # Final clamp (rounding can push us one tile outside).
+    root = (max(min_x, min(max_x, root[0])), max(min_y, min(max_y, root[1])))
+    term = (max(min_x, min(max_x, term[0])), max(min_y, min(max_y, term[1])))
+    return root, term
+
+
+def _max_half_length(
+    cx: float,
+    cy: float,
+    ux: float,
+    uy: float,
+    min_x: int,
+    max_x: int,
+    min_y: int,
+    max_y: int,
+) -> float:
+    """Return the maximum distance we can travel from center along +/- direction."""
+    return min(
+        _max_t_to_bounds(cx, cy, ux, uy, min_x, max_x, min_y, max_y),
+        _max_t_to_bounds(cx, cy, -ux, -uy, min_x, max_x, min_y, max_y),
+    )
+
+
+def _max_t_to_bounds(
+    cx: float,
+    cy: float,
+    ux: float,
+    uy: float,
+    min_x: int,
+    max_x: int,
+    min_y: int,
+    max_y: int,
+) -> float:
+    """Return max positive t where (cx, cy) + t*(ux, uy) stays inside bounds."""
+    t_vals: List[float] = []
+    if abs(ux) < 1e-9:
+        t_vals.append(float("inf"))
+    elif ux > 0:
+        t_vals.append((max_x - cx) / ux)
+    else:
+        t_vals.append((min_x - cx) / ux)
+
+    if abs(uy) < 1e-9:
+        t_vals.append(float("inf"))
+    elif uy > 0:
+        t_vals.append((max_y - cy) / uy)
+    else:
+        t_vals.append((min_y - cy) / uy)
+
+    return max(0.0, min(t_vals))
+
+
+def _prefix_subdivide_divisor(steps: List[SealPatternStep], stop_idx: int) -> int:
+    """Product of subdivide `parts` in the prefix (used to keep integer endpoints)."""
+    divisor = 1
+    for step in steps[: max(0, int(stop_idx))]:
+        if step.gen != "subdivide":
+            continue
+        try:
+            parts = int(step.params.get("parts", 3))
+        except Exception:
+            parts = 3
+        divisor *= max(2, parts)
+    return max(1, divisor)
+
+
 def _build_target_pattern(
     game: "Game",
     root_tile: Tuple[int, int],
@@ -675,6 +880,214 @@ def _make_generator(name: str, params: dict) -> builder.GeneratorBase:
         return builder.ExtendGenerator()
     # Fallback: default to subdivide so we always return something.
     return builder.SubdivideGenerator(parts=3)
+
+
+def _apply_steps_to_pattern(
+    game: "Game",
+    base: Pattern,
+    steps: List[SealPatternStep],
+) -> Pattern:
+    """Apply a flat list of steps (each step == one generator pass)."""
+    gen_steps: List[Tuple[builder.GeneratorBase, int]] = []
+    for step in steps:
+        gen_steps.append((_make_generator(step.gen, step.params), 1))
+    max_segments = getattr(game.cfg, "max_vertices", 20000)
+    return builder.apply_chain(base, gen_steps, max_segments=max_segments, dedup=True)
+
+
+def _pick_repairable_chunk(
+    game: "Game",
+    level: "LevelState",
+    trial_def: SealTrialDef,
+    target_pattern: Pattern,
+    full_root: Tuple[int, int],
+    full_term: Tuple[int, int],
+    expanded_steps: List[SealPatternStep],
+    base_place_range: float,
+) -> Optional[Dict[str, object]]:
+    """Pick a removable chunk that can be rebuilt with the tail of the chain.
+
+    This selects a segment from an intermediate pattern (after repair_start_step),
+    then applies the *remaining* steps to that segment to form the missing chunk.
+    """
+    start_step = int(trial_def.repair_start_step)
+    if start_step < 0 or start_step >= len(expanded_steps):
+        return None
+
+    # Base line for the full rune (pattern-space coordinates).
+    dx = float(full_term[0] - full_root[0])
+    dy = float(full_term[1] - full_root[1])
+    base_pattern = builder.line_pattern((0.0, 0.0), (dx, dy))
+
+    # Build the intermediate pattern where we will select the repair segment.
+    prefix_steps = expanded_steps[:start_step]
+    if prefix_steps:
+        intermediate = _apply_steps_to_pattern(game, base_pattern, prefix_steps)
+    else:
+        intermediate = base_pattern
+
+    seg = _select_repair_segment(
+        trial_def,
+        intermediate,
+        base_place_range,
+        (dx * 0.5, dy * 0.5),
+    )
+    if seg is None:
+        if hasattr(game, "_debug"):
+            game._debug("[seal_trials] no repairable segment found; using fallback chunk.")
+        return None
+
+    # Apply the remainder of the chain to the chosen segment.
+    suffix_steps = expanded_steps[start_step:]
+    missing_pattern = _apply_steps_to_pattern(
+        game,
+        Pattern.from_segments([seg]),
+        suffix_steps,
+    )
+
+    missing_edges, missing_keys = _match_missing_edges(target_pattern, missing_pattern)
+    if not missing_edges:
+        if hasattr(game, "_debug"):
+            game._debug("[seal_trials] missing chunk did not map onto target pattern.")
+        return None
+
+    # World-space root/terminus for the repair chunk (snaps to the segment endpoints).
+    root_tile = (
+        int(round(full_root[0] + seg.a[0])),
+        int(round(full_root[1] + seg.a[1])),
+    )
+    term_tile = (
+        int(round(full_root[0] + seg.b[0])),
+        int(round(full_root[1] + seg.b[1])),
+    )
+
+    # Clamp to bounds just in case rounding nudges outside.
+    root_tile = (
+        max(0, min(level.world.width - 1, root_tile[0])),
+        max(0, min(level.world.height - 1, root_tile[1])),
+    )
+    term_tile = (
+        max(0, min(level.world.width - 1, term_tile[0])),
+        max(0, min(level.world.height - 1, term_tile[1])),
+    )
+
+    seg_len = _segment_length(seg)
+    missing_center = ((seg.a[0] + seg.b[0]) * 0.5, (seg.a[1] + seg.b[1]) * 0.5)
+    missing_radius = max(1.0, seg_len * 0.6)
+
+    required_generators = _unique_generators(suffix_steps)
+
+    return {
+        "root_tile": root_tile,
+        "terminus_tile": term_tile,
+        "missing_center": missing_center,
+        "missing_radius": missing_radius,
+        "missing_edges": missing_edges,
+        "missing_keys": missing_keys,
+        "required_generators": required_generators,
+    }
+
+
+def _select_repair_segment(
+    trial_def: SealTrialDef,
+    pattern: Pattern,
+    base_place_range: float,
+    default_hint: Tuple[float, float],
+) -> Optional[Segment]:
+    """Choose a candidate segment to remove based on length + a hint location."""
+    segments = pattern.to_segments()
+    if not segments:
+        return None
+
+    target_len = max(0.1, float(base_place_range) * float(trial_def.repair_target_scale))
+    len_tol = max(0.0, float(trial_def.repair_len_tolerance))
+
+    hint = trial_def.missing_center
+    if hint == (0.0, 0.0):
+        # If the designer hasn't specified a hint, favor the center of the rune.
+        hint = default_hint
+
+    candidates: List[Tuple[float, float, Segment]] = []
+    for seg in segments:
+        seg_len = _segment_length(seg)
+        if seg_len <= 0.0:
+            continue
+        if len_tol >= 0.0:
+            if abs(seg_len - target_len) > target_len * len_tol:
+                continue
+        # Require near-integer endpoints so snapping doesn't distort the repair.
+        if not _segment_endpoints_integer(seg, tol=0.01):
+            continue
+        mid = ((seg.a[0] + seg.b[0]) * 0.5, (seg.a[1] + seg.b[1]) * 0.5)
+        dist2 = (mid[0] - hint[0]) ** 2 + (mid[1] - hint[1]) ** 2
+        len_diff = abs(seg_len - target_len)
+        candidates.append((dist2, len_diff, seg))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
+def _segment_length(seg: Segment) -> float:
+    dx = seg.b[0] - seg.a[0]
+    dy = seg.b[1] - seg.a[1]
+    return math.hypot(dx, dy)
+
+
+def _segment_endpoints_integer(seg: Segment, tol: float = 1e-3) -> bool:
+    """Return True if endpoints are already near integer tile centers."""
+    ax, ay = seg.a
+    bx, by = seg.b
+    return (
+        abs(round(ax) - ax) <= tol
+        and abs(round(ay) - ay) <= tol
+        and abs(round(bx) - bx) <= tol
+        and abs(round(by) - by) <= tol
+    )
+
+
+def _match_missing_edges(
+    target_pattern: Pattern,
+    missing_pattern: Pattern,
+) -> Tuple[List[Edge], Set[Tuple[int, int]]]:
+    """Map missing-pattern edges onto the full target pattern's edge indices."""
+    lookup = _build_vertex_lookup(target_pattern)
+    missing_keys: Set[Tuple[int, int]] = set()
+
+    for edge in missing_pattern.edges:
+        try:
+            a = missing_pattern.vertices[edge.a].pos
+            b = missing_pattern.vertices[edge.b].pos
+        except Exception:
+            continue
+        ia = lookup.get(_edge_pos_key(a))
+        ib = lookup.get(_edge_pos_key(b))
+        if ia is None or ib is None:
+            continue
+        missing_keys.add((min(ia, ib), max(ia, ib)))
+
+    missing_edges: List[Edge] = []
+    for edge in target_pattern.edges:
+        key = (min(edge.a, edge.b), max(edge.a, edge.b))
+        if key in missing_keys:
+            missing_edges.append(edge)
+
+    return missing_edges, missing_keys
+
+
+def _build_vertex_lookup(pattern: Pattern, ndigits: int = 6) -> Dict[Tuple[float, float], int]:
+    """Map rounded vertex positions to their indices (for edge remapping)."""
+    out: Dict[Tuple[float, float], int] = {}
+    for idx, vertex in enumerate(pattern.vertices):
+        out[_edge_pos_key(vertex.pos, ndigits=ndigits)] = idx
+    return out
+
+
+def _edge_pos_key(pos: Tuple[float, float], ndigits: int = 6) -> Tuple[float, float]:
+    """Round a vertex position for stable matching across patterns."""
+    return (round(pos[0], ndigits), round(pos[1], ndigits))
 
 
 def _pick_missing_edges(
@@ -761,6 +1174,63 @@ def _edge_tiles_for_pattern(
             if world.in_bounds(tx, ty):
                 tiles.add((tx, ty))
     return tiles
+
+
+def _edge_overlap_score(level: "LevelState", trial: SealTrialState) -> float:
+    """Return overlap ratio based on exact edge endpoints (rounded)."""
+    if not level.pattern.vertices or level.pattern_anchor is None:
+        return 0.0
+
+    missing_keys = _edge_position_keys(
+        trial.target_pattern,
+        trial.target_anchor,
+        edge_filter=trial.missing_edge_keys,
+        ndigits=3,
+    )
+    if not missing_keys:
+        return 0.0
+
+    player_keys = _edge_position_keys(
+        level.pattern,
+        level.pattern_anchor,
+        edge_filter=None,
+        ndigits=3,
+    )
+    if not player_keys:
+        return 0.0
+
+    overlap = len(player_keys.intersection(missing_keys))
+    return overlap / max(1, len(missing_keys))
+
+
+def _edge_position_keys(
+    pattern: Pattern,
+    anchor: Tuple[int, int],
+    edge_filter: Optional[Set[Tuple[int, int]]],
+    ndigits: int = 3,
+) -> Set[Tuple[Tuple[float, float], Tuple[float, float]]]:
+    """Build a set of rounded edge endpoint pairs in world-space."""
+    out: Set[Tuple[Tuple[float, float], Tuple[float, float]]] = set()
+    ax, ay = anchor
+
+    for edge in pattern.edges:
+        if edge_filter is not None:
+            key = (min(edge.a, edge.b), max(edge.a, edge.b))
+            if key not in edge_filter:
+                continue
+        try:
+            a = pattern.vertices[edge.a].pos
+            b = pattern.vertices[edge.b].pos
+        except Exception:
+            continue
+        a_world = (round(a[0] + ax, ndigits), round(a[1] + ay, ndigits))
+        b_world = (round(b[0] + ax, ndigits), round(b[1] + ay, ndigits))
+        if a_world <= b_world:
+            out.add((a_world, b_world))
+        else:
+            out.add((b_world, a_world))
+
+    return out
 
 
 def _blur_mask(mask: List[List[float]], radius: int) -> List[List[float]]:
