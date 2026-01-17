@@ -240,7 +240,7 @@
   ai: none
   xp: 0
   parent: human
-  description: Bismuth makes the world go round.
+  description: A pleasure doing bismuth with you.
   tags:
     no_random_spawn: true
 
@@ -314,7 +314,7 @@
   ai: gory_ascetic
   xp: 10
   parent: humanoid
-  description: Only one thing to do when your blood is poisoned with sin.
+  description: Only one thing to do when your blood is tainted with sin.
   drop_items: ["whip"]
   tags:
     gory_ascetic: true
@@ -374,7 +374,7 @@
   ai: skirmisher
   xp: 8
   parent: demon
-  description: Be careful, that berry's got fangs!
+  description: Dripping with juice.
   tags:
     blood_sipper: true
     lifesteal_frac: 0.5
