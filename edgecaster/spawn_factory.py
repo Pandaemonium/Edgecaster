@@ -7,6 +7,7 @@ import copy
 from edgecaster.state.entities import Entity
 from edgecaster.state.actors import Actor, Stats
 from edgecaster.prototypes import bake_instance_body_schema
+import os
 
 
 def _as_color(x: Any, default: Tuple[int, int, int] = (255, 255, 255)) -> Tuple[int, int, int]:
@@ -31,6 +32,35 @@ def _merge_entity_tags(base_tags: Any, override_tags: Any) -> Dict[str, Any]:
     if isinstance(override_tags, dict):
         out.update(override_tags)
     return out
+
+
+def _maybe_attach_default_icon_path(tags: Dict[str, Any], proto_id: Optional[str]) -> None:
+    """
+    If no explicit icon is specified in tags, try to auto-attach one based on proto_id.
+    This is purely a convenience fallback to reduce YAML boilerplate.
+    """
+    if not proto_id:
+        return
+    if not isinstance(tags, dict):
+        return
+
+    # Respect explicit YAML
+    if tags.get("icon_path") or tags.get("icon"):
+        return
+
+    # Tune these to match your actual asset layout.
+    # Order matters: first match wins.
+    candidate_paths = [
+        os.path.join("assets", "icons", f"{proto_id}.png"),
+        os.path.join("assets", f"{proto_id}.png"),
+        os.path.join("assets", "sprites", f"{proto_id}.png"),
+    ]
+
+    for p in candidate_paths:
+        if os.path.exists(p):
+            # Normalize slashes for consistency across platforms
+            tags["icon_path"] = p.replace("\\", "/")
+            return
 
 
 def build_entity_from_spec(
@@ -61,6 +91,7 @@ def build_entity_from_spec(
     render_layer = int(s.get("render_layer", 1) or 1)
     blocks_movement = bool(s.get("blocks_movement", False))
     tags = _merge_entity_tags(s.get("tags"), None)
+    _maybe_attach_default_icon_path(tags, str(s.get("id") or ""))
     statuses = dict(s.get("statuses", {}) or {})
 
     ent = Entity(
@@ -118,7 +149,9 @@ def build_actor_from_spec(
 ) -> Actor:
     """
     Build an Actor from a resolved prototype spec (enemies.yaml style).
-    We keep “classification tags” from YAML under actor.tags["tags"] (list or dict).
+    YAML tags handling:
+    - If the YAML "tags" field is a dict, we merge it directly into actor.tags (so icon_path/icon work like Entities).
+    - If the YAML "tags" field is a list (legacy classification tags), we keep it under actor.tags["tags"].
     """
     s = copy.deepcopy(spec)
     if overrides:
@@ -190,11 +223,16 @@ def build_actor_from_spec(
     # Movement speed hint for energy system
     actor.tags["speed"] = speed
 
-    # Preserve YAML “tags” field without forcing schema:
-    # - enemies.yaml currently uses list tags
-    # - entities.yaml uses dict tags
-    if "tags" in s:
-        actor.tags["tags"] = copy.deepcopy(s.get("tags"))
+    # Preserve YAML "tags" field without forcing schema:
+    # - If YAML tags is a dict, merge into actor.tags (so icon_path/icon work like Entities).
+    # - If YAML tags is a list (legacy enemies.yaml classification tags), keep under actor.tags["tags"].
+    yaml_tags = s.get("tags", None)
+    if isinstance(yaml_tags, dict):
+        actor.tags.update(copy.deepcopy(yaml_tags))
+    elif yaml_tags is not None:
+        actor.tags["tags"] = copy.deepcopy(yaml_tags)
+    _maybe_attach_default_icon_path(actor.tags, str(s.get("id") or ""))
+
 
     # Optional: stash xp
     actor.tags["xp"] = xp
