@@ -1069,11 +1069,19 @@ class AsciiRenderer:
                 # - cell_w_tiles < 1: multiple cells per tile (zoomed in)
                 # - cell_w_tiles == 1: 1:1 mapping (normal zoom)
                 # - cell_w_tiles > 1: one cell covers multiple tiles (zoomed out)
-                color = orig_color  # Start with cached color
-                if god_vision:
-                    # God Vision mode: render all tiles at full brightness, no visibility checks
-                    pass
-                elif player_pos is not None and world is not None:
+
+                # Start with cached color (sampler truth)
+                color = orig_color
+
+                # If available, prefer the cached biome_id (sampler truth) over realized tile.biome_id
+                cached_biome_id = None
+                if val and len(val) > 2:
+                    try:
+                        cached_biome_id = int(val[2])
+                    except Exception:
+                        cached_biome_id = None
+
+                if player_pos is not None and world is not None:
                     # For zoomed out (cell > 1 tile), sample center of cell
                     # For zoomed in (cell < 1 tile), sample the tile containing this cell
                     if cell_w_tiles >= 1.0:
@@ -1084,6 +1092,7 @@ class AsciiRenderer:
                         # Sub-tile cell: just get the tile this cell is within
                         global_x = int(cx * cell_w_tiles)
                         global_y = int(cy * cell_h_tiles)
+
                     local_x = global_x - zone_offset_x
                     local_y = global_y - zone_offset_y
 
@@ -1102,8 +1111,9 @@ class AsciiRenderer:
                                 except Exception:
                                     pass
 
-
-                            if not tile.explored:
+                            # In NORMAL vision, we do not render unexplored tiles.
+                            # In GOD vision, treat everything as explored.
+                            if (not god_vision) and (not tile.explored):
                                 continue
 
                             # Color contract:
@@ -1117,21 +1127,30 @@ class AsciiRenderer:
                             else:
                                 if biome_id_to_color is not None:
                                     try:
-                                        bid = int(getattr(tile, "biome_id", 0) or 0)
+                                        # Prefer cached biome_id (sampler truth). Fall back to tile.biome_id only if needed.
+                                        bid = cached_biome_id
+                                        if bid is None:
+                                            bid = int(getattr(tile, "biome_id", 0) or 0)
                                         if 0 <= bid < 256:
                                             base_color = biome_id_to_color[bid]
                                     except Exception:
                                         pass
 
-
-                            if not tile.visible:
+                            # In GOD vision, treat everything as visible (no dimming).
+                            if god_vision or tile.visible:
+                                color = base_color
+                            else:
                                 r, g, b = base_color
                                 color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
-                            else:
-                                color = base_color
                     else:
-                        # Out-of-zone cells should behave like unexplored tiles: render nothing.
-                        continue
+                        # Outside realized world bounds. In god vision, still draw sampler output.
+                        if not god_vision:
+                            continue
+                else:
+                    # If we have no world/player context, just draw the cached sampler result.
+                    # (This keeps renderer stable even in menus or transitional scenes.)
+                    pass
+
 
                 surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
                 gx = px + (cell_px_w - surf.get_width()) // 2
