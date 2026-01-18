@@ -84,7 +84,7 @@ class DungeonScene(Scene):
 
     uses_live_loop = True
     # --- Music declaration ---
-    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth"]
+    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth", "warp_whistle"]
     music_loop = True
     music_fade_out_ms = 1200
     music_fade_in_ms = 1200

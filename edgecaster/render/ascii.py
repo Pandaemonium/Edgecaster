@@ -48,6 +48,35 @@ class AsciiRenderer:
         self.origin_y = 0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        # Camera interaction timestamp (used to defer expensive sampling while actively panning/zooming)
+        self._last_camera_input_ms = 0
+
+        # Cache rendered glyph surfaces so we don"t call font.render() per cell per frame.
+        # Key: (font_px, ch, r, g, b, alpha)
+        self._glyph_surf_cache = {}
+        self._glyph_surf_cache_max = 4096
+        # Sprite/icon caches (tiles mode + UI previews)
+        # Quantize icon sizes to reduce smoothscale churn during zoom.
+        self._icon_size_bin_px = 1  # 2px bins keeps zoom smooth with bounded caches, but gives a weird jitter so I'm putting it back to 1
+        self._icon_idle_ms = 80     # ms; defer expensive sprite cache fills while camera is moving
+
+        # Icon caches:
+        #   raw:      path -> Surface (convert_alpha once at load)
+        #   scaled:   (path, size_bin) -> Surface
+        #   composed: (path, size_bin, eff_sig) -> Surface  (icon + overlays + visual panel)
+        self._entity_icon_cache_raw = {}
+        self._entity_icon_cache_scaled = {}
+        self._entity_icon_cache_composed = {}
+        self._entity_icon_cache_raw_max = 512
+        self._entity_icon_cache_scaled_max = 1024
+        self._entity_icon_cache_composed_max = 1024
+
+        # Reused surface for entity fade blending (avoid per-frame allocations)
+        self._entities_fade_surface = None
+
+        # Cache scaled bismuth icons by glyph_px (map icon scaling is surprisingly expensive).
+        self._bismuth_icon_map_cache = {}
+        self._last_zoom_glyph_px = int(self.glyph_px)
         # Global-zone glyph density tuning (for local->global zoom blend).
         # More slots => less dead space inside each global zone-cell.
         # You can tweak these live in a debug console if you expose them.
@@ -289,6 +318,11 @@ class AsciiRenderer:
         self.pan_x += float(dx)
         self.pan_y += float(dy)
 
+        try:
+            self._last_camera_input_ms = pygame.time.get_ticks()
+        except Exception:
+            self._last_camera_input_ms = 0
+
     def center_camera_on_player(self, game: Game, *, snap_zoom: bool = True) -> None:
         """Center the camera on the player.
 
@@ -363,6 +397,17 @@ class AsciiRenderer:
         """Hard-reset pan/zoom to sane defaults and center on player."""
         self.pan_x = 0.0
         self.pan_y = 0.0
+        # Camera interaction timestamp (used to defer expensive sampling while actively panning/zooming)
+        self._last_camera_input_ms = 0
+
+        # Cache rendered glyph surfaces so we don"t call font.render() per cell per frame.
+        # Key: (font_px, ch, r, g, b, alpha)
+        self._glyph_surf_cache = {}
+        self._glyph_surf_cache_max = 4096
+
+        # Cache scaled bismuth icons by glyph_px (map icon scaling is surprisingly expensive).
+        self._bismuth_icon_map_cache = {}
+        self._last_zoom_glyph_px = int(self.glyph_px)
 
         cam = getattr(self, "camera", None)
         if cam is not None:
@@ -714,7 +759,7 @@ class AsciiRenderer:
             else:
                 view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
 
-                cell_w_tiles = max(1e-6, float(cell_w_tiles))
+        cell_w_tiles = max(1e-6, float(cell_w_tiles))
         cell_h_tiles = max(1e-6, float(cell_h_tiles))
 
         # Snap view_min to cell boundaries so the grid is rigid/stable.
@@ -781,6 +826,16 @@ class AsciiRenderer:
             cache = {}
             self._lod_cell_cache = cache
 
+
+        # Consider the camera 'interactive' for a short window after pan/zoom input.
+        # While interactive, we try hard to avoid expensive overmap sampling; we will
+        # still render 1:1 local dungeon tiles correctly, and fill gaps with cheap
+        # placeholders until the cache warms.
+        try:
+            now_ms = pygame.time.get_ticks()
+            interactive = (now_ms - int(getattr(self, '_last_camera_input_ms', 0))) < 120
+        except Exception:
+            interactive = False
         # Decide whether we must sample this viewport into the per-cell cache.
         #
         # IMPORTANT: we must not only check the top-left cell. When panning slightly,
@@ -810,7 +865,7 @@ class AsciiRenderer:
         else:
             need_sample = True
 
-        if need_sample:
+        if need_sample and (not interactive):
             try:
                 from edgecaster.overmap_accel import render_overmap_buffers_numpy
                 import numpy as np
@@ -890,17 +945,41 @@ class AsciiRenderer:
         zone_offset_x = 0
         zone_offset_y = 0
         fov_radius = 8  # Match the FOV radius from _update_fov
-        god_vision = getattr(game, "god_vision", False)  # Developer mode: show all tiles
+        god_vision = bool(getattr(game, "god_vision", False))  # Developer mode: show all tiles
+
+        # IMPORTANT: game state has shifted a bit over time (actors dict vs game.player,
+        # world map vs zone). We support both so FOV/visibility stays correct.
         try:
+            # Newer/most common path
             player = game.actors[game.player_id]
-            player_pos = player.pos
-            world = game._level().world
-            # Get zone coordinates to convert global -> local tile coords
-            zone_x, zone_y, _zone_z = game.zone_coord
-            zone_offset_x = zone_x * zone_w
-            zone_offset_y = zone_y * zone_h
-        except (Exception, KeyError, AttributeError):
-            pass  # No player/world available, render everything at full brightness
+            player_pos = getattr(player, 'pos', None)
+            lvl = game._level()
+            world = getattr(lvl, 'world', None)
+        except Exception:
+            player = None
+
+        if player_pos is None:
+            try:
+                player = getattr(game, 'player', None)
+                player_pos = getattr(player, 'xy', None) or getattr(player, 'pos', None)
+            except Exception:
+                player_pos = None
+
+        if world is None:
+            try:
+                # Some builds expose a current zone on game.world
+                wobj = getattr(game, 'world', None)
+                world = getattr(wobj, 'zone', None) or getattr(game, 'zone', None) or wobj
+            except Exception:
+                world = None
+
+        try:
+            zone_x, zone_y, _zone_z = getattr(game, 'zone_coord', (0, 0, 0))
+            zone_offset_x = int(zone_x) * int(zone_w)
+            zone_offset_y = int(zone_y) * int(zone_h)
+        except Exception:
+            zone_offset_x = 0
+            zone_offset_y = 0
 
         # When rendering at 1 world-tile per cell, prefer the *actual* local-map glyphs
         # (walls, stairs, site structures, etc.) over the overmap/biome sampler output.
@@ -942,9 +1021,12 @@ class AsciiRenderer:
 
                 k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
                 val = cache.get(k)
-                if not val:
-                    continue
-                ch, orig_color = val
+                if val:
+                    ch, orig_color = val
+                else:
+                    # Cache miss (often during active panning/zooming before sampling runs).
+                    # Use a cheap placeholder glyph so the viewport never goes blank.
+                    ch, orig_color = ('·', getattr(self, 'dim', (140, 140, 150)))
 
                 # Apply FOV-based dimming using the same tile.visible flags as entities.
                 # This works at all zoom levels:
@@ -1001,7 +1083,7 @@ class AsciiRenderer:
                         # Out-of-zone cells should behave like unexplored tiles: render nothing.
                         continue
 
-                surf = font.render(ch, True, color)
+                surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
                 gx = px + (cell_px_w - surf.get_width()) // 2
                 gy = py + (cell_px_h - surf.get_height()) // 2
                 out.blit(surf, (gx, gy))
@@ -1262,7 +1344,7 @@ class AsciiRenderer:
                         continue
 
                     # render centered
-                    surf = font.render(ch, True, color)
+                    surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
                     gx = px + (cell_px_w - surf.get_width()) // 2
                     gy = py + (cell_px_h - surf.get_height()) // 2
                     grid_surf.blit(surf, (gx, gy))
@@ -1314,6 +1396,48 @@ class AsciiRenderer:
             f = pygame.font.SysFont("consolas", px, bold=False)
             self._map_font_cache[px] = f
         return f
+
+
+    def _get_cached_glyph_surface(
+        self,
+        *,
+        font: 'pygame.font.Font',
+        font_px: int,
+        ch: str,
+        color: tuple[int, int, int],
+        alpha_u8: int = 255,
+    ) -> 'pygame.Surface':
+        """Return a cached glyph surface.
+
+        This is a major performance win for zoomed-out LOD grids where we may
+        draw thousands of glyphs per frame.
+
+        Key includes alpha so blended layers can reuse surfaces too.
+        """
+        try:
+            r, g, b = int(color[0]), int(color[1]), int(color[2])
+        except Exception:
+            r, g, b = 255, 255, 255
+        key = (int(font_px), str(ch), r, g, b, int(alpha_u8))
+        surf = self._glyph_surf_cache.get(key)
+        if surf is not None:
+            return surf
+
+        surf = font.render(ch, True, (r, g, b))
+        if int(alpha_u8) < 255:
+            surf = surf.copy()
+            surf.set_alpha(int(alpha_u8))
+
+        self._glyph_surf_cache[key] = surf
+        if len(self._glyph_surf_cache) > int(self._glyph_surf_cache_max):
+            drop_n = max(64, len(self._glyph_surf_cache) - int(self._glyph_surf_cache_max))
+            for _ in range(drop_n):
+                try:
+                    self._glyph_surf_cache.pop(next(iter(self._glyph_surf_cache)))
+                except Exception:
+                    break
+
+        return surf
 
 
 
@@ -1505,6 +1629,103 @@ class AsciiRenderer:
     # ------------------------------------------------------------------
     # Entity icon / sprite rendering (renderer-agnostic hook)
     # ------------------------------------------------------------------
+
+    def _is_camera_interactive(self, now_ms: int) -> bool:
+        """True if we're within the 'recent camera input' window."""
+        try:
+            last = int(getattr(self, "_last_camera_input_ms", 0))
+            idle_ms = int(getattr(self, "_icon_idle_ms", 80))
+            return (int(now_ms) - last) < idle_ms
+        except Exception:
+            return False
+
+    def _quantize_icon_px(self, size_px: int) -> int:
+        """Quantize icon size to reduce cache churn during smooth zoom."""
+        try:
+            size_px = int(size_px)
+        except Exception:
+            size_px = 1
+        size_px = max(1, size_px)
+        bin_px = int(getattr(self, "_icon_size_bin_px", 2) or 1)
+        if bin_px <= 1:
+            return size_px
+        # nearest bin
+        return max(1, int(round(size_px / float(bin_px))) * bin_px)
+
+    def _trim_cache_dict(self, d: dict, max_n: int) -> None:
+        """Bound a dict cache by dropping oldest insertion-order entries."""
+        try:
+            max_n = int(max_n)
+        except Exception:
+            return
+        if max_n <= 0:
+            return
+        if len(d) <= max_n:
+            return
+        drop_n = max(32, len(d) - max_n)
+        for _ in range(drop_n):
+            try:
+                d.pop(next(iter(d)))
+            except Exception:
+                break
+    def _get_nearest_cached_scaled_icon(self, path: str, size_bin: int) -> pygame.Surface | None:
+        """During interactive zoom, prefer a nearby cached scaled sprite over glyph fallback.
+
+        This prevents sprite<->glyph flicker while still avoiding scale-on-miss.
+        """
+        try:
+            size_bin = max(1, int(size_bin))
+        except Exception:
+            size_bin = 1
+
+        bin_px = int(getattr(self, "_icon_size_bin_px", 2) or 1)
+        if bin_px <= 0:
+            bin_px = 1
+
+        cache = getattr(self, "_entity_icon_cache_scaled", None) or {}
+        # Exact match first (cheap)
+        s = cache.get((path, int(size_bin)))
+        if s is not None:
+            return s
+
+        # Search outward by bins: -1,+1,-2,+2,... (bounded constant work)
+        # NOTE: we keep this small so it stays cheap in the hot loop.
+        MAX_STEPS = 10
+        for i in range(1, MAX_STEPS + 1):
+            lo = size_bin - i * bin_px
+            hi = size_bin + i * bin_px
+            if lo >= 1:
+                s = cache.get((path, int(lo)))
+                if s is not None:
+                    return s
+            s = cache.get((path, int(hi)))
+            if s is not None:
+                return s
+
+        return None
+
+    def _resolve_entity_icon_path(self, ent) -> str | None:
+        """Resolve sprite/icon path by convention."""
+        # Priority order:
+        #  1) ent.sprite_path / ent.sprite / ent.icon_path
+        #  2) ent.tags['icon_path'] or ent.tags['icon']
+        #  3) ent.tags['currency'] -> assets/icons/<currency>.png
+        for attr in ("sprite_path", "sprite", "icon_path"):
+            v = getattr(ent, attr, None)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+        tags = getattr(ent, "tags", {}) or {}
+        v = tags.get("icon_path") or tags.get("icon")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+        cur = tags.get("currency")
+        if isinstance(cur, str) and cur.strip():
+            return f"assets/icons/{cur.strip()}.png"
+
+        return None
+
     def get_entity_icon_surface(
         self,
         ent,
@@ -1512,86 +1733,107 @@ class AsciiRenderer:
         size_px: int,
         scene_effects: list[str] | None = None,
         prefer_sprite: bool = True,
+        allow_idle_gating: bool = False,
     ) -> pygame.Surface:
         """Return an RGBA surface representing an entity at a given pixel size.
 
-        This is the *general* hook UI code should use for magnified previews,
-        diagrammatic zoom, tooltips, etc. It supports:
-          - sprite/icon images (if resolvable)
-          - glyph fallback (ASCII)
-          - scene + entity visual effects (overlays, transforms, tints where applicable)
-
-        Conventions for sprite resolution (in priority order):
-          1) ent.sprite_path / ent.sprite / ent.icon_path (string path)
-          2) ent.tags['icon_path'] or ent.tags['icon'] (string path)
-          3) ent.tags['currency'] -> assets/icons/<currency>.png
+        If allow_idle_gating=True (used by dungeon map draw), we avoid filling missing
+        scaled/composed sprite caches while the camera is actively moving.
         """
         size_px = max(1, int(size_px))
-        eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
+        size_bin = self._quantize_icon_px(size_px)
 
-        # Lazily allocate caches
-        if not hasattr(self, "_entity_icon_cache_scaled"):
-            self._entity_icon_cache_scaled = {}  # (path, size_px) -> Surface
-        if not hasattr(self, "_entity_icon_cache_raw"):
-            self._entity_icon_cache_raw = {}  # path -> Surface
+        eff = concat_effect_names(scene_effects or [], effect_names_from_obj(ent))
+        now_ms = pygame.time.get_ticks()
+        interactive = bool(allow_idle_gating) and self._is_camera_interactive(int(now_ms))
 
         path = None
         if prefer_sprite and bool(getattr(self, "prefer_sprite_icons", True)):
-            for attr in ("sprite_path", "sprite", "icon_path"):
-                v = getattr(ent, attr, None)
-                if isinstance(v, str) and v.strip():
-                    path = v.strip()
-                    break
-            if path is None:
-                tags = getattr(ent, "tags", {}) or {}
-                v = tags.get("icon_path") or tags.get("icon")
-                if isinstance(v, str) and v.strip():
-                    path = v.strip()
-            if path is None:
-                tags = getattr(ent, "tags", {}) or {}
-                cur = tags.get("currency")
-                if isinstance(cur, str) and cur.strip():
-                    # Convention: currencies live in assets/icons/<currency>.png
-                    path = f"assets/icons/{cur.strip()}.png"
+            path = self._resolve_entity_icon_path(ent)
 
-        # Try sprite path if available
         if path:
-            surf = self._load_and_scale_icon(path, size_px=size_px)
-            if surf is not None:
-                # Apply overlays/transforms on top of the icon.
-                return self._apply_entity_effects_to_icon(ent, surf, size_px=size_px, eff=eff)
+            # (A) If effects requested, try composed cache first
+            if eff:
+                ckey = (path, int(size_bin), str(eff))
+                comp = self._entity_icon_cache_composed.get(ckey)
+                if comp is not None:
+                    return comp
+
+            # (B) Try scaled cache
+            skey = (path, int(size_bin))
+            scaled = self._entity_icon_cache_scaled.get(skey)
+
+            # While interactive: do NOT scale-on-miss (prevents hitching)
+            if scaled is None and interactive:
+                # IMPORTANT: keep sprites as sprites (no glyph flicker).
+                # Reuse a nearby cached scaled sprite if possible.
+                near = self._get_nearest_cached_scaled_icon(path, size_bin)
+                if near is not None:
+                    # If effects are active, still skip compose-on-miss while moving.
+                    return near
+                # If we have nothing cached yet, fall through to the normal behavior:
+                # we still avoid composing effects while interactive (handled below),
+                # but we allow the first scale so the entity doesn't flicker into glyphs.
+
+            if scaled is None:
+                scaled = self._load_and_scale_icon(path, size_px=size_bin)
+
+            if scaled is not None:
+                # While interactive: do NOT compose-on-miss (avoid per-entity surface work)
+                if eff and interactive:
+                    return scaled
+
+                if eff:
+                    out = self._apply_entity_effects_to_icon(ent, scaled, size_px=size_bin, eff=eff)
+                    try:
+                        self._entity_icon_cache_composed[ckey] = out
+                        if len(self._entity_icon_cache_composed) > int(self._entity_icon_cache_composed_max):
+                            self._trim_cache_dict(self._entity_icon_cache_composed, int(self._entity_icon_cache_composed_max))
+                    except Exception:
+                        pass
+                    return out
+
+                return scaled
 
         # Fallback: render a glyph (ASCII)
         return self._render_entity_glyph_icon(ent, size_px=size_px, eff=eff)
 
     def _load_and_scale_icon(self, path: str, *, size_px: int) -> pygame.Surface | None:
-        """Load an icon (cached) and return a smoothly scaled copy."""
+        """Load an icon (cached) and return a smoothly scaled copy (cached by size bin)."""
         try:
-            key = (path, int(size_px))
+            size_px = max(1, int(size_px))
+            size_bin = self._quantize_icon_px(size_px)
+
+            key = (path, int(size_bin))
             cached = self._entity_icon_cache_scaled.get(key)
             if cached is not None:
                 return cached
 
             raw = self._entity_icon_cache_raw.get(path)
             if raw is None:
-                # Resolve relative paths against the project root.
                 p = Path(path)
                 if not p.is_absolute():
                     p = (self._project_root / p).resolve()
                 raw = pygame.image.load(str(p)).convert_alpha()
                 self._entity_icon_cache_raw[path] = raw
+                if len(self._entity_icon_cache_raw) > int(self._entity_icon_cache_raw_max):
+                    self._trim_cache_dict(self._entity_icon_cache_raw, int(self._entity_icon_cache_raw_max))
 
-            scaled = pygame.transform.smoothscale(raw, (int(size_px), int(size_px)))
+            scaled = pygame.transform.smoothscale(raw, (int(size_bin), int(size_bin)))
             self._entity_icon_cache_scaled[key] = scaled
+            if len(self._entity_icon_cache_scaled) > int(self._entity_icon_cache_scaled_max):
+                self._trim_cache_dict(self._entity_icon_cache_scaled, int(self._entity_icon_cache_scaled_max))
             return scaled
         except Exception:
             return None
 
     def _render_entity_glyph_icon(self, ent, *, size_px: int, eff: str) -> pygame.Surface:
-        """Glyph fallback for get_entity_icon_surface()."""
+        """Glyph fallback for get_entity_icon_surface().
+
+        Optimized: uses cached fonts and cached glyph surfaces (no per-call font.render()).
+        """
         glyph = str(getattr(ent, "glyph", "@"))[:1]
 
-        # Pick base color using the same logic as map entity rendering.
         base_color = getattr(self, "fg", (240, 240, 255))
         try:
             _, base_color = self._entity_visual(ent)
@@ -1599,9 +1841,19 @@ class AsciiRenderer:
             pass
         color = apply_entity_color_effects(ent, base_color, eff)
 
-        # Choose a font size that tends to fill the requested square.
         font_px = max(10, int(round(size_px * 0.90)))
-        font = pygame.font.SysFont("consolas", font_px, bold=True)
+        font = self._get_cached_font(font_px)
+
+        # Fast path: no overlays/transforms
+        if not eff:
+            canvas = pygame.Surface((size_px, size_px), pygame.SRCALPHA)
+            gsurf = self._get_cached_glyph_surface(
+                font=font, font_px=font_px, ch=glyph, color=color, alpha_u8=255
+            )
+            gx = (size_px - gsurf.get_width()) // 2
+            gy = (size_px - gsurf.get_height()) // 2
+            canvas.blit(gsurf, (gx, gy))
+            return canvas
 
         base_rect = pygame.Rect(0, 0, size_px, size_px)
         union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
@@ -1609,36 +1861,35 @@ class AsciiRenderer:
         canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
         ox, oy = -union_rect.left, -union_rect.top
 
-        gsurf = font.render(glyph, True, color)
+        gsurf = self._get_cached_glyph_surface(
+            font=font, font_px=font_px, ch=glyph, color=color, alpha_u8=255
+        )
         gx = ox + (size_px - gsurf.get_width()) // 2
         gy = oy + (size_px - gsurf.get_height()) // 2
         canvas.blit(gsurf, (gx, gy))
 
-        if eff:
-            shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
-            apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+        shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+        apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
 
-        if eff:
-            try:
-                visual = build_visual_profile(VisualProfile(), eff)
-                out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
-                apply_visual_panel(out, canvas, out.get_rect(), visual)
-                return out
-            except Exception:
-                pass
-
-        return canvas
+        try:
+            visual = build_visual_profile(VisualProfile(), eff)
+            out = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+            apply_visual_panel(out, canvas, out.get_rect(), visual)
+            return out
+        except Exception:
+            return canvas
 
     def _apply_entity_effects_to_icon(self, ent, icon: pygame.Surface, *, size_px: int, eff: str) -> pygame.Surface:
-        """Apply overlay + geometric effects to a sprite/icon surface."""
+        """Apply overlay + geometric effects to a sprite/icon surface.
+
+        Callers should cache this result in hot paths.
+        """
         base_rect = pygame.Rect(0, 0, size_px, size_px)
         union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
 
-        # Canvas with extra room for overlay bounds.
         canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
         ox, oy = -union_rect.left, -union_rect.top
 
-        # Center the icon in the base rect region.
         ix = ox + (size_px - icon.get_width()) // 2
         iy = oy + (size_px - icon.get_height()) // 2
         canvas.blit(icon, (ix, iy))
@@ -1647,7 +1898,6 @@ class AsciiRenderer:
             shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
             apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
 
-        # Apply geometry transforms (rotate/flip/scale) if any.
         if eff:
             try:
                 visual = build_visual_profile(VisualProfile(), eff)
@@ -1656,7 +1906,9 @@ class AsciiRenderer:
                 return out
             except Exception:
                 pass
+
         return canvas
+
 
     def _draw_slaver_chains(self, world: World, entities, *, tile_px_f: float) -> None:
         """Draw visual-only chains between slavers and their chained brutes.
@@ -1797,8 +2049,7 @@ class AsciiRenderer:
     def draw_entities(self, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
 
-        This wrapper supports LOD fading: when the map is cross-fading to the
-        global grid, entities fade with the local layer.
+        Supports LOD fading: when the map is cross-fading to the global grid, entities fade with the local layer.
         """
         alpha = int(getattr(self, "_local_fade_alpha", 255))
         if alpha <= 0:
@@ -1807,8 +2058,12 @@ class AsciiRenderer:
             self._draw_entities_impl(world, entities)
             return
 
-        # Draw entities onto a temporary surface, then alpha-blend onto the main surface.
-        temp = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # Reuse a persistent fade surface to avoid per-frame allocations.
+        if self._entities_fade_surface is None or self._entities_fade_surface.get_size() != (self.width, self.height):
+            self._entities_fade_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        temp = self._entities_fade_surface
+        temp.fill((0, 0, 0, 0))
+
         prev_surface = self.surface
         self.surface = temp
         try:
@@ -1818,6 +2073,7 @@ class AsciiRenderer:
 
         temp.set_alpha(alpha)
         self.surface.blit(temp, (0, 0))
+
 
 
     def _draw_entities_impl(self, world: World, entities) -> None:
@@ -1905,7 +2161,9 @@ class AsciiRenderer:
                     size_px=want_px,
                     scene_effects=scene_eff,
                     prefer_sprite=True,
+                    allow_idle_gating=True,   # <-- IMPORTANT: no scale/compose misses while moving
                 )
+
                 if icon is not None:
                     rect = icon.get_rect(center=(cx, cy))
                     self.surface.blit(icon, rect.topleft)
@@ -1929,10 +2187,20 @@ class AsciiRenderer:
             canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
             ox, oy = -union_rect.left, -union_rect.top
 
-            glyph_surf = font.render(glyph, True, color)
-            gx = ox + (tile_px_i - glyph_surf.get_width()) // 2
-            gy = oy + (tile_px_i - glyph_surf.get_height()) // 2
-            canvas.blit(glyph_surf, (gx, gy))
+            # Fast path: no overlays/transforms -> no per-entity canvas allocation
+            if not eff:
+                gsurf = self._get_cached_glyph_surface(
+                    font=font,
+                    font_px=font_px,
+                    ch=glyph,
+                    color=color,
+                    alpha_u8=255,
+                )
+                gx = int(round(px_f + (tile_px_i - gsurf.get_width()) * 0.5))
+                gy = int(round(py_f + (tile_px_i - gsurf.get_height()) * 0.5))
+                self.surface.blit(gsurf, (gx, gy))
+                continue
+
 
             if eff:
                 shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
@@ -3311,34 +3579,39 @@ class AsciiRenderer:
 
         self.zoom = float(new_zoom)
 
+        # Mark camera as 'interactive' for a short window so expensive sampling can be deferred.
+        try:
+            self._last_camera_input_ms = pygame.time.get_ticks()
+        except Exception:
+            self._last_camera_input_ms = 0
+
         # True world scale for ALL placement math (terrain + entities + targeting).
         new_scale = float(self.base_tile) * float(self.zoom)
         new_scale = max(1e-6, new_scale)
         self.tile_px = float(new_scale)
 
         # CRITICAL: self.tile must remain WORLD scale (not clamped glyph size).
-        # A lot of targeting/overlay math still uses self.tile.
         self.tile = float(self.tile_px)
 
         # Clamped render glyph size (fonts/icons) for legibility.
-        self.glyph_px = int(max(8, min(96, round(new_scale))))
-
-        # Refresh helper surfaces
-        self.edges_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        self.verts_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        self.seal_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        new_glyph_px = int(max(8, min(96, round(new_scale))))
+        self.glyph_px = new_glyph_px
 
         # Map font scales with clamped glyph size; UI fonts remain constant.
-        self.map_font = pygame.font.SysFont("consolas", int(self.glyph_px), bold=False)
+        if int(getattr(self, '_last_zoom_glyph_px', -1)) != int(new_glyph_px):
+            self.map_font = self._get_cached_map_font(int(new_glyph_px))
+            self._last_zoom_glyph_px = int(new_glyph_px)
 
-        # Rescale currency icon for map tiles when zoom changes (use clamped glyph size).
-        if getattr(self, "bismuth_icon", None) is not None:
-            try:
-                self.bismuth_icon_map = pygame.transform.smoothscale(
-                    self.bismuth_icon, (int(self.glyph_px), int(self.glyph_px))
-                )
-            except Exception:
-                self.bismuth_icon_map = None
+            # Rescale currency icon for map tiles when zoom changes (use clamped glyph size).
+            if getattr(self, 'bismuth_icon', None) is not None:
+                try:
+                    cached = self._bismuth_icon_map_cache.get(int(new_glyph_px))
+                    if cached is None:
+                        cached = pygame.transform.smoothscale(self.bismuth_icon, (int(new_glyph_px), int(new_glyph_px)))
+                        self._bismuth_icon_map_cache[int(new_glyph_px)] = cached
+                    self.bismuth_icon_map = cached
+                except Exception:
+                    self.bismuth_icon_map = None
 
         # Adjust pan so world point under cursor stays under cursor (use TRUE scale).
         target_origin_x = mx - wx * new_scale
@@ -3347,7 +3620,7 @@ class AsciiRenderer:
         self.pan_y = float(target_origin_y - base_y)
 
         # Keep TileCamera in sync if present.
-        cam = getattr(self, "camera", None)
+        cam = getattr(self, 'camera', None)
         if cam is not None:
             try:
                 cam.zoom = float(self.zoom)

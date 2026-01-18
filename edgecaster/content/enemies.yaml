@@ -771,7 +771,7 @@
   ai: skirmisher
   xp: 5
   parent: humanoid
-  description: Death by splinters is an agonizing end.
+  description: You really got yourself in a thorny situation.
   tags:
     thorn_sprite: true
     biome_spawn: [TEMPERATE_FOREST, SHRUBLAND]
@@ -805,8 +805,8 @@
     biome_spawn: [SNOW, BARE, TUNDRA]
     no_random_spawn: true
 
-- id: peacock_dandy
-  name: Peacock Dandy
+- id: penguin_dandy
+  name: Penguin Dandy
   glyph: P
   color: [80, 200, 180]
   actions: [move, wait]
@@ -819,7 +819,7 @@
   ai: territorial
   xp: 6
   parent: humanoid
-  description: A preening bird-person obsessed with displays of wealth.
+  description: Probably compensating for something.
   tags:
     peacock_dandy: true
     flying: true
@@ -844,7 +844,7 @@
   tier_min: 8
   tier_max: 10
   parent: humanoid
-  description: He's watching you very carefully.
+  description: Watching you very carefully.
   tags:
     talon_guard: true
     flying: true
@@ -885,7 +885,7 @@
   ai: skirmisher
   xp: 5
   parent: beast
-  description: The shrewdness of the crow is not to be underestimated.
+  description: He's seen about everything.
   tags:
     corvid_spy: true
     flying: true
