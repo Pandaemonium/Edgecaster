@@ -867,18 +867,18 @@ class AsciiRenderer:
 
         if need_sample and (not interactive):
             try:
-                from edgecaster.overmap_accel import render_overmap_buffers_numpy
+                from edgecaster.overmap_accel import render_overmap_fields_climate
                 import numpy as np
 
                 span_wx = float(cols * cell_w_tiles)
                 span_wy = float(rows * cell_h_tiles)
 
-                # Iter budget: interactive, with more detail when zoomed in.
+                # Iter budget: more detail when zoomed in.
                 zoom_factor = max(1.0, float(total_w) / max(1e-9, span_wx))
                 iters = 48 + int(24 * math.log(max(1.0, zoom_factor)))
                 iters = int(max(24, min(iters, 320)))
 
-                rgb_main, _rgb_corr, _peak2 = render_overmap_buffers_numpy(
+                elev2, biome2, _peak2 = render_overmap_fields_climate(
                     px_w=int(cols),
                     px_h=int(rows),
                     total_w=total_w,
@@ -898,19 +898,35 @@ class AsciiRenderer:
                     spline_weight=float(p.get("corruption_spline_weight", 0.0) or 0.0),
                     hotspots=p.get("corruption_hotspots", None),
                     anchors=p.get("corruption_anchors", None),
+                    climate_config=p.get("climate_config", None),
                 )
 
-                from edgecaster.biome import ANCHORS_RGB, BIOME_GLYPHS_NP
-                anchors_rgb = np.asarray(ANCHORS_RGB, dtype=np.int16)
-                glyph_lut = BIOME_GLYPHS_NP.astype(np.int16, copy=False)
-                rgb16 = rgb_main.astype(np.int16)
-                dif = rgb16[:, :, None, :] - anchors_rgb[None, None, :, :]
-                dist2 = (dif * dif).sum(axis=3)
-                idx = dist2.argmin(axis=2).astype(np.int16)
+                # --- Elevation glyph ladder (Phase 1: simple thresholds; tweak later) ---
+                # bins define the *upper* threshold of each rung (digitize -> 0..6)
+                bins = np.asarray([0.12, 0.22, 0.28, 0.56, 0.72, 0.86], dtype=np.float32)
+                glyphs = np.asarray(
+                    [ord("≈"), ord("~"), ord(","), ord("."), ord('"'), ord("#"), ord("^")],
+                    dtype=np.int16,
+                )
+                e_idx = np.digitize(elev2.astype(np.float32, copy=False), bins, right=False).astype(np.int16, copy=False)
+                glyph_codes = glyphs[e_idx]
 
-                glyph_codes = glyph_lut[idx]  # (rows, cols)
-                col = anchors_rgb[idx].astype(np.int16)
-                col = np.clip(col + 28, 0, 255).astype(np.uint8)
+                # --- Biome fg color (Phase 1: biome palette only; no extra tint) ---
+                from edgecaster.biome import BIOME_COLORS as _BIOME_COLORS
+
+                lut = np.empty((256, 3), dtype=np.uint8)
+                lut[:, :] = (200, 200, 200)
+                for k, v in _BIOME_COLORS.items():
+                    kk = int(k)
+                    if 0 <= kk < 256:
+                        lut[kk, 0] = int(v[0])
+                        lut[kk, 1] = int(v[1])
+                        lut[kk, 2] = int(v[2])
+
+                bi = biome2.astype(np.int16, copy=False)
+                bi = np.clip(bi, 0, 255).astype(np.uint8, copy=False)
+                col = lut[bi]
+
 
                 for rr in range(rows):
                     cy = base_cy + rr
@@ -922,7 +938,13 @@ class AsciiRenderer:
                         g = int(glyph_codes[rr, cc])
                         ch = chr(g)
                         color = (int(col[rr, cc, 0]), int(col[rr, cc, 1]), int(col[rr, cc, 2]))
-                        cache[k] = (ch, color)
+
+                        # Cache biome + relief category too (used by look/inspect, especially in god vision)
+                        biome_id = int(bi[rr, cc])
+                        elev_cat = int(e_idx[rr, cc])
+
+                        cache[k] = (ch, color, biome_id, elev_cat)
+
 
                 max_cells = int(getattr(self, "lod_cache_max_cells", 250_000) or 250_000)
                 if len(cache) > max_cells:
@@ -988,20 +1010,30 @@ class AsciiRenderer:
         # features are still visible.
         biome_glyph_to_color = None
         special_glyph_to_color = None
-        try:
-            from edgecaster import biome as _biome
 
-            biome_glyph_to_color = {
-                ch: _biome.BIOME_COLORS[i] for i, ch in enumerate(_biome.BIOME_CHARS)
-            }
-            special_glyph_to_color = {
-                ">": (220, 220, 255),  # stairs down
-                "<": (220, 220, 255),  # stairs up
-                "=": (255, 240, 160),  # lab console
-            }
+        from edgecaster import biome as _biome
+
+        biome_id_to_color = None
+        structure_glyph_to_color = {
+            "#": (160, 160, 160),  # walls: fixed gray (Phase 1)
+            "+": (200, 170, 120),  # door-ish (leave as a visible special for now)
+            ">": (220, 220, 255),  # stairs down
+            "<": (220, 220, 255),  # stairs up
+            "=": (255, 240, 160),  # console/platform
+        }
+
+        try:
+            from edgecaster.biome import BIOME_COLORS as _BC
+            # Make a simple 0..255 LUT for speed.
+            lut = [(200, 200, 200)] * 256
+            for k, v in _BC.items():
+                kk = int(k)
+                if 0 <= kk < 256:
+                    lut[kk] = (int(v[0]), int(v[1]), int(v[2]))
+            biome_id_to_color = lut
         except Exception:
-            biome_glyph_to_color = None
-            special_glyph_to_color = None
+            biome_id_to_color = None
+
 
         for rr in range(rows):
             cy = base_cy + rr
@@ -1022,7 +1054,11 @@ class AsciiRenderer:
                 k = (lod_id, cell_w_tiles, cell_h_tiles, cx, cy, sig)
                 val = cache.get(k)
                 if val:
-                    ch, orig_color = val
+                    ch = val[0]
+                    orig_color = val[1]
+                    # Optional metadata (newer cache entries):
+                    #   val[2] = biome_id, val[3] = elev_cat
+                    # We don't need them for drawing, but other systems may query.
                 else:
                     # Cache miss (often during active panning/zooming before sampling runs).
                     # Use a cheap placeholder glyph so the viewport never goes blank.
@@ -1054,25 +1090,39 @@ class AsciiRenderer:
                     if world.in_bounds(local_x, local_y):
                         tile = world.get_tile(local_x, local_y)
                         if tile:
-                            # Prefer true local glyphs only at LoD=1 tile/cell so walls/structures are visible.
+                            # At 1:1 scale, only override the sampled terrain glyph when the realized tile is a STRUCTURE.
+                            # Base terrain should still come from the field sampler so it stays consistent across LoD.
                             if abs(cell_w_tiles - 1.0) < 1e-6:
                                 try:
-                                    ch = str(tile.glyph or ch)
-                                    # If this is ever more than 1 char, take the first for font rendering.
-                                    if len(ch) > 1:
-                                        ch = ch[0]
+                                    tg = str(tile.glyph or "")
+                                    if tg:
+                                        tg = tg[0]
+                                    if tg in structure_glyph_to_color:
+                                        ch = tg
                                 except Exception:
                                     pass
+
 
                             if not tile.explored:
                                 continue
 
-                            # Choose a stable color for known glyphs so structures don't inherit biome colors.
+                            # Color contract:
+                            # - Structures use intrinsic material colors (walls fixed gray)
+                            # - Otherwise terrain color comes ONLY from biome_id (no glyph-based colors)
                             base_color = orig_color
-                            if biome_glyph_to_color is not None and ch in biome_glyph_to_color:
-                                base_color = biome_glyph_to_color[ch]
-                            elif special_glyph_to_color is not None and ch in special_glyph_to_color:
-                                base_color = special_glyph_to_color[ch]
+
+                            # If we're drawing a structure glyph (either sampled or overridden), use its intrinsic color.
+                            if ch in structure_glyph_to_color:
+                                base_color = structure_glyph_to_color[ch]
+                            else:
+                                if biome_id_to_color is not None:
+                                    try:
+                                        bid = int(getattr(tile, "biome_id", 0) or 0)
+                                        if 0 <= bid < 256:
+                                            base_color = biome_id_to_color[bid]
+                                    except Exception:
+                                        pass
+
 
                             if not tile.visible:
                                 r, g, b = base_color

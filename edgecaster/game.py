@@ -2346,30 +2346,214 @@ class Game:
 
 
     def describe_tile_at(self, pos: Tuple[int, int]) -> str:
-        """Return a short description of the terrain at a position.
-
-        This is used by look-mode when no entities occupy the tile.
-        """
         level = self._level()
         tile = level.world.get_tile(*pos)
         if tile is None:
             return "You see nothing but void."
 
-        biome_label = "Unknown"
-        try:
-            biome_id = getattr(tile, "biome_id", None)
-            if biome_id is not None:
-                from edgecaster.climate import Biome, BIOME_SHORT_NAMES
+        god_vision = bool(getattr(self, "god_vision", False))
+        explored = bool(getattr(tile, "explored", True))
 
-                biome = Biome(int(biome_id))
-                biome_label = BIOME_SHORT_NAMES.get(
-                    biome, biome.name.replace("_", " ").title()
-                )
+        # --- Biome label (default: realized tile biome_id) ---
+        biome_label = "Unknown"
+        stored_biome_id = None
+        try:
+            stored_biome_id = int(getattr(tile, "biome_id", 0) or 0)
+            from edgecaster.climate import Biome, BIOME_SHORT_NAMES
+            b = Biome(stored_biome_id)
+            biome_label = BIOME_SHORT_NAMES.get(b, b.name.replace("_", " ").title())
         except Exception:
             biome_label = "Unknown"
 
-        terrain_label = "Open ground" if tile.walkable else "Wall"
-        return f"Biome: {biome_label}\nTerrain: {terrain_label}"
+        passable = "Yes" if getattr(tile, "walkable", True) else "No (Blocked)"
+
+        relief_label_map = {
+            "≈": "Deep Ocean",
+            "~": "Shallow Water",
+            ",": "Coast",
+            ".": "Plains",
+            '"': "Hills",
+            "#": "Mountains",
+            "^": "Peak",
+        }
+
+        # Canonical relief ladder used by ascii.py's overmap LOD glyph ladder.
+        relief_glyphs_by_cat = ["≈", "~", ",", ".", '"', "#", "^"]
+
+        relief_glyph = "?"
+        relief_label = "Unknown"
+
+        # ---------------------------------------------------------------------
+        # Preferred: ask the renderer what it drew (LOD cache).
+        # This is the only correct answer when zoomed-out (LOD cells != tiles).
+        # ---------------------------------------------------------------------
+        try:
+            cfg = getattr(self, "cfg", None)
+            zone_w = int(getattr(cfg, "world_width", getattr(level.world, "width", 60) or 60))
+            zone_h = int(getattr(cfg, "world_height", getattr(level.world, "height", 40) or 40))
+
+            # IMPORTANT: renderer uses game.zone_coord (not level.coord)
+            zx, zy, _zz = getattr(self, "zone_coord", (0, 0, 0))
+            tx, ty = int(pos[0]), int(pos[1])
+
+            abs_wx = float(int(zx) * zone_w + tx)
+            abs_wy = float(int(zy) * zone_h + ty)
+
+            # Find the Ascii renderer instance (best-effort; depends on wiring)
+            ascii_renderer = None
+            mgr = getattr(self, "scene_manager", None)
+            candidates = []
+
+            if mgr is not None:
+                candidates.extend([
+                    getattr(mgr, "renderer", None),
+                    getattr(mgr, "ascii_renderer", None),
+                    getattr(mgr, "ascii", None),
+                ])
+                r = getattr(mgr, "renderer", None)
+                if r is not None:
+                    candidates.extend([
+                        getattr(r, "ascii_renderer", None),
+                        getattr(r, "ascii", None),
+                        getattr(r, "ascii_render", None),
+                    ])
+
+            for c in candidates:
+                if c is None:
+                    continue
+                if hasattr(c, "_lod_cell_cache") and hasattr(c, "_overmap_signature") and hasattr(c, "_render_lod_grid"):
+                    ascii_renderer = c
+                    break
+
+            cache = getattr(ascii_renderer, "_lod_cell_cache", None) if ascii_renderer is not None else None
+            if isinstance(cache, dict) and ascii_renderer is not None:
+                # Recompute LOD the same way ascii.py draw_world_zoomed() does.
+                world_scale = float(getattr(ascii_renderer, "tile_px", float(getattr(ascii_renderer, "base_tile", 18)) * float(getattr(ascii_renderer, "zoom", 1.0))))
+                world_scale = max(1e-6, world_scale)
+
+                target_glyph_px = float(getattr(ascii_renderer, "lod_target_glyph_px", getattr(ascii_renderer, "base_tile", 18)) or getattr(ascii_renderer, "base_tile", 18))
+                raw = target_glyph_px / world_scale
+
+                LOD_RADIX = getattr(ascii_renderer, "lod_radix", 2)
+                lod_f = math.log(max(1e-12, raw), LOD_RADIX)
+
+                lod0 = int(math.floor(lod_f))
+                lod1 = lod0 + 1
+                frac = float(lod_f - lod0)
+
+                lod0 = max(-12, min(lod0, 12))
+                lod1 = max(-12, min(lod1, 12))
+                if lod1 == lod0:
+                    frac = 0.0
+
+                cell0 = float(LOD_RADIX ** lod0)
+                cell1 = float(LOD_RADIX ** lod1)
+
+                # Same smoothstep + deadband as ascii.py
+                def _smoothstep(a: float, b: float, t: float) -> float:
+                    if t <= a:
+                        return 0.0
+                    if t >= b:
+                        return 1.0
+                    x = (t - a) / (b - a)
+                    return x * x * (3.0 - 2.0 * x)
+
+                blend = _smoothstep(0.0, 1.0, frac)
+                eps = 0.06
+                if blend <= eps:
+                    a0, a1 = 1.0, 0.0
+                elif blend >= 1.0 - eps:
+                    a0, a1 = 0.0, 1.0
+                else:
+                    a0, a1 = 1.0 - blend, blend
+
+                # Choose the dominant layer (what you mostly see)
+                if a1 > a0 and abs(cell1 - cell0) > 1e-12:
+                    lod_id = int(lod1)
+                    cell_tiles = float(cell1)
+                else:
+                    lod_id = int(lod0)
+                    cell_tiles = float(cell0)
+
+                cell_tiles = max(1e-6, cell_tiles)
+
+                # Cache keys use absolute cell coords (cx,cy) in world tile space.
+                cx = int(math.floor(abs_wx / cell_tiles))
+                cy = int(math.floor(abs_wy / cell_tiles))
+
+                sig = ascii_renderer._overmap_signature(self)
+                key = (lod_id, cell_tiles, cell_tiles, cx, cy, sig)
+                val = cache.get(key, None)
+
+                if val is not None:
+                    # Cache entries can be either:
+                    #   (ch, rgb)  [older]
+                    #   (ch, rgb, biome_id, elev_cat)  [new]
+                    ch = val[0] if len(val) > 0 else ""
+                    cached_biome_id = None
+                    cached_elev_cat = None
+
+                    try:
+                        if len(val) > 2:
+                            cached_biome_id = int(val[2])
+                    except Exception:
+                        cached_biome_id = None
+
+                    try:
+                        if len(val) > 3:
+                            cached_elev_cat = int(val[3])
+                    except Exception:
+                        cached_elev_cat = None
+
+                    # Relief: prefer cached elev category (most stable), else use cached glyph char.
+                    if cached_elev_cat is not None and 0 <= cached_elev_cat < len(relief_glyphs_by_cat):
+                        relief_glyph = relief_glyphs_by_cat[cached_elev_cat]
+                        relief_label = relief_label_map.get(relief_glyph, "Unknown")
+                    elif isinstance(ch, str) and ch:
+                        relief_glyph = ch[0]
+                        relief_label = relief_label_map.get(relief_glyph, "Unknown")
+
+                    # Biome: in god vision or unexplored tiles, prefer cached biome_id if available.
+                    prefer_cache_biome = god_vision or (not explored)
+                    if prefer_cache_biome and cached_biome_id is not None:
+                        try:
+                            stored_biome_id = int(cached_biome_id)
+                            from edgecaster.climate import Biome, BIOME_SHORT_NAMES
+                            b = Biome(stored_biome_id)
+                            biome_label = BIOME_SHORT_NAMES.get(b, b.name.replace("_", " ").title())
+                        except Exception:
+                            pass
+
+        except Exception:
+            # If cache plumbing fails, fall through to fallback.
+            pass
+
+        # ---------------------------------------------------------------------
+        # Fallback: only trust tile.glyph if it is one of the NEW relief glyphs.
+        # (Never resurrect legacy '%' etc.)
+        # ---------------------------------------------------------------------
+        if relief_glyph == "?":
+            try:
+                g = str(getattr(tile, "glyph", "") or "")
+                if g and g[0] in relief_label_map:
+                    relief_glyph = g[0]
+                    relief_label = relief_label_map.get(relief_glyph, "Unknown")
+            except Exception:
+                pass
+
+        if passable != "Yes" and relief_glyph == "#":
+            relief_label = "Wall"
+
+        return "\n".join([
+            f"Biome: {biome_label} [tile:{stored_biome_id}]",
+            f"Relief: {relief_label} ({relief_glyph})",
+            f"Passable: {passable}",
+        ])
+
+
+
+
+
 
 
 
