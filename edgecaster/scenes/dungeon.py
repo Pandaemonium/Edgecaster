@@ -869,13 +869,77 @@ class DungeonScene(Scene):
             except Exception:
                 renderables = []
 
-            entities_here = [
-                e for e in renderables
-                if getattr(e, "pos", None) == (tx, ty)
-            ]
+            # Gather unique entities at this tile (avoid actor duplicates mirrored in entities).
+            seen = {}
+            for e in renderables:
+                if getattr(e, "pos", None) != (tx, ty):
+                    continue
+                eid = getattr(e, "id", None)
+                key = eid if eid is not None else id(e)
+                if key in seen:
+                    continue
+                seen[key] = e
+            entities_here = list(seen.values())
 
             if entities_here:
-                # First pass: open a read-only inspect popup (InventoryScene in look mode)
+                if len(entities_here) > 1:
+                    # Prompt for which entity to inspect (terrain is not included here).
+                    choices = []
+                    infos = []
+                    for ent in entities_here:
+                        info = describe_entity_for_look(ent)
+                        infos.append(info)
+                        choices.append(info.get("name", "Something") or "Something")
+
+                    def _inspect_choice(idx: int, mgr) -> None:  # type: ignore[no-redef]
+                        if idx < 0 or idx >= len(entities_here):
+                            return
+                        ent = entities_here[idx]
+                        info = infos[idx]
+                        try:
+                            from .inventory_scene import LookScene
+                        except Exception:
+                            LookScene = None  # type: ignore[assignment]
+
+                        ent_id = getattr(ent, "id", None)
+                        if LookScene is not None and ent_id is not None:
+                            mgr.push_scene(
+                                LookScene(
+                                    game,
+                                    owner_id=str(ent_id),
+                                    title=info.get("name", "You inspect...") or "You inspect...",
+                                )
+                            )
+                            return
+
+                        # Fallback to a text popup.
+                        glyph = info.get("glyph", "?")
+                        desc = info.get("description", "") or "You see nothing remarkable about it."
+                        lines = [str(glyph), "", str(desc)] if glyph else [str(desc)]
+                        hp_txt = info.get("hp_text")
+                        if hp_txt:
+                            lines.extend(["", str(hp_txt)])
+                        mgr.push_scene(
+                            UrgentMessageScene(
+                                game,
+                                "\n".join(lines),
+                                title=info.get("name", title) or title,
+                                choices=["OK"],
+                            )
+                        )
+
+                    manager.push_scene(
+                        UrgentMessageScene(
+                            game,
+                            "Multiple things are here. Which do you inspect?",
+                            title="Inspect",
+                            choices=choices,
+                            on_choice=_inspect_choice,
+                        )
+                    )
+                    return
+
+                # Single entity: open a read-only inspect popup (InventoryScene in look mode)
                 primary = entities_here[0]
                 info = describe_entity_for_look(primary)
 

@@ -2345,6 +2345,33 @@ class Game:
         self._describe_tile(level, pos, observer_id=self.player_id, auto=False)
 
 
+    def describe_tile_at(self, pos: Tuple[int, int]) -> str:
+        """Return a short description of the terrain at a position.
+
+        This is used by look-mode when no entities occupy the tile.
+        """
+        level = self._level()
+        tile = level.world.get_tile(*pos)
+        if tile is None:
+            return "You see nothing but void."
+
+        biome_label = "Unknown"
+        try:
+            biome_id = getattr(tile, "biome_id", None)
+            if biome_id is not None:
+                from edgecaster.climate import Biome, BIOME_SHORT_NAMES
+
+                biome = Biome(int(biome_id))
+                biome_label = BIOME_SHORT_NAMES.get(
+                    biome, biome.name.replace("_", " ").title()
+                )
+        except Exception:
+            biome_label = "Unknown"
+
+        terrain_label = "Open ground" if tile.walkable else "Wall"
+        return f"Biome: {biome_label}\nTerrain: {terrain_label}"
+
+
 
     def _describe_tile(
         self,
