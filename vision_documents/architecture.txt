@@ -177,6 +177,17 @@ Spawn pipeline:
 Rule: if you are adding entities like NPCs, item stocks, POI spawns, etc.,
 prefer sending them through the prototype/spawn pipeline so instantiation stays consistent.
 
+DIFFICULTY FIELD (Zone Danger, 10-tier):
+- systems/difficulty.py computes a deterministic danger scalar per zone, then maps it to tiers 1..10.
+- Base field: west->east gradient + low-frequency noise (keeps large swaths coherent).
+- Local modifiers: corruption envelope, site kind bonuses, POI structure bonuses.
+- Starting zone safety: a configurable safe radius clamps difficulty to a low cap.
+- LevelState stores: danger_value, danger_tier, danger_sources (for debugging/tuning).
+- Spawning filters enemy pools by tier:
+  - enemies.yaml can set tier_min/tier_max explicitly.
+  - If not set, a fallback tier is derived from XP using the global XP range.
+  - This prevents high-tier enemies from appearing in low-tier zones by default.
+
 ===============================================================================
 8) DIALOGUE
 

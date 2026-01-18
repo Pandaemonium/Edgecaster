@@ -34,6 +34,7 @@ from edgecaster.systems import scheduling
 from edgecaster.systems import combat as combat_system
 from edgecaster.systems import zones as zones_system
 from edgecaster.systems import overmap as overmap_system
+from edgecaster.systems import difficulty as difficulty_system
 from . import lorenz
 import math
 
@@ -133,6 +134,10 @@ class LevelState:
     fern_growth_tips: List[int] = field(default_factory=list)  # Vertex indices that can spawn growth
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
+    # Zone difficulty metadata (computed on zone creation).
+    danger_value: float = 0.0
+    danger_tier: int = 1
+    danger_sources: Dict[str, float] = field(default_factory=dict)
 
 
 
@@ -281,6 +286,12 @@ class Game:
         from edgecaster.systems.sites import SiteRegistry
         from edgecaster.systems.site_placement import place_all_sites
         self.site_registry: SiteRegistry = place_all_sites(self)
+
+        # Difficulty field configuration (tunable, decoupled from biomes).
+        # Adjust this in one place to change zone difficulty behavior.
+        self.difficulty_config = difficulty_system.DifficultyConfig()
+        # Optional per-zone overrides (quest/scripts can set these).
+        self.zone_difficulty_overrides: Dict[Tuple[int, int, int], float] = {}
 
         # Inventories: mapping from owner id to a list of carried Entities.
         # Initially empty; per-owner lists are created lazily via get_inventory().
@@ -1310,6 +1321,8 @@ class Game:
             coord=coord,
             lab_state=lab_state,
         )
+        # Compute difficulty metadata for this zone (tier + sources).
+        difficulty_system.apply_zone_difficulty(self, lvl, coord)
         # Spawn NPCs/entities from any POIs for this level (e.g., starting NPCs)
         self._spawn_poi_contents(lvl, coord)
 

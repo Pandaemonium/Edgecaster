@@ -27,6 +27,7 @@ from edgecaster import spawn_factory
 from edgecaster.enemies import factory as enemy_factory
 from edgecaster.state.actors import Human, Stats
 from edgecaster.content import npcs
+from edgecaster.systems import difficulty as difficulty_system
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +447,15 @@ def spawn_enemies(
             enemy_ids = get_enemy_template_ids(game)
 
         if not enemy_ids:
+            enemy_ids = ["imp"]
+
+        # Filter by zone difficulty tier (10-tier system).
+        zone_tier = getattr(level, "danger_tier", 1) or 1
+        filtered_pool, _bounds = difficulty_system.filter_enemy_pool(game, enemy_ids, zone_tier)
+        if filtered_pool:
+            enemy_ids = filtered_pool
+        else:
+            # If nothing matches, fall back to a safe baseline.
             enemy_ids = ["imp"]
 
         tmpl_id = game.rng.choice(enemy_ids)
@@ -927,6 +937,14 @@ def spawn_enemies_for_biome(
     pool = get_biome_enemy_pool(biome_id, include_neutral_factions=include_neutral_factions)
     if not pool:
         return 0
+
+    # Filter by zone difficulty tier (10-tier system).
+    zone_tier = getattr(level, "danger_tier", 1) or 1
+    filtered_pool, _bounds = difficulty_system.filter_enemy_pool(game, pool, zone_tier)
+    if filtered_pool:
+        pool = filtered_pool
+    else:
+        pool = ["imp"]
 
     spawned = 0
     attempts = 0
