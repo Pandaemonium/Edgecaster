@@ -627,3 +627,262 @@ def render_overmap_buffers_climate(
         rgb_corr = np.zeros((px_h, px_w, 3), dtype=np.uint8)
 
     return rgb_main, rgb_corr, peak2
+
+def render_overmap_fields_climate(
+    *,
+    px_w: int,
+    px_h: int,
+    total_w: int,
+    total_h: int,
+    j_min_x: float,
+    j_max_x: float,
+    j_min_y: float,
+    j_max_y: float,
+    view_min_wx: float = 0.0,
+    view_min_wy: float = 0.0,
+    view_span_wx: Optional[float] = None,
+    view_span_wy: Optional[float] = None,
+    visual_c: complex,
+    iters: int,
+    corruption_level: float,
+    corruption_seed: int,
+    spline_weight: float = 0.0,
+    hotspots: Optional[Iterable[tuple[float, float, float, float]]] = None,
+    anchors: Optional[Iterable[tuple[float, float, float, float]]] = None,
+    climate_config: Optional["ClimateConfig"] = None,
+) -> tuple["object", "object", "object"]:
+    """
+    Return field buffers needed for the unified ASCII appearance contract.
+
+    Returns (elev, biome_id, peak_env) as numpy arrays:
+      - elev:     (px_h, px_w) float32 in ~[0,1] (climate elevation field)
+      - biome_id: (px_h, px_w) uint8  (Biome enum value, incl corruption effects if enabled)
+      - peak_env: (px_h, px_w) float32 (corruption environment intensity; useful later)
+    """
+    import math
+    import numpy as np
+
+    from edgecaster import corruption as corr
+    from edgecaster.climate import (
+        ClimateConfig,
+        elev_ridge_belt,
+        ocean_lake_masks_from_water,
+        manhattan_distance_to,
+        compute_temperature,
+        compute_wind_field,
+        compute_moisture,
+        classify_biome,
+    )
+
+    if climate_config is None:
+        climate_config = ClimateConfig()
+    cfg = climate_config
+
+    px_w = int(px_w)
+    px_h = int(px_h)
+    if px_w <= 0 or px_h <= 0:
+        raise ValueError("px_w/px_h must be > 0")
+
+    total_w = int(total_w)
+    total_h = int(total_h)
+    if total_w <= 1 or total_h <= 1:
+        raise ValueError("total_w/total_h must be > 1")
+
+    world_max_wx = float(max(1, total_w - 1))
+    world_max_wy = float(max(1, total_h - 1))
+
+    iters = int(iters)
+    if iters <= 0:
+        iters = 1
+
+    corr_level = float(corruption_level or 0.0)
+    corr_seed = int(corruption_seed)
+    hot_list = list(hotspots or [])
+    anchor_list = list(anchors or [])
+
+    corr_params = corr.CorruptionParams(
+        seed=corr_seed,
+        hotspots=hot_list,
+        anchors=anchor_list,
+        spline_weight=float(spline_weight or 0.0),
+    )
+
+    # Pixel -> world coord -> Julia coord mapping
+    view_min_wx = float(view_min_wx)
+    view_min_wy = float(view_min_wy)
+    span_wx = float(view_span_wx) if view_span_wx is not None else float(world_max_wx)
+    span_wy = float(view_span_wy) if view_span_wy is not None else float(world_max_wy)
+    if span_wx <= 0.0 or span_wy <= 0.0:
+        raise ValueError("view_span_wx/view_span_wy must be > 0")
+
+    span_jx = float(j_max_x) - float(j_min_x)
+    span_jy = float(j_max_y) - float(j_min_y)
+    step_x = span_jx / world_max_wx
+    step_y = span_jy / world_max_wy
+
+    wx_line = view_min_wx + np.linspace(0.0, span_wx, px_w, dtype=np.float64)
+    wy_line = view_min_wy + np.linspace(0.0, span_wy, px_h, dtype=np.float64)
+    wx_line = np.clip(wx_line, 0.0, world_max_wx)
+    wy_line = np.clip(wy_line, 0.0, world_max_wy)
+
+    jx_line = float(j_min_x) + wx_line * step_x
+    jy_line = float(j_min_y) + wy_line * step_y
+
+    zx0 = np.tile(jx_line, (px_h, 1))
+    zy0 = np.tile(jy_line.reshape(-1, 1), (1, px_w))
+
+    zx = zx0.reshape(-1).astype(np.float64, copy=True)
+    zy = zy0.reshape(-1).astype(np.float64, copy=True)
+    n = zx.size
+    alive = np.ones(n, dtype=np.bool_)
+    escaped_it = np.full(n, iters, dtype=np.int32)
+    peak_env = np.zeros(n, dtype=np.float32)
+
+    # Corruption LUTs (same as the climate renderer, to avoid drift)
+    lut_res = int(getattr(corr, "_LUT_RES", 256))
+
+    nx_arr, ny_arr, spots_arr = corr._noise_lut(  # type: ignore[attr-defined]
+        int(corr_params.seed),
+        float(corr_params.freq),
+        float(corr_params.base_res),
+        float(corr_params.detail_res),
+        float(corr_params.ridge_strength),
+        float(corr_params.spot_freq),
+        float(corr_params.spot_threshold),
+        float(corr_params.spot_weight),
+        float(corr_params.right_start),
+        float(corr_params.right_sharpness),
+        float(corr_params.right_weight),
+        float(j_min_x),
+        float(j_max_x),
+        int(lut_res),
+    )
+    nx_tex = np.frombuffer(nx_arr, dtype=np.float32)
+    ny_tex = np.frombuffer(ny_arr, dtype=np.float32)
+    spots_tex = np.frombuffer(spots_arr, dtype=np.float32)
+
+    if hot_list:
+        hot_arr, hot_gx_arr, hot_gy_arr = corr._hot_lut(  # type: ignore[attr-defined]
+            corr._hotspots_cache_key(hot_list),  # type: ignore[attr-defined]
+            int(lut_res),
+        )
+        hot_tex = np.frombuffer(hot_arr, dtype=np.float32)
+        hot_gx_tex = np.frombuffer(hot_gx_arr, dtype=np.float32)
+        hot_gy_tex = np.frombuffer(hot_gy_arr, dtype=np.float32)
+    else:
+        hot_tex = None
+        hot_gx_tex = None
+        hot_gy_tex = None
+
+    if anchor_list:
+        anchor_arr = corr._anchor_lut(  # type: ignore[attr-defined]
+            corr._anchors_cache_key(anchor_list),  # type: ignore[attr-defined]
+            int(lut_res),
+        )
+        anchor_tex = np.frombuffer(anchor_arr, dtype=np.float32)
+    else:
+        anchor_tex = None
+
+    if float(getattr(corr_params, "spline_weight", 0.0) or 0.0) > 1e-9:
+        sx_arr, sy_arr = corr._spline_lut(  # type: ignore[attr-defined]
+            int(corr_params.seed),
+            int(getattr(corr_params, "spline_points", 40) or 40),
+            float(getattr(corr_params, "spline_strength", 0.35) or 0.35),
+            int(getattr(corr_params, "spline_iters", 120) or 120),
+            int(lut_res),
+        )
+        spline_x_tex = np.frombuffer(sx_arr, dtype=np.float32)
+        spline_y_tex = np.frombuffer(sy_arr, dtype=np.float32)
+    else:
+        spline_x_tex = None
+        spline_y_tex = None
+
+    def distortion_np(zx_a, zy_a):
+        return corr.distortion_np(  # type: ignore[attr-defined]
+            zx_a,
+            zy_a,
+            params=corr_params,
+            j_min_x=float(j_min_x),
+            j_max_x=float(j_max_x),
+            corruption_level=corr_level,
+            nx_tex=nx_tex,
+            ny_tex=ny_tex,
+            spots_tex=spots_tex,
+            spline_x_tex=spline_x_tex,
+            spline_y_tex=spline_y_tex,
+            anchor_tex=anchor_tex,
+            hot_tex=hot_tex,
+            hot_gx_tex=hot_gx_tex,
+            hot_gy_tex=hot_gy_tex,
+            lut_res=lut_res,
+        )
+
+    # Julia iteration
+    c_real = float(visual_c.real)
+    c_imag = float(visual_c.imag)
+    for i in range(iters):
+        idx = np.nonzero(alive)[0]
+        if idx.size == 0:
+            break
+
+        zx_a = zx[idx]
+        zy_a = zy[idx]
+
+        dx_a, dy_a, env_a = distortion_np(zx_a, zy_a)
+        peak_env[idx] = np.maximum(peak_env[idx], env_a.astype(np.float32, copy=False))
+
+        zx2 = zx_a * zx_a
+        zy2 = zy_a * zy_a
+        xt = zx2 - zy2 + c_real + dx_a
+        new_zy = 2.0 * zx_a * zy_a + c_imag + dy_a
+
+        zx[idx] = xt
+        zy[idx] = new_zy
+
+        r2 = xt * xt + new_zy * new_zy
+        escaped = r2 > 4.0
+        if np.any(escaped):
+            esc_idx = idx[escaped]
+            escaped_it[esc_idx] = i + 1
+            alive[esc_idx] = False
+
+    # Smooth escape time normalized t in [0,1]
+    mu = np.full(n, float(iters), dtype=np.float64)
+    mask_escaped = escaped_it < iters
+    if np.any(mask_escaped):
+        zx_e = zx[mask_escaped]
+        zy_e = zy[mask_escaped]
+        it_e = escaped_it[mask_escaped].astype(np.float64)
+        mod = np.sqrt(zx_e * zx_e + zy_e * zy_e)
+        smooth = it_e + 1.0 - (np.log(np.log(np.maximum(mod, 1e-6))) / math.log(2.0))
+        mu[mask_escaped] = smooth
+
+    t = np.clip(mu / float(iters), 0.0, 1.0).reshape((px_h, px_w)).astype(np.float32)
+    peak2 = peak_env.reshape((px_h, px_w))
+
+    # Climate elevation field
+    E_clim = elev_ridge_belt(t, land_boost=cfg.land_boost)
+
+    # Water classification / distance fields
+    water = (E_clim < cfg.sea_level)
+    ocean_mask, lake_mask = ocean_lake_masks_from_water(water, t=t)
+    ocean_dist = manhattan_distance_to(ocean_mask)
+    lake_dist = manhattan_distance_to(lake_mask)
+
+    # Latitude
+    y_mid = 0.5 * (float(j_min_y) + float(j_max_y))
+    y_half = 0.5 * (float(j_max_y) - float(j_min_y)) + 1e-6
+    lat_1d = (jy_line.astype(np.float32) - y_mid) / y_half
+    lat_1d = np.clip(lat_1d, -1.0, 1.0)
+    lat = np.repeat(lat_1d[:, None], px_w, axis=1).astype(np.float32)
+
+    # Temperature / wind / moisture
+    T = compute_temperature(E_clim, ocean_dist, lat, cfg)
+    U, V = compute_wind_field(E_clim, lat, T, cfg)
+    M = compute_moisture(E_clim, ocean_dist, lake_dist, U, V, T, cfg)
+
+    # Biome id (with corruption influence if enabled)
+    corruption_env = peak2 if corr_level > 0.0 else None
+    biome = classify_biome(E_clim, T, M, ocean_mask, lake_mask, corruption_env=corruption_env)
+
+    return E_clim.astype(np.float32, copy=False), biome.astype(np.uint8, copy=False), peak2.astype(np.float32, copy=False)
