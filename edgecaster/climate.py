@@ -150,14 +150,14 @@ class ClimateConfig:
     sea_level: float = 0.0    # Threshold for water (E_clim < sea_level)
 
     # Temperature knobs
-    lat_power: float = 1.2
+    lat_power: float = 0.8
     elev_scale: float = 0.6
     elev_power: float = 1.2
-    w_lat: float = 0.55
+    w_lat: float = 2
     w_elev: float = 0.40
     w_ocean: float = 0.05
     ocean_L: float = 10.0
-    temp_offset: float = 0.0
+    temp_offset: float = -0.2
 
     # Wind knobs (Earth-like mode)
     w_zonal_earth: float = 0.55
@@ -187,6 +187,7 @@ class ClimateConfig:
     # Geothermal knobs
     use_geothermal: bool = False
     geothermal_strength: float = 0.12
+    elev_norm_scale: float = 1.0   # tune: 0.7..1.6
 
 
 # -----------------------------
@@ -219,21 +220,21 @@ def elev_ridge_belt(
     land_boost: float = 0.0,
 ) -> np.ndarray:
     """
-    Non-monotonic "ridge belt" elevation mapping.
+    "Continent" elevation mapping (monotonic at the high end).
 
     Args:
-        t: Normalized escape time in [0, 1]. 0 = fast escape (ocean), 1 = bounded (lakes)
-        land_boost: 0.0 = original narrow ridges, 1.0 = maximum land coverage
+        t: Normalized escape time in [0, 1]. 0 = fast escape (far exterior), 1 = bounded / deep interior.
+        land_boost: widens ridges and increases land coverage.
 
     Returns:
         Elevation array where:
         - Fast escape (low t) -> negative (ocean)
-        - Moderate escape (medium t) -> positive peaks (land ridge belt)
-        - Bounded (t ~= 1) -> zero or negative (inland freshwater)
+        - Moderate escape (medium t) -> positive peaks (ridge belt)
+        - Bounded (t ~= 1) -> positive uplands (continental interior), NOT lakes
     """
-    # Boost factor affects ridge width and height
     boost = float(land_boost)
-    # Original parameters (narrow ridges)
+
+    # Original parameters (kept, just reinterpreting the t->1 behavior)
     ridge_center_base = 0.45
     ridge_sigma_base = 0.14
     ocean_depth_base = 0.8
@@ -257,13 +258,15 @@ def elev_ridge_belt(
     # Ridge belt (Gaussian peak)
     ridge = peak_height * gauss(t, ridge_center, ridge_sigma)
 
-    # Inland depression (bounded = t near 1.0)
+    # Continental interior uplift (bounded / near-bounded = t near 1.0)
+    # This replaces the old "inland depression" that produced giant interior seas.
     inland_start = 0.92 - boost * 0.05
-    inland_depth = 0.25 + boost * 0.15
-    inland_dip = -inland_depth * smoothstep(inland_start, 1.0, t)
+    inland_height = 0.35 + boost * 0.25
+    inland_uplift = inland_height * smoothstep(inland_start, 1.0, t)
 
-    E = ocean_trough + ridge + inland_dip
+    E = ocean_trough + ridge + inland_uplift
     return E.astype(np.float32)
+
 
 
 # -----------------------------
@@ -396,8 +399,14 @@ def compute_temperature(
     # Maritime moderation
     T_ocean = np.exp(-ocean_dist / float(cfg.ocean_L))
 
-    # Blend
-    T = float(cfg.w_lat) * T_lat + float(cfg.w_ocean) * T_ocean + float(cfg.w_elev) * T_elev
+    # Blend (NORMALIZED, so we don't saturate to 1.0 everywhere)
+    w_lat = float(cfg.w_lat)
+    w_ocean = float(cfg.w_ocean)
+    w_elev = float(cfg.w_elev)
+    wsum = max(1e-6, w_lat + w_ocean + w_elev)
+
+    T = (w_lat * T_lat + w_ocean * T_ocean + w_elev * T_elev) / wsum
+
 
     # Temperature offset
     if cfg.temp_offset != 0:
@@ -746,11 +755,15 @@ def classify_biome(
     # Land classification
     land = ~(ocean_mask | lake_mask)
 
-    # Normalize elevation for land cells using median-based scaling
-    E_land = np.where(land, E, 0)
-    E_median = np.median(E_land[land]) if np.any(land) else 0.5
-    E_median = max(E_median, 0.05)
-    E_norm = np.clip(E_land / (E_median * 2.0), 0, 1)
+    # Normalize elevation for land cells using a stable scale (not local median)
+    E_land = np.where(land, E, 0.0)
+
+    # Convert climate elevation into a 0..1 "land height" scale relative to sea level
+    # (negative = water already masked out, but we keep it safe)
+    E_rel = np.maximum(0.0, E_land)   # sea_level assumed 0.0
+    E_norm = np.clip(E_rel / 1.0, 0.0, 1.0)
+
+
 
     # High elevation
     high_elev = land & (E_norm > 0.65)
@@ -773,7 +786,7 @@ def classify_biome(
 
     # Cold
     biome[low_mid & (T < 0.25)] = Biome.TUNDRA
-    biome[low_mid & (T < 0.1) & (M > 0.75)] = Biome.ICE
+    biome[low_mid & (T < 0.18)] = Biome.ICE
 
     # Cool-temperate
     biome[low_mid & (T >= 0.25) & (T < 0.5) & (M < 0.25)] = Biome.TEMPERATE_DESERT
@@ -795,7 +808,7 @@ def classify_biome(
 
     # Coastal / low elevation
     coastal = land & (E_norm <= 0.15)
-    biome[coastal & (T < 0.15)] = Biome.ICE
+    biome[coastal & (T < 0.22)] = Biome.ICE
     biome[coastal & (T >= 0.15) & (T < 0.30)] = Biome.TUNDRA
     biome[coastal & (T >= 0.30) & (T < 0.50) & (M < 0.35)] = Biome.TEMPERATE_GRASSLAND
     biome[coastal & (T >= 0.30) & (T < 0.50) & (M >= 0.35)] = Biome.TEMPERATE_FOREST

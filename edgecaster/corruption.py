@@ -1199,22 +1199,24 @@ def julia_height_norm_corrupted(
     if params is None:
         params = CorruptionParams()
 
+    SEA = 0.35
+    ocean_pow = 1.15
+    interior_pow = 1.8
+
     zx = nx * scale
     zy = ny * scale
     it = 0
     peak_env = 0.0
 
+    r2_max = 0.0  # NEW
+
     while zx * zx + zy * zy <= 4.0 and it < iters:
-        dx, dy, env = distortion_dz(
-            zx,
-            zy,
-            params=params,
-            j_min_x=j_min_x,
-            j_max_x=j_max_x,
-            corruption_level=corruption_level,
-        )
-        if env > peak_env:
-            peak_env = env
+        r2 = zx * zx + zy * zy
+        if r2 > r2_max:
+            r2_max = r2
+
+        dx, dy, env = distortion_dz(...)
+        peak_env = max(peak_env, env)
 
         xt = zx * zx - zy * zy + c.real + dx
         zy = 2.0 * zx * zy + c.imag + dy
@@ -1222,10 +1224,24 @@ def julia_height_norm_corrupted(
         it += 1
 
     if it >= iters:
-        return 0.0, peak_env
+        # Julia-based interior roughness
+        interior_julia = (1.0 - clamp(r2_max / 4.0, 0.0, 1.0)) ** interior_pow
 
+        # Smooth continental core bias
+        r = math.sqrt(zx*zx + zy*zy)
+        core_pow = 1.5
+        core_weight = 0.6
+        core = (1.0 - clamp(r / 2.0, 0.0, 1.0)) ** core_pow
+
+        interior = max(interior_julia, core * core_weight)
+
+        h = SEA + (1.0 - SEA) * interior
+        return h, peak_env
+
+
+    # escaped: ocean depths (far away low, near boundary approaches SEA)
     mod = math.sqrt(zx * zx + zy * zy)
     smooth = it + 1.0 - math.log(math.log(max(mod, 1e-6))) / math.log(2.0)
-    h = clamp(smooth / iters, 0.0, 1.0)
-
+    t = clamp(smooth / iters, 0.0, 1.0)
+    h = SEA * (t ** ocean_pow)
     return h, peak_env

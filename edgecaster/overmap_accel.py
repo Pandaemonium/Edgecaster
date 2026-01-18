@@ -560,12 +560,12 @@ def render_overmap_buffers_climate(
     ocean_dist = manhattan_distance_to(ocean_mask)
     lake_dist = manhattan_distance_to(lake_mask)
 
-    # Latitude (from Julia y-coordinates, normalized to [-1, 1])
-    y_mid = 0.5 * (float(j_min_y) + float(j_max_y))
-    y_half = 0.5 * (float(j_max_y) - float(j_min_y)) + 1e-6
-    lat_1d = (jy_line.astype(np.float32) - y_mid) / y_half
-    lat_1d = np.clip(lat_1d, -1.0, 1.0)
-    lat = np.repeat(lat_1d[:, None], px_w, axis=1).astype(np.float32)
+    # --- Latitude (world-based, stable across views) ---
+    # wy_line is world-space Y in [0 .. total_h-1]
+    wy_norm = (wy_line / (total_h - 1)) * 2.0 - 1.0
+    # wy_norm: -1 = south edge, 0 = equator, +1 = north edge
+    lat = np.repeat(wy_norm[:, None], px_w, axis=1).astype(np.float32)
+
 
     # Temperature
     T = compute_temperature(E_clim, ocean_dist, lat, cfg)
@@ -655,9 +655,14 @@ def render_overmap_fields_climate(
     Return field buffers needed for the unified ASCII appearance contract.
 
     Returns (elev, biome_id, peak_env) as numpy arrays:
-      - elev:     (px_h, px_w) float32 in ~[0,1] (climate elevation field)
+      - elev:     (px_h, px_w) float32 (climate elevation field)
       - biome_id: (px_h, px_w) uint8  (Biome enum value, incl corruption effects if enabled)
       - peak_env: (px_h, px_w) float32 (corruption environment intensity; useful later)
+
+    NOTE:
+    This version enriches the "bounded" (inside Julia set) elevation by tracking r2_max
+    during iteration and using it to spread bounded points across a band of t near 1.0.
+    That preserves "pure Julia" structure without adding external noise fields.
     """
     import math
     import numpy as np
@@ -737,6 +742,9 @@ def render_overmap_fields_climate(
     alive = np.ones(n, dtype=np.bool_)
     escaped_it = np.full(n, iters, dtype=np.int32)
     peak_env = np.zeros(n, dtype=np.float32)
+
+    # NEW: track maximum radius^2 encountered during orbit (for "depth of capture")
+    r2_max = np.zeros(n, dtype=np.float64)
 
     # Corruption LUTs (same as the climate renderer, to avoid drift)
     lut_res = int(getattr(corr, "_LUT_RES", 256))
@@ -840,6 +848,10 @@ def render_overmap_fields_climate(
         zy[idx] = new_zy
 
         r2 = xt * xt + new_zy * new_zy
+
+        # NEW: accumulate maximum radius^2 while still iterating
+        r2_max[idx] = np.maximum(r2_max[idx], r2)
+
         escaped = r2 > 4.0
         if np.any(escaped):
             esc_idx = idx[escaped]
@@ -857,24 +869,47 @@ def render_overmap_fields_climate(
         smooth = it_e + 1.0 - (np.log(np.log(np.maximum(mod, 1e-6))) / math.log(2.0))
         mu[mask_escaped] = smooth
 
-    t = np.clip(mu / float(iters), 0.0, 1.0).reshape((px_h, px_w)).astype(np.float32)
+    t = np.clip(mu / float(iters), 0.0, 1.0).astype(np.float32)
     peak2 = peak_env.reshape((px_h, px_w))
 
+    # NEW: enrich bounded points using r2_max ("depth of capture")
+    # Points that never escaped currently have t==1.0; we instead spread them across a band
+    # near 1.0 so inland has relief but remains purely Julia-derived.
+    bounded = ~mask_escaped
+    if np.any(bounded):
+        # interiorness in [0..1]: 0 near boundary (orbit grazes bailout), 1 deep interior (tight orbit)
+        interior_pow = 1.8
+        interior = (1.0 - np.clip(r2_max[bounded] / 4.0, 0.0, 1.0)) ** interior_pow
+
+        # Map interiorness into a band of t near 1.0.
+        # Keep consistent with elev_ridge_belt's inland_start (~0.92) so coastline behavior stays stable.
+        inland_start = 0.88 - float(getattr(cfg, "land_boost", 0.0) or 0.0) * 0.05
+        inland_start = float(np.clip(inland_start, 0.75, 0.98))
+
+        t[bounded] = inland_start + (1.0 - inland_start) * interior.astype(np.float32)
+
+    t2 = t.reshape((px_h, px_w)).astype(np.float32, copy=False)
+
     # Climate elevation field
-    E_clim = elev_ridge_belt(t, land_boost=cfg.land_boost)
+    E_clim = elev_ridge_belt(t2, land_boost=cfg.land_boost)
 
     # Water classification / distance fields
     water = (E_clim < cfg.sea_level)
-    ocean_mask, lake_mask = ocean_lake_masks_from_water(water, t=t)
+    ocean_mask, lake_mask = ocean_lake_masks_from_water(water, t=t2)
     ocean_dist = manhattan_distance_to(ocean_mask)
     lake_dist = manhattan_distance_to(lake_mask)
 
     # Latitude
     y_mid = 0.5 * (float(j_min_y) + float(j_max_y))
     y_half = 0.5 * (float(j_max_y) - float(j_min_y)) + 1e-6
-    lat_1d = (jy_line.astype(np.float32) - y_mid) / y_half
-    lat_1d = np.clip(lat_1d, -1.0, 1.0)
-    lat = np.repeat(lat_1d[:, None], px_w, axis=1).astype(np.float32)
+    # --- Latitude (world-based, stable across views) ---
+    # wy_line is already world-space Y in [0 .. total_h-1]
+
+    wy_norm = (wy_line / (total_h - 1)) * 2.0 - 1.0
+    # wy_norm: -1 = south pole, 0 = equator, +1 = north pole
+
+    lat = np.repeat(wy_norm[:, None], px_w, axis=1).astype(np.float32)
+
 
     # Temperature / wind / moisture
     T = compute_temperature(E_clim, ocean_dist, lat, cfg)
