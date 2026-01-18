@@ -186,7 +186,7 @@
   base_defense: 0
   speed: 1.0
   faction: hostile
-  ai: skirmisher
+  ai: lunatic
   xp: 5
   parent: humanoid
   description: Even a thousand monkeys are right twice a day.
