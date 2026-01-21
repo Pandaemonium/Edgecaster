@@ -51,6 +51,9 @@ class SceneManager:
         # Default rendering mode (tiles on): allow sprite/icon rendering when available.
         try:
             setattr(self.renderer, "prefer_sprite_icons", bool(self.options.get("Tiles", True)))
+            setattr(self.renderer, "prefer_terrain_tiles", bool(self.options.get("Tiles", True)))
+
+ 
         except Exception:
             pass
 
@@ -118,6 +121,8 @@ class SceneManager:
         # (Renderer will still fall back to glyphs when a sprite/icon is missing.)
         try:
             setattr(self.renderer, "prefer_sprite_icons", bool(self.options.get("Tiles", True)))
+            setattr(self.renderer, "prefer_terrain_tiles", bool(self.options.get("Tiles", True)))
+
         except Exception:
             pass
 

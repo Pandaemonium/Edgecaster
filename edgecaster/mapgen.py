@@ -105,38 +105,53 @@ def apply_pois(world: World, coord: Tuple[int, int, int]) -> List[str]:
 def build_item_depot(world: World, rng, entry: Tuple[int, int]) -> dict:
     """
     Carve an item depot to the left of entry. Returns metadata for placement.
+
+    IMPORTANT: This no longer stamps terrain walls. It returns wall_positions so
+    the Game can spawn wall entities (and a door entity) at realization time.
     """
-    # Make the depot fairly large so it feels like a real stockroom and provides
-    # plenty of item variety for testing/early-game progression.
     w = rng.randint(8, 12)
     h = rng.randint(8, 12)
     ex, ey = entry
     x = max(1, ex - w - 4)
     y = max(1, min(world.height - h - 2, ey - h // 2))
+
+    # Door on east wall
     door_y = y + rng.randint(1, max(1, h - 2))
-    door_x = x + w - 1  # east wall
+    door_x = x + w - 1
 
     interior = []
+    wall_positions = []
+
     for yy in range(y, y + h):
         for xx in range(x, x + w):
             tile = world.get_tile(xx, yy)
             if tile is None:
                 continue
-            is_border = xx in (x, x + w - 1) or yy in (y, y + h - 1)
-            if is_border:
-                tile.walkable = False
-                tile.glyph = "#"
+
+            is_border = (xx in (x, x + w - 1) or yy in (y, y + h - 1))
+            is_door = (xx == door_x and yy == door_y)
+
+            if is_border and not is_door:
+                # Leave terrain alone visually; just record where to spawn wall entities.
+                wall_positions.append((xx, yy))
+
+                # Ensure the underlying terrain isn't acting like a wall anymore.
+                # (Let the wall entity handle blocking + visibility.)
+                tile.walkable = True
+                # Keep the tile glyph as-is if you prefer; using '.' makes testing obvious.
+                tile.glyph = "."
             else:
                 tile.walkable = True
                 tile.glyph = "."
                 interior.append((xx, yy))
-    # door
+
+    # Door tile should be walkable at the terrain level; the door ENTITY blocks movement.
     if world.in_bounds(door_x, door_y):
         dtile = world.get_tile(door_x, door_y)
         if dtile:
-            # Closed door starts as a blocker (like a wall) until opened.
-            dtile.walkable = False
-            dtile.glyph = "#"
+            dtile.walkable = True
+            dtile.glyph = "."
+
     # sign just outside door (east side)
     sign_pos = None
     if world.in_bounds(door_x + 1, door_y):
@@ -145,12 +160,15 @@ def build_item_depot(world: World, rng, entry: Tuple[int, int]) -> dict:
         if tile:
             tile.walkable = True
             tile.glyph = "."
+
     return {
         "rect": (x, y, w, h),
         "door": (door_x, door_y),
         "sign": sign_pos,
         "interior": interior,
+        "wall_positions": wall_positions,
     }
+
 
 
 def generate_basic(world: World, rng, up_pos: Optional[Tuple[int, int]] = None, coord: Tuple[int, int, int] = (0, 0, 0)) -> None:

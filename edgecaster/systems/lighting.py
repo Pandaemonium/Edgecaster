@@ -4,16 +4,13 @@ Lighting System - Light emission from entities.
 This module manages:
 - Collecting light sources from entities in a level
 - Calculating per-tile illumination
-- Integrating with the FOV system to make lit tiles visible
-
-Light sources are entities with a 'light_radius' tag > 0.
-Optional tags: 'light_intensity' (default 1.0), 'light_color' (RGB tuple).
+- Optionally revealing distant lit tiles, respecting blocks_vision
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple, Set
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -30,8 +27,22 @@ class LightSource:
     color: Optional[Tuple[int, int, int]] = None
 
 
-def _los_check(world: "World", a: Tuple[int, int], b: Tuple[int, int]) -> bool:
-    """Check line-of-sight between two points (simplified Bresenham)."""
+def _los_check(
+    world: "World",
+    a: Tuple[int, int],
+    b: Tuple[int, int],
+    *,
+    opaque: Optional[Set[Tuple[int, int]]] = None,
+) -> bool:
+    """
+    Check line-of-sight between two points (simplified Bresenham).
+
+    Blocks LOS on:
+      - any position in `opaque` (entities with blocks_vision=True)
+      - terrain tiles with tile.blocks_vision == True (if present)
+
+    Always allows seeing the target square itself.
+    """
     x0, y0 = a
     x1, y1 = b
     dx = abs(x1 - x0)
@@ -44,13 +55,23 @@ def _los_check(world: "World", a: Tuple[int, int], b: Tuple[int, int]) -> bool:
     while True:
         if not world.in_bounds(x, y):
             return False
+
         tile = world.get_tile(x, y)
         if tile is None:
             return False
+
+        # Allow seeing the target tile itself
         if (x, y) == (x1, y1):
             return True
-        if not tile.walkable:
+
+        # Entity-based occlusion (walls, closed doors, etc.)
+        if opaque is not None and (x, y) in opaque:
             return False
+
+        # Terrain-based occlusion (if ever used)
+        if getattr(tile, "blocks_vision", False):
+            return False
+
         e2 = 2 * err
         if e2 >= dy:
             err += dy
@@ -91,24 +112,43 @@ def collect_light_sources(level: "LevelState") -> List[LightSource]:
             except Exception:
                 color = None
 
-        sources.append(LightSource(
-            pos=pos,
-            radius=radius,
-            intensity=intensity,
-            color=color,
-        ))
+        sources.append(
+            LightSource(
+                pos=pos,
+                radius=radius,
+                intensity=intensity,
+                color=color,
+            )
+        )
 
     return sources
+
+
+def _build_opaque_set(level: "LevelState") -> Set[Tuple[int, int]]:
+    """Build a set of positions that block vision (entities with blocks_vision)."""
+    opaque: Set[Tuple[int, int]] = set()
+    entities = getattr(level, "entities", {}) or {}
+    for ent in entities.values():
+        if getattr(ent, "blocks_vision", False):
+            pos = getattr(ent, "pos", None)
+            if pos is not None:
+                opaque.add(pos)
+    return opaque
 
 
 def calculate_illumination(level: "LevelState", sources: List[LightSource]) -> None:
     """Calculate and store illumination values for all tiles.
 
     For each light source, illuminates tiles within its radius
-    with falloff based on distance. Light requires line-of-sight.
+    with falloff based on distance. Light requires LOS respecting blocks_vision.
     """
     world = level.world
     world.clear_illumination()
+
+    if not sources:
+        return
+
+    opaque = _build_opaque_set(level)
 
     for src in sources:
         lx, ly = src.pos
@@ -125,20 +165,18 @@ def calculate_illumination(level: "LevelState", sources: List[LightSource]) -> N
                 if dist2 > r2:
                     continue
 
-                # Check LOS from light source to tile
-                if not _los_check(world, (lx, ly), (tx, ty)):
+                if not _los_check(world, (lx, ly), (tx, ty), opaque=opaque):
                     continue
 
                 tile = world.get_tile(tx, ty)
                 if tile is None:
                     continue
 
-                # Calculate illumination with distance falloff
-                dist = (dist2 ** 0.5) if dist2 > 0 else 0
+                # Distance falloff
+                dist = (dist2 ** 0.5) if dist2 > 0 else 0.0
                 falloff = 1.0 - (dist / (r + 1))
                 illumination = src.intensity * falloff
 
-                # Accumulate light from multiple sources
                 tile.illumination = max(tile.illumination, illumination)
 
 
@@ -150,36 +188,30 @@ def mark_lit_tiles_visible(
 ) -> None:
     """Mark sufficiently lit tiles as visible if player has LOS to them.
 
-    This allows the player to see distant light sources (like a dropped
-    Glowing Band) even if they're outside the normal FOV radius, as long
-    as there's no wall blocking the view.
-
-    Args:
-        game: The game instance (for accessing _los helper if needed)
-        level: The current level
-        player_pos: Player's position for LOS checks
-        illumination_threshold: Minimum illumination to consider a tile "lit"
+    This allows seeing distant light sources (e.g. glowing items)
+    *without* violating walls/doors that block vision.
     """
     world = level.world
     px, py = player_pos
 
-    # Check all tiles for illumination
+    opaque = _build_opaque_set(level)
+
     for y in range(world.height):
         for x in range(world.width):
             tile = world.get_tile(x, y)
             if tile is None:
                 continue
 
-            # Skip if already visible (from normal FOV)
+            # Already visible from normal FOV
             if tile.visible:
                 continue
 
-            # Skip if not illuminated enough
+            # Not bright enough
             if tile.illumination < illumination_threshold:
                 continue
 
-            # Check if player has LOS to this lit tile
-            if _los_check(world, (px, py), (x, y)):
+            # Respect entity-based occlusion
+            if _los_check(world, (px, py), (x, y), opaque=opaque):
                 tile.visible = True
                 tile.explored = True
 
@@ -189,10 +221,9 @@ def update_level_lighting(
     level: "LevelState",
     player_pos: Tuple[int, int],
 ) -> None:
-    """Full lighting update: collect sources, calculate illumination, mark visible.
+    """Full lighting update.
 
-    Call this from _update_fov() after clearing visibility but before
-    or after the normal FOV calculation.
+    Intended to be called from Game._update_fov().
     """
     sources = collect_light_sources(level)
     if not sources:

@@ -257,57 +257,51 @@ def _find_open_area(
     return None
 
 
-def _stamp_walls_site(
-    level: "LevelState",
-    x0: int, y0: int,
-    w: int, h: int,
-    door_side: str = "south",
-) -> Optional[Tuple[int, int]]:
-    """Stamp a rectangular wall structure with a door.
-
-    Returns the door position (x, y) or None.
+def _spawn_walls_and_door_site(game, level, rect):
     """
-    world = level.world
-    door_pos = None
+    Spawn wall entities around the perimeter of rect,
+    with a single door entity replacing one wall.
+    """
+    x0, y0, w, h = rect
+    x1 = x0 + w - 1
+    y1 = y0 + h - 1
 
-    for dy in range(h):
-        for dx in range(w):
-            x, y = x0 + dx, y0 + dy
-            if not world.in_bounds(x, y):
-                continue
+    wall_positions = []
 
-            tile = world.get_tile(x, y)
-            if tile is None:
-                continue
+    # Collect perimeter positions
+    for x in range(x0, x1 + 1):
+        wall_positions.append((x, y0))
+        wall_positions.append((x, y1))
 
-            is_border = (dx == 0 or dx == w - 1 or dy == 0 or dy == h - 1)
+    for y in range(y0 + 1, y1):
+        wall_positions.append((x0, y))
+        wall_positions.append((x1, y))
 
-            if is_border:
-                tile.walkable = False
-                tile.glyph = "#"
-                tile.color = (120, 100, 80)
-            else:
-                tile.walkable = True
-                tile.glyph = "."
-                tile.color = (80, 70, 60)
+    # Choose a door position (middle of one side)
+    door_pos = ((x0 + x1) // 2, y0)
 
-    if door_side == "south":
-        door_pos = (x0 + w // 2, y0 + h - 1)
-    elif door_side == "north":
-        door_pos = (x0 + w // 2, y0)
-    elif door_side == "east":
-        door_pos = (x0 + w - 1, y0 + h // 2)
-    elif door_side == "west":
-        door_pos = (x0, y0 + h // 2)
+    # Remove door position from wall list
+    wall_positions = [p for p in wall_positions if p != door_pos]
 
-    if door_pos and world.in_bounds(*door_pos):
-        tile = world.get_tile(*door_pos)
-        if tile:
-            tile.walkable = True
-            tile.glyph = "+"
-            tile.color = (160, 120, 80)
+    # Spawn wall entities
+    for (x, y) in wall_positions:
+        if not level.get_entity_at((x, y)):
+            ent = game.spawn_factory.spawn_from_template(
+                "wall",
+                pos=(x, y),
+                level=level,
+            )
+            level.entities[ent.id] = ent
 
-    return door_pos
+    # Spawn door entity
+    if not level.get_entity_at(door_pos):
+        ent = game.spawn_factory.spawn_from_template(
+            "door",
+            pos=door_pos,
+            level=level,
+        )
+        level.entities[ent.id] = ent
+
 
 
 def _stamp_platform_site(
@@ -331,6 +325,52 @@ def _stamp_platform_site(
                 tile.walkable = True
                 tile.glyph = glyph
                 tile.color = color
+
+def _spawn_walls_and_door_site(game, level, rect):
+    """
+    Spawn wall entities around the perimeter of rect,
+    with a single door entity replacing one wall.
+    """
+    x0, y0, w, h = rect
+    x1 = x0 + w - 1
+    y1 = y0 + h - 1
+
+    wall_positions = []
+
+    # Collect perimeter positions
+    for x in range(x0, x1 + 1):
+        wall_positions.append((x, y0))
+        wall_positions.append((x, y1))
+
+    for y in range(y0 + 1, y1):
+        wall_positions.append((x0, y))
+        wall_positions.append((x1, y))
+
+    # Choose a door position (middle of one side)
+    door_pos = ((x0 + x1) // 2, y0)
+
+    # Remove door position from wall list
+    wall_positions = [p for p in wall_positions if p != door_pos]
+
+    # Spawn wall entities
+    for (x, y) in wall_positions:
+        if not level.get_entity_at((x, y)):
+            ent = game.spawn_factory.spawn_from_template(
+                "wall",
+                pos=(x, y),
+                level=level,
+            )
+            level.entities[ent.id] = ent
+
+    # Spawn door entity
+    if not level.get_entity_at(door_pos):
+        ent = game.spawn_factory.spawn_from_template(
+            "door",
+            pos=door_pos,
+            level=level,
+        )
+        level.entities[ent.id] = ent
+
 
 
 def _stamp_landmark_site(
@@ -430,7 +470,7 @@ def realize_bird_aerie(
     x0, y0, w, h = area
     tower_x = x0 + w // 2 - 2
     tower_y = y0 + h // 2 - 2
-    _stamp_walls_site(level, tower_x, tower_y, 5, 5, door_side="south")
+    _spawn_walls_and_door_site(game, level, tower_x, tower_y, 5, 5, door_side="south")
 
     offsets = [(-4, -2), (4, -2), (-4, 3), (4, 3)]
     for dx, dy in offsets:
@@ -484,11 +524,11 @@ def realize_fishing_village(
     if dock_y >= 1:
         _stamp_platform_site(level, dock_x - 1, dock_y, 3, 2, glyph="=", color=(100, 80, 60))
 
-    _stamp_walls_site(level, x0, y0, 5, 4, door_side="south")
+    _spawn_walls_and_door_site(game, level, x0, y0, 5, 4, door_side="south")
 
     hut_x = x0 + 6
     if world.in_bounds(hut_x, y0):
-        _stamp_walls_site(level, hut_x, y0, 4, 3, door_side="south")
+        _spawn_walls_and_door_site(game, level, hut_x, y0, 4, 3, door_side="south")
 
     npc_pool = site.tags.get("npc_pool", [])
     if npc_pool:
@@ -595,7 +635,7 @@ def realize_hunter_lodge(
         return
 
     x0, y0, w, h = area
-    _stamp_walls_site(level, x0, y0, 6, 5, door_side="south")
+    _spawn_walls_and_door_site(game, level, x0, y0, 6, 5, door_side="south")
 
     rack_x = x0 + 7
     if world.in_bounds(rack_x, y0):

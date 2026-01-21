@@ -1,13 +1,65 @@
 # edgecaster/spawn_factory.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 import copy
+import inspect
+import os
 
 from edgecaster.state.entities import Entity
 from edgecaster.state.actors import Actor, Stats
 from edgecaster.prototypes import bake_instance_body_schema
-import os
+
+
+# Keys that are handled explicitly by build_entity_from_spec/build_actor_from_spec
+# or should never be blindly copied onto the runtime instance.
+_ENTITY_RESERVED_KEYS = {
+    # identity / placement
+    "id", "eid", "aid", "pos",
+    # presentation core (handled)
+    "name", "glyph", "color", "render_layer", "kind",
+    # structured blobs (handled/merged)
+    "tags", "statuses",
+    # prototype / inheritance metadata
+    "parent",
+}
+
+
+def _ctor_kwargs_for(cls: type, desired: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter kwargs to only those accepted by cls.__init__.
+
+    This makes the factory robust as Entity/Actor signatures evolve.
+    """
+    try:
+        sig = inspect.signature(cls.__init__)
+        params = set(sig.parameters.keys())
+        # Always exclude 'self'
+        params.discard("self")
+        return {k: v for k, v in desired.items() if k in params}
+    except Exception:
+        # If signature introspection fails for any reason, fall back to the safe minimum.
+        safe = {}
+        for k in ("id", "name", "pos", "glyph", "color", "render_layer", "kind", "tags", "statuses"):
+            if k in desired:
+                safe[k] = desired[k]
+        return safe
+
+
+def _hydrate_entity_extras(ent: Any, spec: Dict[str, Any]) -> None:
+    """Copy remaining spec keys onto the entity as attributes.
+
+    IMPORTANT: We *do* overwrite existing attributes (except reserved keys), because
+    many entities/actors define defaults on the class (e.g. blocks_vision=False) and
+    we want YAML/prototype values to take precedence at spawn time.
+    """
+    for k, v in spec.items():
+        if k in _ENTITY_RESERVED_KEYS:
+            continue
+        try:
+            setattr(ent, k, copy.deepcopy(v))
+        except Exception:
+            # Swallow to keep this future-proof even if some attrs are read-only.
+            pass
 
 
 def _as_color(x: Any, default: Tuple[int, int, int] = (255, 255, 255)) -> Tuple[int, int, int]:
@@ -21,8 +73,8 @@ def _as_color(x: Any, default: Tuple[int, int, int] = (255, 255, 255)) -> Tuple[
 
 
 def _merge_entity_tags(base_tags: Any, override_tags: Any) -> Dict[str, Any]:
-    """
-    Entities expect tags as a dict.
+    """Entities expect tags as a dict.
+
     - If base is missing or non-dict, treat as empty.
     - Overrides must be dict-like; otherwise ignored.
     """
@@ -35,10 +87,7 @@ def _merge_entity_tags(base_tags: Any, override_tags: Any) -> Dict[str, Any]:
 
 
 def _maybe_attach_default_icon_path(tags: Dict[str, Any], proto_id: Optional[str]) -> None:
-    """
-    If no explicit icon is specified in tags, try to auto-attach one based on proto_id.
-    This is purely a convenience fallback to reduce YAML boilerplate.
-    """
+    """If no explicit icon is specified in tags, try to auto-attach one based on proto_id."""
     if not proto_id:
         return
     if not isinstance(tags, dict):
@@ -49,7 +98,6 @@ def _maybe_attach_default_icon_path(tags: Dict[str, Any], proto_id: Optional[str
         return
 
     # Tune these to match your actual asset layout.
-    # Order matters: first match wins.
     candidate_paths = [
         os.path.join("assets", "icons", f"{proto_id}.png"),
         os.path.join("assets", f"{proto_id}.png"),
@@ -58,7 +106,6 @@ def _maybe_attach_default_icon_path(tags: Dict[str, Any], proto_id: Optional[str
 
     for p in candidate_paths:
         if os.path.exists(p):
-            # Normalize slashes for consistency across platforms
             tags["icon_path"] = p.replace("\\", "/")
             return
 
@@ -70,9 +117,14 @@ def build_entity_from_spec(
     pos: Tuple[int, int],
     overrides: Optional[Dict[str, Any]] = None,
 ) -> Entity:
-    """
-    Build a plain Entity from a resolved prototype spec.
+    """Build a plain Entity from a resolved prototype spec.
+
     `overrides` merges on top; `tags` merges dict-wise.
+
+    Design intent:
+    - Only pass kwargs that Entity.__init__ actually accepts.
+    - Copy every remaining YAML key onto the instance afterward so new YAML
+      properties (e.g. blocks_vision) "just work" without special-casing.
     """
     s = copy.deepcopy(spec)
 
@@ -89,36 +141,39 @@ def build_entity_from_spec(
     color = _as_color(s.get("color"), (255, 255, 255))
     kind = s.get("kind", "generic")
     render_layer = int(s.get("render_layer", 1) or 1)
-    blocks_movement = bool(s.get("blocks_movement", False))
     tags = _merge_entity_tags(s.get("tags"), None)
     _maybe_attach_default_icon_path(tags, str(s.get("id") or ""))
     statuses = dict(s.get("statuses", {}) or {})
 
-    ent = Entity(
-        id=eid,
-        name=name,
-        pos=pos,
-        glyph=glyph,
-        color=color,  # type: ignore[arg-type]
-        render_layer=render_layer,
-        kind=kind,
-        blocks_movement=blocks_movement,
-        tags=tags,
-        statuses=statuses,
-    )
+    # Build kwargs, then filter against Entity.__init__ so we never crash on
+    # new YAML fields (e.g. blocks_vision) or older Entity signatures.
+    desired_kwargs: Dict[str, Any] = {
+        "id": eid,
+        "name": name,
+        "pos": pos,
+        "glyph": glyph,
+        "color": color,
+        "render_layer": render_layer,
+        "kind": kind,
+        "tags": tags,
+        "statuses": statuses,
+        # Common optional ctor args (only used if Entity accepts them):
+        "blocks_movement": bool(s.get("blocks_movement", False)),
+        "blocks_vision": bool(s.get("blocks_vision", False)),
+    }
 
-    # Keep a reference to the originating prototype id (critical for body schemas, save/load, introspection).
-    # IMPORTANT: this must be the prototype id, not the runtime instance id.
-    src_pid = s.get("id")  # resolved prototype id
+    ent = Entity(**_ctor_kwargs_for(Entity, desired_kwargs))
+
+    # Keep a reference to the originating prototype id (critical for body schemas,
+    # save/load, introspection). IMPORTANT: this must be the prototype id.
+    src_pid = s.get("id")
     if src_pid is not None:
         try:
             ent.proto_id = str(src_pid)
         except Exception:
             pass
 
-
-    # Optional: attach description if your Entity supports it (it seems to in your project).
-    # This is safe even if not declared in the dataclass, because Python allows dynamic attrs.
+    # Optional: attach description if your Entity supports it.
     desc = s.get("description", None)
     if desc is not None:
         try:
@@ -126,16 +181,15 @@ def build_entity_from_spec(
         except Exception:
             pass
 
-
-    # Birth-time bilateral symmetry baking:
-    # If this entity has mirrored nodes (e.g. arm_m), rewrite their layouts/props and proto
-    # references so zooming into them resolves mirrored sub-schemas without inventory_scene
-    # needing to do any mirror math.
+    # Birth-time bilateral symmetry baking.
     try:
         if getattr(ent, "proto_id", None):
             ent.body_schema = bake_instance_body_schema(str(ent.proto_id))
     except Exception:
         pass
+
+    # Finally, hydrate any remaining YAML keys onto the instance.
+    _hydrate_entity_extras(ent, s)
 
     return ent
 
@@ -147,29 +201,28 @@ def build_actor_from_spec(
     pos: Tuple[int, int],
     overrides: Optional[Dict[str, Any]] = None,
 ) -> Actor:
-    """
-    Build an Actor from a resolved prototype spec (enemies.yaml style).
+    """Build an Actor from a resolved prototype spec (enemies.yaml style).
+
     YAML tags handling:
-    - If the YAML "tags" field is a dict, we merge it directly into actor.tags (so icon_path/icon work like Entities).
-    - If the YAML "tags" field is a list (legacy classification tags), we keep it under actor.tags["tags"].
+    - If YAML "tags" is a dict, merge it directly into actor.tags
+    - If YAML "tags" is a list (legacy classification tags), keep under actor.tags["tags"]
+
+    Like Entities, we hydrate all remaining YAML keys onto the instance after init,
+    so adding new YAML fields doesn't require more factory code.
     """
     s = copy.deepcopy(spec)
     if overrides:
-        # For actors, we’ll allow a shallow override merge; if you later want patch ops,
-        # do it at the prototype layer.
+        # For actors, allow a shallow override merge.
         s.update(dict(overrides))
 
     name = s.get("name") or s.get("id") or "Actor"
     glyph = s.get("glyph", "@")
     color = _as_color(s.get("color"), (255, 255, 255))
     faction = s.get("faction", "neutral")
-    # Preserve explicit empty action lists from YAML (e.g. training dummies).
-    # Only fall back to default if the key is missing or None.
+
+    # Preserve explicit empty action lists from YAML.
     raw_actions = s.get("actions", None)
-    if raw_actions is None:
-        actions = ("move", "wait")
-    else:
-        actions = tuple(raw_actions)
+    actions = ("move", "wait") if raw_actions is None else tuple(raw_actions)
 
     base_hp = int(s.get("base_hp", 1) or 1)
     base_attack = int(s.get("base_attack", 1) or 1)
@@ -178,36 +231,41 @@ def build_actor_from_spec(
     ai_name = s.get("ai", "idle")
     xp = int(s.get("xp", 0) or 0)
 
-    actor = Actor(
-        id=aid,
-        name=name,
-        pos=pos,
-        glyph=glyph,
-        color=color,
-        render_layer=2,
-        kind="enemy",
-        blocks_movement=True,
-        tags={
-            "template_id": s.get("id"),
-            "ai": ai_name,
-            "base_attack": base_attack,
-            "base_defense": base_defense,
-        },
-        statuses={},
-        faction=faction,
-        actions=actions,
-    )
+    actor_tags: Dict[str, Any] = {
+        "template_id": s.get("id"),
+        "ai": ai_name,
+        "base_attack": base_attack,
+        "base_defense": base_defense,
+    }
 
-    # Keep a reference to the originating prototype id (critical for body schemas, save/load, introspection).
-    # IMPORTANT: this must be the prototype id, not the runtime instance id.
-    src_pid = s.get("id")  # resolved prototype id
+    desired_kwargs: Dict[str, Any] = {
+        "id": aid,
+        "name": name,
+        "pos": pos,
+        "glyph": glyph,
+        "color": color,
+        "render_layer": 2,
+        "kind": "enemy",
+        "blocks_movement": True,
+        "tags": actor_tags,
+        "statuses": {},
+        "faction": faction,
+        "actions": actions,
+        # Some projects put these directly on Actor.__init__ as well:
+        "blocks_vision": bool(s.get("blocks_vision", False)),
+    }
+
+    actor = Actor(**_ctor_kwargs_for(Actor, desired_kwargs))
+
+    # Keep a reference to the originating prototype id.
+    src_pid = s.get("id")
     if src_pid is not None:
         try:
             actor.proto_id = str(src_pid)
         except Exception:
             pass
 
-
+    # Stats
     actor.stats = Stats(
         hp=base_hp,
         max_hp=base_hp,
@@ -221,23 +279,32 @@ def build_actor_from_spec(
     )
 
     # Movement speed hint for energy system
-    actor.tags["speed"] = speed
+    try:
+        actor.tags["speed"] = speed
+    except Exception:
+        pass
 
-    # Preserve YAML "tags" field without forcing schema:
-    # - If YAML tags is a dict, merge into actor.tags (so icon_path/icon work like Entities).
-    # - If YAML tags is a list (legacy enemies.yaml classification tags), keep under actor.tags["tags"].
+    # Preserve YAML "tags" field
     yaml_tags = s.get("tags", None)
     if isinstance(yaml_tags, dict):
-        actor.tags.update(copy.deepcopy(yaml_tags))
+        try:
+            actor.tags.update(copy.deepcopy(yaml_tags))
+        except Exception:
+            pass
     elif yaml_tags is not None:
-        actor.tags["tags"] = copy.deepcopy(yaml_tags)
+        try:
+            actor.tags["tags"] = copy.deepcopy(yaml_tags)
+        except Exception:
+            pass
     _maybe_attach_default_icon_path(actor.tags, str(s.get("id") or ""))
 
-
     # Optional: stash xp
-    actor.tags["xp"] = xp
+    try:
+        actor.tags["xp"] = xp
+    except Exception:
+        pass
 
-    # Optional: description, same rationale as build_entity_from_spec
+    # Optional: description
     desc = s.get("description", None)
     if desc is not None:
         try:
@@ -245,12 +312,14 @@ def build_actor_from_spec(
         except Exception:
             pass
 
-
-    # Birth-time bilateral symmetry baking (see build_entity_from_spec for details).
+    # Birth-time bilateral symmetry baking
     try:
         if getattr(actor, "proto_id", None):
             actor.body_schema = bake_instance_body_schema(str(actor.proto_id))
     except Exception:
         pass
+
+    # Hydrate remaining YAML keys onto the instance.
+    _hydrate_entity_extras(actor, s)
 
     return actor
