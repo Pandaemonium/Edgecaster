@@ -405,6 +405,22 @@
     charges_min: 3
     charges_max: 5
     not_stackable: true
+
+- id: wall
+  name: Wall
+  glyph: "#"
+  color: [120, 100, 80]
+  kind: feature
+  render_layer: 0
+  blocks_movement: true
+  blocks_vision: true
+  parent: entity
+  description: A rough stone wall.
+  tags:
+    wall: true
+    remember_in_fog: true
+
+
 - id: sign
   name: Sign
   glyph: §
@@ -429,6 +445,15 @@
   kind: feature
   render_layer: 0
   blocks_movement: true
+  blocks_vision: true
+  parent: entity
+  description: A sturdy wooden door.
+  tags:
+    door_state: closed
+    door: true
+    remember_in_fog: true
+
+
   parent: entity
   description: A sturdy wooden door.
   tags:

@@ -534,6 +534,25 @@
     dust_wraith: true
     biome_spawn: [SUBTROPICAL_DESERT, TEMPERATE_DESERT, SCORCHED]
 
+- id: spider_camel
+  name: Spider Camel
+  glyph: C
+  color: [80, 120, 200]
+  actions: [move, wait]
+  base_hp: 7
+  base_mana: 0
+  base_attack: 2
+  base_defense: 1
+  speed: 1.3
+  faction: natures_chosen
+  ai: territorial
+  xp: 6
+  parent: beast
+  description: Does whatever a spider camel can.
+  tags:
+    spider_camel: true
+    biome_spawn: [SUBTROPICAL_DESERT, TEMPERATE_DESERT, SCORCHED]
+
 # --- Taiga (Hunter Lodges) ---
 
 - id: wolf
@@ -771,7 +790,7 @@
   ai: skirmisher
   xp: 5
   parent: humanoid
-  description: You really got yourself in a thorny situation.
+  description: You've really got yourself in a thorny situation.
   tags:
     thorn_sprite: true
     biome_spawn: [TEMPERATE_FOREST, SHRUBLAND]
@@ -951,7 +970,7 @@
   tier_min: 6
   tier_max: 8
   parent: beast
-  description: A dog's loyalty becomes terrifying when it is in service of hell.
+  description: A dog's loyalty becomes terrifying when it is in service of Death.
   tags:
     cinder_hound: true
     biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
@@ -973,7 +992,7 @@
   tier_min: 9
   tier_max: 10
   parent: demon
-  description: Was this a fragment of a fallen star, taken refuge in this furnace?
+  description: Was this a fragment of a fallen star, taken refuge in this earthly furnace?
   tags:
     pyroclast: true
     biome_spawn: [SCORCHED]
@@ -1189,7 +1208,7 @@
   ai: territorial
   xp: 6
   parent: humanoid
-  description: They wander this earth, experiences writ upon their skin.
+  description: They wander this earth, encyclopedias writ upon their skin.
   tags:
     pattern_wanderer: true
     biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]

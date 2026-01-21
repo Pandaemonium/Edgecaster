@@ -1015,7 +1015,7 @@ class AsciiRenderer:
 
         biome_id_to_color = None
         structure_glyph_to_color = {
-            "#": (160, 160, 160),  # walls: fixed gray (Phase 1)
+            "█": (160, 160, 160),  # walls: fixed gray (Phase 1)
             "+": (200, 170, 120),  # door-ish (leave as a visible special for now)
             ">": (220, 220, 255),  # stairs down
             "<": (220, 220, 255),  # stairs up
@@ -1061,8 +1061,11 @@ class AsciiRenderer:
                     # We don't need them for drawing, but other systems may query.
                 else:
                     # Cache miss (often during active panning/zooming before sampling runs).
-                    # Use a cheap placeholder glyph so the viewport never goes blank.
+                    # In tiles mode, NEVER show ASCII placeholders; leave last frame's terrain visible.
+                    if bool(getattr(self, "prefer_terrain_tiles", False)):
+                        continue
                     ch, orig_color = ('·', getattr(self, 'dim', (140, 140, 150)))
+
 
                 # Apply FOV-based dimming using the same tile.visible flags as entities.
                 # This works at all zoom levels:
@@ -1106,6 +1109,7 @@ class AsciiRenderer:
                                     tg = str(tile.glyph or "")
                                     if tg:
                                         tg = tg[0]
+
                                     if tg in structure_glyph_to_color:
                                         ch = tg
                                 except Exception:
@@ -1152,10 +1156,55 @@ class AsciiRenderer:
                     pass
 
 
-                surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
-                gx = px + (cell_px_w - surf.get_width()) // 2
-                gy = py + (cell_px_h - surf.get_height()) // 2
-                out.blit(surf, (gx, gy))
+                # --- Terrain tiles POC: base tile underlay, glyphs only for structures ---
+                prefer_terrain_tiles = bool(getattr(self, "prefer_terrain_tiles", False))
+
+                drawn_tile = False
+                if prefer_terrain_tiles and val and len(val) > 3:
+                    try:
+                        from edgecaster.render.terrain_tiles import get_terrain_tile_surface
+
+                        cached_biome_id = int(val[2])
+                        cached_elev_cat = int(val[3])
+
+                        tile_surf = get_terrain_tile_surface(
+                            elev_cat=cached_elev_cat,
+                            biome_id=cached_biome_id,
+                            w_px=cell_px_w,
+                            h_px=cell_px_h,
+                            cx=cx,
+                            cy=cy,
+                        )
+
+                        # Apply the SAME fog-of-war dim vibe to terrain tiles.
+                        # (Your glyph logic uses ~0.4; we multiply RGB by ~0.4 here too.)
+                        if (player_pos is not None and world is not None) and (not god_vision):
+                            # If we managed to fetch a real tile above, we used tile.visible there.
+                            # But if anything fell through, safest is: dim when the chosen color is a dimmed one.
+                            # (We set 'color' to dimmed base_color in the logic above.)
+                            try:
+                                # If tile exists in scope and is not visible, dim.
+                                if (not tile.visible):
+                                    tile_surf = tile_surf.copy()
+                                    tile_surf.fill((102, 102, 102, 255), special_flags=pygame.BLEND_RGBA_MULT)  # ~0.4
+                            except Exception:
+                                # Fallback heuristic: if we’re in the dimmed branch (color already darker), dim tiles too.
+                                pass
+
+                        out.blit(tile_surf, (px, py))
+                        drawn_tile = True
+                    except Exception:
+                        drawn_tile = False
+
+
+                # In tiles mode: draw glyphs only for structure overrides.
+                # In ASCII mode: draw glyphs for everything (original behavior).
+                if (not prefer_terrain_tiles) or (ch in structure_glyph_to_color) or (not drawn_tile):
+                    surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
+                    gx = px + (cell_px_w - surf.get_width()) // 2
+                    gy = py + (cell_px_h - surf.get_height()) // 2
+                    out.blit(surf, (gx, gy))
+
 
         return out
 
@@ -2115,7 +2164,7 @@ class AsciiRenderer:
             self.surface.blit(overlay, fx_rect.topleft)
 
 
-    def draw_entities(self, world: World, entities) -> None:
+    def draw_entities(self, game, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
 
         Supports LOD fading: when the map is cross-fading to the global grid, entities fade with the local layer.
@@ -2124,7 +2173,7 @@ class AsciiRenderer:
         if alpha <= 0:
             return
         if alpha >= 255:
-            self._draw_entities_impl(world, entities)
+            self._draw_entities_impl(game, world, entities)
             return
 
         # Reuse a persistent fade surface to avoid per-frame allocations.
@@ -2136,7 +2185,7 @@ class AsciiRenderer:
         prev_surface = self.surface
         self.surface = temp
         try:
-            self._draw_entities_impl(world, entities)
+            self._draw_entities_impl(game, world, entities)
         finally:
             self.surface = prev_surface
 
@@ -2145,11 +2194,17 @@ class AsciiRenderer:
 
 
 
-    def _draw_entities_impl(self, world: World, entities) -> None:
+
+    def _draw_entities_impl(self, game, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
 
         Ordering is controlled by an optional 'render_layer' attribute:
         higher layers are drawn later (on top).
+
+        Phase 1 fog-of-war rule:
+        - If tile.visible: draw normally
+        - Else if tile.explored: draw ONLY entities with tags.remember_in_fog (dimmed)
+        - Else: draw nothing
         """
         def layer(ent) -> int:
             if hasattr(ent, "faction"):
@@ -2161,7 +2216,10 @@ class AsciiRenderer:
         tile_px_f = float(getattr(self, "tile_px", float(self.tile)))
         tile_px_i = max(1, int(round(tile_px_f)))
 
+        god_vision = bool(getattr(game, "god_vision", False))
+
         # Visual-only overlay: slaver chains (drawn underneath actor glyphs/sprites).
+        # Note: this currently only draws when both endpoints are visible.
         self._draw_slaver_chains(world, entities_sorted, tile_px_f=tile_px_f)
 
         # Approx "map viewport" bounds, used as a sane cap for huge zoom-in.
@@ -2170,7 +2228,6 @@ class AsciiRenderer:
         min_dim = max(1, min(map_w, map_h))
 
         # Allow entities to get VERY large, but cap to roughly the visible map area.
-        # (Keeps us from allocating absurdly huge fonts/surfaces at extreme zoom.)
         size_cap = int(min_dim * 1.05)
 
         # Effects active at the scene level (if any)
@@ -2180,12 +2237,34 @@ class AsciiRenderer:
             pos = getattr(ent, "pos", None)
             if pos is None:
                 continue
+
             x, y = pos
             if not world.in_bounds(x, y):
                 continue
+
             tile = world.get_tile(x, y)
-            if not tile or not tile.visible:
+            if not tile:
                 continue
+
+            # In normal vision, never draw anything on unexplored tiles.
+            if (not god_vision) and (not getattr(tile, "explored", False)):
+                continue
+
+            # Determine whether we are allowed to draw this entity when not currently visible.
+            visible_now = bool(getattr(tile, "visible", False)) or god_vision
+            draw_in_fog = False
+
+            if not visible_now:
+                tags = getattr(ent, "tags", {}) or {}
+                if not isinstance(tags, dict):
+                    tags = {}
+                draw_in_fog = bool(tags.get("remember_in_fog", False))
+                if not draw_in_fog:
+                    continue
+
+            # If we're drawing from explored fog memory, dim the entity.
+            dim_in_fog = (not visible_now) and draw_in_fog
+            fog_alpha_u8 = 110  # ~0.43 of 255, matches your terrain 0.4 dim vibe
 
             px_f = x * tile_px_f + float(self.origin_x)
             py_f = y * tile_px_f + float(self.origin_y)
@@ -2205,9 +2284,6 @@ class AsciiRenderer:
             cx = int(round(px_f + tile_px_f * 0.5))
             cy = int(round(py_f + tile_px_f * 0.5))
 
-            # Ask the general hook for an icon surface.
-            # If the entity has no resolvable sprite/icon, the hook returns a glyph surface anyway,
-            # but we only want to use it for *sprite/icon* here. So we do a cheap “does it have a path?” check first.
             tags = getattr(ent, "tags", {}) or {}
             has_sprite_hint = False
             for attr in ("sprite_path", "sprite", "icon_path"):
@@ -2225,18 +2301,88 @@ class AsciiRenderer:
                     has_sprite_hint = True  # convention assets/icons/<currency>.png
 
             if has_sprite_hint and bool(getattr(self, "prefer_sprite_icons", True)):
+                ent_eff = effect_names_from_obj(ent)
+                eff = concat_effect_names(scene_eff, ent_eff)
+
+                # IMPORTANT:
+                # Pull a *stable* base sprite from cache (no time-varying scene effects baked in).
                 icon = self.get_entity_icon_surface(
                     ent,
                     size_px=want_px,
-                    scene_effects=scene_eff,
+                    scene_effects=[],          # <- do NOT bake animated effects into the cached icon
                     prefer_sprite=True,
-                    allow_idle_gating=True,   # <-- IMPORTANT: no scale/compose misses while moving
+                    allow_idle_gating=True,
                 )
 
                 if icon is not None:
-                    rect = icon.get_rect(center=(cx, cy))
-                    self.surface.blit(icon, rect.topleft)
+                    # If there are no effects at all, keep the fast path.
+                    if not eff:
+                        if dim_in_fog:
+                            try:
+                                icon = icon.copy()
+                                icon.set_alpha(fog_alpha_u8)
+                            except Exception:
+                                pass
+                        rect = icon.get_rect(center=(cx, cy))
+                        self.surface.blit(icon, rect.topleft)
+                        continue
+
+                    # Otherwise, compose into a per-frame canvas so we can tint + overlay.
+                    base_rect = pygame.Rect(0, 0, tile_px_i, tile_px_i)
+                    union_rect, rect_by_name = compute_overlay_union_rect(ent, base_rect, eff)
+                    canvas = pygame.Surface((union_rect.w, union_rect.h), pygame.SRCALPHA)
+                    ox, oy = -union_rect.left, -union_rect.top
+
+                    # Center sprite on the *tile* rect (not union rect)
+                    ix = ox + (tile_px_i - icon.get_width()) // 2
+                    iy = oy + (tile_px_i - icon.get_height()) // 2
+                    canvas.blit(icon, (ix, iy))
+
+                    now_ms = pygame.time.get_ticks()
+
+                    # 1) Dynamic color effects (bismuth hue drift etc.) as a MULTIPLY tint
+                    try:
+                        tint = apply_entity_color_effects(ent, (255, 255, 255), eff, now_ms=now_ms)
+                        if tint != (255, 255, 255):
+                            canvas.fill((tint[0], tint[1], tint[2], 255), special_flags=pygame.BLEND_RGBA_MULT)
+                    except Exception:
+                        pass
+
+                    # 2) Dynamic overlay lane (sparkles/shimmer/etc.), masked by sprite alpha
+                    try:
+                        shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
+                        overlay = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+                        apply_surface_overlays(ent, overlay, overlay.get_rect(), eff, now_ms=now_ms, rect_by_name=shifted)
+
+                        # Mask overlay alpha by the sprite silhouette alpha so it doesn't become a square.
+                        try:
+                            import numpy as np
+                            oa = pygame.surfarray.pixels_alpha(overlay)
+                            ca = pygame.surfarray.pixels_alpha(canvas)
+                            oa[:] = ((oa.astype(np.uint16) * ca.astype(np.uint16)) // 255).astype(np.uint8)
+                            del oa, ca
+                        except Exception:
+                            pass
+
+                        canvas.blit(overlay, (0, 0))
+                    except Exception:
+                        pass
+
+                    if dim_in_fog:
+                        try:
+                            canvas.set_alpha(fog_alpha_u8)
+                        except Exception:
+                            pass
+
+                    dest = pygame.Rect(
+                        int(round(px_f + union_rect.left)),
+                        int(round(py_f + union_rect.top)),
+                        union_rect.w,
+                        union_rect.h,
+                    )
+                    self.surface.blit(canvas, dest.topleft)
                     continue
+
 
             # -----------------------------
             # 2) Glyph fallback (big!)
@@ -2246,6 +2392,13 @@ class AsciiRenderer:
             ent_eff = effect_names_from_obj(ent)
             eff = concat_effect_names(scene_eff, ent_eff)
             color = apply_entity_color_effects(ent, base_color, eff)
+
+            if dim_in_fog:
+                try:
+                    r, g, b = color
+                    color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
+                except Exception:
+                    pass
 
             # Let glyph font scale with zoom, but cap it.
             font_px = max(8, min(want_px, 1024))
@@ -2263,17 +2416,22 @@ class AsciiRenderer:
                     font_px=font_px,
                     ch=glyph,
                     color=color,
-                    alpha_u8=255,
+                    alpha_u8=(fog_alpha_u8 if dim_in_fog else 255),
                 )
                 gx = int(round(px_f + (tile_px_i - gsurf.get_width()) * 0.5))
                 gy = int(round(py_f + (tile_px_i - gsurf.get_height()) * 0.5))
                 self.surface.blit(gsurf, (gx, gy))
                 continue
 
-
             if eff:
                 shifted = {name: r.move(ox, oy) for name, r in rect_by_name.items()}
                 apply_surface_overlays(ent, canvas, canvas.get_rect(), eff, rect_by_name=shifted)
+
+            if dim_in_fog:
+                try:
+                    canvas.set_alpha(fog_alpha_u8)
+                except Exception:
+                    pass
 
             dest = pygame.Rect(
                 int(round(px_f + union_rect.left)),
@@ -2286,6 +2444,7 @@ class AsciiRenderer:
                 apply_visual_panel(self.surface, canvas, dest, visual)
             else:
                 self.surface.blit(canvas, dest.topleft)
+
 
 
     def draw_pattern_overlay(self, game: Game) -> None:
@@ -3549,7 +3708,7 @@ class AsciiRenderer:
         self.draw_aim_overlay(game)
         # Unified entity rendering: items + actors together.
         renderables = game.renderables_current()
-        self.draw_entities(game.world, renderables)
+        self.draw_entities(game, game.world, renderables)
         self.draw_action_preview_overlay(game)
         self.draw_target_cursor(game)
         self.draw_seal_root_hint(game)

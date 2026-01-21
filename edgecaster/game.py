@@ -68,18 +68,43 @@ def _line_points(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
     return points
 
 
-def _los(world: World, a: Tuple[int, int], b: Tuple[int, int]) -> bool:
+def _los(
+    world: World,
+    a: Tuple[int, int],
+    b: Tuple[int, int],
+    *,
+    opaque: set[Tuple[int, int]] | None = None,
+) -> bool:
+    """
+    Line-of-sight test from a -> b.
+
+    Blocks LOS on:
+      - any position in `opaque` (typically entities with blocks_vision=True)
+      - terrain tiles with tile.blocks_vision == True (NOT tile.walkable)
+
+    Always allows seeing the target square itself.
+    """
     for (x, y) in _line_points(a[0], a[1], b[0], b[1]):
         if not world.in_bounds(x, y):
             return False
         tile = world.get_tile(x, y)
         if tile is None:
             return False
+
+        # Always allow seeing the target square itself.
         if (x, y) == b:
             return True
-        if not tile.walkable:
+
+        # Entity occluders (walls, closed doors, etc.)
+        if opaque is not None and (x, y) in opaque:
             return False
+
+        # Terrain occluders (cliffs, opaque fog tiles, etc.)
+        if getattr(tile, "blocks_vision", False):
+            return False
+
     return True
+
 
 
 @dataclass
@@ -268,7 +293,7 @@ class Game:
 
 
         # debug flags
-        self.debug_no_fog: bool = True
+        self.debug_no_fog: bool = False
         self.debug_spawn_inventories: bool = False
 
         # zones keyed by (x, y, depth)
@@ -513,10 +538,6 @@ class Game:
         except Exception:
             pass
 
-        # DEBUG: spawn a few Inventory entities near the starting position so we
-        # can pick them up and test nested containers / recursion.
-        if getattr(self, "debug_spawn_inventories", False):
-            self.debug_spawn_inventory_near_player()
 
 
 
@@ -1463,7 +1484,7 @@ class Game:
                         border = (dx == 0 or dx == w - 1 or dy == 0 or dy == h - 1)
                         if border:
                             tile.walkable = False
-                            tile.glyph = "#"
+                            tile.glyph = "█"
                             tile.color = wall_color
                         else:
                             tile.walkable = True
@@ -1488,7 +1509,7 @@ class Game:
                                 interior.add((wall_x, yy))
                             else:
                                 tile.walkable = False
-                                tile.glyph = "#"
+                                tile.glyph = "█"
                                 tile.color = wall_color
                                 interior.discard((wall_x, yy))
                     else:
@@ -1505,7 +1526,7 @@ class Game:
                                 interior.add((xx, wall_y))
                             else:
                                 tile.walkable = False
-                                tile.glyph = "#"
+                                tile.glyph = "█"
                                 tile.color = wall_color
                                 interior.discard((xx, wall_y))
 
@@ -1541,19 +1562,37 @@ class Game:
             # Handle structures
             for struct in getattr(poi, "structures", []) or []:
                 if struct.get("kind") == "item_depot" and depot_info:
-                    # Place door
+                    # --- Walls (entities) ---
+                    for pos in (depot_info.get("wall_positions") or []):
+                        try:
+                            # Use the Game helper; Level doesn't implement get_entity_at in this codebase.
+                            if not self._entity_at(level, pos):
+                                ent = self._spawn_entity_from_template("wall", pos)
+                                level.entities[ent.id] = ent
+
+                            # Underlying terrain should remain "normal" walkability; the wall entity blocks.
+                            tile = level.world.get_tile(*pos)
+                            if tile:
+                                tile.walkable = True
+                        except Exception:
+                            pass
+
+                    # --- Door (entity) ---
                     door_pos = depot_info.get("door")
                     if door_pos:
                         try:
-                            ent = self._spawn_entity_from_template("door", door_pos)
-                            level.entities[ent.id] = ent
+                            if not self._entity_at(level, door_pos):
+                                ent = self._spawn_entity_from_template("door", door_pos)
+                                level.entities[ent.id] = ent
+
+                            # Do not overwrite glyph here; door entity renders as '+'.
                             tile = level.world.get_tile(*door_pos)
                             if tile:
-                                tile.walkable = False
-                                tile.glyph = "#"
+                                tile.walkable = True
                         except Exception:
                             pass
-                    # Place sign
+
+                    # --- Sign (entity) ---
                     sign_pos = depot_info.get("sign")
                     if sign_pos:
                         try:
@@ -1565,6 +1604,9 @@ class Game:
                             level.entities[ent.id] = ent
                         except Exception:
                             pass
+
+
+
                     # Place items in interior - one of each type first, then random
                     interior = depot_info.get("interior") or []
                     # All spawnable items (excludes base templates, features, currency)
@@ -1644,7 +1686,7 @@ class Game:
                             tile = level.world.get_tile(*door_pos)
                             if tile:
                                 tile.walkable = False
-                                tile.glyph = "#"
+                                tile.glyph = "+"
                         except Exception:
                             pass
 
@@ -2231,6 +2273,8 @@ class Game:
         if state == "closed":
             tags["door_state"] = "open"
             ent.blocks_movement = False
+            ent.blocks_vision = ent.blocks_movement
+
             ent.glyph = "/"
             ent.color = getattr(ent, "color", (180, 140, 80))
             if tile:
@@ -2246,7 +2290,7 @@ class Game:
             if tile:
                 # Closed doors block movement and line-of-sight like walls.
                 tile.walkable = False
-                tile.glyph = "#"
+                tile.glyph = "+"
             if notify:
                 self.log.add("You close the door.")
         ent.tags = tags
@@ -2513,9 +2557,8 @@ class Game:
                         relief_glyph = ch[0]
                         relief_label = relief_label_map.get(relief_glyph, "Unknown")
 
-                    # Biome: in god vision or unexplored tiles, prefer cached biome_id if available.
-                    prefer_cache_biome = god_vision or (not explored)
-                    if prefer_cache_biome and cached_biome_id is not None:
+                    # Prefer cached biome_id if available.
+                    if cached_biome_id is not None:
                         try:
                             stored_biome_id = int(cached_biome_id)
                             from edgecaster.climate import Biome, BIOME_SHORT_NAMES
@@ -2541,7 +2584,7 @@ class Game:
             except Exception:
                 pass
 
-        if passable != "Yes" and relief_glyph == "#":
+        if passable != "Yes" and relief_glyph == "█":
             relief_label = "Wall"
 
         return "\n".join([
@@ -4447,9 +4490,11 @@ class Game:
     def _update_fov(self, level: LevelState, radius: int = 8) -> None:
         if self.player_id not in level.actors:
             return
+
         # Apply view bonus from equipment
         view_bonus = self.effective_character_stats().get("view", 0)
         radius = radius + view_bonus
+
         px, py = level.actors[self.player_id].pos
         level.world.clear_visibility()
 
@@ -4464,33 +4509,48 @@ class Game:
                     actor = self._actor_at(level, (x, y))
                     if actor and actor.id not in level.spotted:
                         level.spotted.add(actor.id)
-        else:
-            # Normal FOV calculation
-            r2 = radius * radius
-            for y in range(py - radius, py + radius + 1):
-                for x in range(px - radius, px + radius + 1):
-                    if not level.world.in_bounds(x, y):
-                        continue
-                    dx = x - px
-                    dy = y - py
-                    if dx * dx + dy * dy > r2:
-                        continue
-                    if _los(level.world, (px, py), (x, y)):
-                        tile = level.world.get_tile(x, y)
-                        if tile:
-                            tile.visible = True
-                            tile.explored = True
-                        actor = self._actor_at(level, (x, y))
-                        if actor and actor.id not in level.spotted:
-                            level.spotted.add(actor.id)
-                            if actor.id != self.player_id:
-                                self.log.add(f"You spot a {actor.name}.")
+            # Apply lighting after visibility changes (consistent behavior)
+            from edgecaster.systems import lighting
+            lighting.update_level_lighting(self, level, (px, py))
+            level.need_fov = False
+            return
+
+        # Build set of opaque positions from entities (walls, closed doors, etc.)
+        opaque: set[Tuple[int, int]] = set()
+        for ent in level.entities.values():
+            if getattr(ent, "blocks_vision", False):
+                opaque.add(ent.pos)
+
+
+
+        # Normal FOV calculation
+        r2 = radius * radius
+        for y in range(py - radius, py + radius + 1):
+            for x in range(px - radius, px + radius + 1):
+                if not level.world.in_bounds(x, y):
+                    continue
+                dx = x - px
+                dy = y - py
+                if dx * dx + dy * dy > r2:
+                    continue
+
+                if _los(level.world, (px, py), (x, y), opaque=opaque):
+                    tile = level.world.get_tile(x, y)
+                    if tile:
+                        tile.visible = True
+                        tile.explored = True
+                    actor = self._actor_at(level, (x, y))
+                    if actor and actor.id not in level.spotted:
+                        level.spotted.add(actor.id)
+                        if actor.id != self.player_id:
+                            self.log.add(f"You spot a {actor.name}.")
 
         # Apply lighting from light-emitting entities (e.g., dropped Glowing Band)
-        from edgecaster.systems import lighting
-        lighting.update_level_lighting(self, level, (px, py))
+        #from edgecaster.systems import lighting
+        #lighting.update_level_lighting(self, level, (px, py))
 
         level.need_fov = False
+
 
     # --- exposed for renderer ---
 
