@@ -732,6 +732,8 @@ def generate_fractal_overworld(
             hotspots=hotspots,
             anchors=anchors,
             spline_weight=float(spline_weight or 0.0),
+ 
+         
         )
 
     # Fast-path: numpy vectorization for local zones (60x40) makes startup essentially instant,

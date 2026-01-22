@@ -106,6 +106,7 @@ def init_overmap_params_and_grid(game: "Game") -> None:
     max_wx = float(total_w)
     max_wy = float(total_h)
     # stash params without surface; render thread will fill it
+    game.corruption_hotspots = [(0.8, 0.0, 0.3, 0.05)]  # your temporary single-blob default
     game.overmap_params = {
         "min_wx": min_wx,
         "min_wy": min_wy,
