@@ -27,13 +27,14 @@ class CorruptionParams:
     # "Landscape" feel from distorted_Julia.py when combined with base_res/detail_res.
     freq: float = 1.0
     # Distortion amplitude at corruption_level=1, before envelope scaling.
-    amp: float = 0.5
+    amp: float = 0.05
+    base_weight: float = 0.0
 
     # Right-side "mountains of corruption" shaping (in normalized Julia x space).
     # 0.0 = start at far left of the current Julia view, 1.0 = only at far right.
     right_start: float = 0.30
     right_sharpness: float = 2.0
-    right_weight: float = 1.0
+    right_weight: float = 0.0
 
     # Landscape builder knobs (ported from distorted_Julia.py init_landscape).
     base_res: float = 3.0
@@ -52,7 +53,7 @@ class CorruptionParams:
     # Scattered hotspots (rare peaks) derived from noise.
     spot_freq: float = 1.1
     spot_threshold: float = 0.86
-    spot_weight: float = 0.12
+    spot_weight: float = 0.0
 
     # Optional explicit hotspots in Julia-plane coordinates: (x, y, strength, sigma)
     # This is for later content-driven placement; not required for phase 1.
@@ -984,8 +985,9 @@ def distortion_dz(
         # We threshold the *magnitude* so the right side contains quiet valleys
         # (near-zero corruption) and distinct "mountains" rather than a uniform fog.
         spot_boost = 1.0 + float(spots) * spot_mask
-        field_x = spot_boost * float(nx) + float(hot) * hot_dir_x
-        field_y = spot_boost * float(ny) + float(hot) * hot_dir_y
+        bw = float(params.base_weight)
+        field_x = bw * spot_boost * nx + hot * hot_dir_x
+        field_y = bw * spot_boost * ny + hot * hot_dir_y
 
         mag = math.sqrt(field_x * field_x + field_y * field_y)
         mount = smoothstep(float(params.mount_mag_floor), float(params.mount_mag_ceil), mag)
@@ -1167,8 +1169,9 @@ def distortion_np(
     # We threshold the *magnitude* so the right side contains quiet valleys
     # (near-zero corruption) and distinct "mountains" rather than a uniform fog.
     spot_boost = 1.0 + spots * spot_mask
-    field_x = spot_boost * nx + hot * hot_dir_x
-    field_y = spot_boost * ny + hot * hot_dir_y
+    bw = float(params.base_weight)
+    field_x = bw * spot_boost * nx + hot * hot_dir_x
+    field_y = bw * spot_boost * ny + hot * hot_dir_y
 
     mag = np.sqrt(field_x * field_x + field_y * field_y)
     mount = smoothstep_np(float(params.mount_mag_floor), float(params.mount_mag_ceil), mag)

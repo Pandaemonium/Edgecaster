@@ -942,8 +942,37 @@ class AsciiRenderer:
                         # Cache biome + relief category too (used by look/inspect, especially in god vision)
                         biome_id = int(bi[rr, cc])
                         elev_cat = int(e_idx[rr, cc])
+                        # Cache corruption intensity too (quantized 0..255).
+                        # _peak2 is a float field; we clamp and scale so the cache stays compact and overlay-friendly.
+                        # Cache corruption intensity quantized to 0..15 (what terrain_tiles expects).
+                        # Cache corruption intensity quantized to 0..15 (what terrain_tiles expects).
+                        # IMPORTANT: threshold small background noise to 0 so overlays don't appear everywhere.
+                        try:
+                            c = float(_peak2[rr, cc])
+                        except Exception:
+                            c = 0.0
 
-                        cache[k] = (ch, color, biome_id, elev_cat)
+                        if c < 0.0:
+                            c = 0.0
+                        elif c > 1.0:
+                            c = 1.0
+
+                        CORR_VIS_THRESHOLD = 0.18  # tweak 0.12..0.30 depending on how localized you want it
+
+                        if c <= CORR_VIS_THRESHOLD:
+                            corr_q = 0
+                        else:
+                            # Remap so "just above threshold" starts at low intensities
+                            c2 = (c - CORR_VIS_THRESHOLD) / (1.0 - CORR_VIS_THRESHOLD)
+                            corr_q = int(c2 * 15.0 + 0.5)
+                            if corr_q < 1:
+                                corr_q = 1
+                            elif corr_q > 15:
+                                corr_q = 15
+
+
+                        cache[k] = (ch, color, biome_id, elev_cat, corr_q)
+
 
 
                 max_cells = int(getattr(self, "lod_cache_max_cells", 250_000) or 250_000)
@@ -1166,6 +1195,7 @@ class AsciiRenderer:
 
                         cached_biome_id = int(val[2])
                         cached_elev_cat = int(val[3])
+                        cached_corr_q = int(val[4])
 
                         tile_surf = get_terrain_tile_surface(
                             elev_cat=cached_elev_cat,
@@ -1174,7 +1204,10 @@ class AsciiRenderer:
                             h_px=cell_px_h,
                             cx=cx,
                             cy=cy,
+                            corruption_level=cached_corr_q,
                         )
+
+
 
                         # Apply the SAME fog-of-war dim vibe to terrain tiles.
                         # (Your glyph logic uses ~0.4; we multiply RGB by ~0.4 here too.)
