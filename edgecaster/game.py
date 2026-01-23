@@ -4080,6 +4080,129 @@ class Game:
 
         self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
+    def act_chakra(self, actor_id: str) -> None:
+        """Apply chakra pattern as a fractal generator to existing edges.
+
+        Each active chakra becomes a vertex positioned according to body
+        geometry. This chakra shape is then used to transform each edge
+        in the current pattern, just like Koch, Branch, or Custom generators.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+
+        # Need an existing pattern to transform
+        if not level.pattern.vertices:
+            self.log.add("No pattern to modify. Place a terminus first.")
+            return
+
+        # Get chakra state
+        chakra_state = getattr(actor, "chakra_state", None)
+        if chakra_state is None:
+            self.log.add("No chakra state found.")
+            return
+
+        # Get body schema
+        try:
+            from edgecaster.prototypes import resolve_body_schema
+            from edgecaster.systems.chakras import chakras_to_seed_pattern
+            body_schema = resolve_body_schema(actor)
+        except Exception:
+            self.log.add("Could not resolve body schema.")
+            return
+
+        if not body_schema or not body_schema.get("nodes"):
+            self.log.add("No body schema to generate pattern from.")
+            return
+
+        # Generate the chakra seed pattern
+        try:
+            chakra_pattern = chakras_to_seed_pattern(body_schema, chakra_state, base_scale=1.0)
+        except Exception as e:
+            self.log.add(f"Chakra pattern generation failed: {e}")
+            return
+
+        if not chakra_pattern.vertices or len(chakra_pattern.vertices) < 2:
+            self.log.add("Need at least 2 active chakras to form a generator.")
+            return
+
+        # Extract vertices as (x, y) tuples
+        verts = [(v.pos[0], v.pos[1]) for v in chakra_pattern.vertices]
+
+        # Extract edges as (a, b) index tuples
+        edges = []
+        if chakra_pattern.edges:
+            edges = [(e.a, e.b) for e in chakra_pattern.edges]
+
+        # Reorder vertices so root is first and furthest point is last.
+        # The CustomGraphGenerator uses vertices[0] and vertices[-1] as the
+        # baseline for scaling - if these aren't the pattern endpoints,
+        # the pattern will explode in size after iterations.
+        #
+        # Root is typically the "body" node at or near (0, 0).
+        # Find the vertex closest to origin as root.
+        def dist_sq(p: tuple) -> float:
+            return p[0] ** 2 + p[1] ** 2
+
+        root_idx = min(range(len(verts)), key=lambda i: dist_sq(verts[i]))
+
+        # Find furthest vertex from root
+        root_pos = verts[root_idx]
+
+        def dist_from_root(p: tuple) -> float:
+            dx = p[0] - root_pos[0]
+            dy = p[1] - root_pos[1]
+            return dx * dx + dy * dy
+
+        furthest_idx = max(range(len(verts)), key=lambda i: dist_from_root(verts[i]))
+
+        # Build mapping from old indices to new indices
+        # New order: root first, furthest last, everything else in between
+        old_to_new = {}
+        new_verts = []
+
+        # Add root first
+        old_to_new[root_idx] = 0
+        new_verts.append(verts[root_idx])
+
+        # Add all middle vertices
+        for i, v in enumerate(verts):
+            if i != root_idx and i != furthest_idx:
+                old_to_new[i] = len(new_verts)
+                new_verts.append(v)
+
+        # Add furthest last
+        old_to_new[furthest_idx] = len(new_verts)
+        new_verts.append(verts[furthest_idx])
+
+        # Remap edge indices
+        new_edges = [(old_to_new[a], old_to_new[b]) for a, b in edges]
+
+        verts = new_verts
+        edges = new_edges
+
+        # Get amplitude from param system (like custom generator)
+        amp = self._param_value("chakra", "amplitude")
+        if amp is None:
+            amp = 1.0
+
+        # Create a CustomGraphGenerator with the chakra shape
+        gen = builder.CustomGraphGenerator(verts, edges, amplitude=amp)
+
+        # Apply to current pattern (same flow as _apply_fractal_op)
+        segs = level.pattern.to_segments()
+        level.pattern_motion = None  # Cancel any ongoing motion
+
+        segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
+        segs = builder.cleanup_duplicates(segs)
+        if len(segs) > self.cfg.max_vertices:
+            segs = segs[: self.cfg.max_vertices]
+            self.log.add("Pattern capped at max vertices.")
+
+        level.pattern = builder.Pattern.from_segments(segs)
+        self.log.add(f"Chakra generator applied ({len(verts)} chakra vertices).")
+
     def act_corrosive_melt(self, actor_id: str) -> None:
         """Activate acidic mode on the current pattern.
 

@@ -9,6 +9,7 @@ import os
 from edgecaster.state.entities import Entity
 from edgecaster.state.actors import Actor, Stats
 from edgecaster.prototypes import bake_instance_body_schema
+from edgecaster.systems.chakras import ChakraState
 
 
 # Keys that are handled explicitly by build_entity_from_spec/build_actor_from_spec
@@ -316,6 +317,19 @@ def build_actor_from_spec(
     try:
         if getattr(actor, "proto_id", None):
             actor.body_schema = bake_instance_body_schema(str(actor.proto_id))
+    except Exception:
+        pass
+
+    # Initialize chakra state for pattern generation.
+    # All actors start with "body" (torso/core) chakra unlocked and active (if they have a body schema).
+    # Note: "body" is the root node ID in the human body schema.
+    # Player characters may have additional chakras unlocked via progression.
+    try:
+        if hasattr(actor, "body_schema") and actor.body_schema:
+            actor.chakra_state = ChakraState(
+                unlocked={"body"},
+                active={"body"},
+            )
     except Exception:
         pass
 

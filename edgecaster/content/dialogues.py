@@ -601,6 +601,561 @@ def _build_merchant(_game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogu
     )
 
 
+def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTree:
+    """
+    Build a comprehensive dialogue tree explaining the chakra system.
+
+    This NPC provides detailed, branching explanations of:
+    - What chakras are and how they relate to body nodes
+    - How unlocking and activation work
+    - The gating system (branch roots)
+    - How chakras generate fractal patterns
+    - Alignment and resonance bonuses
+    - Can unlock one chakra per conversation
+    """
+    title = _npc_name(npc, npc_def)
+
+    # Helper to get player's chakra info
+    def _get_chakra_count(game: Any) -> tuple[int, int]:
+        """Return (unlocked_count, active_count)."""
+        try:
+            player = game._player()
+            if not hasattr(player, "chakra_state") or player.chakra_state is None:
+                return (1, 1)  # Default: torso only
+            cs = player.chakra_state
+            return (len(cs.unlocked), len(cs.active))
+        except Exception:
+            return (1, 1)
+
+    def _get_all_locked_chakras(game: Any) -> list[str]:
+        """
+        Return list of ALL chakra node IDs that are currently locked.
+
+        This bypasses gating requirements - the Sage can unlock anything!
+        Used as a cheat/debug feature for testing the chakra system.
+        """
+        try:
+            from edgecaster.prototypes import resolve_body_schema
+            from edgecaster.systems.chakras import _get_nodes
+
+            player = game._player()
+            if not hasattr(player, "chakra_state") or player.chakra_state is None:
+                return []
+
+            body_schema = resolve_body_schema(player)
+            nodes = _get_nodes(body_schema)
+            unlocked = player.chakra_state.unlocked
+
+            # Return all nodes that aren't unlocked yet
+            locked = [node_id for node_id in nodes if node_id not in unlocked]
+
+            # Sort by a logical order (root-ish nodes first)
+            priority = ["head", "arm", "arm_m", "leg", "leg_m"]
+            def sort_key(n: str) -> tuple:
+                if n in priority:
+                    return (0, priority.index(n))
+                return (1, n)
+
+            return sorted(locked, key=sort_key)
+        except Exception:
+            return []
+
+    def _effect_unlock_chakra(node_id: str) -> Callable[[Any], None]:
+        """
+        Create an effect function that unlocks a specific chakra.
+
+        The Sage bypasses gating - she'll also unlock any prerequisites automatically.
+        Also grants the "chakra" ability if not already owned.
+        """
+        def effect(game: Any) -> None:
+            try:
+                from edgecaster.systems.chakras import unlock_chakra, get_gating_chain
+                from edgecaster.prototypes import resolve_body_schema
+
+                player = game._player()
+                if not hasattr(player, "chakra_state") or player.chakra_state is None:
+                    return
+
+                chakra_state = player.chakra_state
+                body_schema = resolve_body_schema(player)
+
+                # First, unlock any gating prerequisites (the Sage's power!)
+                gating_chain = get_gating_chain(body_schema, node_id)
+                for gate_id in gating_chain:
+                    if gate_id not in chakra_state.unlocked:
+                        unlock_chakra(chakra_state, gate_id, auto_activate=True)
+                        gate_name = gate_id.replace("_m", " (mirror)").replace("_", " ").title()
+                        game.log.add(f"The Sage also opens your {gate_name} chakra as a gateway.")
+
+                # Now unlock the requested chakra
+                if unlock_chakra(chakra_state, node_id, auto_activate=True):
+                    display_name = node_id.replace("_m", " (mirror)").replace("_", " ").title()
+                    game.log.add(f"The Chakra Sage awakens your {display_name} chakra!")
+                    game.log.add("You feel new energy flowing through you.")
+
+                # Grant the "chakra" ability if not already owned
+                if hasattr(game, "grant_ability"):
+                    if game.grant_ability("chakra"):
+                        game.log.add("You have learned to channel your chakras into patterns!")
+                        game.log.add("The 'Chakra' ability has been added to your ability bar.")
+            except Exception:
+                pass
+        return effect
+
+    unlocked, active = _get_chakra_count(game)
+    unlockable = _get_all_locked_chakras(game)
+
+    # Build the dialogue nodes
+    nodes: dict[str, DialogueNode] = {}
+
+    # =========================================================================
+    # START NODE
+    # =========================================================================
+    start_choices = [
+        DialogueChoice(text="What are chakras?", next_id="what_are_chakras"),
+        DialogueChoice(text="How do I unlock more?", next_id="unlocking"),
+        DialogueChoice(text="How do patterns work?", next_id="patterns"),
+    ]
+
+    # Add chakra unlock option if there are unlockable chakras
+    if unlockable:
+        start_choices.insert(0, DialogueChoice(
+            text="Awaken a chakra for me.",
+            next_id="unlock_chakra"
+        ))
+
+    start_choices.append(DialogueChoice(text="Maybe later.", next_id=None))
+
+    nodes["start"] = DialogueNode(
+        id="start",
+        title=title,
+        body=(
+            "Ah, a seeker of patterns. I sense the potential within you.\n\n"
+            f"You currently have {unlocked} chakra{'s' if unlocked != 1 else ''} unlocked, "
+            f"with {active} active.\n\n"
+            "Your body is a map of energy centers - chakras - each one a vertex in the "
+            "great pattern. Would you like to learn about the chakra system?"
+        ),
+        choices=start_choices,
+    )
+
+    # =========================================================================
+    # UNLOCK CHAKRA NODE
+    # =========================================================================
+    if unlockable:
+        # Build choices for each unlockable chakra (limit to first 3 to keep UI clean)
+        unlock_choices: list[DialogueChoice] = []
+        for node_id in unlockable[:3]:
+            display_name = node_id.replace("_m", " (mirror)").replace("_", " ").title()
+            unlock_choices.append(DialogueChoice(
+                text=display_name,
+                next_id="unlock_done",
+                effect=_effect_unlock_chakra(node_id)
+            ))
+        unlock_choices.append(DialogueChoice(text="Not right now.", next_id="start"))
+
+        nodes["unlock_chakra"] = DialogueNode(
+            id="unlock_chakra",
+            title=title,
+            body=(
+                "I can sense the dormant energy points within you.\n\n"
+                f"There are {len(unlockable)} chakras ready to awaken. "
+                "Choose one, and I shall open the flow of energy to it.\n\n"
+                "Which chakra would you like me to awaken?"
+            ),
+            choices=unlock_choices,
+        )
+
+        nodes["unlock_done"] = DialogueNode(
+            id="unlock_done",
+            title=title,
+            body=(
+                "It is done. I have opened the flow of energy to that chakra.\n\n"
+                "Press Shift+C to open your chakra management screen and see your "
+                "newly awakened energy center. You can toggle it active or inactive there.\n\n"
+                "Return to me when you are ready to awaken another."
+            ),
+            choices=[
+                DialogueChoice(text="Thank you, Sage.", next_id=None),
+                DialogueChoice(text="Tell me more about chakras.", next_id="start"),
+            ],
+        )
+
+    # =========================================================================
+    # WHAT ARE CHAKRAS
+    # =========================================================================
+    nodes["what_are_chakras"] = DialogueNode(
+        id="what_are_chakras",
+        title=title,
+        body=(
+            "Chakras are energy centers aligned with your physical form.\n\n"
+            "Every part of your body - your torso, shoulders, hands, even your "
+            "fingertips - has a corresponding chakra point.\n\n"
+            "When you cast a pattern, your active chakras become VERTICES in that "
+            "pattern. The more chakras you activate, the more complex and powerful "
+            "your patterns become.\n\n"
+            "Think of it this way: your body IS the seed of your fractal."
+        ),
+        choices=[
+            DialogueChoice(text="Tell me about body nodes.", next_id="body_nodes"),
+            DialogueChoice(text="What's a vertex?", next_id="vertices"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["body_nodes"] = DialogueNode(
+        id="body_nodes",
+        title=title,
+        body=(
+            "Your body is organized as a TREE of nodes:\n\n"
+            "  TORSO (root)\n"
+            "    ├── Chest, Back, Abdomen\n"
+            "    ├── Head → Neck → Skull → Face...\n"
+            "    ├── Arms → Shoulder → Elbow → Wrist → Hand...\n"
+            "    └── Legs → Thigh → Knee → Calf → Foot...\n\n"
+            "Each node is a potential chakra. Deeper nodes (like fingertips) "
+            "require you to first unlock the nodes leading to them.\n\n"
+            "The TORSO is always your root chakra - it cannot be deactivated."
+        ),
+        choices=[
+            DialogueChoice(text="How deep does it go?", next_id="depth"),
+            DialogueChoice(text="What about hands?", next_id="hands"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["depth"] = DialogueNode(
+        id="depth",
+        title=title,
+        body=(
+            "The tree goes remarkably deep:\n\n"
+            "HAND BRANCH:\n"
+            "  Wrist → Palm → Thumb/Index/Middle/Ring/Pinky\n"
+            "  Each finger → Knuckle 1 → Knuckle 2 → Knuckle 3 → Nail\n\n"
+            "FOOT BRANCH:\n"
+            "  Ankle → Sole → Heel / Big Toe / other toes...\n\n"
+            "HEAD BRANCH:\n"
+            "  Neck → Skull → Face → Nose/Eyes/Forehead/Mouth\n\n"
+            "A master who unlocks all chakras wields patterns of extraordinary "
+            "complexity. But such mastery takes a lifetime."
+        ),
+        choices=[
+            DialogueChoice(text="How do I unlock more?", next_id="unlocking"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["hands"] = DialogueNode(
+        id="hands",
+        title=title,
+        body=(
+            "Ah, the hands - a favorite among edgecasters.\n\n"
+            "Each hand has:\n"
+            "  • WRIST - The gateway to hand chakras\n"
+            "  • PALM - The center of hand energy\n"
+            "  • FIVE FINGERS - Thumb, Index, Middle, Ring, Pinky\n\n"
+            "Each finger has FOUR nodes:\n"
+            "  Knuckle 1 → Knuckle 2 → Knuckle 3 → Nail\n\n"
+            "Activating all five fingers creates a 'full hand' resonance - "
+            "a powerful bonus that amplifies your pattern's effect.\n\n"
+            "And remember: you have TWO hands. Bilateral symmetry grants "
+            "its own resonance bonuses."
+        ),
+        choices=[
+            DialogueChoice(text="What are resonance bonuses?", next_id="resonance"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["vertices"] = DialogueNode(
+        id="vertices",
+        title=title,
+        body=(
+            "In pattern magic, a VERTEX is a point of power.\n\n"
+            "When you cast, each active chakra becomes a vertex positioned "
+            "according to your body's layout. These vertices are connected by "
+            "EDGES following your body's natural structure.\n\n"
+            "For example, with torso, shoulder, and elbow active:\n"
+            "  • Torso vertex at center\n"
+            "  • Shoulder vertex offset from torso\n"
+            "  • Elbow vertex offset from shoulder\n"
+            "  • Edges: torso↔shoulder, shoulder↔elbow\n\n"
+            "This forms the SEED PATTERN, which is then fractally iterated "
+            "to create your final spell shape."
+        ),
+        choices=[
+            DialogueChoice(text="What's fractal iteration?", next_id="fractals"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    # =========================================================================
+    # UNLOCKING
+    # =========================================================================
+    nodes["unlocking"] = DialogueNode(
+        id="unlocking",
+        title=title,
+        body=(
+            "Unlocking chakras requires understanding the GATING system.\n\n"
+            "Chakras are gated by BRANCH ROOTS - the entry points to body regions:\n"
+            "  • SHOULDER gates the entire arm\n"
+            "  • WRIST gates the entire hand\n"
+            "  • PALM gates all five fingers\n"
+            "  • THIGH gates the entire leg\n"
+            "  • ANKLE gates the entire foot\n\n"
+            "To unlock a chakra, all branch roots in its path must be unlocked first.\n\n"
+            "Example: To unlock Knuckle 2 on your index finger, you need:\n"
+            "  Torso → Shoulder → Wrist → Palm (all branch roots in path)"
+        ),
+        choices=[
+            DialogueChoice(text="What about intermediate nodes?", next_id="intermediate"),
+            DialogueChoice(text="How do I actually unlock them?", next_id="unlock_methods"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["intermediate"] = DialogueNode(
+        id="intermediate",
+        title=title,
+        body=(
+            "This is subtle but important:\n\n"
+            "INTERMEDIATE nodes do NOT gate each other.\n\n"
+            "Within the arm, Elbow and Forearm are intermediate - neither "
+            "is a branch root. So you can unlock Forearm without Elbow.\n\n"
+            "Within a finger, Knuckles 1, 2, and 3 are intermediate - "
+            "you can unlock Knuckle 3 directly without Knuckle 1 or 2.\n\n"
+            "Only BRANCH ROOTS gate:\n"
+            "  • Shoulder (arm entry)\n"
+            "  • Wrist (hand entry)\n"
+            "  • Ankle (foot entry)\n"
+            "  • Neck (head entry)\n"
+            "  • And so on...\n\n"
+            "This means you can strategically skip intermediate chakras "
+            "to reach deeper ones faster."
+        ),
+        choices=[
+            DialogueChoice(text="Show me a gating chain.", next_id="gating_chain"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["gating_chain"] = DialogueNode(
+        id="gating_chain",
+        title=title,
+        body=(
+            "Let's trace the path to your index fingernail:\n\n"
+            "TARGET: Index Finger → Nail (deepest point)\n\n"
+            "GATING CHAIN (branch roots only):\n"
+            "  1. Torso (body root) - always unlocked\n"
+            "  2. Shoulder (arm branch root)\n"
+            "  3. Wrist (hand branch root)\n"
+            "  4. Palm is NOT a branch root for fingers!\n\n"
+            "Wait - Palm isn't a gate? Correct!\n\n"
+            "Fingers branch directly from the HAND schema, and their root "
+            "is Knuckle 1. But Knuckle 1 itself isn't a branch root for "
+            "Knuckle 2 or 3.\n\n"
+            "So to reach your index fingernail, you only need:\n"
+            "  Torso + Shoulder + Wrist\n\n"
+            "Then you can unlock ANY node in the hand/finger subtree!"
+        ),
+        choices=[
+            DialogueChoice(text="That's clever design.", next_id="design_philosophy"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["design_philosophy"] = DialogueNode(
+        id="design_philosophy",
+        title=title,
+        body=(
+            "The gating system reflects anatomical reality:\n\n"
+            "You can't move your fingers without having an arm. But once "
+            "you have wrist control, you can move any finger independently.\n\n"
+            "This creates meaningful PROGRESSION:\n"
+            "  • Early game: Torso only (simple patterns)\n"
+            "  • Mid game: Arms and legs unlocked (complex shapes)\n"
+            "  • Late game: Hands and feet fully unlocked (intricate fractals)\n"
+            "  • Mastery: Every chakra active (cosmic-level patterns)\n\n"
+            "The deeper you go, the more vertices you add, and the more "
+            "powerful your patterns become."
+        ),
+        choices=[
+            DialogueChoice(text="How do I actually unlock them?", next_id="unlock_methods"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["unlock_methods"] = DialogueNode(
+        id="unlock_methods",
+        title=title,
+        body=(
+            "Chakras are unlocked through various means:\n\n"
+            "• LEVELING UP - Each level grants a chakra unlock point\n"
+            "• QUEST REWARDS - Some quests grant specific chakras\n"
+            "• SPECIAL ITEMS - Chakra stones can unlock specific nodes\n"
+            "• MEDITATION - At certain shrines, you can meditate to unlock\n"
+            "• COMBAT MASTERY - Defeating powerful enemies may awaken chakras\n\n"
+            "Once unlocked, a chakra can be ACTIVATED or DEACTIVATED at will. "
+            "More active chakras = more vertices = more complex patterns.\n\n"
+            "But beware: more complexity isn't always better. Sometimes a "
+            "simple, focused pattern is more effective than an unwieldy one."
+        ),
+        choices=[
+            DialogueChoice(text="How do patterns work?", next_id="patterns"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    # =========================================================================
+    # PATTERNS
+    # =========================================================================
+    nodes["patterns"] = DialogueNode(
+        id="patterns",
+        title=title,
+        body=(
+            "Pattern generation follows a three-step process:\n\n"
+            "1. SEED PATTERN\n"
+            "   Your active chakras become vertices.\n"
+            "   Body tree edges become pattern edges.\n\n"
+            "2. FRACTAL ITERATION\n"
+            "   The seed is transformed by fractal generators.\n"
+            "   Koch, Branch, Zigzag - each creates different shapes.\n\n"
+            "3. PROJECTION\n"
+            "   The pattern is projected into the world.\n"
+            "   Vertices become points of power; edges channel energy.\n\n"
+            "The more chakras active, the more complex your seed, "
+            "and the more intricate your final pattern."
+        ),
+        choices=[
+            DialogueChoice(text="What's fractal iteration?", next_id="fractals"),
+            DialogueChoice(text="Tell me about alignment.", next_id="alignment"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["fractals"] = DialogueNode(
+        id="fractals",
+        title=title,
+        body=(
+            "Fractal iteration transforms simple shapes into complex ones.\n\n"
+            "Take a simple line segment. Apply the KOCH generator:\n"
+            "  Before: ────────────\n"
+            "  After:  ──/\\──\n\n"
+            "Apply it again:\n"
+            "  After:  /\\/\\/\\/\\\n\n"
+            "Each iteration adds detail. Your chakra seed might start as a "
+            "simple star shape, but after iteration becomes an intricate mandala.\n\n"
+            "Different generators create different effects:\n"
+            "  • KOCH - Classic snowflake bumps\n"
+            "  • BRANCH - Tree-like splitting\n"
+            "  • ZIGZAG - Jagged lightning patterns\n"
+            "  • SUBDIVIDE - Smooth subdivision"
+        ),
+        choices=[
+            DialogueChoice(text="How does this affect combat?", next_id="combat"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["alignment"] = DialogueNode(
+        id="alignment",
+        title=title,
+        body=(
+            "Each chakra has an ALIGNMENT - a subtle positional offset.\n\n"
+            "Perfect alignment means your chakra sits exactly where your "
+            "body's layout defines. But chakras can drift, creating unique "
+            "pattern variations.\n\n"
+            "Your DEXTERITY stat affects alignment wobble:\n"
+            "  • Low dex: Chakras wobble randomly (unpredictable patterns)\n"
+            "  • High dex: Chakras stay aligned (precise, repeatable patterns)\n\n"
+            "Some edgecasters deliberately misalign chakras to create "
+            "asymmetric patterns with unexpected properties.\n\n"
+            "Experiment! A slightly off-center heart chakra might create "
+            "a pattern that spirals rather than radiates."
+        ),
+        choices=[
+            DialogueChoice(text="What are resonance bonuses?", next_id="resonance"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["resonance"] = DialogueNode(
+        id="resonance",
+        title=title,
+        body=(
+            "Certain chakra combinations create RESONANCE - bonus effects:\n\n"
+            "• BILATERAL ARMS (shoulder + shoulder_m)\n"
+            "  Both arm chakras active. Grants mana efficiency.\n\n"
+            "• FULL HAND (all 5 fingers on one hand)\n"
+            "  All five finger chakras active. Grants precision bonus.\n\n"
+            "• GROUNDED (both thighs active)\n"
+            "  Both leg root chakras. Grants stability and defense.\n\n"
+            "• CENTERED (torso + chest + back)\n"
+            "  Core chakras aligned. Grants power boost.\n\n"
+            "Seek these resonances! They represent harmony within your "
+            "energy system and amplify your pattern's effectiveness."
+        ),
+        choices=[
+            DialogueChoice(text="How does this affect combat?", next_id="combat"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["combat"] = DialogueNode(
+        id="combat",
+        title=title,
+        body=(
+            "In combat, your pattern determines your power:\n\n"
+            "• MORE VERTICES = More points of damage\n"
+            "  Each vertex near an enemy deals damage.\n\n"
+            "• PATTERN SHAPE = Coverage area\n"
+            "  Wide patterns hit more enemies; focused patterns hit harder.\n\n"
+            "• FRACTAL COMPLEXITY = Total power\n"
+            "  More iterations = more vertices = more damage potential.\n\n"
+            "But there are tradeoffs:\n"
+            "  • Complex patterns take longer to cast\n"
+            "  • Wide patterns dilute damage per enemy\n"
+            "  • Too many active chakras can drain mana faster\n\n"
+            "Master edgecasters learn to adjust their chakra configuration "
+            "for each situation: few chakras for quick strikes, many for "
+            "devastating area attacks."
+        ),
+        choices=[
+            DialogueChoice(text="Any final advice?", next_id="advice"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["advice"] = DialogueNode(
+        id="advice",
+        title=title,
+        body=(
+            "My advice to you, young edgecaster:\n\n"
+            "1. START SMALL\n"
+            "   Master your torso chakra before rushing to unlock more.\n\n"
+            "2. UNLOCK STRATEGICALLY\n"
+            "   Branch roots first - they gate entire regions.\n\n"
+            "3. EXPERIMENT WITH ACTIVATION\n"
+            "   You don't need every unlocked chakra active. Less can be more.\n\n"
+            "4. SEEK RESONANCE\n"
+            "   Bilateral symmetry and full-limb activations grant bonuses.\n\n"
+            "5. MIND YOUR DEXTERITY\n"
+            "   High dex = precise patterns. Low dex = chaos.\n\n"
+            "May your chakras align and your fractals flourish."
+        ),
+        choices=[
+            DialogueChoice(text="Thank you, Sage.", next_id=None),
+            DialogueChoice(text="I have more questions.", next_id="start"),
+        ],
+    )
+
+    return DialogueTree(
+        id=f"npc:{npc_id}",
+        start_id="start",
+        nodes=nodes,
+    )
+
+
 def _build_lair_informant(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTree:
     title = _npc_name(npc, npc_def)
     base_body = _npc_dialogue_body(npc, npc_def)
@@ -705,6 +1260,8 @@ def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
         return _build_merchant(game, npc, npc_id, npc_def)
     if npc_id == "lair_informant":
         return _build_lair_informant(game, npc, npc_id, npc_def)
+    if npc_id == "chakra_sage":
+        return _build_chakra_sage(game, npc, npc_id, npc_def)
 
     # Generic fallback: show whatever dialogue lines exist, then end.
     title = _npc_name(npc, npc_def)

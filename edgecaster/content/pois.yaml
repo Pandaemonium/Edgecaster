@@ -43,6 +43,12 @@ starting_zone:
       color: [255, 80, 80]
       offsets: [[-2, 0], [2, 0], [0, -2], [0, 2], [1, 1], [-1, -1]]
       description: "A hulking demon chained and pitted for training."
+    - npc_id: chakra_sage
+      name: The Chakra Sage
+      glyph: "@"
+      color: [200, 160, 255]
+      offsets: [[-3, 1], [-3, 2], [-4, 1], [-4, 2], [-3, 0]]
+      description: "A serene figure radiating faint luminescence from seven points along their body."
   structures:
     - kind: item_depot
 inventor_workshop:

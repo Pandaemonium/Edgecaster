@@ -9,11 +9,33 @@ import pygame
 MOD_MASK = pygame.KMOD_SHIFT | pygame.KMOD_CTRL | pygame.KMOD_ALT
 
 
+def _normalize_mods(mods: int) -> int:
+    """
+    Normalize modifier flags so left/right variants match.
+
+    pygame distinguishes KMOD_LSHIFT vs KMOD_RSHIFT, but for keybindings
+    we want either to match KMOD_SHIFT. Same for CTRL and ALT.
+    """
+    result = 0
+    # Shift: either LSHIFT or RSHIFT → SHIFT
+    if mods & (pygame.KMOD_LSHIFT | pygame.KMOD_RSHIFT):
+        result |= pygame.KMOD_SHIFT
+    # Ctrl: either LCTRL or RCTRL → CTRL
+    if mods & (pygame.KMOD_LCTRL | pygame.KMOD_RCTRL):
+        result |= pygame.KMOD_CTRL
+    # Alt: either LALT or RALT → ALT
+    if mods & (pygame.KMOD_LALT | pygame.KMOD_RALT):
+        result |= pygame.KMOD_ALT
+    return result
+
+
 def encode_keybinding(keycode: int, mods: int = 0) -> int:
     """
     Encode a key + modifiers into a single int so bindings can distinguish combos.
+
+    Modifiers are normalized so LSHIFT/RSHIFT both become SHIFT, etc.
     """
-    return int(keycode) | ((int(mods) & MOD_MASK) << 16)
+    return int(keycode) | ((_normalize_mods(int(mods)) & MOD_MASK) << 16)
 
 
 def decode_keybinding(code: int) -> tuple[int, int]:
@@ -53,6 +75,7 @@ DEFAULT_BINDINGS: Dict[str, List[int]] = {
     "open_inventory": [encode_keybinding(pygame.K_i)],
     "open_quest_journal": [encode_keybinding(pygame.K_j)],
     "open_factions": [encode_keybinding(pygame.K_f, pygame.KMOD_SHIFT)],
+    "open_chakra_menu": [encode_keybinding(pygame.K_c, pygame.KMOD_SHIFT)],  # Shift+C for chakra management
     "open_abilities": [],  # reserved for ctrl+A below
     "yawp": [encode_keybinding(pygame.K_y)],
     "wait": [encode_keybinding(pygame.K_KP5)],
@@ -267,6 +290,7 @@ class GameInput:
             "open_inventory",
             "open_quest_journal",
             "open_factions",
+            "open_chakra_menu",
             "yawp",
             "wait",
             "stairs_down",

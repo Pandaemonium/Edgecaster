@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from edgecaster.state.entities import Entity  # NEW
 
@@ -40,6 +40,11 @@ class Actor(Entity):
     # Which high-level Actions this actor can perform.
     # (Action names from edgecaster.systems.actions.)
     actions: tuple[str, ...] = field(default_factory=tuple)
+
+    # Chakra state for pattern generation (optional - initialized on spawn)
+    # Stores unlocked/active chakras and alignment offsets.
+    # See edgecaster.systems.chakras for full documentation.
+    chakra_state: Optional[Any] = None
 
     # statuses/tags are inherited from Entity
 

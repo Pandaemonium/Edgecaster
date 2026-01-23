@@ -115,6 +115,14 @@ def default_param_defs() -> Dict[str, Dict[str, dict]]:
                 "label": "Scale",
             },
         },
+        "chakra": {
+            "amplitude": {
+                "values": [1.0, 0.8, 0.6, 0.4],
+                "thresholds": [0, 2, 4, 6],
+                "stat": "int",
+                "label": "Scale",
+            },
+        },
         "winter_hue": {
             "radius": {
                 "values": [1, 2, 3, 4],
@@ -445,12 +453,13 @@ class ParamManager:
 
         Exceptions:
         - "custom"/"amplitude": kept at user choice
+        - "chakra"/"amplitude": kept at user choice
         - "place_rune_anchor": designer/player-tuned, not auto-maxed
         """
         for action, params in self.param_defs.items():
             for key in params:
-                # Keep custom amplitude at user choice (default 1.0)
-                if action == "custom" and key == "amplitude":
+                # Keep custom/chakra amplitude at user choice (default 1.0)
+                if action in ("custom", "chakra") and key == "amplitude":
                     continue
                 # Rune-anchor range/strength are designer/player-tuned
                 if action == "place_rune_anchor":

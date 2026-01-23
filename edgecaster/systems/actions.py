@@ -291,6 +291,13 @@ ACTION_SUB_BUTTONS: Dict[str, list[SubButtonMeta]] = {
             kind="open_config",
         ),
     ],
+    "chakra": [
+        SubButtonMeta(
+            id="config",
+            icon="⚙",
+            kind="open_config",
+        ),
+    ],
     "place_rune_anchor": [
         SubButtonMeta(
             id="config",
@@ -789,6 +796,19 @@ def _action_custom(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     if hasattr(game, "act_fractal"):
         game.act_fractal(actor_id, "custom")
+
+
+@register_action("chakra", label="Chakra", speed="fast", show_in_bar=True)
+def _action_chakra(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Generate a pattern from the actor's active chakras.
+
+    Each active chakra becomes a vertex, and body tree edges between
+    active chakras become pattern edges. This creates a seed pattern
+    based on body geometry that can then be fractally iterated.
+    """
+    if hasattr(game, "act_chakra"):
+        game.act_chakra(actor_id)
 
 
 @register_action("polygon", label="Polygon", speed="fast", show_in_bar=True)

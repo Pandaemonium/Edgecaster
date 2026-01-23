@@ -565,6 +565,8 @@ class DungeonScene(Scene):
                 renderer.pause_requested = False
             if hasattr(game, "inventory_requested"):
                 game.inventory_requested = False
+            if hasattr(game, "chakra_requested"):
+                game.chakra_requested = False
             renderer.start_dungeon(game)
             self._started = True
 
@@ -623,6 +625,13 @@ class DungeonScene(Scene):
         if getattr(game, "inventory_requested", False):
             game.inventory_requested = False
             manager.push_scene(InventoryScene(game))
+            return
+
+        # 3a) Chakra management requested -> push chakra selection scene
+        if getattr(game, "chakra_requested", False):
+            game.chakra_requested = False
+            from .chakra_scene import ChakraSelectionScene
+            manager.push_scene(ChakraSelectionScene(game=game))
             return
 
         # 3b) Merchant requested -> push trade overlay
@@ -1871,6 +1880,12 @@ class DungeonScene(Scene):
         if kind == "open_inventory":
             if not in_aim_mode:
                 setattr(game, "inventory_requested", True)
+                renderer.quit_requested = True
+            return
+
+        if kind == "open_chakra_menu":
+            if not in_aim_mode:
+                setattr(game, "chakra_requested", True)
                 renderer.quit_requested = True
             return
 

@@ -975,3 +975,187 @@ def clear_proto_caches() -> None:
     _RESOLVED_CACHE = {}
     _RESOLVED_BODY_CACHE = {}
     _LOADED = False
+
+
+# ---------------------------------------------------------------------------
+# Branch Root Detection (for Chakra System)
+# ---------------------------------------------------------------------------
+# A "branch root" is a node whose prototype defines its own body schema.
+# These nodes act as gating points for the chakra system - you must unlock
+# a branch root before you can access any chakras in its sub-schema.
+#
+# Example: "shoulder" is the root of the "arm" schema, so it gates access
+# to all arm chakras (upper_arm, elbow, forearm, hand, etc.)
+# ---------------------------------------------------------------------------
+
+def proto_has_body_root(proto_id: str) -> bool:
+    """
+    Check if a prototype defines a body schema with a root node.
+
+    This identifies "branch roots" - prototypes that introduce a new
+    body sub-schema (like arm, hand, finger, leg, foot, etc.)
+
+    Args:
+        proto_id: The prototype ID to check
+
+    Returns:
+        True if this proto defines body.root (is a sub-schema entry point)
+
+    Examples:
+        proto_has_body_root("arm")    -> True  (has body.root = "shoulder")
+        proto_has_body_root("hand")   -> True  (has body.root = "wrist")
+        proto_has_body_root("elbow")  -> False (no body schema)
+        proto_has_body_root("torso")  -> False (is a node, not a schema definer)
+    """
+    if not proto_id:
+        return False
+
+    if not _LOADED:
+        load_master_bucket()
+
+    # Handle mirrored protos
+    pid = base_proto_id(str(proto_id))
+
+    spec = resolve_proto(pid)
+    if not spec:
+        return False
+
+    body = spec.get("body", {})
+    if not isinstance(body, dict):
+        return False
+
+    root = body.get("root")
+    return bool(root)
+
+
+def get_proto_body_root(proto_id: str) -> Optional[str]:
+    """
+    Get the root node ID of a prototype's body schema, if any.
+
+    Args:
+        proto_id: The prototype ID to check
+
+    Returns:
+        The root node ID string, or None if this proto has no body schema
+
+    Examples:
+        get_proto_body_root("arm")    -> "shoulder"
+        get_proto_body_root("hand")   -> "wrist"
+        get_proto_body_root("finger") -> "knuckle_1"
+        get_proto_body_root("elbow")  -> None
+    """
+    if not proto_id:
+        return None
+
+    if not _LOADED:
+        load_master_bucket()
+
+    pid = base_proto_id(str(proto_id))
+    spec = resolve_proto(pid)
+    if not spec:
+        return None
+
+    body = spec.get("body", {})
+    if not isinstance(body, dict):
+        return None
+
+    root = body.get("root")
+    return str(root) if root else None
+
+
+def get_body_node_info(body_schema: dict, node_id: str) -> Dict[str, Any]:
+    """
+    Get detailed information about a node in a body schema.
+
+    Args:
+        body_schema: The body schema dict (with 'nodes' key)
+        node_id: The node ID to look up
+
+    Returns:
+        Dict with keys: proto, children, layout (x, y), size, exists
+    """
+    if not isinstance(body_schema, dict):
+        return {"exists": False}
+
+    # Handle nested 'body' key
+    body = body_schema.get("body", body_schema)
+    nodes = body.get("nodes", {}) if isinstance(body, dict) else {}
+
+    if not isinstance(nodes, dict) or node_id not in nodes:
+        return {"exists": False}
+
+    node = nodes[node_id]
+    if not isinstance(node, dict):
+        return {"exists": False}
+
+    layout = node.get("layout", {})
+    if not isinstance(layout, dict):
+        layout = {}
+
+    props = node.get("props", {})
+    if not isinstance(props, dict):
+        props = {}
+
+    children = node.get("children", [])
+    if not isinstance(children, list):
+        children = []
+
+    return {
+        "exists": True,
+        "proto": node.get("proto", ""),
+        "children": [str(c) for c in children if c],
+        "layout": (float(layout.get("x", 0)), float(layout.get("y", 0))),
+        "size": float(props.get("size", 0.5)),
+    }
+
+
+def find_parent_in_body_schema(body_schema: dict, target_node_id: str) -> Optional[str]:
+    """
+    Find the parent node ID for a given node in a body schema.
+
+    Args:
+        body_schema: The body schema dict
+        target_node_id: The node whose parent we want to find
+
+    Returns:
+        Parent node ID, or None if target is root or not found
+    """
+    if not isinstance(body_schema, dict):
+        return None
+
+    body = body_schema.get("body", body_schema)
+    nodes = body.get("nodes", {}) if isinstance(body, dict) else {}
+
+    if not isinstance(nodes, dict):
+        return None
+
+    for node_id, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+        children = node.get("children", [])
+        if isinstance(children, list) and target_node_id in children:
+            return str(node_id)
+
+    return None
+
+
+def get_all_body_nodes(body_schema: dict) -> List[str]:
+    """
+    Get a list of all node IDs in a body schema.
+
+    Args:
+        body_schema: The body schema dict
+
+    Returns:
+        List of node ID strings
+    """
+    if not isinstance(body_schema, dict):
+        return []
+
+    body = body_schema.get("body", body_schema)
+    nodes = body.get("nodes", {}) if isinstance(body, dict) else {}
+
+    if not isinstance(nodes, dict):
+        return []
+
+    return list(nodes.keys())

@@ -87,6 +87,19 @@ NPC_DEFS = {
         # Which entry in content/merchants.yaml to use for stock/prices/restock.
         "merchant_id": "general_store",
     },
+    "chakra_sage": {
+        "name": "The Chakra Sage",
+        "factions": ["edgecasters"],
+        "base_disposition": 10,
+        "glyph": "@",
+        "color": (200, 160, 255),
+        "description": "A serene figure radiating faint luminescence from seven points along their body.",
+        "dialogue": [
+            "Ah, a seeker of patterns. I sense the potential within you.",
+            "Your body is a map of energy centers - chakras - each one a vertex in the great pattern.",
+            "Would you like to learn about the chakra system?",
+        ],
+    },
 
     # ---------------------------------------------------------------------------
     # Biome-Specific NPCs (for site spawning)
