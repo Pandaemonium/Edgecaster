@@ -353,6 +353,92 @@ def get_gating_chain(
     return gating_chain
 
 
+def collect_all_chakra_nodes(
+    body_schema: Dict[str, Any],
+    unlocked: Set[str],
+    prefix: str = "",
+    depth: int = 0,
+    max_depth: int = 5,
+    proto_index: Optional[Dict[str, Any]] = None
+) -> List[Tuple[str, str, int]]:
+    """
+    Recursively collect all chakra nodes, expanding sub-schemas when their
+    branch root is unlocked.
+
+    IMPORTANT: Once a branch root is unlocked, ALL nodes in its sub-schema
+    become available immediately. There's no sequential gating within a
+    sub-schema - only the "local root" (branch root) gates access.
+
+    For example, once "arm" is unlocked:
+    - ALL arm sub-nodes are available: shoulder, upper_arm, elbow, forearm, hand
+    - You don't need to unlock shoulder before upper_arm
+
+    Args:
+        body_schema: The body schema to traverse
+        unlocked: Set of already-unlocked chakra node IDs (may include prefixed IDs)
+        prefix: Prefix for node IDs in this schema (e.g., "arm." for arm sub-schema)
+        depth: Current nesting depth (0 = top-level)
+        max_depth: Maximum recursion depth to prevent infinite loops
+        proto_index: Optional prototype index cache
+
+    Returns:
+        List of tuples: (full_node_id, display_name, depth)
+        - full_node_id: e.g., "arm", "arm.shoulder", "arm.hand.wrist"
+        - display_name: Human-readable name
+        - depth: Nesting depth for sorting
+
+    Example:
+        # With "body" and "arm" unlocked:
+        nodes = collect_all_chakra_nodes(body_schema, {"body", "arm"})
+        # Returns all arm sub-nodes immediately available
+    """
+    if depth > max_depth:
+        return []
+
+    result: List[Tuple[str, str, int]] = []
+    nodes = _get_nodes(body_schema)
+
+    for node_id, node_spec in nodes.items():
+        # Build full ID with prefix
+        full_id = f"{prefix}{node_id}" if prefix else node_id
+
+        # Get prototype ID for branch root check
+        proto_id = node_spec.get("proto", node_id) if isinstance(node_spec, dict) else node_id
+
+        # Build display name from node_id
+        if node_id.endswith("_m"):
+            base = node_id[:-2].replace("_", " ").title()
+            display_name = f"{base} (Mirror)"
+        else:
+            display_name = node_id.replace("_", " ").title()
+
+        result.append((full_id, display_name, depth))
+
+        # If this node is a branch root AND it's unlocked, expand its sub-schema
+        # ALL nodes in the sub-schema become available (no sequential gating)
+        if is_branch_root(proto_id, proto_index) and full_id in unlocked:
+            try:
+                from edgecaster.prototypes import resolve_body_schema
+                sub_schema = resolve_body_schema(proto_id)
+                if sub_schema and isinstance(sub_schema, dict) and sub_schema.get("nodes"):
+                    # Recursively collect sub-schema nodes
+                    # Pass unlocked so nested branch roots still require unlocking
+                    sub_nodes = collect_all_chakra_nodes(
+                        sub_schema,
+                        unlocked,
+                        prefix=f"{full_id}.",
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        proto_index=proto_index
+                    )
+                    result.extend(sub_nodes)
+            except Exception:
+                # If sub-schema resolution fails, just skip expansion
+                pass
+
+    return result
+
+
 # =============================================================================
 # CHAKRA OPERATIONS
 # =============================================================================
@@ -576,41 +662,142 @@ def get_chakra_world_positions(
     """
     Convert chakra node positions to world-space coordinates.
 
-    This walks the body tree recursively, accumulating position and scale
-    transforms to produce final world positions for each chakra.
-
-    The algorithm:
-    1. Start at root node at origin (0, 0) with base_scale
-    2. For each child node:
-       - Position = parent_pos + (child_layout * current_scale)
-       - Scale = current_scale * child_size
-    3. Apply alignment offsets from chakra_state
-
-    Args:
-        body_schema: The actor's body schema
-        chakra_state: Current chakra state (for alignments)
-        base_scale: World-space scale factor (default 5.0 tiles)
-        include_inactive: If True, include all unlocked chakras, not just active
-
-    Returns:
-        Dict mapping node_id to (x, y) world position
-
-    Example:
-        positions = get_chakra_world_positions(actor.body_schema, actor.chakra_state)
-        # {"torso": (0, 0), "shoulder": (-1.5, 0.8), "shoulder_m": (1.5, 0.8), ...}
+    IMPORTANT:
+    This now includes sub-schema chakras (e.g., hand/finger nodes) once their
+    branch root is unlocked, so gated chakras can affect the pattern.
     """
-    nodes = _get_nodes(body_schema)
-    root_id = _get_root_node_id(body_schema)
-
-    if not nodes or not root_id:
-        return {}
+    # Use the recursive position helper so sub-schemas are included.
+    all_positions = get_all_chakra_positions_recursive(
+        body_schema,
+        chakra_state,
+        base_scale=base_scale,
+    )
 
     # Determine which nodes to include
     target_nodes = chakra_state.active if not include_inactive else chakra_state.unlocked
-
     positions: Dict[str, Vec2] = {}
 
-    def walk(node_id: str, parent_pos: Vec2, current_scale: float) -> None:
+    for node_id, (pos_u, _state, _scale, _base_pos) in all_positions.items():
+        if node_id in target_nodes:
+            positions[node_id] = pos_u
+
+    return positions
+
+
+def get_chakra_connections_recursive(
+    body_schema: Dict[str, Any],
+    chakra_state: ChakraState,
+    prefix: str = "",
+    depth: int = 0,
+    max_depth: int = 5,
+) -> List[Tuple[str, str]]:
+    """
+    Build parent-child connections across the full body schema tree, including
+    unlocked sub-schemas. This mirrors the Chakra scene's connection logic.
+    """
+    if depth > max_depth:
+        return []
+
+    nodes = _get_nodes(body_schema)
+    if not nodes:
+        return []
+
+    edges: List[Tuple[str, str]] = []
+
+    for node_id, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+
+        full_id = f"{prefix}{node_id}" if prefix else node_id
+
+        # Edges to children within this schema
+        children = node.get("children", [])
+        if isinstance(children, list):
+            for child_id in children:
+                if child_id:
+                    child_full_id = f"{prefix}{child_id}" if prefix else str(child_id)
+                    edges.append((full_id, child_full_id))
+
+        # If this is an unlocked branch root, connect to sub-schema root and recurse
+        proto_id = node.get("proto", node_id)
+        if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
+            try:
+                from edgecaster.prototypes import resolve_body_schema
+                sub_schema = resolve_body_schema(proto_id)
+                if sub_schema and isinstance(sub_schema, dict):
+                    sub_root = sub_schema.get("root")
+                    if sub_root:
+                        sub_root_full = f"{full_id}.{sub_root}"
+                        edges.append((full_id, sub_root_full))
+                    edges.extend(
+                        get_chakra_connections_recursive(
+                            sub_schema,
+                            chakra_state,
+                            prefix=f"{full_id}.",
+                            depth=depth + 1,
+                            max_depth=max_depth,
+                        )
+                    )
+            except Exception:
+                pass
+
+    return edges
+
+
+def get_all_chakra_positions_recursive(
+    body_schema: Dict[str, Any],
+    chakra_state: ChakraState,
+    base_scale: float = 1.0,
+    prefix: str = "",
+    parent_pos: Vec2 = (0.0, 0.0),
+    parent_scale: float = 1.0,
+    depth: int = 0,
+    max_depth: int = 5,
+) -> Dict[str, Tuple[Vec2, str, float, Vec2]]:
+    """
+    Recursively get positions for ALL chakra nodes, including sub-schemas.
+
+    When a branch root is unlocked, this expands into its sub-schema and
+    positions those nodes relative to the branch root's position.
+
+    Args:
+        body_schema: The body schema to traverse
+        chakra_state: Current chakra state
+        base_scale: Scale factor for this schema level
+        prefix: Prefix for node IDs (e.g., "arm." for arm sub-schema)
+        parent_pos: Parent node's position for offset calculation
+        parent_scale: Parent's scale for composing transforms
+        depth: Current recursion depth
+        max_depth: Maximum depth to prevent infinite recursion
+
+    Returns:
+        Dict mapping full_node_id to (position, state, local_scale, base_position)
+        - position: (x, y) in unit coordinates (includes alignment offsets)
+        - state: "locked", "unlocked", or "active"
+        - local_scale: scale used for this node's layout (for alignment math)
+        - base_position: (x, y) without alignment offsets
+    """
+    if depth > max_depth:
+        return {}
+
+    nodes = _get_nodes(body_schema)
+    root_id = _get_root_node_id(body_schema)
+
+    if not nodes:
+        return {}
+
+    result: Dict[str, Tuple[Vec2, str]] = {}
+
+    def get_node_state(full_id: str) -> str:
+        """Determine chakra state for a node."""
+        if full_id in chakra_state.active:
+            return "active"
+        elif full_id in chakra_state.unlocked:
+            return "unlocked"
+        else:
+            return "locked"
+
+    def walk(node_id: str, pos: Vec2, scale: float) -> None:
         """Recursively walk the tree, computing positions."""
         if node_id not in nodes:
             return
@@ -619,29 +806,64 @@ def get_chakra_world_positions(
         layout = _get_node_layout(node)
         size = _get_node_size(node)
 
-        # Compute this node's position
-        x = parent_pos[0] + (layout[0] * current_scale)
-        y = parent_pos[1] + (layout[1] * current_scale)
+        # Compute this node's base position (pre-alignment)
+        x = pos[0] + (layout[0] * scale)
+        y = pos[1] + (layout[1] * scale)
+        base_pos = (x, y)
+
+        # Build full ID with prefix
+        full_id = f"{prefix}{node_id}" if prefix else node_id
 
         # Apply alignment offset if present
-        if node_id in chakra_state.alignments:
-            align = chakra_state.alignments[node_id]
-            x += align[0] * current_scale * 0.5  # Scale alignment by current zoom
-            y += align[1] * current_scale * 0.5
+        if full_id in chakra_state.alignments:
+            align = chakra_state.alignments[full_id]
+            x += align[0] * scale * 0.5
+            y += align[1] * scale * 0.5
 
-        # Store if this is a target node
-        if node_id in target_nodes:
-            positions[node_id] = (x, y)
+        # Store this node's position and state
+        state = get_node_state(full_id)
+        result[full_id] = ((x, y), state, scale, base_pos)
 
-        # Recurse to children with scaled-down coordinate system
-        child_scale = current_scale * size
+        # Check if this is a branch root that's unlocked
+        proto_id = node.get("proto", node_id) if isinstance(node, dict) else node_id
+        if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
+            try:
+                from edgecaster.prototypes import resolve_body_schema
+                sub_schema = resolve_body_schema(proto_id)
+                if sub_schema and isinstance(sub_schema, dict) and sub_schema.get("nodes"):
+                    # Recursively get sub-schema positions
+                    # Position sub-schema relative to this node
+                    # NOTE: Only apply the parent scale once. The previous logic
+                    # multiplied by (scale * size) twice, which made deeper
+                    # chakras appear much smaller than intended.
+                    sub_result = get_all_chakra_positions_recursive(
+                        sub_schema,
+                        chakra_state,
+                        base_scale=1.0,
+                        prefix=f"{full_id}.",
+                        parent_pos=(x, y),
+                        parent_scale=scale * size,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                    )
+                    result.update(sub_result)
+            except Exception:
+                pass
+
+        # Recurse to children within this schema
+        child_scale = scale * size
         for child_id in _get_node_children(node):
             walk(child_id, (x, y), child_scale)
 
-    # Start walk from root
-    walk(root_id, (0.0, 0.0), base_scale)
+    # Start walk from root (or from parent_pos if nested)
+    if root_id and root_id in nodes:
+        walk(root_id, parent_pos, base_scale * parent_scale)
+    else:
+        # No root, walk all nodes
+        for node_id in nodes:
+            walk(node_id, parent_pos, base_scale * parent_scale)
 
-    return positions
+    return result
 
 
 # =============================================================================
@@ -672,7 +894,6 @@ def chakras_to_seed_pattern(
     # Import here to avoid circular dependency
     from edgecaster.state.patterns import Pattern
 
-    nodes = _get_nodes(body_schema)
     positions = get_chakra_world_positions(body_schema, chakra_state, base_scale)
 
     if not positions:
@@ -682,21 +903,21 @@ def chakras_to_seed_pattern(
     pattern = Pattern()
     node_to_idx: Dict[str, int] = {}
 
-    # Add vertices for each active chakra
+    # Add vertices for each active chakra (including sub-schema nodes)
     for node_id, pos in positions.items():
         idx = pattern.add_vertex(pos, color="chakra", power=1.0)
         node_to_idx[node_id] = idx
 
-    # Add edges following body tree structure
-    # An edge exists between parent and child if BOTH are active
-    for node_id in positions:
-        parent_id = _find_parent_node_id(nodes, node_id)
-        if parent_id and parent_id in node_to_idx:
+    # Add edges following body tree structure (including sub-schemas).
+    # An edge exists between parent and child if BOTH endpoints are active.
+    edges = get_chakra_connections_recursive(body_schema, chakra_state)
+    for parent_id, child_id in edges:
+        if parent_id in node_to_idx and child_id in node_to_idx:
             pattern.add_edge(
                 node_to_idx[parent_id],
-                node_to_idx[node_id],
+                node_to_idx[child_id],
                 color="chakra",
-                weight=1.0
+                weight=1.0,
             )
 
     return pattern

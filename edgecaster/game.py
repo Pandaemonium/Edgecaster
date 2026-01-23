@@ -4106,7 +4106,7 @@ class Game:
         # Get body schema
         try:
             from edgecaster.prototypes import resolve_body_schema
-            from edgecaster.systems.chakras import chakras_to_seed_pattern
+            from edgecaster.systems.chakras import chakras_to_seed_pattern, get_chakra_world_positions
             body_schema = resolve_body_schema(actor)
         except Exception:
             self.log.add("Could not resolve body schema.")
@@ -4135,17 +4135,76 @@ class Game:
         if chakra_pattern.edges:
             edges = [(e.a, e.b) for e in chakra_pattern.edges]
 
+        # Drop orphan vertices (not referenced by any edge). These can
+        # otherwise show up as stray points when applying the generator.
+        if edges:
+            used = set()
+            for a, b in edges:
+                used.add(a)
+                used.add(b)
+            if len(used) >= 2:
+                # Preserve original vertex order for stability
+                used_list = [i for i in range(len(verts)) if i in used]
+                old_to_new = {old: new for new, old in enumerate(used_list)}
+                verts = [verts[i] for i in used_list]
+                edges = [(old_to_new[a], old_to_new[b]) for a, b in edges if a in old_to_new and b in old_to_new]
+
+        if len(verts) < 2 or not edges:
+            self.log.add("Need at least 2 connected chakras to form a generator.")
+            return
+
+        # Drop degenerate edges where endpoints collapse to the same spot.
+        # These create tiny "orphan dots" when the generator is applied.
+        def edge_len_sq(a_idx: int, b_idx: int) -> float:
+            ax, ay = verts[a_idx]
+            bx, by = verts[b_idx]
+            dx = ax - bx
+            dy = ay - by
+            return dx * dx + dy * dy
+
+        eps_sq = 1e-8
+        edges = [(a, b) for a, b in edges if edge_len_sq(a, b) > eps_sq]
+
+        if edges:
+            used = set()
+            for a, b in edges:
+                used.add(a)
+                used.add(b)
+            if len(used) >= 2:
+                used_list = [i for i in range(len(verts)) if i in used]
+                old_to_new = {old: new for new, old in enumerate(used_list)}
+                verts = [verts[i] for i in used_list]
+                edges = [(old_to_new[a], old_to_new[b]) for a, b in edges if a in old_to_new and b in old_to_new]
+        if len(verts) < 2 or not edges:
+            self.log.add("Need at least 2 connected chakras to form a generator.")
+            return
+
         # Reorder vertices so root is first and furthest point is last.
         # The CustomGraphGenerator uses vertices[0] and vertices[-1] as the
         # baseline for scaling - if these aren't the pattern endpoints,
         # the pattern will explode in size after iterations.
         #
-        # Root is typically the "body" node at or near (0, 0).
-        # Find the vertex closest to origin as root.
+        # Root is typically the "body" node; fall back to closest-to-origin.
+        root_hint = None
+        try:
+            root_id = body_schema.get("root")
+            if root_id:
+                positions = get_chakra_world_positions(body_schema, chakra_state, base_scale=1.0)
+                root_hint = positions.get(root_id)
+        except Exception:
+            root_hint = None
+
         def dist_sq(p: tuple) -> float:
             return p[0] ** 2 + p[1] ** 2
-
-        root_idx = min(range(len(verts)), key=lambda i: dist_sq(verts[i]))
+        if root_hint is not None:
+            rx, ry = root_hint
+            def dist_to_hint(idx: int) -> float:
+                dx = verts[idx][0] - rx
+                dy = verts[idx][1] - ry
+                return dx * dx + dy * dy
+            root_idx = min(range(len(verts)), key=dist_to_hint)
+        else:
+            root_idx = min(range(len(verts)), key=lambda i: dist_sq(verts[i]))
 
         # Find furthest vertex from root
         root_pos = verts[root_idx]
@@ -4156,6 +4215,35 @@ class Game:
             return dx * dx + dy * dy
 
         furthest_idx = max(range(len(verts)), key=lambda i: dist_from_root(verts[i]))
+
+        # Normalize the chakra shape so the baseline lies on +X axis.
+        # This prevents unintended rotation and keeps the terminus aligned
+        # with the existing pattern's segment endpoints.
+        rx, ry = root_pos
+        tx, ty = verts[furthest_idx]
+        bx = tx - rx
+        by = ty - ry
+        base_len = math.hypot(bx, by)
+        if base_len > 1e-6:
+            ang = math.atan2(by, bx)
+            cos_a = math.cos(-ang)
+            sin_a = math.sin(-ang)
+
+            norm_verts = []
+            for vx, vy in verts:
+                # Translate so root is origin
+                dx = vx - rx
+                dy = vy - ry
+                # Rotate so baseline aligns to +X
+                nx = dx * cos_a - dy * sin_a
+                ny = dx * sin_a + dy * cos_a
+                norm_verts.append((nx, ny))
+            verts = norm_verts
+
+            # Update root/terminus indices after normalization
+            root_idx = 0
+            # Terminus is now the furthest point along +X
+            furthest_idx = max(range(len(verts)), key=lambda i: verts[i][0])
 
         # Build mapping from old indices to new indices
         # New order: root first, furthest last, everything else in between

@@ -1,5 +1,5 @@
 EDGECASTER ARCHITECTURE GUIDE
-Updated: 2026-01-09
+Updated: 2026-01-23
 
 This document orients new contributors to the current structure.
 Goal: keep responsibilities clean and make new features easy to add.
@@ -76,6 +76,11 @@ To add a new bindable action:
 Rule: Do not create "hardwired keys" in scenes. If it is a player-facing action,
 it should have a keybinding entry so it automatically appears in the keybind menu.
 
+Modifier normalization:
+- _normalize_mods() converts left/right modifier variants to their combined form
+- KMOD_LSHIFT and KMOD_RSHIFT both normalize to KMOD_SHIFT (same for CTRL, ALT)
+- This ensures Shift+C works regardless of which Shift key is pressed
+
 ===============================================================================
 3) CAMERA + ZOOM (ONE CAMERA INVARIANT)
 
@@ -134,6 +139,7 @@ Key modules (non-exhaustive):
 - systems/legendaries.py: legendary registry, lairs, POI discovery/rumors
 - systems/lorenz_aura.py: Strange Attractor aura simulation (game-side)
 - systems/lighting.py: light emission from entities (illumination, visibility)
+- systems/chakras.py: body-based chakra system for fractal pattern generation
 
 ===============================================================================
 6) VISIBILITY + LIGHTING
@@ -223,6 +229,41 @@ Testing:
 - UI: edgecaster/scenes/merchant_scene.py (PanelScene-style menu)
 - Esc cancels a proposal; Accept commits and exits
 - Merchant definitions should be data-driven (content YAML) and spawned via POIs where possible
+
+===============================================================================
+11) CHAKRA SYSTEM (BODY-BASED PATTERN GENERATION)
+
+Core module:
+- edgecaster/systems/chakras.py: ChakraState, unlocking, activation, gating, pattern generation
+
+Concepts:
+- Chakras: energy centers aligned with body schema nodes (torso, shoulders, hands, fingers, etc.)
+- Unlocking: chakras must be unlocked before activation; gated by "branch roots" (sub-schema entry points)
+- Activation: unlocked chakras can be toggled active/inactive; only active chakras contribute to patterns
+- Alignment: per-chakra position offsets for tuning pattern shape
+- Pattern generation: active chakra positions become vertices, body tree edges become pattern segments
+
+Gating rules:
+- Branch roots are nodes whose prototype defines its own body.root (a sub-schema)
+- To unlock a chakra, ALL branch roots in its ancestry must be unlocked
+- Example: to unlock "knuckle_2", you need {torso, shoulder, wrist} unlocked (but NOT knuckle_1)
+
+Key functions:
+- can_unlock_chakra(): checks gating prerequisites
+- unlock_chakra(): unlocks a chakra (optionally auto-activates)
+- toggle_chakra_active(): toggles active state
+- chakras_to_seed_pattern(): generates Pattern from active chakras
+- get_gating_chain(): returns list of branch roots needed for a node
+
+UI:
+- edgecaster/scenes/chakra_scene.py: ChakraSelectionScene (Shift+C to open)
+- Features: body silhouette with glowing chakra points, real-time pattern preview,
+  3-layer glow rendering, pulse animations, energy flow lines, particle bursts
+
+Action integration:
+- "chakra" action in systems/actions.py: applies chakra pattern as a fractal generator
+- Works like Koch/Branch/Custom: transforms existing pattern edges using chakra shape
+- Vertex ordering: root (closest to origin) is first, furthest point is last (prevents size explosion)
 
 ===============================================================================
 GUIDING PRINCIPLES
