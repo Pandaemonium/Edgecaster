@@ -1,0 +1,145 @@
+PATTERN PIPELINE UPDATE PLAN
+=============================
+
+Goal
+----
+Unify all generator sources (chakras, tattoos, wands, shrines, resonance, etc.)
+behind one pipeline so activations and pattern edits are source-agnostic.
+
+
+1) Define Core Data Types
+-------------------------
+1.1 SeedPattern
+    - vertices: list[(x, y)]
+    - edges: list[(a, b)]
+    - tags: dict (source_id, display_name, traits)
+    - baseline_hint: optional (root_id, terminus_id)
+
+1.2 GeneratorShape (normalized seed)
+    - vertices, edges
+    - baseline: (root_idx, terminus_idx)
+    - amplitude: float
+    - tags
+
+1.3 PatternSource (interface)
+    - id: str
+    - label: str
+    - priority: int
+    - get_seed(game, actor, level) -> SeedPattern | None
+    - is_active(game, actor, level) -> bool
+    - ui_metadata(): optional (icon, short_label)
+
+
+2) Pipeline Module
+------------------
+Create edgecaster/systems/pattern_sources.py with:
+2.1 resolve_active_sources(...)
+    - gather sources from chakras, tattoos, equipped items, shrine buffs, etc.
+    - filter by is_active()
+    - pick highest-priority (or allow stacking later)
+
+2.2 normalize_seed(seed: SeedPattern) -> GeneratorShape
+    - drop orphan vertices
+    - drop degenerate edges
+    - pick baseline root/terminus
+    - normalize orientation (+X baseline)
+    - scale to unit baseline
+
+2.3 build_generator(shape: GeneratorShape, amplitude: float)
+    - returns CustomGraphGenerator or CustomPolyGenerator
+
+
+3) Source Implementations
+-------------------------
+3.1 ChakraSource
+    - wrap chakras_to_seed_pattern -> SeedPattern
+    - provide baseline_hint from body schema root + furthest
+    - respects realignment
+
+3.2 TattooSource
+    - seed loaded from tattoo data in actor inventory/skin
+    - tags include "tattoo" and durability/charges
+
+3.3 WandSource
+    - for items granting generators (zigzag, koch, branch, custom)
+    - active when equipped (or held, depending on tag)
+
+3.4 ShrineSource (zone-limited)
+    - active only in a specific zone or within radius of a tile
+
+3.5 ResonanceSource
+    - active when chakra constellation matches a resonance config
+
+
+4) Generator Application
+------------------------
+4.1 Replace direct chakra generator usage
+    - call resolve_active_sources + normalize_seed + build_generator
+    - apply to current pattern with standard generator flow
+
+4.2 Tag the pattern with source metadata
+    - pattern.meta["source_id"] = ...
+    - pattern.meta["source_label"] = ...
+    - enables UI hints (ability bar or HUD)
+
+
+5) UI Changes
+-------------
+5.1 Ability bar hint
+    - show current generator source on hover
+    - optional: "Tattoo: Spiral Knot" / "Chakra: Body Lattice"
+
+5.2 Chakra scene
+    - preview should use same normalization as generator pipeline
+    - avoid mismatch between UI preview and applied pattern
+
+5.3 Inventory / Tattoo UI
+    - allow selecting tattoo as active generator source
+
+
+6) Actions & Activation
+-----------------------
+6.1 Activations operate only on pattern geometry
+    - no changes required once sources are unified
+
+6.2 Confirmations and preview
+    - preview pipeline should use same normalization path
+
+
+7) Migration + Backward Compatibility
+-------------------------------------
+7.1 Default source: ChakraSource (always available)
+7.2 Legacy custom patterns remain as a source
+7.3 Wands and tattoos opt-in via tag parsing
+
+
+8) Testing / Debugging
+----------------------
+8.1 Logging
+    - one-line summary of chosen source + baseline length
+
+8.2 Debug overlay
+    - show baseline line and normalized shape bounding box
+
+8.3 Regression tests
+    - chakra-only (baseline match, no rotation drift)
+    - tattoo-only
+    - wand-only
+
+
+9) Milestones
+-------------
+M1: Add pattern_sources.py with SeedPattern, GeneratorShape, and ChakraSource
+M2: Route generator application through the new pipeline
+M3: Update chakra preview to use normalization
+M4: Add TattooSource stub and simple UI toggle
+M5: Hook in WandSource + ShrineSource
+M6: Add resonance source (later)
+
+
+Notes / Constraints
+-------------------
+- Keep everything modular and data-driven.
+- Avoid biome or corruption coupling; these are orthogonal.
+- Use a single normalization function everywhere to prevent scale drift.
+

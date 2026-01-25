@@ -50,6 +50,8 @@ from edgecaster.systems.chakras import (
     check_resonance_bonuses,
     get_chakra_world_positions,
     get_all_chakra_positions_recursive,
+    get_resonance_modifiers,
+    CHARGE_MAX_BASE,
     is_branch_root,
 )
 from edgecaster.prototypes import resolve_body_schema
@@ -102,6 +104,17 @@ REALIGN_MAX_LIMIT = 1.00  # Clamp to prevent extreme offsets
 CAMERA_MIN_SCALE = 0.45
 CAMERA_MAX_SCALE = 6.00
 CAMERA_ZOOM_STEP = 1.18
+
+# Tooltip styling
+TOOLTIP_PADDING = 8
+TOOLTIP_MARGIN = 8
+TOOLTIP_MAX_WIDTH = 320
+TOOLTIP_BG = (14, 18, 30)
+TOOLTIP_BORDER = (80, 100, 130)
+TOOLTIP_TITLE = (230, 235, 255)
+TOOLTIP_TEXT = (180, 195, 220)
+TOOLTIP_ACCENT = (170, 220, 255)
+TOOLTIP_WARN = (200, 120, 120)
 
 
 # =============================================================================
@@ -210,6 +223,57 @@ def _get_nodes_from_schema(body_schema: Dict[str, Any]) -> Dict[str, Dict[str, A
             return nodes
 
     return body_schema.get("nodes", {})
+
+
+def _format_chakra_label(node_id: str) -> str:
+    """Turn a node id into a readable label for UI/tooltips."""
+    parts = node_id.split(".")
+    pretty_parts: List[str] = []
+    for part in parts:
+        mirrored = part.endswith("_m")
+        base = part[:-2] if mirrored else part
+        base = base.replace("_", " ").title()
+        if mirrored:
+            base = f"{base} (Mirror)"
+        pretty_parts.append(base)
+    return " \u00b7 ".join(pretty_parts)
+
+
+def _resolve_chakra_path(
+    body_schema: Dict[str, Any],
+    full_id: str,
+) -> List[Tuple[str, Dict[str, Any], str]]:
+    """Resolve a full node id into a path of (full_id, node, proto_id)."""
+    parts = [p for p in full_id.split(".") if p]
+    schema = body_schema
+    prefix = ""
+    out: List[Tuple[str, Dict[str, Any], str]] = []
+
+    for idx, part in enumerate(parts):
+        nodes = _get_nodes_from_schema(schema)
+        node = nodes.get(part)
+        if not isinstance(node, dict):
+            break
+
+        proto_id = node.get("proto", part)
+        full_name = part if not prefix else f"{prefix}{part}"
+        out.append((full_name, node, str(proto_id)))
+
+        if idx < len(parts) - 1:
+            # Only descend into a sub-schema if this node is a true branch root.
+            # This avoids bogus paths caused by inherited body schemas (e.g., knee
+            # inheriting leg.body, which would create "leg.knee.thigh.knee").
+            if not is_branch_root(proto_id):
+                break
+            try:
+                schema = resolve_body_schema(proto_id)
+            except Exception:
+                break
+            if not isinstance(schema, dict):
+                break
+            prefix = f"{full_name}."
+
+    return out
 
 
 # =============================================================================
@@ -382,10 +446,10 @@ class ChakraSilhouetteWidget(Widget):
         chakra_state: ChakraState,
         prefix: str,
         depth: int = 0,
+        recursion_guard: Optional[Set[str]] = None,
     ) -> None:
         """Recursively build parent-child connections for energy flow lines."""
-        if depth > 5:
-            return
+        guard = set(recursion_guard or ())
 
         nodes = _get_nodes_from_schema(body_schema)
         if not nodes:
@@ -410,6 +474,8 @@ class ChakraSilhouetteWidget(Widget):
             # and recurse into sub-schema
             proto_id = node.get("proto", node_id)
             if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
+                if str(proto_id) in guard:
+                    continue
                 try:
                     sub_schema = resolve_body_schema(proto_id)
                     if sub_schema and isinstance(sub_schema, dict):
@@ -424,6 +490,8 @@ class ChakraSilhouetteWidget(Widget):
                             sub_schema, chakra_state,
                             prefix=f"{full_id}.",
                             depth=depth + 1
+                            ,
+                            recursion_guard=guard | {str(proto_id)},
                         )
                 except Exception:
                     pass
@@ -723,6 +791,20 @@ class ChakraSilhouetteWidget(Widget):
         if point.node_id == self._hovered_id:
             base_color = _lerp_color(base_color, COLOR_HOVER, 0.4)
             base_alpha = 255
+            # Extra soft halo for hover (helps eye find tooltips quickly)
+            halo_radius = int(BASE_CHAKRA_RADIUS * 3.0)
+            halo_surf = pygame.Surface((halo_radius * 2, halo_radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(
+                halo_surf,
+                (190, 210, 255, 40),
+                (halo_radius, halo_radius),
+                halo_radius,
+            )
+            surface.blit(
+                halo_surf,
+                (px - halo_radius, py - halo_radius),
+                special_flags=pygame.BLEND_ADD,
+            )
 
         # Selected highlight
         if point.node_id == self._selected_id:
@@ -872,6 +954,14 @@ class ChakraSilhouetteWidget(Widget):
         ux = (pos_px[0] - cx_px) / self._px_per_unit + center_u[0]
         uy = (pos_px[1] - cy_px) / self._px_per_unit + center_u[1]
         return (ux, uy)
+
+    def get_hovered_chakra(self) -> Optional[str]:
+        """Expose the currently hovered chakra id (for tooltips)."""
+        return self._hovered_id
+
+    def get_chakra_point(self, node_id: str) -> Optional[ChakraPoint]:
+        """Return the ChakraPoint for a node id if present."""
+        return self._chakra_points.get(node_id)
 
     def refresh_points(self) -> None:
         """Force a rebuild of chakra points and pixel positions."""
@@ -1380,6 +1470,158 @@ class ChakraSelectionScene(PanelScene):
         resonances = check_resonance_bonuses(body_schema, chakra_state)
         self._info.set_resonances(resonances)
 
+    def _build_chakra_tooltip(
+        self,
+        node_id: str,
+    ) -> Optional[Tuple[str, List[Tuple[str, Tuple[int, int, int]]]]]:
+        """Build tooltip title + lines for the hovered chakra."""
+        if self._actor is None:
+            return None
+
+        chakra_state = self._get_ui_state()
+        body_schema = _get_body_schema(self._actor)
+
+        title = _format_chakra_label(node_id)
+        lines: List[Tuple[str, Tuple[int, int, int]]] = []
+
+        # State label
+        if node_id in chakra_state.active:
+            state_label = "Active"
+            state_color = COLOR_ACTIVE
+        elif node_id in chakra_state.unlocked:
+            state_label = "Unlocked"
+            state_color = COLOR_UNLOCKED
+        else:
+            state_label = "Locked"
+            state_color = COLOR_LOCKED
+        lines.append((f"State: {state_label}", state_color))
+
+        # Resolve node path and gating chain
+        path = _resolve_chakra_path(body_schema, node_id)
+        node = path[-1][1] if path else None
+        proto_id = path[-1][2] if path else node_id
+
+        gating_chain: List[str] = []
+        for full_name, _node, proto in path[:-1]:
+            if is_branch_root(proto):
+                gating_chain.append(full_name)
+
+        if gating_chain:
+            missing = [g for g in gating_chain if g not in chakra_state.unlocked]
+            if missing:
+                req = ", ".join(_format_chakra_label(m) for m in missing)
+                lines.append((f"Requires: {req}", TOOLTIP_WARN))
+            else:
+                prereq = ", ".join(_format_chakra_label(g) for g in gating_chain)
+                lines.append((f"Prereqs: {prereq}", TOOLTIP_TEXT))
+
+        # Branch root hint
+        if is_branch_root(proto_id):
+            lines.append(("Branch Root: yes", TOOLTIP_ACCENT))
+
+        # Child count hint
+        if isinstance(node, dict):
+            children = node.get("children", [])
+            if isinstance(children, list) and children:
+                lines.append((f"Children: {len(children)}", TOOLTIP_TEXT))
+
+        # Charge readout (only meaningful for unlocked/active nodes)
+        if node_id in chakra_state.unlocked or node_id in chakra_state.active:
+            bonuses = check_resonance_bonuses(body_schema, chakra_state)
+            mods = get_resonance_modifiers(bonuses)
+            cap = max(0.01, CHARGE_MAX_BASE + mods.charge_cap_bonus)
+            charge = float(chakra_state.charges.get(node_id, 0.0))
+            pct = int(100 * (charge / cap))
+            lines.append((f"Charge: {pct}% ({charge:.2f}/{cap:.2f})", TOOLTIP_ACCENT))
+
+        # Alignment offset
+        if node_id in chakra_state.alignments:
+            dx, dy = chakra_state.alignments.get(node_id, (0.0, 0.0))
+            lines.append((f"Alignment: {dx:+.2f}, {dy:+.2f}", TOOLTIP_TEXT))
+
+        # Resonance summary
+        if node_id in chakra_state.active:
+            resonances = check_resonance_bonuses(body_schema, chakra_state)
+            if resonances:
+                res_label = ", ".join(r.replace("_", " ").title() for r in resonances[:2])
+                if len(resonances) > 2:
+                    res_label += f" (+{len(resonances) - 2})"
+                lines.append((f"Resonance: {res_label}", (180, 255, 180)))
+
+        return (title, lines)
+
+    def _draw_chakra_tooltip(self, panel: pygame.Surface, renderer) -> None:
+        """Draw a floating tooltip near the hovered chakra."""
+        hover_id = self._silhouette.get_hovered_chakra()
+        if not hover_id:
+            # Fall back to selected chakra for keyboard navigation.
+            hover_id = self._silhouette.get_selected_chakra()
+        if not hover_id:
+            return
+
+        point = self._silhouette.get_chakra_point(hover_id)
+        if point is None:
+            return
+
+        tip = self._build_chakra_tooltip(hover_id)
+        if tip is None:
+            return
+
+        title, lines = tip
+        title_font = getattr(renderer, "font", None) or getattr(renderer, "small_font", None)
+        body_font = getattr(renderer, "small_font", None) or title_font
+        if title_font is None or body_font is None:
+            return
+
+        title_surf = title_font.render(title, True, TOOLTIP_TITLE)
+        line_surfs = [body_font.render(text, True, color) for text, color in lines]
+
+        width = max(title_surf.get_width(), *(ls.get_width() for ls in line_surfs)) + TOOLTIP_PADDING * 2
+        width = min(width, TOOLTIP_MAX_WIDTH)
+        height = (
+            title_surf.get_height()
+            + (len(line_surfs) * body_font.get_height())
+            + TOOLTIP_PADDING * 2
+        )
+
+        # Position tooltip near the chakra, clamp within the silhouette panel.
+        bounds = self._silhouette.rect
+        x = point.pos_px[0] + 18
+        y = point.pos_px[1] - height // 2
+
+        if x + width + TOOLTIP_MARGIN > bounds.right:
+            x = point.pos_px[0] - width - 18
+        x = max(bounds.left + TOOLTIP_MARGIN, min(bounds.right - width - TOOLTIP_MARGIN, x))
+        y = max(bounds.top + TOOLTIP_MARGIN, min(bounds.bottom - height - TOOLTIP_MARGIN, y))
+
+        tooltip_rect = pygame.Rect(x, y, width, height)
+
+        # Soft shadow
+        shadow = pygame.Surface((width + 6, height + 6), pygame.SRCALPHA)
+        shadow.fill((0, 0, 0, 120))
+        panel.blit(shadow, (x - 3, y - 3))
+
+        # Tooltip body
+        box = pygame.Surface((width, height), pygame.SRCALPHA)
+        box.fill((*TOOLTIP_BG, 230))
+        pygame.draw.rect(box, TOOLTIP_BORDER, box.get_rect(), 1)
+        panel.blit(box, (x, y))
+
+        # Pointer line
+        pointer_x = x if x > point.pos_px[0] else x + width
+        pointer_y = y + height // 2
+        pygame.draw.line(panel, TOOLTIP_BORDER, point.pos_px, (pointer_x, pointer_y), 1)
+
+        # Text layout
+        tx = x + TOOLTIP_PADDING
+        ty = y + TOOLTIP_PADDING
+        panel.blit(title_surf, (tx, ty))
+        ty += title_surf.get_height() + 2
+
+        for surf in line_surfs:
+            panel.blit(surf, (tx, ty))
+            ty += body_font.get_height()
+
     def _get_ui_state(self) -> ChakraState:
         """Return the chakra state currently driving the UI (realign preview or live)."""
         if self._working_state is not None:
@@ -1840,6 +2082,9 @@ class ChakraSelectionScene(PanelScene):
         self._info.draw(ctx)
         self._btn_commit.draw(ctx)
         self._btn_cancel.draw(ctx)
+
+        # Hover tooltip (drawn on top of the layout for quick context).
+        self._draw_chakra_tooltip(panel, renderer)
 
         # Draw footer hint
         small_font = getattr(renderer, "small_font", None) or font

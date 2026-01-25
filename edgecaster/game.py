@@ -4080,6 +4080,53 @@ class Game:
 
         self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
+    # --- chakra modifiers / charge helpers ---
+
+    def _chakra_modifiers(self, actor_id: str):
+        """Return ChakraModifiers for the given actor (resonance + charge)."""
+        try:
+            actor = self._level().actors.get(actor_id)
+        except Exception:
+            actor = None
+        if actor is None:
+            return None
+
+        chakra_state = getattr(actor, "chakra_state", None)
+        if chakra_state is None:
+            return None
+
+        try:
+            from edgecaster.prototypes import resolve_body_schema
+            from edgecaster.systems import chakras as chakra_system
+        except Exception:
+            return None
+
+        body_schema = resolve_body_schema(actor) or {}
+        bonuses = chakra_system.check_resonance_bonuses(body_schema, chakra_state)
+        mods = chakra_system.get_resonance_modifiers(bonuses)
+        avg_charge = chakra_system.get_average_charge(chakra_state)
+        mods = chakra_system.apply_charge_to_modifiers(mods, avg_charge)
+        return mods
+
+    def _consume_chakra_charge(self, actor_id: str, amount: float) -> None:
+        """Consume chakra charge from the actor's active chakras."""
+        if amount <= 0:
+            return
+        try:
+            actor = self._level().actors.get(actor_id)
+        except Exception:
+            actor = None
+        if actor is None:
+            return
+        chakra_state = getattr(actor, "chakra_state", None)
+        if chakra_state is None:
+            return
+        try:
+            from edgecaster.systems import chakras as chakra_system
+        except Exception:
+            return
+        chakra_system.consume_chakra_charge(chakra_state, amount)
+
     def act_chakra(self, actor_id: str) -> None:
         """Apply chakra pattern as a fractal generator to existing edges.
 
@@ -4274,6 +4321,10 @@ class Game:
         amp = self._param_value("chakra", "amplitude")
         if amp is None:
             amp = 1.0
+        # Apply chakra resonance/charge amp multiplier if available.
+        mods = self._chakra_modifiers(actor_id)
+        if mods is not None:
+            amp *= mods.chakra_amp_mult
 
         # Create a CustomGraphGenerator with the chakra shape
         gen = builder.CustomGraphGenerator(verts, edges, amplitude=amp)
@@ -4290,6 +4341,17 @@ class Game:
 
         level.pattern = builder.Pattern.from_segments(segs)
         self.log.add(f"Chakra generator applied ({len(verts)} chakra vertices).")
+
+        # Spend a bit of chakra charge when applying the generator.
+        if mods is not None:
+            try:
+                from edgecaster.systems import chakras as chakra_system
+                self._consume_chakra_charge(
+                    actor_id,
+                    chakra_system.CHARGE_CONSUME_GENERATOR * mods.charge_consume_mult,
+                )
+            except Exception:
+                pass
 
     def act_corrosive_melt(self, actor_id: str) -> None:
         """Activate acidic mode on the current pattern.
@@ -4469,6 +4531,12 @@ class Game:
         per_vertex = self.get_param_value("activate_all", "damage")
         cap = self.cfg.pattern_damage_cap
 
+        # Apply chakra resonance/charge modifiers (player only for now).
+        mods = self._chakra_modifiers(self.player_id)
+        if mods is not None:
+            dmg_radius = max(0.1, float(dmg_radius) + float(mods.radius_bonus))
+            per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
+
         # pick vertices in radius
         active_vertices = []
         r2 = dmg_radius * dmg_radius
@@ -4487,6 +4555,8 @@ class Game:
         if mana_cost == 0:
             self.log.add("No vertices in range of the target.")
             return
+        if mods is not None:
+            mana_cost = int(math.ceil(float(mana_cost) * float(mods.mana_cost_mult)))
         if player.stats.mana < mana_cost:
             self.log.add(f"Not enough mana ({player.stats.mana}/{mana_cost}).")
             return
@@ -4535,6 +4605,17 @@ class Game:
         if hits == 0:
             self.log.add("Your rune fizzles; no foes in its reach.")
 
+        # Spend chakra charge on activation.
+        if mods is not None:
+            try:
+                from edgecaster.systems import chakras as chakra_system
+                self._consume_chakra_charge(
+                    self.player_id,
+                    chakra_system.CHARGE_CONSUME_ACTIVATE * mods.charge_consume_mult,
+                )
+            except Exception:
+                pass
+
     def _activate_pattern_seed_neighbors(self, level: LevelState, target_vertex: Optional[int]) -> None:
         if not level.pattern.vertices:
             self.log.add("No pattern defined.")
@@ -4558,6 +4639,9 @@ class Game:
             self.log.add("Your pattern destabilizes; the activation slips away.")
             return
         depth = self._param_value("activate_seed", "neighbor_depth")
+        mods = self._chakra_modifiers(self.player_id)
+        if mods is not None:
+            depth = int(depth) + int(mods.neighbor_depth_bonus)
         active_indices = set(self.neighbor_set_depth(seed_idx, depth))
         active_vertices = [world_vertices[i] for i in active_indices if 0 <= i < len(world_vertices)]
         level.activation_points = active_vertices
@@ -4569,6 +4653,8 @@ class Game:
         if len(active_vertices) > str_limit and self._fizzle_roll(len(active_vertices) - str_limit, str_limit):
             self.log.add("This weave challenges your focus.")
             return
+        if mods is not None:
+            mana_cost = int(math.ceil(float(mana_cost) * float(mods.mana_cost_mult)))
         if player.stats.mana < mana_cost:
             self.log.add(f"Not enough mana ({player.stats.mana}/{mana_cost}).")
             return
@@ -4576,6 +4662,8 @@ class Game:
         player.stats.clamp()
 
         per_vertex = self._param_value("activate_seed", "damage")
+        if mods is not None:
+            per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
         hits = 0
         # damage enemies in tiles containing active vertices
         for ax, ay in active_vertices:
@@ -4591,6 +4679,16 @@ class Game:
                     self._kill_actor(level, target_actor, killer_id=self.player_id, killer_is_player=True)
         if hits == 0:
             self.log.add("Your focus fizzles; no foes in reach.")
+
+        if mods is not None:
+            try:
+                from edgecaster.systems import chakras as chakra_system
+                self._consume_chakra_charge(
+                    self.player_id,
+                    chakra_system.CHARGE_CONSUME_ACTIVATE * mods.charge_consume_mult,
+                )
+            except Exception:
+                pass
 
     # --- FOV ---
 

@@ -117,6 +117,9 @@ class ChakraState:
     # Per-chakra generator preferences: node_id -> generator_id
     generators: Dict[str, str] = field(default_factory=dict)
 
+    # Per-chakra charge level (0..max). Populated lazily.
+    charges: Dict[str, float] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for saving."""
         return {
@@ -124,6 +127,7 @@ class ChakraState:
             "active": list(self.active),
             "alignments": {k: list(v) for k, v in self.alignments.items()},
             "generators": dict(self.generators),
+            "charges": dict(self.charges),
         }
 
     @classmethod
@@ -138,6 +142,7 @@ class ChakraState:
                 k: tuple(v) for k, v in data.get("alignments", {}).items()
             },
             generators=dict(data.get("generators", {})),
+            charges={k: float(v) for k, v in data.get("charges", {}).items()},
         )
 
 
@@ -268,15 +273,19 @@ def is_branch_root(proto_id: str, proto_index: Optional[Dict[str, Any]] = None) 
     if not proto_id:
         return False
 
-    # Get prototype data
-    if proto_index is None:
-        try:
-            from edgecaster.prototypes import resolve_proto
-            spec = resolve_proto(proto_id)
-        except Exception:
+    # Branch roots should be detected from the *raw* proto, not the resolved
+    # proto. Resolved protos inherit parent fields (including "body"), which
+    # makes non-branch nodes (e.g., "knee") incorrectly look like branch roots.
+    # That causes infinite-looking nested paths like "leg.knee.thigh.knee".
+    try:
+        from edgecaster.prototypes import get_raw_proto, base_proto_id
+        pid = base_proto_id(str(proto_id))
+        spec = get_raw_proto(pid)
+    except Exception:
+        # Fallback to provided index when raw lookup isn't available.
+        if proto_index is None:
             return False
-    else:
-        spec = proto_index.get(proto_id, {})
+        spec = proto_index.get(str(proto_id), {})
 
     if not spec:
         return False
@@ -358,8 +367,9 @@ def collect_all_chakra_nodes(
     unlocked: Set[str],
     prefix: str = "",
     depth: int = 0,
-    max_depth: int = 5,
-    proto_index: Optional[Dict[str, Any]] = None
+    max_depth: Optional[int] = None,
+    proto_index: Optional[Dict[str, Any]] = None,
+    recursion_guard: Optional[Set[str]] = None,
 ) -> List[Tuple[str, str, int]]:
     """
     Recursively collect all chakra nodes, expanding sub-schemas when their
@@ -378,8 +388,9 @@ def collect_all_chakra_nodes(
         unlocked: Set of already-unlocked chakra node IDs (may include prefixed IDs)
         prefix: Prefix for node IDs in this schema (e.g., "arm." for arm sub-schema)
         depth: Current nesting depth (0 = top-level)
-        max_depth: Maximum recursion depth to prevent infinite loops
+        max_depth: Optional recursion depth limit (None = unbounded)
         proto_index: Optional prototype index cache
+        recursion_guard: Proto-id guard for cycle detection in recursive schemas
 
     Returns:
         List of tuples: (full_node_id, display_name, depth)
@@ -392,11 +403,12 @@ def collect_all_chakra_nodes(
         nodes = collect_all_chakra_nodes(body_schema, {"body", "arm"})
         # Returns all arm sub-nodes immediately available
     """
-    if depth > max_depth:
+    if max_depth is not None and depth > max_depth:
         return []
 
     result: List[Tuple[str, str, int]] = []
     nodes = _get_nodes(body_schema)
+    guard = set(recursion_guard or ())
 
     for node_id, node_spec in nodes.items():
         # Build full ID with prefix
@@ -417,6 +429,9 @@ def collect_all_chakra_nodes(
         # If this node is a branch root AND it's unlocked, expand its sub-schema
         # ALL nodes in the sub-schema become available (no sequential gating)
         if is_branch_root(proto_id, proto_index) and full_id in unlocked:
+            if str(proto_id) in guard:
+                # Prevent infinite recursion if a schema references itself.
+                continue
             try:
                 from edgecaster.prototypes import resolve_body_schema
                 sub_schema = resolve_body_schema(proto_id)
@@ -429,7 +444,8 @@ def collect_all_chakra_nodes(
                         prefix=f"{full_id}.",
                         depth=depth + 1,
                         max_depth=max_depth,
-                        proto_index=proto_index
+                        proto_index=proto_index,
+                        recursion_guard=guard | {str(proto_id)},
                     )
                     result.extend(sub_nodes)
             except Exception:
@@ -689,13 +705,14 @@ def get_chakra_connections_recursive(
     chakra_state: ChakraState,
     prefix: str = "",
     depth: int = 0,
-    max_depth: int = 5,
+    max_depth: Optional[int] = None,
+    recursion_guard: Optional[Set[str]] = None,
 ) -> List[Tuple[str, str]]:
     """
     Build parent-child connections across the full body schema tree, including
     unlocked sub-schemas. This mirrors the Chakra scene's connection logic.
     """
-    if depth > max_depth:
+    if max_depth is not None and depth > max_depth:
         return []
 
     nodes = _get_nodes(body_schema)
@@ -703,6 +720,7 @@ def get_chakra_connections_recursive(
         return []
 
     edges: List[Tuple[str, str]] = []
+    guard = set(recursion_guard or ())
 
     for node_id, node in nodes.items():
         if not isinstance(node, dict):
@@ -721,6 +739,8 @@ def get_chakra_connections_recursive(
         # If this is an unlocked branch root, connect to sub-schema root and recurse
         proto_id = node.get("proto", node_id)
         if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
+            if str(proto_id) in guard:
+                continue
             try:
                 from edgecaster.prototypes import resolve_body_schema
                 sub_schema = resolve_body_schema(proto_id)
@@ -736,6 +756,7 @@ def get_chakra_connections_recursive(
                             prefix=f"{full_id}.",
                             depth=depth + 1,
                             max_depth=max_depth,
+                            recursion_guard=guard | {str(proto_id)},
                         )
                     )
             except Exception:
@@ -752,7 +773,8 @@ def get_all_chakra_positions_recursive(
     parent_pos: Vec2 = (0.0, 0.0),
     parent_scale: float = 1.0,
     depth: int = 0,
-    max_depth: int = 5,
+    max_depth: Optional[int] = None,
+    recursion_guard: Optional[Set[str]] = None,
 ) -> Dict[str, Tuple[Vec2, str, float, Vec2]]:
     """
     Recursively get positions for ALL chakra nodes, including sub-schemas.
@@ -768,7 +790,8 @@ def get_all_chakra_positions_recursive(
         parent_pos: Parent node's position for offset calculation
         parent_scale: Parent's scale for composing transforms
         depth: Current recursion depth
-        max_depth: Maximum depth to prevent infinite recursion
+        max_depth: Optional recursion depth limit (None = unbounded)
+        recursion_guard: Proto-id guard for cycle detection in recursive schemas
 
     Returns:
         Dict mapping full_node_id to (position, state, local_scale, base_position)
@@ -777,7 +800,7 @@ def get_all_chakra_positions_recursive(
         - local_scale: scale used for this node's layout (for alignment math)
         - base_position: (x, y) without alignment offsets
     """
-    if depth > max_depth:
+    if max_depth is not None and depth > max_depth:
         return {}
 
     nodes = _get_nodes(body_schema)
@@ -787,6 +810,7 @@ def get_all_chakra_positions_recursive(
         return {}
 
     result: Dict[str, Tuple[Vec2, str]] = {}
+    guard = set(recursion_guard or ())
 
     def get_node_state(full_id: str) -> str:
         """Determine chakra state for a node."""
@@ -827,6 +851,9 @@ def get_all_chakra_positions_recursive(
         # Check if this is a branch root that's unlocked
         proto_id = node.get("proto", node_id) if isinstance(node, dict) else node_id
         if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
+            if str(proto_id) in guard:
+                # Prevent infinite recursion if a schema references itself.
+                return
             try:
                 from edgecaster.prototypes import resolve_body_schema
                 sub_schema = resolve_body_schema(proto_id)
@@ -845,6 +872,7 @@ def get_all_chakra_positions_recursive(
                         parent_scale=scale * size,
                         depth=depth + 1,
                         max_depth=max_depth,
+                        recursion_guard=guard | {str(proto_id)},
                     )
                     result.update(sub_result)
             except Exception:
@@ -870,6 +898,30 @@ def get_all_chakra_positions_recursive(
 # PATTERN GENERATION
 # =============================================================================
 
+def get_connected_active_nodes(
+    edges: List[Tuple[str, str]],
+    active: Set[str],
+) -> Set[str]:
+    """Return active nodes plus all ancestors so the graph stays connected."""
+    if not active:
+        return set()
+
+    parent_map: Dict[str, str] = {}
+    for parent, child in edges:
+        # First parent wins; graph is a tree in practice.
+        if child not in parent_map:
+            parent_map[child] = parent
+
+    expanded = set(active)
+    for node in list(active):
+        cur = node
+        while cur in parent_map:
+            cur = parent_map[cur]
+            if cur in expanded:
+                break
+            expanded.add(cur)
+    return expanded
+
 def chakras_to_seed_pattern(
     body_schema: Dict[str, Any],
     chakra_state: ChakraState,
@@ -894,7 +946,22 @@ def chakras_to_seed_pattern(
     # Import here to avoid circular dependency
     from edgecaster.state.patterns import Pattern
 
-    positions = get_chakra_world_positions(body_schema, chakra_state, base_scale)
+    # Build full positions map (includes inactive + sub-schema nodes).
+    all_positions = get_all_chakra_positions_recursive(
+        body_schema,
+        chakra_state,
+        base_scale=base_scale,
+    )
+
+    # Use connected active set so sub-schema nodes don't "float" disconnected.
+    edges = get_chakra_connections_recursive(body_schema, chakra_state)
+    active_nodes = get_connected_active_nodes(edges, chakra_state.active)
+
+    positions = {
+        node_id: pos_u
+        for node_id, (pos_u, _state, _scale, _base_pos) in all_positions.items()
+        if node_id in active_nodes
+    }
 
     if not positions:
         # Return empty pattern
@@ -909,8 +976,8 @@ def chakras_to_seed_pattern(
         node_to_idx[node_id] = idx
 
     # Add edges following body tree structure (including sub-schemas).
-    # An edge exists between parent and child if BOTH endpoints are active.
-    edges = get_chakra_connections_recursive(body_schema, chakra_state)
+    # An edge exists between parent and child if BOTH endpoints are in the
+    # connected active set (so chains stay connected).
     for parent_id, child_id in edges:
         if parent_id in node_to_idx and child_id in node_to_idx:
             pattern.add_edge(
@@ -1066,6 +1133,58 @@ def get_chakra_info(
 # RESONANCE BONUSES (Optional Enhancement)
 # =============================================================================
 
+# Chakra charge tuning (feel free to tweak)
+CHARGE_MAX_BASE = 1.0
+CHARGE_GAIN_PER_TICK = 0.004  # base gain per tick while charging
+CHARGE_DECAY_PER_TICK = 0.006  # decay per tick when not charging or inactive
+CHARGE_CONSUME_ACTIVATE = 0.35  # spend on activation actions (Activate R/N)
+CHARGE_CONSUME_GENERATOR = 0.20  # spend on generator actions (chakra apply)
+
+# Charge -> modifier scales
+CHARGE_DAMAGE_SCALE = 0.25  # avg_charge * this applied to damage
+CHARGE_RADIUS_BONUS = 0.5   # avg_charge * this added to radius
+CHARGE_MANA_DISCOUNT = 0.10  # avg_charge * this reduces mana cost multiplier
+CHARGE_AMP_SCALE = 0.30     # avg_charge * this increases chakra generator amplitude
+
+
+@dataclass
+class ChakraModifiers:
+    """Aggregate modifiers derived from resonances + charge."""
+    mana_cost_mult: float = 1.0
+    damage_mult: float = 1.0
+    radius_bonus: float = 0.0
+    neighbor_depth_bonus: int = 0
+    chakra_amp_mult: float = 1.0
+
+    # Charge mechanics
+    charge_gain_mult: float = 1.0
+    charge_cap_bonus: float = 0.0
+    charge_consume_mult: float = 1.0
+
+    def apply(self, other: "ChakraModifiers") -> None:
+        """Merge another modifier set into this one."""
+        self.mana_cost_mult *= other.mana_cost_mult
+        self.damage_mult *= other.damage_mult
+        self.radius_bonus += other.radius_bonus
+        self.neighbor_depth_bonus += int(other.neighbor_depth_bonus)
+        self.chakra_amp_mult *= other.chakra_amp_mult
+        self.charge_gain_mult *= other.charge_gain_mult
+        self.charge_cap_bonus += other.charge_cap_bonus
+        self.charge_consume_mult *= other.charge_consume_mult
+
+
+RESONANCE_EFFECTS: Dict[str, ChakraModifiers] = {
+    # Arms in harmony: cheaper, steadier activations.
+    "bilateral_arms": ChakraModifiers(mana_cost_mult=0.90, damage_mult=1.05),
+    # Grounding legs: broader radius, steadier control.
+    "grounded": ChakraModifiers(radius_bonus=0.5, mana_cost_mult=0.95),
+    # Centered torso: stronger output + more stable generator.
+    "centered": ChakraModifiers(damage_mult=1.10, chakra_amp_mult=1.10),
+    # Full hand(s): faster charge + slightly deeper neighbor reach.
+    "full_hand": ChakraModifiers(charge_gain_mult=1.25, charge_cap_bonus=0.15, neighbor_depth_bonus=1),
+    "full_hand_m": ChakraModifiers(charge_gain_mult=1.25, charge_cap_bonus=0.15, neighbor_depth_bonus=1),
+}
+
 def check_resonance_bonuses(
     body_schema: Dict[str, Any],
     chakra_state: ChakraState
@@ -1087,26 +1206,125 @@ def check_resonance_bonuses(
     bonuses: List[str] = []
     active = chakra_state.active
 
-    # Bilateral arms (top-level "arm" nodes or sub-schema "shoulder" nodes)
-    if ("arm" in active and "arm_m" in active) or ("shoulder" in active and "shoulder_m" in active):
+    def _has(node_id: str) -> bool:
+        """True if any active node matches node_id or a prefixed sub-schema id."""
+        if node_id in active:
+            return True
+        suffix = f".{node_id}"
+        return any(a.endswith(suffix) for a in active)
+
+    # Bilateral arms (top-level or sub-schema shoulder)
+    if (_has("arm") and _has("arm_m")) or (_has("shoulder") and _has("shoulder_m")):
         bonuses.append("bilateral_arms")
 
     # Full hand (any hand) - sub-schema node IDs
     hand_fingers = {"thumb", "index", "middle", "ring", "pinky"}
-    if hand_fingers.issubset(active):
+    if all(_has(fid) for fid in hand_fingers):
         bonuses.append("full_hand")
 
     # Mirrored hand
     hand_fingers_m = {"thumb_m", "index_m", "middle_m", "ring_m", "pinky_m"}
-    if hand_fingers_m.issubset(active):
+    if all(_has(fid) for fid in hand_fingers_m):
         bonuses.append("full_hand_m")
 
     # Grounded (top-level "leg" nodes or sub-schema "thigh" nodes)
-    if ("leg" in active and "leg_m" in active) or ("thigh" in active and "thigh_m" in active):
+    if (_has("leg") and _has("leg_m")) or (_has("thigh") and _has("thigh_m")):
         bonuses.append("grounded")
 
-    # Centered - "body" is the torso/core at top level
-    if "body" in active:
+    # Centered - torso/core
+    if _has("body"):
         bonuses.append("centered")
 
     return bonuses
+
+
+def get_resonance_modifiers(bonuses: List[str]) -> ChakraModifiers:
+    """Aggregate modifiers from active resonance bonuses."""
+    mods = ChakraModifiers()
+    for bonus in bonuses:
+        effect = RESONANCE_EFFECTS.get(bonus)
+        if effect:
+            mods.apply(effect)
+    return mods
+
+
+def get_average_charge(chakra_state: ChakraState, nodes: Optional[Set[str]] = None) -> float:
+    """Average charge across the given nodes (defaults to active)."""
+    targets = nodes or chakra_state.active
+    if not targets:
+        return 0.0
+    vals = [float(chakra_state.charges.get(n, 0.0)) for n in targets]
+    return sum(vals) / max(1, len(vals))
+
+
+def apply_charge_to_modifiers(mods: ChakraModifiers, avg_charge: float) -> ChakraModifiers:
+    """Apply charge-based scaling to modifiers (returns new object)."""
+    out = ChakraModifiers()
+    out.apply(mods)
+
+    # Charge improves output while reducing mana cost a bit.
+    out.damage_mult *= 1.0 + avg_charge * CHARGE_DAMAGE_SCALE
+    out.radius_bonus += avg_charge * CHARGE_RADIUS_BONUS
+    out.mana_cost_mult *= max(0.5, 1.0 - avg_charge * CHARGE_MANA_DISCOUNT)
+    out.chakra_amp_mult *= 1.0 + avg_charge * CHARGE_AMP_SCALE
+    return out
+
+
+def tick_chakra_charge(
+    body_schema: Dict[str, Any],
+    chakra_state: ChakraState,
+    delta: int,
+    *,
+    charging: bool,
+    dex: int = 0,
+) -> None:
+    """Update chakra charge values in-place."""
+    if delta <= 0:
+        return
+
+    bonuses = check_resonance_bonuses(body_schema, chakra_state)
+    mods = get_resonance_modifiers(bonuses)
+
+    gain = CHARGE_GAIN_PER_TICK * mods.charge_gain_mult
+    decay = CHARGE_DECAY_PER_TICK
+    if dex > 0:
+        gain *= 1.0 + float(dex) * 0.01
+
+    cap = CHARGE_MAX_BASE + mods.charge_cap_bonus
+
+    # Ensure dictionary exists
+    if chakra_state.charges is None:
+        chakra_state.charges = {}
+
+    if charging:
+        for node_id in chakra_state.active:
+            cur = float(chakra_state.charges.get(node_id, 0.0))
+            chakra_state.charges[node_id] = min(cap, cur + gain * delta)
+        # Decay inactive nodes to zero
+        for node_id in list(chakra_state.charges.keys()):
+            if node_id not in chakra_state.active:
+                cur = float(chakra_state.charges.get(node_id, 0.0))
+                cur = max(0.0, cur - decay * delta)
+                chakra_state.charges[node_id] = cur
+    else:
+        # No charging state: decay all
+        for node_id in list(chakra_state.charges.keys()):
+            cur = float(chakra_state.charges.get(node_id, 0.0))
+            cur = max(0.0, cur - decay * delta)
+            chakra_state.charges[node_id] = cur
+
+
+def consume_chakra_charge(
+    chakra_state: ChakraState,
+    amount: float,
+    nodes: Optional[Set[str]] = None,
+) -> None:
+    """Consume charge from the given nodes (defaults to active)."""
+    if amount <= 0:
+        return
+    targets = nodes or chakra_state.active
+    if not targets:
+        return
+    for node_id in targets:
+        cur = float(chakra_state.charges.get(node_id, 0.0))
+        chakra_state.charges[node_id] = max(0.0, cur - amount)

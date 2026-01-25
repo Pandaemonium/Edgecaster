@@ -1,0 +1,156 @@
+EDGECASTER VISION (RUNE TRIALS + CHAKRAS)
+========================================
+
+Working title: Edgecaster: The Seals of a Fractal World
+Length: ~2 pages
+
+1) Premise and Fantasy
+----------------------
+Edgecaster is a roguelike where the world is a living fractal and the player is
+a "caster of edges." You mend a failing world by reconstructing vast sealing
+runes. Your body is a tree of chakras that defines the geometry of your magic.
+To seal the land, you will sometimes have to steal or borrow a different body
+to access the chakra shapes required by a specific rune.
+
+The core fantasy: "math becomes myth." Players learn the grammar of patterns,
+then use it to repair reality while surviving enemies in a world that is
+continuously warped by corruption.
+
+
+2) Design Pillars
+-----------------
+P1: Rune Trials are the spine of progression.
+    - Each trial is a major encounter that changes the world when sealed.
+    - The trial is a spatial puzzle under combat pressure.
+
+P2: Chakras are the buildcraft system.
+    - Your active chakras define your base generator.
+    - Alignment and body composition are meaningful choices.
+
+P3: The world feels coherent and strange.
+    - Biomes, corruption, lairs, and factions are all derived from the same
+      underlying field logic.
+
+
+3) Core Loop
+------------
+1. Explore zones and gather bismuth, items, and intel.
+2. Seek the next rune trial location and the tools to complete it.
+3. Prepare: tune chakras, acquire tools, or swap bodies if needed.
+4. Enter the trial zone and repair the damaged rune fragment.
+5. Seal it with a Coherence Crystal.
+6. The world state shifts; new challenges and routes open.
+
+Roguelike loop: repeat with escalating complexity, higher corruption, and
+more demanding rune geometry.
+
+
+4) Rune Trial Experience
+------------------------
+Each trial is a large pre-existing rune that fills most of the screen. A single
+missing chunk is chosen so it is "repairable" using a limited subset of
+generators. The trial grants temporary abilities specific to the damage, and
+snaps targeting to the canonical terminus to reduce frustration.
+
+Key traits:
+- The missing segment is subtle but distinct (pulsing).
+- The player must stand at a highlighted root tile.
+- The match is spatial and scored by overlap; auto-complete once aligned.
+- The final seal requires a Coherence Crystal to lock the rune in place.
+
+Trial tension: combat pressure while you build. Enemies spawn, terrain shifts,
+and corruption surges as you delay.
+
+
+5) Chakras as the Generator System
+----------------------------------
+Your active chakras form a tree of nodes and edges which becomes a custom
+generator. Realignment lets you shift chakras within a limited radius (DEX
+gated). This creates a "shape vocabulary" that the player can refine over time.
+
+Design intent:
+- Activate chakras to gain edges.
+- Realign to change the generator's style.
+- Resonances: specific configurations yield bonuses.
+- Body swaps reset your available chakra graph but can unlock new shapes.
+
+
+6) Body Swapping as Progression
+-------------------------------
+At least one trial requires a chakra geometry not available in the player's
+current body. This encourages intentional possession and makes the body system
+relevant to progression.
+
+Example:
+- Trial requires a generator with a steep branching angle and long lateral
+  reach. The player's current body tree cannot produce it.
+- A nearby legendary creature or NPC has the required body schema.
+- You must possess it to complete the trial.
+
+Body swap is not a one-off gimmick: it becomes a tactical tool and a form of
+buildcraft. Your equipment and items remain with your old body, so swapping is
+a trade-off.
+
+
+7) World Evolution
+------------------
+Sealing runes alters the corruption field. As seals stabilize:
+- Corruption retracts from key regions.
+- Certain biomes or routes become safe.
+- Faction attitudes may shift (some benefit from chaos).
+
+Failure to seal in time may cause further distortion and enemy escalation.
+
+
+8) Systems Touchpoints
+----------------------
+Chakra system -> Generator system -> Rune trials
+Corruption field -> Biomes -> Faction zones -> Enemy pools
+Quest journal -> Trial locations -> World map discovery
+Items -> Chakra modulation -> Trial capability
+Body swapping -> Chakra access -> Trial completion
+
+
+9) Progression Structure
+------------------------
+Act 1: The Broken Seal
+- Learn basic rune logic.
+- First trial uses near-complete rune; small repair.
+- Introduces Coherence Crystal and the inventor quest.
+
+Act 2: The Fractured Network
+- Multiple seals, each demanding different generators.
+- Introduces body swap requirement for at least one trial.
+- Corruption zones expand; lairs appear.
+
+Act 3: The Great Binding
+- Large, complex runes with multiple hazards.
+- Seals impact factions and world topology.
+- Final trial requires deep chakra mastery and/or rare bodies.
+
+
+10) Aesthetic Direction
+-----------------------
+Tone: arcane and luminous, with "scientific occultism."
+Visuals: fractal grids, glows, shimmering edges, subtle UI shimmer.
+Sound: crystalline, resonant, with "mathematical" chimes on successes.
+
+Language: “seals,” “coherence,” “resonance,” “anchors,” “iterations.”
+
+
+11) What Success Looks Like
+---------------------------
+- Players say: "I learned the rune grammar."
+- They can explain how their chakras change their magic.
+- They feel their choices shape the world (corruption recedes).
+- Trials are memorable and scary, not just puzzles.
+
+
+12) Immediate Next Steps (for implementation)
+----------------------------------------------
+1. Solidify a "trial descriptor" schema: base pattern, missing edges, grants,
+   root/terminus, match threshold, reward.
+2. Build 3 handcrafted trial templates for early playtest.
+3. Ensure chakra generator yields predictable baseline scaling.
+4. Add at least one body swap "bridge trial" to prove the mechanic.
+

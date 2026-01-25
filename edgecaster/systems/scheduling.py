@@ -71,6 +71,9 @@ def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
     # Cooldowns tick down
     cooldown_tick(game, level, delta)
 
+    # Chakra charge + resonance tick
+    chakra_charge_tick(game, level, delta)
+
     # Pattern motion tick
     pattern_motion.step_motion(game, level, delta)
 
@@ -86,6 +89,44 @@ def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
         seal_trials.update_trial(game, level)
     except Exception:
         pass
+
+
+def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
+    """Update chakra charge for actors with chakra_state."""
+    if delta <= 0:
+        return
+
+    try:
+        from edgecaster.prototypes import resolve_body_schema
+        from edgecaster.systems import chakras as chakra_system
+    except Exception:
+        return
+
+    # Only charge while the player's pattern exists
+    charging = bool(getattr(level, "pattern", None) and level.pattern.vertices)
+
+    for actor in level.actors.values():
+        chakra_state = getattr(actor, "chakra_state", None)
+        if chakra_state is None:
+            continue
+
+        # Only the player currently builds charge from the shared pattern.
+        if getattr(actor, "id", None) != getattr(game, "player_id", None):
+            continue
+
+        try:
+            dex = int(getattr(actor.stats, "agi", 0))
+        except Exception:
+            dex = 0
+
+        body_schema = resolve_body_schema(actor) or {}
+        chakra_system.tick_chakra_charge(
+            body_schema,
+            chakra_state,
+            delta,
+            charging=charging,
+            dex=dex,
+        )
 
 
 def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, interval: int) -> None:
