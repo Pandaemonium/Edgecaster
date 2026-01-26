@@ -764,6 +764,8 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         DialogueChoice(text="What are chakras?", next_id="what_are_chakras"),
         DialogueChoice(text="How do I unlock more?", next_id="unlocking"),
         DialogueChoice(text="How do patterns work?", next_id="patterns"),
+        DialogueChoice(text="Tell me about resonance.", next_id="resonance"),
+        DialogueChoice(text="Tell me about chakra charge.", next_id="chakra_charge"),
     ]
 
     # Add chakra unlock option if there are unlockable chakras
@@ -906,7 +908,8 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
             "Each finger has FOUR nodes:\n"
             "  Knuckle 1 → Knuckle 2 → Knuckle 3 → Nail\n\n"
             "Activating all five fingers creates a 'full hand' resonance - "
-            "a powerful bonus that amplifies your pattern's effect.\n\n"
+            "a powerful bonus that amplifies your pattern's effect and "
+            "helps your charge build faster.\n\n"
             "And remember: you have TWO hands. Bilateral symmetry grants "
             "its own resonance bonuses."
         ),
@@ -1132,20 +1135,50 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         id="resonance",
         title=title,
         body=(
-            "Certain chakra combinations create RESONANCE - bonus effects:\n\n"
-            "• BILATERAL ARMS (shoulder + shoulder_m)\n"
-            "  Both arm chakras active. Grants mana efficiency.\n\n"
-            "• FULL HAND (all 5 fingers on one hand)\n"
-            "  All five finger chakras active. Grants precision bonus.\n\n"
-            "• GROUNDED (both thighs active)\n"
-            "  Both leg root chakras. Grants stability and defense.\n\n"
-            "• CENTERED (torso + chest + back)\n"
-            "  Core chakras aligned. Grants power boost.\n\n"
-            "Seek these resonances! They represent harmony within your "
-            "energy system and amplify your pattern's effectiveness."
+            "Certain chakra constellations create RESONANCE - harmonies that "
+            "change how your power flows. Resonance only counts ACTIVE chakras.\n\n"
+            "• BILATERAL ARMS (arm + arm_m or shoulder + shoulder_m)\n"
+            "  Symmetry in the arms reduces mana cost and steadies damage.\n\n"
+            "• FULL HAND (thumb/index/middle/ring/pinky)\n"
+            "  A complete hand accelerates charge gain and deepens activations.\n\n"
+            "• FULL HAND (mirrored)\n"
+            "  The other hand can resonate the same way.\n\n"
+            "• GROUNDED (leg + leg_m or thigh + thigh_m)\n"
+            "  Rooted legs widen your activation radius and calm mana strain.\n\n"
+            "• CENTERED (body core)\n"
+            "  Your core steadies output and strengthens chakra generators.\n\n"
+            "Resonance is the easiest way to make a smaller pattern feel "
+            "stronger. It also makes chakra charge grow faster."
         ),
         choices=[
             DialogueChoice(text="How does this affect combat?", next_id="combat"),
+            DialogueChoice(text="Explain chakra charge.", next_id="chakra_charge"),
+            DialogueChoice(text="Back to the beginning.", next_id="start"),
+        ],
+    )
+
+    nodes["chakra_charge"] = DialogueNode(
+        id="chakra_charge",
+        title=title,
+        body=(
+            "Chakra charge is the heat your active chakras build while a "
+            "pattern is HELD in the world.\n\n"
+            "In practice:\n"
+            "• Charge builds only while you have a live pattern.\n"
+            "• It accrues per ACTIVE chakra and slowly decays when idle.\n"
+            "• Dexterity steadies the flow and increases gain.\n\n"
+            "What charge does:\n"
+            "• Higher charge increases damage and activation radius.\n"
+            "• It trims mana cost slightly.\n"
+            "• It strengthens the chakra generator's amplitude.\n\n"
+            "Spending charge:\n"
+            "• Activate R / Activate N consume charge.\n"
+            "• Using the Chakra generator consumes charge.\n"
+            "• Resonance (especially full hands) raises charge gain and cap.\n\n"
+            "You can view charge in the Chakra screen by hovering a node."
+        ),
+        choices=[
+            DialogueChoice(text="Tell me about resonance.", next_id="resonance"),
             DialogueChoice(text="Back to the beginning.", next_id="start"),
         ],
     )
