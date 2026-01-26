@@ -234,25 +234,29 @@ class OvermapLodRenderer:
         # Clamp the view window to world bounds. Without this, when panning against
         # world edges at extreme zoom levels, part of the viewport can fall out of
         # bounds and you'll see persistent 'black bars'.
-        cfg = getattr(game, "cfg", None)
-        total_w = total_h = 0
-        if cfg is not None:
-            try:
-                total_w = int(cfg.world_map_screens * cfg.world_width)
-                total_h = int(cfg.world_map_screens * cfg.world_height)
-            except Exception:
-                total_w = total_h = 0
+        CLAMP_VIEW_TO_WORLD = False
 
-        if total_w > 0:
-            if view_span_wx >= float(total_w):
-                view_min_wx = 0.0
-            else:
-                view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
-        if total_h > 0:
-            if view_span_wy >= float(total_h):
-                view_min_wy = 0.0
-            else:
-                view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
+        if CLAMP_VIEW_TO_WORLD:
+
+            cfg = getattr(game, "cfg", None)
+            total_w = total_h = 0
+            if cfg is not None:
+                try:
+                    total_w = int(cfg.world_map_screens * cfg.world_width)
+                    total_h = int(cfg.world_map_screens * cfg.world_height)
+                except Exception:
+                    total_w = total_h = 0
+
+            if total_w > 0:
+                if view_span_wx >= float(total_w):
+                    view_min_wx = 0.0
+                else:
+                    view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
+            if total_h > 0:
+                if view_span_wy >= float(total_h):
+                    view_min_wy = 0.0
+                else:
+                    view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
 
         cell_w_tiles = float(cell_w_tiles) if cell_w_tiles else 1.0
         cell_h_tiles = float(cell_h_tiles) if cell_h_tiles else 1.0
@@ -276,12 +280,15 @@ class OvermapLodRenderer:
         # floor-snapping can push snap_min *backward* by up to one snap cell,
         # which may cause (snap_min + view_span) to exceed the world bounds at the
         # far edge. That manifests as bars that never fill at max X/Y.
-        if total_w > 0:
-            max_snap_min_wx = max(0.0, float(total_w) - view_span_wx)
-            snap_min_wx = max(0.0, min(snap_min_wx, max_snap_min_wx))
-        if total_h > 0:
-            max_snap_min_wy = max(0.0, float(total_h) - view_span_wy)
-            snap_min_wy = max(0.0, min(snap_min_wy, max_snap_min_wy))
+
+        if CLAMP_VIEW_TO_WORLD:
+
+            if total_w > 0:
+                max_snap_min_wx = max(0.0, float(total_w) - view_span_wx)
+                snap_min_wx = max(0.0, min(snap_min_wx, max_snap_min_wx))
+            if total_h > 0:
+                max_snap_min_wy = max(0.0, float(total_h) - view_span_wy)
+                snap_min_wy = max(0.0, min(snap_min_wy, max_snap_min_wy))
 
         # Fractional scroll within the snapped cell grid (in pixels).
         offset_px_x = (view_min_wx - snap_min_wx) * world_scale

@@ -111,6 +111,40 @@ def _maybe_attach_default_icon_path(tags: Dict[str, Any], proto_id: Optional[str
             return
 
 
+
+def _init_entity_size(ent: Any, spec: Dict[str, Any]) -> None:
+    """Initialize coherent size fields for render/LoD.
+
+    Conventions (Phase 0):
+    - base_size: absolute world size in LoD0 tiles (float). Defaults to YAML 'base_size' or legacy 'size' or 1.0.
+    - abs_size: cached absolute size for the entity root (currently == base_size).
+      (Later: dismemberment can set abs_size on spawned subtrees directly.)
+    """
+    try:
+        bs = getattr(ent, "base_size", None)
+        if not isinstance(bs, (int, float)):
+            # Back-compat: many prototypes already use 'size' at the entity root.
+            bs = getattr(ent, "size", None)
+        if not isinstance(bs, (int, float)):
+            bs = spec.get("base_size", None)
+        if not isinstance(bs, (int, float)):
+            bs = spec.get("size", 1.0)
+        bs_f = float(bs)
+        if not (bs_f > 0.0):
+            bs_f = 1.0
+        ent.base_size = bs_f
+        # Phase 0: root absolute size equals base size.
+        ent.abs_size = float(getattr(ent, "abs_size", bs_f) or bs_f)
+        if not (float(ent.abs_size) > 0.0):
+            ent.abs_size = bs_f
+    except Exception:
+        try:
+            ent.base_size = 1.0
+            ent.abs_size = 1.0
+        except Exception:
+            pass
+
+
 def build_entity_from_spec(
     *,
     spec: Dict[str, Any],
@@ -191,6 +225,9 @@ def build_entity_from_spec(
 
     # Finally, hydrate any remaining YAML keys onto the instance.
     _hydrate_entity_extras(ent, s)
+
+    # Coherent size fields (render/LoD). Keeps legacy 'size' working.
+    _init_entity_size(ent, s)
 
     return ent
 
@@ -335,5 +372,8 @@ def build_actor_from_spec(
 
     # Hydrate remaining YAML keys onto the instance.
     _hydrate_entity_extras(actor, s)
+
+    # Coherent size fields (render/LoD). Keeps legacy 'size' working.
+    _init_entity_size(actor, s)
 
     return actor

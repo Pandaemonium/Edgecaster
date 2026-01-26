@@ -29,6 +29,23 @@
         props:
           size: 1
   description: A physical object, possessed of mass and size.
+
+
+- id: settlement
+  name: Settlement
+  parent: physical_object
+  glyph: "§"
+  color: [240, 220, 160]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: A settlement-scale overmap entity. Resolves into structures and inhabitants when observed closely.
+  tags:
+    world_entity: true
+    site: true
+
+
 - id: berry
   name: Berry
   glyph: b

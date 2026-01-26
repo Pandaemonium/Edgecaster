@@ -539,6 +539,11 @@ class AsciiRenderer:
 
         LOD_RADIX = getattr(self, "lod_radix", 2)
         lod_f = math.log(max(1e-12, raw), LOD_RADIX)
+        # Cache a continuous camera LoD scalar for entity rendering.
+        # Convention: LoD 0 corresponds to 1 world-tile per glyph. Positive => zoomed out.
+        self._camera_lod_cont = float(lod_f)
+        self._camera_lod_radix = int(LOD_RADIX)
+
 
         lod0 = int(math.floor(lod_f))
         lod1 = lod0 + 1
@@ -582,13 +587,9 @@ class AsciiRenderer:
         raw = target_glyph_px / world_scale  # desired cell size in tiles
 
         if raw > 1.0:
-            # Zoomed out: fade entities with contribution of the 1-tile terrain layer.
-            if abs(cell0 - 1.0) < 1e-9:
-                ent_a = float(a0)
-            elif abs(cell1 - 1.0) < 1e-9:
-                ent_a = float(a1)
-            else:
-                ent_a = 0.0
+            # Zoomed out: do NOT globally fade entities with the terrain blend.
+            # Size-based LOD visibility is handled per-entity in _compute_entity_visibility_alpha().
+            ent_a = 1.0
         else:
             # Zoomed in: only fade out when a single tile starts to fill most of the map viewport.
             min_dim = float(min(map_rect.w, map_rect.h))
@@ -748,16 +749,20 @@ class AsciiRenderer:
                 total_w = total_h = 0
 
         # Clamp the visible window to world bounds.
-        if total_w > 0:
-            if view_span_wx >= float(total_w):
-                view_min_wx = 0.0
-            else:
-                view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
-        if total_h > 0:
-            if view_span_wy >= float(total_h):
-                view_min_wy = 0.0
-            else:
-                view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
+        
+        CLAMP_VIEW_TO_WORLD = False
+
+        if CLAMP_VIEW_TO_WORLD:
+            if total_w > 0:
+                if view_span_wx >= float(total_w):
+                    view_min_wx = 0.0
+                else:
+                    view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
+            if total_h > 0:
+                if view_span_wy >= float(total_h):
+                    view_min_wy = 0.0
+                else:
+                    view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
 
         cell_w_tiles = max(1e-6, float(cell_w_tiles))
         cell_h_tiles = max(1e-6, float(cell_h_tiles))
@@ -769,18 +774,22 @@ class AsciiRenderer:
         # appear to drift relative to each other while blending.
         snap_w = max(1e-6, float(snap_base_tiles if snap_base_tiles is not None else cell_w_tiles))
         snap_h = max(1e-6, float(snap_base_tiles if snap_base_tiles is not None else cell_h_tiles))
+        
         snap_min_wx = math.floor(view_min_wx / snap_w) * snap_w
         snap_min_wy = math.floor(view_min_wy / snap_h) * snap_h
 
 
         # Clamp snap_min as well: floor-snapping can push the sampled window out of bounds at
         # the far edge even when view_min is clamped. This is the classic "bars at max X/Y" case.
-        if total_w > 0:
-            max_snap_min_wx = max(0.0, float(total_w) - view_span_wx)
-            snap_min_wx = max(0.0, min(snap_min_wx, max_snap_min_wx))
-        if total_h > 0:
-            max_snap_min_wy = max(0.0, float(total_h) - view_span_wy)
-            snap_min_wy = max(0.0, min(snap_min_wy, max_snap_min_wy))
+
+        if CLAMP_VIEW_TO_WORLD:
+
+            if total_w > 0:
+                max_snap_min_wx = max(0.0, float(total_w) - view_span_wx)
+                snap_min_wx = max(0.0, min(snap_min_wx, max_snap_min_wx))
+            if total_h > 0:
+                max_snap_min_wy = max(0.0, float(total_h) - view_span_wy)
+                snap_min_wy = max(0.0, min(snap_min_wy, max_snap_min_wy))
 
         # Fractional scroll within the snapped cell grid (in pixels).
         # This makes panning/zooming move the grid smoothly while keeping it rigidly aligned
@@ -996,7 +1005,7 @@ class AsciiRenderer:
         zone_offset_x = 0
         zone_offset_y = 0
         fov_radius = 8  # Match the FOV radius from _update_fov
-        god_vision = bool(getattr(game, "god_vision", False))  # Developer mode: show all tiles
+        god_vision = bool(getattr(game, "god_vision", False) or getattr(game, "debug_god_vision", False) or getattr(game, "dev_god_vision", False) or getattr(world, "god_vision", False))  # Developer mode: show all tiles
 
         # IMPORTANT: game state has shifted a bit over time (actors dict vs game.player,
         # world map vs zone). We support both so FOV/visibility stays correct.
@@ -1357,16 +1366,20 @@ class AsciiRenderer:
                 total_w = total_h = 0
 
         # Clamp the visible window to world bounds.
-        if total_w > 0:
-            if view_span_wx >= float(total_w):
-                view_min_wx = 0.0
-            else:
-                view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
-        if total_h > 0:
-            if view_span_wy >= float(total_h):
-                view_min_wy = 0.0
-            else:
-                view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
+        CLAMP_VIEW_TO_WORLD = False
+
+        if CLAMP_VIEW_TO_WORLD:
+
+            if total_w > 0:
+                if view_span_wx >= float(total_w):
+                    view_min_wx = 0.0
+                else:
+                    view_min_wx = max(0.0, min(view_min_wx, float(total_w) - view_span_wx))
+            if total_h > 0:
+                if view_span_wy >= float(total_h):
+                    view_min_wy = 0.0
+                else:
+                    view_min_wy = max(0.0, min(view_min_wy, float(total_h) - view_span_wy))
 
         # ---------------------------------------------------------------------
         # Accel path: render tiny rgb buffer for the visible window and quantize
@@ -2200,32 +2213,10 @@ class AsciiRenderer:
     def draw_entities(self, game, world: World, entities) -> None:
         """Draw all renderable entities (actors, items, features...) on the map.
 
-        Supports LOD fading: when the map is cross-fading to the global grid, entities fade with the local layer.
+        Entity visibility is decided per-entity (size vs camera LoD) and per-tile (visibility / explored),
+        not by terrain LOD cross-fade. We keep this function allocation-free and rely on fast culls.
         """
-        alpha = int(getattr(self, "_local_fade_alpha", 255))
-        if alpha <= 0:
-            return
-        if alpha >= 255:
-            self._draw_entities_impl(game, world, entities)
-            return
-
-        # Reuse a persistent fade surface to avoid per-frame allocations.
-        if self._entities_fade_surface is None or self._entities_fade_surface.get_size() != (self.width, self.height):
-            self._entities_fade_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        temp = self._entities_fade_surface
-        temp.fill((0, 0, 0, 0))
-
-        prev_surface = self.surface
-        self.surface = temp
-        try:
-            self._draw_entities_impl(game, world, entities)
-        finally:
-            self.surface = prev_surface
-
-        temp.set_alpha(alpha)
-        self.surface.blit(temp, (0, 0))
-
-
+        self._draw_entities_impl(game, world, entities)
 
 
     def _draw_entities_impl(self, game, world: World, entities) -> None:
@@ -2240,16 +2231,17 @@ class AsciiRenderer:
         - Else: draw nothing
         """
         def layer(ent) -> int:
-            if hasattr(ent, "faction"):
-                return getattr(ent, "render_layer", 2)
-            return getattr(ent, "render_layer", 1)
+            e = getattr(ent, "obj", ent)
+            if hasattr(e, "faction"):
+                return getattr(e, "render_layer", 2)
+            return getattr(e, "render_layer", 1)
 
         entities_sorted = sorted(entities, key=layer)
 
         tile_px_f = float(getattr(self, "tile_px", float(self.tile)))
         tile_px_i = max(1, int(round(tile_px_f)))
 
-        god_vision = bool(getattr(game, "god_vision", False))
+        god_vision = bool(getattr(game, "god_vision", False) or getattr(game, "debug_god_vision", False) or getattr(game, "dev_god_vision", False) or getattr(world, "god_vision", False))
 
         # Visual-only overlay: slaver chains (drawn underneath actor glyphs/sprites).
         # Note: this currently only draws when both endpoints are visible.
@@ -2267,17 +2259,87 @@ class AsciiRenderer:
         scene_eff = getattr(self, "active_visual_effects", None) or []
 
         for ent in entities_sorted:
-            pos = getattr(ent, "pos", None)
-            if pos is None:
-                continue
+            # Camera queries may provide RenderProxy objects spanning zones.
+            # A RenderProxy is expected to expose:
+            #   - obj: the underlying entity/actor
+            #   - abs_x, abs_y: absolute-world tile coords
+            #   - zone_coord: (zx,zy,zz) of the owning zone
+            #   - local_pos: optional (x,y) within the owning zone (fallback to obj.pos)
+            if hasattr(ent, "obj") and hasattr(ent, "abs_x") and hasattr(ent, "abs_y"):
+                obj = ent.obj
+                try:
+                    abs_x = float(ent.abs_x)
+                    abs_y = float(ent.abs_y)
+                except Exception:
+                    continue
+                ent_zone = getattr(ent, "zone_coord", getattr(game, "zone_coord", (0, 0, 0)))
+                local_pos = getattr(ent, "local_pos", None) or getattr(obj, "pos", None)
+                if local_pos is None:
+                    continue
+                try:
+                    lx, ly = int(local_pos[0]), int(local_pos[1])
+                except Exception:
+                    continue
+            else:
+                obj = ent
+                pos = getattr(obj, "pos", None)
+                if pos is None:
+                    continue
+                try:
+                    lx, ly = int(pos[0]), int(pos[1])
+                except Exception:
+                    continue
+                ent_zone = getattr(game, "zone_coord", (0, 0, 0))
+                # Absolute coords for base-zone entities.
+                zx0, zy0, _zz0 = getattr(game, "zone_coord", (0, 0, 0))
+                zone_w0 = int(getattr(getattr(game, "cfg", None), "world_width", getattr(world, "width", 60) or 60))
+                zone_h0 = int(getattr(getattr(game, "cfg", None), "world_height", getattr(world, "height", 40) or 40))
+                zone_w0 = max(1, zone_w0)
+                zone_h0 = max(1, zone_h0)
+                abs_x = float(int(zx0) * zone_w0 + lx)
+                abs_y = float(int(zy0) * zone_h0 + ly)
 
-            x, y = pos
-            if not world.in_bounds(x, y):
-                continue
+            # Convert absolute coords into the renderer's base-zone local frame for screen mapping.
+            zone_w = int(getattr(getattr(game, "cfg", None), "world_width", getattr(world, "width", 60) or 60))
+            zone_h = int(getattr(getattr(game, "cfg", None), "world_height", getattr(world, "height", 40) or 40))
+            zone_w = max(1, zone_w)
+            zone_h = max(1, zone_h)
 
-            tile = world.get_tile(x, y)
+            base_zx, base_zy, _base_zz = getattr(game, "zone_coord", (0, 0, 0))
+            base_abs_x0 = float(int(base_zx) * zone_w)
+            base_abs_y0 = float(int(base_zy) * zone_h)
+
+            x = float(abs_x - base_abs_x0)
+            y = float(abs_y - base_abs_y0)
+
+            # Fog-of-war tile rules require a tile lookup in the entity's owning zone.
+            tile = None
+            if hasattr(game, "get_zone_for_render"):
+                try:
+                    lvl = game.get_zone_for_render(ent_zone)
+                except Exception:
+                    lvl = None
+            else:
+                lvl = None
+
+            if lvl is None:
+                # Fall back to current world (single-zone).
+                if not world.in_bounds(lx, ly):
+                    continue
+                tile = world.get_tile(lx, ly)
+            else:
+                wld = getattr(lvl, "world", None)
+                if wld is None:
+                    continue
+                if not wld.in_bounds(lx, ly):
+                    continue
+                tile = wld.get_tile(lx, ly)
+
             if not tile:
                 continue
+
+            # From here down, treat 'ent' as the underlying object.
+            ent = obj
 
             # In normal vision, never draw anything on unexplored tiles.
             if (not god_vision) and (not getattr(tile, "explored", False)):
@@ -2298,6 +2360,7 @@ class AsciiRenderer:
             # If we're drawing from explored fog memory, dim the entity.
             dim_in_fog = (not visible_now) and draw_in_fog
             fog_alpha_u8 = 110  # ~0.43 of 255, matches your terrain 0.4 dim vibe
+            base_alpha_u8 = fog_alpha_u8 if dim_in_fog else 255
 
             px_f = x * tile_px_f + float(self.origin_x)
             py_f = y * tile_px_f + float(self.origin_y)
@@ -2311,7 +2374,81 @@ class AsciiRenderer:
             # -----------------------------
             # 1) Try sprite/icon (general)
             # -----------------------------
-            want_px = max(1, min(tile_px_i, size_cap))
+            # Phase 0: size-aware LoD visibility + render-only scaling.
+            # base_size is the absolute world size (in LoD0 tiles) for the entity root.
+            base_size = getattr(ent, "base_size", None)
+            if not isinstance(base_size, (int, float)):
+                base_size = getattr(ent, "size", 1.0)
+
+            abs_size = getattr(ent, "abs_size", base_size)
+            try:
+                abs_size = float(abs_size)
+            except Exception:
+                abs_size = 1.0
+            if not (abs_size > 0.0):
+                abs_size = 1e-6
+
+            # Continuous camera LoD derived from zoom (radix-2). LoD 0 at zoom==1.
+            radix = 2
+            try:
+                z = float(getattr(self, "zoom", 1.0) or 1.0)
+            except Exception:
+                z = 1.0
+            z = max(1e-12, z)
+            cam_lod = float(math.log(1.0 / z, radix))
+            try:
+                ent_lod = float(math.log(max(1e-12, abs_size), radix))
+            except Exception:
+                ent_lod = 0.0
+
+            delta = cam_lod - ent_lod
+
+            # Tunables (override per scene if desired).
+            dmin = float(getattr(self, "entity_lod_delta_min", -5.0))
+            dmax = float(getattr(self, "entity_lod_delta_max", 3.0))
+            fade_w = float(getattr(self, "entity_lod_fade_width", 0.45))
+
+            # Visibility alpha in [0..1]
+            if delta < dmin - fade_w or delta > dmax + fade_w:
+                continue
+            if delta < dmin:
+                vis_a = self._smoothstep(dmin - fade_w, dmin, delta)
+            elif delta > dmax:
+                vis_a = 1.0 - self._smoothstep(dmax, dmax + fade_w, delta)
+            else:
+                vis_a = 1.0
+
+            # Combine LoD visibility fade with fog-memory dimming.
+            draw_alpha_u8 = int(round(float(base_alpha_u8) * float(vis_a)))
+            if draw_alpha_u8 <= 0:
+                continue
+            if draw_alpha_u8 > 255:
+                draw_alpha_u8 = 255
+
+            # Compute desired pixel size (quantized/cached later by get_entity_icon_surface).
+            want_px_f = float(tile_px_f) * float(abs_size)
+
+            # If it would be a ~1-2px speck, skip entirely (performance + avoids subpixel drift).
+            min_px_hide = float(getattr(self, "entity_min_px_hide", 2.0))
+            min_px_full = float(getattr(self, "entity_min_px_full", 6.0))
+            if want_px_f <= min_px_hide:
+                continue
+
+            # Smoothly fade small on-screen sprites as we zoom out.
+            if want_px_f >= min_px_full:
+                pix_a = 1.0
+            else:
+                pix_a = self._smoothstep(min_px_hide, min_px_full, want_px_f)
+
+            # Apply pixel-size fade to alpha (still before any sprite cache lookups).
+            draw_alpha_u8 = int(round(float(draw_alpha_u8) * float(pix_a)))
+            if draw_alpha_u8 <= 0:
+                continue
+            if draw_alpha_u8 > 255:
+                draw_alpha_u8 = 255
+
+            want_px = int(round(want_px_f))
+            want_px = max(1, min(want_px, size_cap))
 
             # Centerpoint for the tile
             cx = int(round(px_f + tile_px_f * 0.5))
@@ -2350,10 +2487,10 @@ class AsciiRenderer:
                 if icon is not None:
                     # If there are no effects at all, keep the fast path.
                     if not eff:
-                        if dim_in_fog:
+                        if draw_alpha_u8 < 255:
                             try:
                                 icon = icon.copy()
-                                icon.set_alpha(fog_alpha_u8)
+                                icon.set_alpha(int(draw_alpha_u8))
                             except Exception:
                                 pass
                         rect = icon.get_rect(center=(cx, cy))
@@ -2403,7 +2540,7 @@ class AsciiRenderer:
 
                     if dim_in_fog:
                         try:
-                            canvas.set_alpha(fog_alpha_u8)
+                            canvas.set_alpha(int(draw_alpha_u8))
                         except Exception:
                             pass
 
@@ -2413,6 +2550,11 @@ class AsciiRenderer:
                         union_rect.w,
                         union_rect.h,
                     )
+                    if draw_alpha_u8 < 255:
+                        try:
+                            canvas.set_alpha(int(draw_alpha_u8))
+                        except Exception:
+                            pass
                     self.surface.blit(canvas, dest.topleft)
                     continue
 
@@ -2449,7 +2591,7 @@ class AsciiRenderer:
                     font_px=font_px,
                     ch=glyph,
                     color=color,
-                    alpha_u8=(fog_alpha_u8 if dim_in_fog else 255),
+                    alpha_u8=int(draw_alpha_u8),
                 )
                 gx = int(round(px_f + (tile_px_i - gsurf.get_width()) * 0.5))
                 gy = int(round(py_f + (tile_px_i - gsurf.get_height()) * 0.5))
@@ -2462,7 +2604,7 @@ class AsciiRenderer:
 
             if dim_in_fog:
                 try:
-                    canvas.set_alpha(fog_alpha_u8)
+                    canvas.set_alpha(int(draw_alpha_u8))
                 except Exception:
                     pass
 
@@ -3740,7 +3882,60 @@ class AsciiRenderer:
         self.draw_activation_overlay(game)
         self.draw_aim_overlay(game)
         # Unified entity rendering: items + actors together.
-        renderables = game.renderables_current()
+        # Camera-centric query (god-vision / macro-view):
+        # - compute the visible world rect in tile coords
+        # - translate local-zone coords -> absolute world coords
+        # - query only entities intersecting that rect, with an LoD/size band cull.
+        try:
+            map_origin_x, map_origin_y = self._map_origin_base()
+            map_w = self.width - self.log_panel_width
+            map_h = self.height - self.ability_bar_height - map_origin_y
+            map_rect = pygame.Rect(map_origin_x, map_origin_y, max(1, map_w), max(1, map_h))
+
+            world_scale = float(getattr(self, "tile_px", float(self.base_tile) * float(getattr(self, "zoom", 1.0))))
+            world_scale = max(1e-6, world_scale)
+
+            # Visible rect in *local* tile coords.
+            x0 = (float(map_rect.left) - float(getattr(self, "origin_x", map_origin_x))) / world_scale
+            y0 = (float(map_rect.top) - float(getattr(self, "origin_y", map_origin_y))) / world_scale
+            x1 = (float(map_rect.right) - float(getattr(self, "origin_x", map_origin_x))) / world_scale
+            y1 = (float(map_rect.bottom) - float(getattr(self, "origin_y", map_origin_y))) / world_scale
+
+            zone_w = int(getattr(getattr(game, "cfg", None), "world_width", getattr(game.world, "width", 60) or 60))
+            zone_h = int(getattr(getattr(game, "cfg", None), "world_height", getattr(game.world, "height", 40) or 40))
+            zone_w = max(1, zone_w)
+            zone_h = max(1, zone_h)
+            zx, zy, _zz = getattr(game, "zone_coord", (0, 0, 0))
+            abs_off_x = float(int(zx) * zone_w)
+            abs_off_y = float(int(zy) * zone_h)
+
+            abs_rect = (abs_off_x + float(x0), abs_off_y + float(y0), abs_off_x + float(x1), abs_off_y + float(y1))
+
+            # cam_lod = log2(1 / zoom)
+            cam_lod = 0.0
+            try:
+                cam_lod = math.log2(float(self.base_tile) / world_scale)
+            except Exception:
+                cam_lod = 0.0
+
+            dmin = float(getattr(self, "entity_lod_delta_min", -5.0))
+            dmax = float(getattr(self, "entity_lod_delta_max", 0.5))
+            fade_w = float(getattr(self, "entity_lod_fade_width", 0.6))
+            max_count = int(getattr(self, "entity_render_max_count", 2000))
+
+            if hasattr(game, "renderables_in_abs_rect"):
+                renderables = game.renderables_in_abs_rect(
+                    abs_rect,
+                    cam_lod=cam_lod,
+                    dmin=dmin,
+                    dmax=dmax,
+                    fade_w=fade_w,
+                    max_count=max_count,
+                )
+            else:
+                renderables = game.renderables_current()
+        except Exception:
+            renderables = game.renderables_current()
         self.draw_entities(game, game.world, renderables)
         self.draw_action_preview_overlay(game)
         self.draw_target_cursor(game)

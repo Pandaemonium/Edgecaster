@@ -86,6 +86,10 @@ class SceneManager:
             "kemet": "assets/music/kemet.ogg",
             "john_bismuth": "assets/music/john_bismuth.ogg",
             "warp_whistle": "assets/music/warp_whistle.ogg",
+            "hornpipe": "assets/music/hornpipe.ogg",
+            "real_boy": "assets/music/real_boy.ogg",
+            "baal_cycle": "assets/music/baal_cycle.ogg",
+
             # Event stingers
             "imp_cackle": "assets/music/imp_cackle.wav",
             "slot_machine": "assets/music/slot_machine.wav",

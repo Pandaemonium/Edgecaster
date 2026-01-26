@@ -84,7 +84,7 @@ class DungeonScene(Scene):
 
     uses_live_loop = True
     # --- Music declaration ---
-    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth", "warp_whistle"]
+    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth", "warp_whistle", "hornpipe", "real_boy", "baal_cycle"]
     music_loop = True
     music_fade_out_ms = 1200
     music_fade_in_ms = 1200
@@ -536,7 +536,7 @@ class DungeonScene(Scene):
                     stinger_key = "beggarly_vagrant"
                 elif t == "level up!":
                     stinger_key = "arpeggio"
-                elif t == "you unravel...":
+                elif t == "You die. This world, now doomed, spirals infinitely toward decay and despair...":
                     stinger_key = "cascade"
                     stinger_scary = True
 
