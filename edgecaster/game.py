@@ -4,13 +4,33 @@ from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
 from collections import deque
 
+@dataclass
+class RenderProxy:
+    """Lightweight wrapper for rendering objects that may live in other zones.
 
+    The renderer can treat this as 'an entity' but it also carries absolute-world
+    coordinates so we can map it into the current camera frame.
+    """
+    obj: object
+    abs_x: float
+    abs_y: float
+    zone_coord: Tuple[int, int, int]
+    local_pos: Tuple[int, int]
+
+
+
+
+
+import heapq
 from edgecaster import config, events
 from edgecaster.state.world import World
 from edgecaster.state.actors import Actor, Stats, Human
 from edgecaster.state.entities import Entity
 from edgecaster.enemies import factory as enemy_factory
-
+from edgecaster.systems.world_entity_index import WorldEntityIndex
+from edgecaster import prototypes
+from edgecaster import spawn_factory
+from edgecaster.systems.sites import load_site_types
 
 from edgecaster import mapgen
 from edgecaster import mapgen_sites
@@ -311,6 +331,12 @@ class Game:
         from edgecaster.systems.sites import SiteRegistry
         from edgecaster.systems.site_placement import place_all_sites
         self.site_registry: SiteRegistry = place_all_sites(self)
+        # World-level entity index (macro-scale renderables).
+        # Populated from site_registry once placement completes.
+        zone_w_init = int(getattr(getattr(self, "cfg", None), "world_width", 60) or 60)
+        zone_h_init = int(getattr(getattr(self, "cfg", None), "world_height", 40) or 40)
+        self.world_entity_index: WorldEntityIndex = WorldEntityIndex(zone_w=zone_w_init, zone_h=zone_h_init)
+        self._world_entities_built: bool = False
 
         # Difficulty field configuration (tunable, decoupled from biomes).
         # Adjust this in one place to change zone difficulty behavior.
@@ -2320,8 +2346,8 @@ class Game:
         """Get (and lazily create) a zone. Delegates to zones_system."""
         return zones_system.get_zone(self, coord, up_pos)
 
-    def get_zone_for_render(self, coord: Tuple[int, int, int]) -> LevelState:
-        """Get zone for rendering without side effects. Delegates to zones_system."""
+    def get_zone_for_render(self, coord: Tuple[int, int, int]) -> Optional[LevelState]:
+        """Render-peek only: returns already-loaded zones, else None."""
         return zones_system.get_zone_for_render(self, coord)
 
     def all_actors_current(self) -> List[Actor]:
@@ -2339,6 +2365,434 @@ class Game:
         and living actors (player, monsters, NPCs).
         """
         return self.all_entities_current() + self.all_actors_current()
+
+
+
+
+    def _size_for_render(self, obj: object) -> float:
+        """Heuristic absolute size for rendering.
+
+        We prefer explicit numeric fields (abs_size/base_size/size). If absent, we apply
+        a conservative heuristic so that micro-items (berries, crystals, etc.) don't
+        persist at macro zoom.
+        """
+        # Explicit numeric attributes win.
+        for attr in ("abs_size", "base_size", "size"):
+            v = getattr(obj, attr, None)
+            if isinstance(v, (int, float)) and float(v) > 0:
+                return float(v)
+
+        # Heuristic fallback by kind / tags.
+        kind = getattr(obj, "kind", "") or ""
+        if kind == "item":
+            return 0.25
+        if kind in ("feature", "structure"):
+            return 2.0
+
+        tags = getattr(obj, "tags", {}) or {}
+        if isinstance(tags, dict):
+            if "item_type" in tags:
+                return 0.25
+
+        return 1.0
+
+    def _rebuild_spatial_bins(self, level: LevelState) -> None:
+        """Rebuild per-level spatial bins for fast camera-rect queries."""
+        bs = int(getattr(level, "spatial_bin_size", 16) or 16)
+        bs = max(1, bs)
+        bins: Dict[Tuple[int, int], List[str]] = {}
+
+        # Include actors (alive) and entities. Some actors may also be in entities; dedupe by id.
+        seen: set[str] = set()
+
+        for a in level.actors.values():
+            try:
+                if not a.alive:
+                    continue
+            except Exception:
+                pass
+            if a.id in seen:
+                continue
+            seen.add(a.id)
+            x, y = a.pos
+            key = (int(x) // bs, int(y) // bs)
+            bins.setdefault(key, []).append(a.id)
+
+        for e in level.entities.values():
+            if e.id in seen:
+                continue
+            seen.add(e.id)
+            x, y = e.pos
+            key = (int(x) // bs, int(y) // bs)
+            bins.setdefault(key, []).append(e.id)
+
+        level.spatial_bins = bins
+        level.spatial_dirty = False
+
+    def renderables_in_abs_rect(
+        self,
+        abs_rect: Tuple[float, float, float, float],
+        *,
+        include_actors: bool = True,
+        include_entities: bool = True,
+        cam_lod: float,
+        dmin: float = -5.0,
+        dmax: float = 0.75,
+        fade_w: float = 0.6,
+        max_count: int = 2000,
+    ) -> List[RenderProxy]:
+        """Return renderable objects intersecting an absolute-world tile rect.
+
+        abs_rect = (x0, y0, x1, y1) in absolute world-tile coordinates.
+        Rect is half-open: [x0,x1) × [y0,y1).
+
+        Camera-centric query for god-vision / scry / macro-view.
+
+        Critical invariants:
+        - Rendering must not instantiate gameplay state.
+        - get_zone_for_render() may return None for unloaded zones (and that's OK).
+        - World-index entities (sites, later forests/cities/etc.) must still be queryable
+          even when the camera spans many zones.
+        """
+        try:
+            ax0, ay0, ax1, ay1 = map(float, abs_rect)
+        except Exception:
+            return []
+
+        if ax1 < ax0:
+            ax0, ax1 = ax1, ax0
+        if ay1 < ay0:
+            ay0, ay1 = ay1, ay0
+        if ax1 == ax0 or ay1 == ay0:
+            return []
+
+        # Zone dimensions MUST match the actual zone tile dimensions used everywhere else.
+        # Prefer cfg.world_width/world_height (canonical), fall back to current level/world defaults.
+        cfg = getattr(self, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 0) or 0)
+        zone_h = int(getattr(cfg, "world_height", 0) or 0)
+
+        if zone_w <= 0 or zone_h <= 0:
+            try:
+                lvl0 = self._level()
+                zone_w = int(getattr(lvl0.world, "width", 60) or 60)
+                zone_h = int(getattr(lvl0.world, "height", 40) or 40)
+            except Exception:
+                zone_w = 60
+                zone_h = 40
+
+
+        # Which depth are we on?
+        _czx, _czy, zz = getattr(self, "zone_coord", (0, 0, 0))
+        zz = int(zz)
+
+        # Zone span covered by camera rect.
+        zx0 = int(math.floor(ax0 / float(zone_w)))
+        zy0 = int(math.floor(ay0 / float(zone_h)))
+        zx1 = int(math.floor((ax1 - 1e-9) / float(zone_w)))
+        zy1 = int(math.floor((ay1 - 1e-9) / float(zone_h)))
+
+        # If the camera spans a ridiculous number of zones, we should NOT iterate through them
+        # (that would freeze), but we STILL want world-index entities to appear anywhere in view.
+        max_zone_span = int(getattr(getattr(self, "cfg", None), "render_max_zone_span", 9) or 9)
+        max_zone_span = max(1, max_zone_span)
+        span_x = (zx1 - zx0 + 1)
+        span_y = (zy1 - zy0 + 1)
+        too_many_zones = (span_x > max_zone_span) or (span_y > max_zone_span)
+
+        out: List[RenderProxy] = []
+        candidates: List[Tuple[object, float, float, Tuple[int, int, int], Tuple[int, int], float]] = []
+
+        # Camera center for scoring (prefer big + near center).
+        ccx = 0.5 * (ax0 + ax1)
+        ccy = 0.5 * (ay0 + ay1)
+
+        def _score(abs_size: float, abs_x: float, abs_y: float) -> float:
+            dx = abs_x - ccx
+            dy = abs_y - ccy
+            return abs_size * 1000.0 - (dx * dx + dy * dy)
+
+        # ------------------------------------------------------------
+        # 1) WORLD INDEX ENTITIES (sites, later forests/cities/etc.)
+        #    IMPORTANT: do NOT zone-span-cap this query, or you'll get the "center window" bug.
+        # ------------------------------------------------------------
+        self._ensure_world_site_entities(zone_w=zone_w, zone_h=zone_h)
+
+        try:
+            if getattr(self, "world_entity_index", None) is not None:
+                for ref in self.world_entity_index.query_abs_rect((ax0, ay0, ax1, ay1), z=zz, zone_span_cap=None):
+                    obj = ref.ent
+                    zx, zy, _z = ref.zone_coord
+                    ox, oy = ref.local_pos
+
+                    abs_x = float(zx * zone_w + ox)
+                    abs_y = float(zy * zone_h + oy)
+
+                    abs_size = self._size_for_render(obj)
+                    ent_lod = math.log2(abs_size) if abs_size > 0 else -30.0
+                    delta = float(cam_lod) - float(ent_lod)
+
+                    # Fade band gating (matches your existing LoD philosophy).
+                    if delta < (float(dmin) - float(fade_w)) or delta > (float(dmax) + float(fade_w)):
+                        continue
+
+                    # Tight rect intersection: treat as a box of side abs_size around its center.
+                    half = 0.5 * float(abs_size)
+                    ex0 = abs_x - half
+                    ey0 = abs_y - half
+                    ex1 = abs_x + half
+                    ey1 = abs_y + half
+                    if ex1 <= ax0 or ex0 >= ax1 or ey1 <= ay0 or ey0 >= ay1:
+                        continue
+
+                    sc = _score(abs_size, abs_x, abs_y)
+                    candidates.append((obj, abs_x, abs_y, (int(zx), int(zy), int(zz)), (int(ox), int(oy)), sc))
+        except Exception:
+            # World entities are best-effort; never crash rendering.
+            pass
+
+        # ------------------------------------------------------------
+        # 2) LOADED ZONES ONLY (never instantiate zones here)
+        # ------------------------------------------------------------
+        coords_to_check: List[Tuple[int, int, int]] = []
+
+        if too_many_zones:
+            # Camera spans many zones; do NOT iterate them all.
+            # But we *must* still render entities from zones that already exist in memory.
+            try:
+                for coord in getattr(self, "levels", {}).keys():
+                    try:
+                        zx, zy, zdepth = coord
+                    except Exception:
+                        continue
+                    if int(zdepth) != int(zz):
+                        continue
+
+                    # Does this zone's absolute rect intersect the camera rect?
+                    zax0 = float(zx * zone_w)
+                    zay0 = float(zy * zone_h)
+                    zax1 = zax0 + float(zone_w)
+                    zay1 = zay0 + float(zone_h)
+                    if zax1 <= ax0 or zax0 >= ax1 or zay1 <= ay0 or zay0 >= ay1:
+                        continue
+
+                    coords_to_check.append((int(zx), int(zy), int(zz)))
+            except Exception:
+                coords_to_check = []
+        else:
+            for zx in range(zx0, zx1 + 1):
+                for zy in range(zy0, zy1 + 1):
+                    coords_to_check.append((int(zx), int(zy), int(zz)))
+
+        for coord in coords_to_check:
+            zx, zy, _ = coord
+            try:
+                level = self.get_zone_for_render(coord)
+            except Exception:
+                continue
+            if level is None:
+                continue
+
+            # Ensure bins exist for this zone.
+            if getattr(level, "spatial_dirty", True) or not getattr(level, "spatial_bins", None):
+                self._rebuild_spatial_bins(level)
+
+            # Local rect within this zone.
+            lx0 = ax0 - float(zx * zone_w)
+            ly0 = ay0 - float(zy * zone_h)
+            lx1 = ax1 - float(zx * zone_w)
+            ly1 = ay1 - float(zy * zone_h)
+
+            # Clamp to zone bounds.
+            if lx1 <= 0 or ly1 <= 0 or lx0 >= zone_w or ly0 >= zone_h:
+                continue
+            lx0 = max(0.0, min(float(zone_w), lx0))
+            ly0 = max(0.0, min(float(zone_h), ly0))
+            lx1 = max(0.0, min(float(zone_w), lx1))
+            ly1 = max(0.0, min(float(zone_h), ly1))
+            if lx1 <= lx0 or ly1 <= ly0:
+                continue
+
+            bs = int(getattr(level, "spatial_bin_size", 16) or 16)
+            bs = max(1, bs)
+            bx0 = int(math.floor(lx0 / bs))
+            by0 = int(math.floor(ly0 / bs))
+            bx1 = int(math.floor((lx1 - 1e-6) / bs))
+            by1 = int(math.floor((ly1 - 1e-6) / bs))
+
+            bins = level.spatial_bins
+            seen_ids: set[str] = set()
+
+            for by in range(by0, by1 + 1):
+                for bx in range(bx0, bx1 + 1):
+                    ids = bins.get((bx, by))
+                    if not ids:
+                        continue
+                    for obj_id in ids:
+                        if obj_id in seen_ids:
+                            continue
+                        seen_ids.add(obj_id)
+
+                        obj = None
+                        if include_actors:
+                            obj = level.actors.get(obj_id)
+                        if obj is None and include_entities:
+                            obj = level.entities.get(obj_id)
+                        if obj is None:
+                            continue
+
+                        try:
+                            ox, oy = obj.pos
+                        except Exception:
+                            continue
+                        if not (lx0 <= ox < lx1 and ly0 <= oy < ly1):
+                            continue
+
+                        abs_x = float(zx * zone_w + ox)
+                        abs_y = float(zy * zone_h + oy)
+
+                        abs_size = self._size_for_render(obj)
+                        ent_lod = math.log2(abs_size) if abs_size > 0 else -30.0
+                        delta = float(cam_lod) - float(ent_lod)
+                        if delta < (float(dmin) - float(fade_w)) or delta > (float(dmax) + float(fade_w)):
+                            continue
+
+                        sc = _score(abs_size, abs_x, abs_y)
+                        candidates.append((obj, abs_x, abs_y, coord, (int(ox), int(oy)), sc))
+
+
+        if not candidates:
+            return []
+
+        # Downselect if needed.
+        if max_count > 0 and len(candidates) > max_count:
+            candidates = heapq.nlargest(max_count, candidates, key=lambda t: t[5])
+
+        for obj, abs_x, abs_y, coord, local_pos, _sc in candidates:
+            out.append(
+                RenderProxy(
+                    obj=obj,
+                    abs_x=float(abs_x),
+                    abs_y=float(abs_y),
+                    zone_coord=coord,
+                    local_pos=local_pos,
+                )
+            )
+        return out
+
+
+
+
+
+
+    
+    def _ensure_world_site_entities(self, *, zone_w: int, zone_h: int) -> None:
+        """
+        Incrementally build world-level site entities (macro renderables) from the SiteRegistry.
+
+        Important properties:
+        - No gameplay side effects. Does NOT stamp walls/NPCs/etc.
+        - Does NOT wait for async placement completion.
+        - Not "build once": it incrementally adds newly-placed or newly-revealed sites.
+        """
+
+        # Initialize tracking
+        if not hasattr(self, "_world_site_ids_built"):
+            self._world_site_ids_built = set()
+
+        # If zone dims changed, rebuild the index (safe: we can re-add incrementally)
+        prev_wh = getattr(self, "_world_entity_index_wh", None)
+        wh = (int(zone_w), int(zone_h))
+        if prev_wh != wh or getattr(self, "world_entity_index", None) is None:
+            try:
+                self.world_entity_index = WorldEntityIndex(zone_w=wh[0], zone_h=wh[1])
+                self._world_entity_index_wh = wh
+                self._world_site_ids_built.clear()
+            except Exception:
+                return
+
+        # Grab site specs. In god vision: all sites that exist so far.
+        # In normal: only visible/discovered sites.
+        try:
+            if bool(getattr(self, "god_vision", False)):
+                specs = list(getattr(self.site_registry, "_sites", {}).values())
+            else:
+                specs = list(self.site_registry.get_visible())
+        except Exception:
+            return
+
+        if not specs:
+            return
+
+        site_types = load_site_types()
+
+        # Resolve settlement prototype once
+        try:
+            settlement_proto = prototypes.resolve_proto("settlement")
+        except Exception:
+            settlement_proto = {
+                "id": "settlement",
+                "name": "Settlement",
+                "glyph": "§",
+                "color": [240, 220, 160],
+                "kind": "feature",
+                "base_size": 64,
+                "tags": {},
+            }
+
+        new_count = 0
+
+        for s in specs:
+            try:
+                sid = getattr(s, "id", None) or f"{getattr(s,'coord',(0,0,0))}"
+                eid = f"site:{sid}"
+                if eid in self._world_site_ids_built:
+                    continue
+
+                zx, zy, zz = map(int, getattr(s, "coord", (0, 0, 0)))
+                cfg = site_types.get(getattr(s, "kind", ""), None)
+
+                name = getattr(cfg, "name", None) or getattr(s, "kind", "site")
+                glyph = getattr(cfg, "map_glyph", "?") if cfg else "?"
+                color = list(getattr(cfg, "map_color", (255, 255, 255))) if cfg else [255, 255, 255]
+
+                # Zone-center for now (later: intra-zone location from spec if you add it)
+                ox = int(zone_w // 2)
+                oy = int(zone_h // 2)
+
+                overrides = {
+                    "name": name,
+                    "glyph": glyph,
+                    "color": color,
+                    "kind": "feature",
+                    "base_size": 64,
+                    "tags": {
+                        "world_entity": True,
+                        "site": True,
+                        "site_id": getattr(s, "id", ""),
+                        "site_kind": getattr(s, "kind", ""),
+                        "site_seed": int(getattr(s, "seed", 0) or 0),
+                        "site_biome": str(getattr(s, "biome", "")),
+                        **(getattr(s, "tags", {}) or {}),
+                    },
+                }
+
+                ent = spawn_factory.build_entity_from_spec(
+                    spec=settlement_proto,
+                    eid=eid,
+                    pos=(ox, oy),
+                    overrides=overrides,
+                )
+
+                self.world_entity_index.add(ent, zone_coord=(zx, zy, zz), local_pos=(ox, oy))
+                self._world_site_ids_built.add(eid)
+                new_count += 1
+
+            except Exception:
+                continue
+
+        if new_count and hasattr(self, "_debug"):
+            self._debug(f"[world_entities] added {new_count} site proxies (total={len(self._world_site_ids_built)})")
 
 
 

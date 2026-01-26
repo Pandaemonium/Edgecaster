@@ -150,14 +150,14 @@ class ClimateConfig:
     sea_level: float = 0.0    # Threshold for water (E_clim < sea_level)
 
     # Temperature knobs
-    lat_power: float = 0.8
+    lat_power: float = 0.6
     elev_scale: float = 0.6
     elev_power: float = 1.2
-    w_lat: float = 2
+    w_lat: float = 4
     w_elev: float = 0.40
     w_ocean: float = 0.05
     ocean_L: float = 10.0
-    temp_offset: float = -0.2
+    temp_offset: float = -0.1
 
     # Wind knobs (Earth-like mode)
     w_zonal_earth: float = 0.55

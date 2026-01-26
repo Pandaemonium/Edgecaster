@@ -171,6 +171,7 @@
   ai: skirmisher
   xp: 4
   parent: beast
+  size: 0.5
   description: Or was it a bat vampire?
   tags:
     vampire_bat: true
@@ -227,10 +228,36 @@
   ai: none
   xp: 0
   parent: demon
+  size: 4
   description: Disturbingly, it doesn't seem to mind its punishment.
   tags:
     training_dummy: true
     no_random_spawn: true
+
+
+
+- id: leviathan
+  name: Leviathan
+  glyph: "Ω"
+  color: [80, 200, 255]
+  actions: [wait]
+  base_hp: 20000
+  base_mana: 0
+  base_attack: 120
+  base_defense: 80
+  speed: 0.25
+  faction: hostile
+  ai: idle
+  xp: 5000
+  parent: demon
+  description: "Upon earth there is not his like, who is made without fear. He beholdeth all high things: he is a king over all the children of pride."
+  base_size: 512.0
+  tags:
+    leviathan: true
+    boss: true
+    no_random_spawn: true
+    corruption_source: true
+
 
 - id: merchant
   name: Merchant
@@ -630,7 +657,7 @@
   ai: skirmisher
   xp: 5
   parent: beast
-  description: This one really gets in your amygdala.
+  description: This one really gets you in the amygdala.
   tags:
     venomous_snake: true
     biome_spawn: [TROPICAL_FOREST, TROPICAL_RAINFOREST, SAVANNA]
@@ -1208,7 +1235,7 @@
   ai: territorial
   xp: 6
   parent: humanoid
-  description: They wander this earth, encyclopedias writ upon their skin.
+  description: They explore this earth, encyclopedias writ upon their skin.
   tags:
     pattern_wanderer: true
     biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
@@ -1248,7 +1275,7 @@
   ai: territorial
   xp: 7
   parent: humanoid
-  description: Do not interrupt the patternkeepers when they are dancing.
+  description: Do not interrupt the patternkeepers while they are dancing.
   tags:
     line_dancer: true
     biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
