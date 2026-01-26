@@ -104,17 +104,34 @@ def get_zone(
     return game.levels[coord]
 
 
-def get_zone_for_render(game: "Game", coord: Tuple[int, int, int]) -> "LevelState":
-    """
-    Get (and lazily create) a zone for *rendering* purposes.
 
-    Unlike get_zone(), this does **not** reset pattern state, coherence, or
-    any other per-zone gameplay state. It's intended for 'peek' rendering of
-    adjacent zones while zooming out.
+def get_zone_for_render(game: "Game", coord: Tuple[int, int, int]) -> Optional["LevelState"]:
     """
-    if coord not in game.levels:
-        game.levels[coord] = game._make_zone(coord, up_pos=None)
-    return game.levels[coord]
+    Render-peek only.
+
+    IMPORTANT INVARIANT (Round 1):
+    - This function must NEVER instantiate gameplay state.
+    - It must NOT call game._make_zone().
+    - It must NOT trigger site realization, discovery, spawns, etc.
+
+    It returns an already-loaded LevelState if present, else None.
+    """
+
+    lvl = game.levels.get(coord)
+    if lvl is not None:
+        return lvl
+
+    # Optional escape hatch for debugging / experimentation only.
+    # Keep default False so render cannot create zones.
+    if bool(getattr(game, "allow_render_zone_creation", False)):
+        try:
+            game.levels[coord] = game._make_zone(coord, up_pos=None)
+            return game.levels[coord]
+        except Exception:
+            return None
+
+    return None
+
 
 
 def use_stairs_down(game: "Game") -> None:
