@@ -120,6 +120,10 @@ class ChakraState:
     # Per-chakra charge level (0..max). Populated lazily.
     charges: Dict[str, float] = field(default_factory=dict)
 
+    # Optional root for chakra pattern generation (must be active).
+    # If None, we fall back to the body root or any active chakra.
+    pattern_root: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for saving."""
         return {
@@ -128,6 +132,7 @@ class ChakraState:
             "alignments": {k: list(v) for k, v in self.alignments.items()},
             "generators": dict(self.generators),
             "charges": dict(self.charges),
+            "pattern_root": self.pattern_root,
         }
 
     @classmethod
@@ -136,13 +141,14 @@ class ChakraState:
         if not data:
             return cls()
         return cls(
-            unlocked=set(data.get("unlocked", ["torso"])),
-            active=set(data.get("active", ["torso"])),
+            unlocked=set(data.get("unlocked", ["body"])),
+            active=set(data.get("active", ["body"])),
             alignments={
                 k: tuple(v) for k, v in data.get("alignments", {}).items()
             },
             generators=dict(data.get("generators", {})),
             charges={k: float(v) for k, v in data.get("charges", {}).items()},
+            pattern_root=data.get("pattern_root"),
         )
 
 
@@ -901,8 +907,14 @@ def get_all_chakra_positions_recursive(
 def get_connected_active_nodes(
     edges: List[Tuple[str, str]],
     active: Set[str],
+    root_id: Optional[str] = None,
 ) -> Set[str]:
-    """Return active nodes plus all ancestors so the graph stays connected."""
+    """Return active nodes plus ancestors needed for a connected subgraph.
+
+    If root_id is provided, only active nodes that can trace ancestry to
+    root_id are included. This keeps the chakra graph connected to the
+    chosen pattern root and excludes unrelated branches.
+    """
     if not active:
         return set()
 
@@ -912,14 +924,26 @@ def get_connected_active_nodes(
         if child not in parent_map:
             parent_map[child] = parent
 
-    expanded = set(active)
+    expanded: Set[str] = set()
     for node in list(active):
+        # Walk up until we hit the root (if provided) or the top.
         cur = node
+        chain: List[str] = [cur]
         while cur in parent_map:
             cur = parent_map[cur]
-            if cur in expanded:
+            chain.append(cur)
+            if root_id is not None and cur == root_id:
                 break
-            expanded.add(cur)
+
+        if root_id is not None:
+            # Only include nodes whose ancestry reaches the chosen root.
+            if root_id not in chain:
+                continue
+        expanded.update(chain)
+
+    # Ensure the root itself is always included if valid.
+    if root_id is not None and root_id in active:
+        expanded.add(root_id)
     return expanded
 
 def chakras_to_seed_pattern(
@@ -955,6 +979,9 @@ def chakras_to_seed_pattern(
 
     # Use connected active set so sub-schema nodes don't "float" disconnected.
     edges = get_chakra_connections_recursive(body_schema, chakra_state)
+    # Keep all active chakras (plus needed ancestors) regardless of which
+    # chakra is chosen as the pattern root. The root only affects ordering,
+    # not which vertices participate in the pattern.
     active_nodes = get_connected_active_nodes(edges, chakra_state.active)
 
     positions = {
@@ -967,13 +994,17 @@ def chakras_to_seed_pattern(
         # Return empty pattern
         return Pattern()
 
+    import json
+
     pattern = Pattern()
     node_to_idx: Dict[str, int] = {}
+    node_order: List[str] = []
 
     # Add vertices for each active chakra (including sub-schema nodes)
     for node_id, pos in positions.items():
         idx = pattern.add_vertex(pos, color="chakra", power=1.0)
         node_to_idx[node_id] = idx
+        node_order.append(node_id)
 
     # Add edges following body tree structure (including sub-schemas).
     # An edge exists between parent and child if BOTH endpoints are in the
@@ -986,6 +1017,13 @@ def chakras_to_seed_pattern(
                 color="chakra",
                 weight=1.0,
             )
+
+    # Store vertex -> chakra node mapping so downstream systems can
+    # reliably identify the chosen root by node id.
+    try:
+        pattern.meta["chakra_nodes"] = json.dumps(node_order)
+    except Exception:
+        pass
 
     return pattern
 

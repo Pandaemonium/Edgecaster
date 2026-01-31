@@ -50,6 +50,7 @@ from edgecaster.systems.chakras import (
     check_resonance_bonuses,
     get_chakra_world_positions,
     get_all_chakra_positions_recursive,
+    collect_all_chakra_nodes,
     get_resonance_modifiers,
     CHARGE_MAX_BASE,
     is_branch_root,
@@ -102,8 +103,13 @@ REALIGN_MAX_LIMIT = 1.00  # Clamp to prevent extreme offsets
 
 # Camera zoom controls for the chakra layout view
 CAMERA_MIN_SCALE = 0.45
-CAMERA_MAX_SCALE = 6.00
+CAMERA_MAX_SCALE = 12.00
 CAMERA_ZOOM_STEP = 1.18
+
+# Focus view auto-toggle (zoom-driven). When zoomed in deeply, the scene
+# can collapse to a subtree for visual clarity without restricting selection.
+FOCUS_AUTO_SCALE = 2.6
+FOCUS_AUTO_RELEASE = 1.9
 
 # Tooltip styling
 TOOLTIP_PADDING = 8
@@ -331,6 +337,7 @@ class ChakraSilhouetteWidget(Widget):
         on_chakra_drag_start: Optional[callable] = None,
         on_chakra_drag: Optional[callable] = None,
         on_chakra_drag_end: Optional[callable] = None,
+        on_drag_select: Optional[callable] = None,
     ) -> None:
         super().__init__()
         self.actor = actor
@@ -339,11 +346,13 @@ class ChakraSilhouetteWidget(Widget):
         self.on_chakra_drag_start = on_chakra_drag_start
         self.on_chakra_drag = on_chakra_drag
         self.on_chakra_drag_end = on_chakra_drag_end
+        self.on_drag_select = on_drag_select
 
         # Cached chakra points (rebuilt on layout)
         self._chakra_points: Dict[str, ChakraPoint] = {}
         self._hovered_id: Optional[str] = None
         self._selected_id: Optional[str] = None
+        self._selected_nodes: Set[str] = set()
         self._dragging_id: Optional[str] = None
 
         # Animation state
@@ -365,9 +374,22 @@ class ChakraSilhouetteWidget(Widget):
         # Optional state override (used for "realign preview" without committing)
         self.state_override: Optional[ChakraState] = None
 
+        # Current pattern root (for highlighting)
+        self._pattern_root: Optional[str] = None
+
         # Realign mode visualization (optional)
         self.realign_mode: bool = False
         self.realign_radius: float = 0.0  # alignment units (not pixels)
+
+        # Focus view disabled: we always render all chakras at every zoom level.
+        self._focus_enabled: bool = False
+        self._focus_node: Optional[str] = None
+        self._visible_nodes: Optional[Set[str]] = None
+
+        # Drag-select state (selection rectangle)
+        self._drag_select_active: bool = False
+        self._drag_select_start: Optional[Tuple[int, int]] = None
+        self._drag_select_end: Optional[Tuple[int, int]] = None
 
     def set_actor(self, actor: Any) -> None:
         """Update the actor being displayed."""
@@ -386,6 +408,32 @@ class ChakraSilhouetteWidget(Widget):
         self.realign_mode = bool(active)
         self.realign_radius = float(max_align)
 
+    def set_selected_nodes(self, nodes: Set[str]) -> None:
+        """Update the set of selected chakra nodes for highlighting."""
+        self._selected_nodes = set(nodes)
+
+    def set_focus_enabled(self, enabled: bool) -> None:
+        """Focus view is disabled; keep all chakras visible."""
+        self._focus_enabled = False
+        self._visible_nodes = None
+
+    def set_focus_node(self, node_id: Optional[str]) -> None:
+        """Focus view is disabled; ignore focus node requests."""
+        self._focus_node = None
+        self._visible_nodes = None
+
+    def _refresh_focus_visibility(self) -> None:
+        """Focus view is disabled; all nodes remain visible."""
+        self._visible_nodes = None
+
+    def _is_visible(self, node_id: str) -> bool:
+        """Always render chakras regardless of zoom."""
+        return True
+
+    def get_camera_scale(self) -> float:
+        """Expose camera scale for auto-focus decisions."""
+        return float(self._cam_scale)
+
     def _rebuild_chakra_points(self) -> None:
         """Rebuild chakra point data from actor's body schema.
 
@@ -402,6 +450,10 @@ class ChakraSilhouetteWidget(Widget):
         body_schema = _get_body_schema(self.actor)
         chakra_state = self._get_state()
         nodes = _get_nodes_from_schema(body_schema)
+        if getattr(chakra_state, "pattern_root", None) in chakra_state.active:
+            self._pattern_root = chakra_state.pattern_root
+        else:
+            self._pattern_root = None
 
         if not nodes:
             return
@@ -439,6 +491,9 @@ class ChakraSilhouetteWidget(Widget):
         # Build parent-child connections for energy flow
         # This now needs to handle prefixed IDs (e.g., arm -> arm.shoulder)
         self._build_connections(body_schema, chakra_state, "")
+
+        # Refresh focus visibility now that nodes are rebuilt.
+        self._refresh_focus_visibility()
 
     def _build_connections(
         self,
@@ -655,7 +710,20 @@ class ChakraSilhouetteWidget(Widget):
 
         # Draw chakra points (with glow)
         for point in self._chakra_points.values():
+            if not self._is_visible(point.node_id):
+                continue
             self._draw_chakra_point(surface, point, now_ms)
+
+        # Drag-select rectangle overlay
+        if self._drag_select_active and self._drag_select_start and self._drag_select_end:
+            x0, y0 = self._drag_select_start
+            x1, y1 = self._drag_select_end
+            rect = pygame.Rect(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+            if rect.width > 2 and rect.height > 2:
+                overlay = pygame.Surface(rect.size, pygame.SRCALPHA)
+                overlay.fill((80, 140, 220, 30))
+                surface.blit(overlay, rect.topleft)
+                pygame.draw.rect(surface, (110, 160, 230), rect, 1)
 
         # Draw particles on top
         self._draw_particles(surface)
@@ -707,6 +775,8 @@ class ChakraSilhouetteWidget(Widget):
         chakra_state = self._get_state()
 
         for parent_id, child_id in self._connections:
+            if not self._is_visible(parent_id) or not self._is_visible(child_id):
+                continue
             parent = self._chakra_points.get(parent_id)
             child = self._chakra_points.get(child_id)
 
@@ -806,7 +876,7 @@ class ChakraSilhouetteWidget(Widget):
                 special_flags=pygame.BLEND_ADD,
             )
 
-        # Selected highlight
+        # Selected highlight (primary)
         if point.node_id == self._selected_id:
             # Draw selection ring
             pygame.draw.circle(surface, COLOR_HOVER, (px, py), int(BASE_CHAKRA_RADIUS * 1.8 * radius_mul), 2)
@@ -826,6 +896,26 @@ class ChakraSilhouetteWidget(Widget):
                         align_radius_px,
                         1,
                     )
+
+        # Multi-selection ring (thin gold halo for non-primary selections)
+        if point.node_id in self._selected_nodes and point.node_id != self._selected_id:
+            pygame.draw.circle(
+                surface,
+                (230, 200, 120),
+                (px, py),
+                int(BASE_CHAKRA_RADIUS * 1.4 * radius_mul),
+                1,
+            )
+
+        # Pattern root highlight (thin cyan ring)
+        if point.node_id == self._pattern_root:
+            pygame.draw.circle(
+                surface,
+                (120, 220, 255),
+                (px, py),
+                int(BASE_CHAKRA_RADIUS * 2.1 * radius_mul),
+                1,
+            )
 
         base_radius = int(BASE_CHAKRA_RADIUS * radius_mul)
 
@@ -884,6 +974,10 @@ class ChakraSilhouetteWidget(Widget):
         if event.type == pygame.MOUSEMOTION:
             pos = getattr(event, "pos", None)
             if pos and self.rect.collidepoint(pos):
+                if self._drag_select_active:
+                    self._drag_select_end = pos
+                    return True
+
                 # Find hovered chakra
                 old_hovered = self._hovered_id
                 self._hovered_id = self._get_chakra_at(pos)
@@ -898,6 +992,9 @@ class ChakraSilhouetteWidget(Widget):
                 return True
             else:
                 self._hovered_id = None
+                if self._drag_select_active and pos:
+                    self._drag_select_end = pos
+                    return True
                 # Continue drag even if cursor leaves the widget
                 if self._dragging_id and self.on_chakra_drag and pos:
                     self.on_chakra_drag(self._dragging_id, pos)
@@ -921,8 +1018,37 @@ class ChakraSilhouetteWidget(Widget):
                     if self.on_chakra_click:
                         self.on_chakra_click(clicked_id)
                         return True
+                else:
+                    # Begin drag-select in empty space
+                    self._drag_select_active = True
+                    self._drag_select_start = pos
+                    self._drag_select_end = pos
+                    return True
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self._drag_select_active and self._drag_select_start and self._drag_select_end:
+                x0, y0 = self._drag_select_start
+                x1, y1 = self._drag_select_end
+                rect = pygame.Rect(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+                if rect.width >= 2 and rect.height >= 2 and self.on_drag_select:
+                    picked: Set[str] = set()
+                    for point in self._chakra_points.values():
+                        if rect.collidepoint(point.pos_px):
+                            picked.add(point.node_id)
+                    try:
+                        mods = pygame.key.get_mods()
+                    except Exception:
+                        mods = 0
+                    try:
+                        self.on_drag_select(picked, mods)
+                    except Exception:
+                        pass
+
+                self._drag_select_active = False
+                self._drag_select_start = None
+                self._drag_select_end = None
+                return True
+
             if self._dragging_id:
                 if self.on_chakra_drag_end and hasattr(event, "pos"):
                     try:
@@ -973,16 +1099,21 @@ class ChakraSilhouetteWidget(Widget):
     def _get_chakra_at(self, pos: Tuple[int, int]) -> Optional[str]:
         """Get the chakra ID at the given pixel position."""
         click_radius = BASE_CHAKRA_RADIUS * 1.5
+        best_id: Optional[str] = None
+        best_d2 = float("inf")
 
         for point in self._chakra_points.values():
+            if not self._is_visible(point.node_id):
+                continue
             dx = pos[0] - point.pos_px[0]
             dy = pos[1] - point.pos_px[1]
             dist_sq = dx * dx + dy * dy
 
-            if dist_sq <= click_radius * click_radius:
-                return point.node_id
+            if dist_sq <= click_radius * click_radius and dist_sq < best_d2:
+                best_d2 = dist_sq
+                best_id = point.node_id
 
-        return None
+        return best_id
 
     def select_chakra(self, node_id: Optional[str]) -> None:
         """Set the selected chakra for keyboard navigation."""
@@ -1207,12 +1338,16 @@ class PatternPreviewWidget(Widget):
             self._pattern_surface = surf
             return
 
-        root_id = body_schema.get("root")
+        root_id = getattr(chakra_state, "pattern_root", None)
         if root_id and root_id in positions:
             root_pos = positions[root_id]
         else:
-            # Fallback: closest to origin
-            root_pos = min(positions.values(), key=lambda p: p[0] ** 2 + p[1] ** 2)
+            root_id = body_schema.get("root")
+            if root_id and root_id in positions:
+                root_pos = positions[root_id]
+            else:
+                # Fallback: closest to origin
+                root_pos = min(positions.values(), key=lambda p: p[0] ** 2 + p[1] ** 2)
 
         def dist_sq_from_root(p: tuple) -> float:
             dx = p[0] - root_pos[0]
@@ -1265,6 +1400,166 @@ class PatternPreviewWidget(Widget):
 
         self._pattern_surface = surf
 
+
+# =============================================================================
+# CHAKRA LIST WIDGET
+# =============================================================================
+
+@dataclass
+class ChakraListEntry:
+    node_id: str
+    label: str
+    depth: int
+
+
+class ChakraListWidget(Widget):
+    """
+    Scrollable list view of all chakras (for precision selection).
+
+    - Shows active/unlocked/locked state with colored markers
+    - Highlights current selection set
+    - Supports click selection with modifier keys
+    """
+
+    def __init__(
+        self,
+        *,
+        items: Optional[List[ChakraListEntry]] = None,
+        get_state: Optional[callable] = None,
+        on_select: Optional[callable] = None,
+    ) -> None:
+        super().__init__()
+        self.items = items or []
+        self.get_state = get_state
+        self.on_select = on_select
+        self._selected_nodes: Set[str] = set()
+        self.scroll_offset: int = 0
+        self.padding: int = 8
+        self.line_spacing: int = 4
+        self._line_height: int = 20
+        self._hover_index: Optional[int] = None
+
+    def set_items(self, items: List[ChakraListEntry]) -> None:
+        self.items = list(items)
+        self.scroll_offset = max(0, min(self.scroll_offset, max(0, len(self.items) - 1)))
+
+    def set_selected_nodes(self, nodes: Set[str]) -> None:
+        self._selected_nodes = set(nodes)
+
+    def _visible_capacity(self) -> int:
+        if self._line_height <= 0:
+            return max(1, len(self.items))
+        usable_h = max(1, self.rect.height - 2 * self.padding)
+        return max(1, usable_h // self._line_height)
+
+    def _pick_index_at(self, pos: Tuple[int, int]) -> Optional[int]:
+        if not self.rect.collidepoint(pos):
+            return None
+        rel_y = pos[1] - (self.rect.y + self.padding)
+        if rel_y < 0:
+            return None
+        idx_in_view = int(rel_y // max(1, self._line_height))
+        idx = self.scroll_offset + idx_in_view
+        if 0 <= idx < len(self.items):
+            return idx
+        return None
+
+    def handle_event(self, event, ctx: WidgetContext) -> bool:
+        if not (self.visible and self.enabled):
+            return False
+
+        if event.type == pygame.MOUSEWHEEL:
+            if self.rect.collidepoint(pygame.mouse.get_pos()):
+                if event.y != 0:
+                    self.scroll_offset = max(0, min(self.scroll_offset - event.y, max(0, len(self.items) - 1)))
+                    return True
+
+        if event.type == pygame.MOUSEMOTION and hasattr(event, "pos"):
+            idx = self._pick_index_at(event.pos)
+            self._hover_index = idx
+
+        if event.type == pygame.MOUSEBUTTONDOWN and getattr(event, "button", None) == 1:
+            pos = getattr(event, "pos", None)
+            if pos is None:
+                return False
+            idx = self._pick_index_at(pos)
+            if idx is None:
+                return False
+            if 0 <= idx < len(self.items):
+                entry = self.items[idx]
+                try:
+                    mods = pygame.key.get_mods()
+                except Exception:
+                    mods = 0
+                if self.on_select:
+                    try:
+                        self.on_select(entry.node_id, mods)
+                    except Exception:
+                        pass
+                return True
+
+        return super().handle_event(event, ctx)
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        surface = ctx.surface
+
+        panel = pygame.Surface(self.rect.size, pygame.SRCALPHA)
+        panel.fill((12, 14, 22, 170))
+        surface.blit(panel, self.rect.topleft)
+        pygame.draw.rect(surface, (60, 65, 85), self.rect, 1)
+
+        font = getattr(ctx.renderer, "small_font", None) or getattr(ctx.renderer, "font", None)
+        if font is None:
+            return
+
+        # Title
+        title = font.render("Chakra List", True, (170, 180, 205))
+        surface.blit(title, (self.rect.x + self.padding, self.rect.y + 4))
+
+        # Layout items
+        self._line_height = font.get_height() + self.line_spacing
+        cap = self._visible_capacity()
+        start = self.scroll_offset
+        end = min(len(self.items), start + cap)
+
+        state = self.get_state() if self.get_state else None
+
+        y = self.rect.y + self.padding + title.get_height() + 6
+        for idx in range(start, end):
+            entry = self.items[idx]
+            node_id = entry.node_id
+            depth = entry.depth
+
+            # Row highlight
+            if node_id in self._selected_nodes:
+                row_rect = pygame.Rect(self.rect.x + 2, y - 2, self.rect.width - 4, self._line_height)
+                pygame.draw.rect(surface, (40, 50, 80), row_rect)
+            elif self._hover_index == idx:
+                row_rect = pygame.Rect(self.rect.x + 2, y - 2, self.rect.width - 4, self._line_height)
+                pygame.draw.rect(surface, (26, 32, 48), row_rect)
+
+            # State color
+            if state and node_id in state.active:
+                dot_col = COLOR_ACTIVE
+            elif state and node_id in state.unlocked:
+                dot_col = COLOR_UNLOCKED
+            else:
+                dot_col = COLOR_LOCKED
+
+            dot_x = self.rect.x + self.padding + depth * 14
+            dot_y = y + self._line_height // 2 - 1
+            pygame.draw.circle(surface, dot_col, (dot_x, dot_y), 4)
+
+            label = entry.label
+            label_surf = font.render(label, True, (210, 220, 235))
+            surface.blit(label_surf, (dot_x + 10, y))
+
+            y += self._line_height
+
+        super().draw(ctx)
 
 # =============================================================================
 # INFO PANEL WIDGET
@@ -1398,6 +1693,14 @@ class ChakraSelectionScene(PanelScene):
         self._original_alignments: Optional[Dict[str, Tuple[float, float]]] = None
         self._working_state: Optional[ChakraState] = None
 
+        # Selection + undo
+        self._selected_nodes: Set[str] = set()
+        self._undo_stack: List[ChakraState] = []
+
+        # Optional list view state
+        self._list_view_enabled: bool = False
+        self._focus_view_enabled: bool = False
+
         # Create widgets
         self._silhouette = ChakraSilhouetteWidget(
             actor=self._actor,
@@ -1406,21 +1709,44 @@ class ChakraSelectionScene(PanelScene):
             on_chakra_drag_start=self._on_chakra_drag_start,
             on_chakra_drag=self._on_chakra_drag,
             on_chakra_drag_end=self._on_chakra_drag_end,
+            on_drag_select=self._on_drag_select,
         )
 
         self._preview = PatternPreviewWidget(actor=self._actor)
+        self._list_widget = ChakraListWidget(
+            items=[],
+            get_state=self._get_ui_state,
+            on_select=self._on_list_select,
+        )
         self._info = ChakraInfoWidget()
 
         # Commit/cancel buttons for realign mode
         self._btn_commit = ButtonWidget("Commit", on_click=self._on_commit_click)
         self._btn_cancel = ButtonWidget("Cancel", on_click=self._on_cancel_click)
 
+        # Selection action buttons (activate mode)
+        self._btn_activate = ButtonWidget("Activate", on_click=lambda _b: self._apply_selection_action("activate"))
+        self._btn_deactivate = ButtonWidget("Deactivate", on_click=lambda _b: self._apply_selection_action("deactivate"))
+        self._btn_toggle = ButtonWidget("Toggle", on_click=lambda _b: self._apply_selection_action("toggle"))
+        self._btn_clear = ButtonWidget("Clear", on_click=lambda _b: self._apply_selection_action("clear"))
+        self._btn_root = ButtonWidget("Set Root", on_click=lambda _b: self._set_pattern_root())
+        self._btn_undo = ButtonWidget("Undo", on_click=lambda _b: self._undo_last())
+        self._btn_list = ButtonWidget("List", on_click=lambda _b: self._toggle_list_view())
+
         # Build widget tree
         self.root.add_child(self._silhouette)
         self.root.add_child(self._preview)
+        self.root.add_child(self._list_widget)
         self.root.add_child(self._info)
         self.root.add_child(self._btn_commit)
         self.root.add_child(self._btn_cancel)
+        self.root.add_child(self._btn_activate)
+        self.root.add_child(self._btn_deactivate)
+        self.root.add_child(self._btn_toggle)
+        self.root.add_child(self._btn_clear)
+        self.root.add_child(self._btn_root)
+        self.root.add_child(self._btn_undo)
+        self.root.add_child(self._btn_list)
 
         # Input handling
         self._menu_input = MenuInput()
@@ -1441,12 +1767,12 @@ class ChakraSelectionScene(PanelScene):
 
         # Prefer "body" (the core/torso) as starting point
         if "body" in chakra_state.unlocked:
-            self._silhouette.select_chakra("body")
-            self._update_info_for_chakra("body")
+            self._set_selection({"body"}, "body")
         elif chakra_state.unlocked:
             first = next(iter(chakra_state.unlocked))
-            self._silhouette.select_chakra(first)
-            self._update_info_for_chakra(first)
+            self._set_selection({first}, first)
+
+        self._refresh_list_items()
 
     def _update_info_for_chakra(self, node_id: Optional[str]) -> None:
         """Update the info panel for a chakra."""
@@ -1469,6 +1795,189 @@ class ChakraSelectionScene(PanelScene):
         body_schema = _get_body_schema(self._actor)
         resonances = check_resonance_bonuses(body_schema, chakra_state)
         self._info.set_resonances(resonances)
+
+    def _set_selection(self, nodes: Set[str], primary: Optional[str]) -> None:
+        """Apply selection state and keep UI widgets in sync."""
+        if primary is None and nodes:
+            primary = next(iter(nodes))
+        if primary and primary not in nodes:
+            nodes = set(nodes)
+            nodes.add(primary)
+
+        self._selected_nodes = set(nodes)
+        self._silhouette.set_selected_nodes(self._selected_nodes)
+        self._list_widget.set_selected_nodes(self._selected_nodes)
+
+        self._silhouette.select_chakra(primary)
+        self._update_info_for_chakra(primary)
+
+        # Focus view disabled: keep all chakras visible.
+
+    def _refresh_list_items(self) -> None:
+        """Rebuild list view entries from the current body schema."""
+        if not self._actor:
+            self._list_widget.set_items([])
+            return
+        chakra_state = self._get_actor_state()
+        body_schema = _get_body_schema(self._actor)
+
+        entries: List[ChakraListEntry] = []
+        for full_id, _display, depth in collect_all_chakra_nodes(body_schema, chakra_state.unlocked):
+            label = _format_chakra_label(full_id)
+            entries.append(ChakraListEntry(full_id, label, depth))
+
+        self._list_widget.set_items(entries)
+
+    def _snapshot_state(self, state: ChakraState) -> ChakraState:
+        """Deep copy a ChakraState for undo snapshots."""
+        try:
+            return ChakraState.from_dict(state.to_dict())
+        except Exception:
+            return ChakraState(
+                unlocked=set(state.unlocked),
+                active=set(state.active),
+                alignments=dict(state.alignments),
+                generators=dict(state.generators),
+                charges=dict(state.charges),
+                pattern_root=getattr(state, "pattern_root", None),
+            )
+
+    def _push_undo(self) -> None:
+        """Push current actor state onto the undo stack (if distinct)."""
+        if self._actor is None:
+            return
+        state = self._get_actor_state()
+        snap = self._snapshot_state(state)
+        if self._undo_stack:
+            try:
+                if self._undo_stack[-1].to_dict() == snap.to_dict():
+                    return
+            except Exception:
+                pass
+        self._undo_stack.append(snap)
+        # Keep the stack bounded.
+        if len(self._undo_stack) > 40:
+            self._undo_stack.pop(0)
+
+    def _undo_last(self) -> None:
+        """Undo the most recent activation/alignment change."""
+        if self._actor is None or not self._undo_stack:
+            return
+        snap = self._undo_stack.pop()
+        state = self._get_actor_state()
+        state.unlocked = set(snap.unlocked)
+        state.active = set(snap.active)
+        state.alignments = dict(snap.alignments)
+        state.generators = dict(snap.generators)
+        state.charges = dict(snap.charges)
+        if hasattr(state, "pattern_root"):
+            state.pattern_root = getattr(snap, "pattern_root", None)
+
+        self._silhouette.refresh_points()
+        self._preview.mark_dirty()
+        primary = self._silhouette.get_selected_chakra()
+        self._update_info_for_chakra(primary)
+        self._refresh_list_items()
+
+    def _apply_selection_action(self, action: str) -> None:
+        """Apply an action (activate/deactivate/toggle/clear) to selection."""
+        if self._mode == "realign":
+            return
+
+        if action == "clear":
+            self._set_selection(set(), None)
+            return
+
+        state = self._get_actor_state()
+        targets = set(self._selected_nodes)
+        if not targets:
+            primary = self._silhouette.get_selected_chakra()
+            if primary:
+                targets = {primary}
+
+        if not targets:
+            return
+
+        # Determine if anything will change before pushing undo.
+        changed = False
+        for node_id in targets:
+            if node_id not in state.unlocked:
+                continue
+            if action == "activate" and node_id not in state.active:
+                changed = True
+                break
+            if action == "deactivate" and node_id in state.active:
+                changed = True
+                break
+            if action == "toggle":
+                changed = True
+                break
+
+        if not changed:
+            return
+
+        self._push_undo()
+
+        for node_id in targets:
+            if node_id not in state.unlocked:
+                continue
+            was_active = node_id in state.active
+            if action == "activate":
+                toggle_chakra_active(state, node_id, active=True)
+                now_active = True
+            elif action == "deactivate":
+                toggle_chakra_active(state, node_id, active=False)
+                now_active = False
+            else:
+                now_active = toggle_chakra_active(state, node_id, active=None)
+
+            # Visual burst at the chakra location
+            point = self._silhouette.get_chakra_point(node_id)
+            if point:
+                self._silhouette.spawn_activation_burst(
+                    point.pos_px[0],
+                    point.pos_px[1],
+                    activating=(now_active and not was_active),
+                )
+
+        self._silhouette.refresh_points()
+        self._preview.mark_dirty()
+        primary = self._silhouette.get_selected_chakra()
+        self._update_info_for_chakra(primary)
+        self._refresh_list_items()
+
+    def _set_pattern_root(self) -> None:
+        """Set the chakra pattern root to the primary selected active chakra."""
+        if self._mode == "realign":
+            return
+        if self._actor is None:
+            return
+        state = self._get_actor_state()
+        primary = self._silhouette.get_selected_chakra()
+        if not primary:
+            return
+        if primary not in state.active:
+            if self.game:
+                self.game.log.add("Root must be an active chakra.")
+            return
+        if getattr(state, "pattern_root", None) == primary:
+            return
+
+        self._push_undo()
+        state.pattern_root = primary
+        self._preview.mark_dirty()
+        self._refresh_list_items()
+        self._update_info_for_chakra(primary)
+
+    def _toggle_list_view(self) -> None:
+        """Toggle the list view panel."""
+        self._list_view_enabled = not self._list_view_enabled
+        if self._list_view_enabled:
+            self._refresh_list_items()
+
+    def _maybe_auto_focus(self) -> None:
+        """No-op: focus view has been removed."""
+        return
 
     def _build_chakra_tooltip(
         self,
@@ -1495,6 +2004,8 @@ class ChakraSelectionScene(PanelScene):
             state_label = "Locked"
             state_color = COLOR_LOCKED
         lines.append((f"State: {state_label}", state_color))
+        if getattr(chakra_state, "pattern_root", None) == node_id:
+            lines.append(("Pattern Root: yes", TOOLTIP_ACCENT))
 
         # Resolve node path and gating chain
         path = _resolve_chakra_path(body_schema, node_id)
@@ -1643,6 +2154,8 @@ class ChakraSelectionScene(PanelScene):
             active=set(state.active),
             alignments=dict(alignments),
             generators=dict(state.generators),
+            charges=dict(state.charges),
+            pattern_root=getattr(state, "pattern_root", None),
         )
 
     def _get_dexterity(self) -> int:
@@ -1692,6 +2205,8 @@ class ChakraSelectionScene(PanelScene):
         if commit and self._actor is not None and self._pending_alignments is not None:
             state = self._get_actor_state()
             changed = (self._pending_alignments != (self._original_alignments or {}))
+            if changed:
+                self._push_undo()
             state.alignments = dict(self._pending_alignments)
             if changed:
                 self._apply_realign_time_cost()
@@ -1735,28 +2250,80 @@ class ChakraSelectionScene(PanelScene):
         self._exit_realign_mode(commit=False)
 
     def _on_chakra_click(self, node_id: str) -> None:
-        """Handle chakra click (toggle activation)."""
-        self._silhouette.select_chakra(node_id)
-        self._update_info_for_chakra(node_id)
-
+        """Handle chakra click (selection only)."""
         # In realign mode, clicks are handled by drag logic instead of toggling.
         if self._mode == "realign":
+            self._silhouette.select_chakra(node_id)
+            self._update_info_for_chakra(node_id)
             return
 
-        self._toggle_chakra(node_id)
+        try:
+            mods = pygame.key.get_mods()
+        except Exception:
+            mods = 0
+
+        add = bool(mods & pygame.KMOD_SHIFT)
+        remove = bool(mods & pygame.KMOD_ALT)
+
+        if add:
+            nodes = set(self._selected_nodes)
+            nodes.add(node_id)
+            self._set_selection(nodes, node_id)
+        elif remove:
+            nodes = set(self._selected_nodes)
+            nodes.discard(node_id)
+            primary = node_id if node_id in nodes else (next(iter(nodes), None))
+            self._set_selection(nodes, primary)
+        else:
+            self._set_selection({node_id}, node_id)
 
     def _on_chakra_hover(self, node_id: Optional[str]) -> None:
         """Handle chakra hover."""
         if node_id:
             self._update_info_for_chakra(node_id)
 
+    def _on_drag_select(self, nodes: Set[str], mods: int) -> None:
+        """Handle drag-selection across multiple chakras."""
+        add = bool(mods & pygame.KMOD_SHIFT)
+        remove = bool(mods & pygame.KMOD_ALT)
+
+        if add:
+            merged = set(self._selected_nodes)
+            merged.update(nodes)
+            primary = next(iter(nodes), None) or (next(iter(merged), None))
+            self._set_selection(merged, primary)
+        elif remove:
+            merged = set(self._selected_nodes)
+            merged.difference_update(nodes)
+            primary = next(iter(merged), None)
+            self._set_selection(merged, primary)
+        else:
+            primary = next(iter(nodes), None)
+            self._set_selection(set(nodes), primary)
+
+    def _on_list_select(self, node_id: str, mods: int) -> None:
+        """Handle list selection clicks (same logic as silhouette)."""
+        add = bool(mods & pygame.KMOD_SHIFT)
+        remove = bool(mods & pygame.KMOD_ALT)
+
+        if add:
+            nodes = set(self._selected_nodes)
+            nodes.add(node_id)
+            self._set_selection(nodes, node_id)
+        elif remove:
+            nodes = set(self._selected_nodes)
+            nodes.discard(node_id)
+            primary = next(iter(nodes), None)
+            self._set_selection(nodes, primary)
+        else:
+            self._set_selection({node_id}, node_id)
+
     def _on_chakra_drag_start(self, node_id: str, pos_px: Tuple[int, int]) -> bool:
         """Begin dragging a chakra for alignment."""
         if self._mode != "realign":
             return False
 
-        self._silhouette.select_chakra(node_id)
-        self._update_info_for_chakra(node_id)
+        self._set_selection({node_id}, node_id)
 
         # Only unlocked chakras can be realigned.
         state = self._get_actor_state()
@@ -1835,6 +2402,9 @@ class ChakraSelectionScene(PanelScene):
         if node_id not in chakra_state.unlocked:
             return
 
+        # Push undo snapshot before changing state
+        self._push_undo()
+
         # Check if activating or deactivating
         was_active = node_id in chakra_state.active
 
@@ -1907,15 +2477,32 @@ class ChakraSelectionScene(PanelScene):
                 self._toggle_realign_mode()
                 return
 
+            # Toggle list view
+            if event.key == pygame.K_l:
+                self._toggle_list_view()
+                return
+
+            # Undo (Ctrl+Z)
+            if event.key == pygame.K_z:
+                try:
+                    if pygame.key.get_mods() & pygame.KMOD_CTRL:
+                        self._undo_last()
+                        return
+                except Exception:
+                    pass
+
             # Zoom controls
             if event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                 self._silhouette.adjust_zoom(1)
+                self._maybe_auto_focus()
                 return
             if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 self._silhouette.adjust_zoom(-1)
+                self._maybe_auto_focus()
                 return
             if event.key in (pygame.K_0, pygame.K_KP_0):
                 self._silhouette.reset_zoom()
+                self._maybe_auto_focus()
                 return
 
             # In realign mode, ignore Space to avoid accidental commit.
@@ -1946,8 +2533,10 @@ class ChakraSelectionScene(PanelScene):
 
             if event.y > 0:
                 self._silhouette.adjust_zoom(1, anchor_px=anchor)
+                self._maybe_auto_focus()
             elif event.y < 0:
                 self._silhouette.adjust_zoom(-1, anchor_px=anchor)
+                self._maybe_auto_focus()
 
     def _handle_action(self, action: str, manager: "SceneManager") -> None:
         """Handle a menu action."""
@@ -1969,9 +2558,7 @@ class ChakraSelectionScene(PanelScene):
                 self._exit_realign_mode(commit=True)
                 return
 
-            selected = self._silhouette.get_selected_chakra()
-            if selected:
-                self._toggle_chakra(selected)
+            self._apply_selection_action("toggle")
             return
 
         # Navigation
@@ -1986,8 +2573,10 @@ class ChakraSelectionScene(PanelScene):
             direction = direction_map[action]
             next_id = self._silhouette.get_adjacent_chakra(direction)
             if next_id:
-                self._silhouette.select_chakra(next_id)
-                self._update_info_for_chakra(next_id)
+                # Move primary selection; keep multi-selection intact.
+                nodes = set(self._selected_nodes) if self._selected_nodes else {next_id}
+                nodes.add(next_id)
+                self._set_selection(nodes, next_id)
 
     def _close(self, manager: "SceneManager") -> None:
         """Close the scene."""
@@ -2023,8 +2612,16 @@ class ChakraSelectionScene(PanelScene):
         # Silhouette takes left portion
         self._silhouette.rect = pygame.Rect(0, 0, body_w, h - info_h)
 
-        # Preview takes right portion
-        self._preview.rect = pygame.Rect(body_w, 0, preview_w, h - info_h)
+        # Right side: list + preview (optional list view)
+        if self._list_view_enabled:
+            list_h = int((h - info_h) * 0.52)
+            list_h = max(120, min(list_h, h - info_h - 120))
+            self._list_widget.visible = True
+            self._list_widget.rect = pygame.Rect(body_w, 0, preview_w, list_h)
+            self._preview.rect = pygame.Rect(body_w, list_h, preview_w, h - info_h - list_h)
+        else:
+            self._list_widget.visible = False
+            self._preview.rect = pygame.Rect(body_w, 0, preview_w, h - info_h)
 
         # Info panel at bottom
         self._info.rect = pygame.Rect(0, h - info_h, w, info_h)
@@ -2032,6 +2629,16 @@ class ChakraSelectionScene(PanelScene):
         # Commit/cancel buttons (only visible in realign mode)
         self._btn_commit.visible = (self._mode == "realign")
         self._btn_cancel.visible = (self._mode == "realign")
+
+        # Selection action buttons (only visible in activate mode)
+        activate_mode = (self._mode == "activate")
+        self._btn_activate.visible = activate_mode
+        self._btn_deactivate.visible = activate_mode
+        self._btn_toggle.visible = activate_mode
+        self._btn_clear.visible = activate_mode
+        self._btn_root.visible = activate_mode
+        self._btn_undo.visible = True  # Keep undo available in both modes
+        self._btn_list.visible = True
 
         # Layout buttons along the bottom-right
         btn_y = h - info_h + 8
@@ -2064,10 +2671,18 @@ class ChakraSelectionScene(PanelScene):
         )
 
         self._silhouette.layout(ctx)
+        self._list_widget.layout(ctx)
         self._preview.layout(ctx)
         self._info.layout(ctx)
         self._btn_commit.layout(ctx)
         self._btn_cancel.layout(ctx)
+        self._btn_activate.layout(ctx)
+        self._btn_deactivate.layout(ctx)
+        self._btn_toggle.layout(ctx)
+        self._btn_clear.layout(ctx)
+        self._btn_root.layout(ctx)
+        self._btn_undo.layout(ctx)
+        self._btn_list.layout(ctx)
 
         # Now place buttons with correct sizes
         if self._btn_cancel.visible:
@@ -2077,11 +2692,40 @@ class ChakraSelectionScene(PanelScene):
             self._btn_commit.rect.x = self._btn_cancel.rect.x - self._btn_commit.rect.width - btn_pad
             self._btn_commit.rect.y = btn_y
 
+        # Activate-mode buttons aligned to the bottom-right, just left of commit/cancel.
+        if activate_mode:
+            right_x = w - 12
+            for btn in (self._btn_list, self._btn_undo, self._btn_clear, self._btn_toggle, self._btn_root, self._btn_deactivate, self._btn_activate):
+                if not btn.visible:
+                    continue
+                right_x -= btn.rect.width
+                btn.rect.x = right_x
+                btn.rect.y = btn_y
+                right_x -= btn_pad
+        else:
+            # Still place undo/list even in realign mode.
+            right_x = min(self._btn_commit.rect.x, self._btn_cancel.rect.x) - btn_pad
+            for btn in (self._btn_list, self._btn_undo):
+                if not btn.visible:
+                    continue
+                right_x -= btn.rect.width
+                btn.rect.x = right_x
+                btn.rect.y = btn_y
+                right_x -= btn_pad
+
         self._silhouette.draw(ctx)
+        self._list_widget.draw(ctx)
         self._preview.draw(ctx)
         self._info.draw(ctx)
         self._btn_commit.draw(ctx)
         self._btn_cancel.draw(ctx)
+        self._btn_activate.draw(ctx)
+        self._btn_deactivate.draw(ctx)
+        self._btn_toggle.draw(ctx)
+        self._btn_clear.draw(ctx)
+        self._btn_root.draw(ctx)
+        self._btn_undo.draw(ctx)
+        self._btn_list.draw(ctx)
 
         # Hover tooltip (drawn on top of the layout for quick context).
         self._draw_chakra_tooltip(panel, renderer)
@@ -2090,9 +2734,9 @@ class ChakraSelectionScene(PanelScene):
         small_font = getattr(renderer, "small_font", None) or font
         if small_font:
             if self._mode == "realign":
-                hint = "Drag: Realign  |  Enter: Commit  |  Esc: Cancel  |  R: Toggle  |  +/- or Wheel: Zoom"
+                hint = "Drag: Realign  |  Enter: Commit  |  Esc: Cancel  |  R: Toggle  |  L: List  |  +/- or Wheel: Zoom"
             else:
-                hint = "Arrows: Navigate  |  Space: Toggle  |  R: Realign  |  +/- or Wheel: Zoom  |  Esc: Close"
+                hint = "Drag: Box Select  |  Shift/Alt: Add/Remove  |  Space: Toggle  |  Ctrl+Z: Undo  |  Set Root button  |  L: List  |  +/- or Wheel: Zoom  |  Esc: Close"
             hint_surf = small_font.render(hint, True, (100, 110, 130))
             hx = (w - hint_surf.get_width()) // 2
             panel.blit(hint_surf, (hx, h - 20))

@@ -260,6 +260,17 @@ UI:
 - Features: body silhouette with glowing chakra points, real-time pattern preview,
   3-layer glow rendering, pulse animations, energy flow lines, particle bursts
 
+Chakra pipeline responsibilities (key scripts):
+- edgecaster/systems/chakras.py: core chakra data model (unlock/activate), body schema traversal,
+  world-position projection, and seed pattern generation + metadata.
+- edgecaster/scenes/chakra_scene.py: player-facing UI for selecting/activating chakras, choosing
+  the pattern root, and previewing the generated shape (does not apply gameplay effects).
+- edgecaster/game.py (act_chakra): applies the chakra generator to the live rune, aligning the
+  chosen root and computed terminus to the current segment endpoints.
+- edgecaster/patterns/builder.py (CustomGraphGenerator): maps a vertex/edge graph onto a line
+  segment baseline (first/last vertices), so root/terminus ordering matters.
+- edgecaster/systems/actions.py: registers the "chakra" action and its targeting rules.
+
 Action integration:
 - "chakra" action in systems/actions.py: applies chakra pattern as a fractal generator
 - Works like Koch/Branch/Custom: transforms existing pattern edges using chakra shape

@@ -4607,7 +4607,10 @@ class Game:
         # Get body schema
         try:
             from edgecaster.prototypes import resolve_body_schema
-            from edgecaster.systems.chakras import chakras_to_seed_pattern, get_chakra_world_positions
+            from edgecaster.systems.chakras import (
+                chakras_to_seed_pattern,
+                get_all_chakra_positions_recursive,
+            )
             body_schema = resolve_body_schema(actor)
         except Exception:
             self.log.add("Could not resolve body schema.")
@@ -4636,6 +4639,20 @@ class Game:
         if chakra_pattern.edges:
             edges = [(e.a, e.b) for e in chakra_pattern.edges]
 
+        # If the seed pattern carries a node-id ordering, keep it in sync
+        # as we prune/reindex vertices. This lets us resolve the chosen root
+        # by exact node id instead of guessing by position.
+        node_order = None
+        try:
+            import json
+            raw = chakra_pattern.meta.get("chakra_nodes") if getattr(chakra_pattern, "meta", None) else None
+            if raw:
+                node_order = json.loads(raw)
+                if not isinstance(node_order, list) or len(node_order) != len(verts):
+                    node_order = None
+        except Exception:
+            node_order = None
+
         # Drop orphan vertices (not referenced by any edge). These can
         # otherwise show up as stray points when applying the generator.
         if edges:
@@ -4649,6 +4666,8 @@ class Game:
                 old_to_new = {old: new for new, old in enumerate(used_list)}
                 verts = [verts[i] for i in used_list]
                 edges = [(old_to_new[a], old_to_new[b]) for a, b in edges if a in old_to_new and b in old_to_new]
+                if node_order is not None:
+                    node_order = [node_order[i] for i in used_list]
 
         if len(verts) < 2 or not edges:
             self.log.add("Need at least 2 connected chakras to form a generator.")
@@ -4676,6 +4695,8 @@ class Game:
                 old_to_new = {old: new for new, old in enumerate(used_list)}
                 verts = [verts[i] for i in used_list]
                 edges = [(old_to_new[a], old_to_new[b]) for a, b in edges if a in old_to_new and b in old_to_new]
+                if node_order is not None:
+                    node_order = [node_order[i] for i in used_list]
         if len(verts) < 2 or not edges:
             self.log.add("Need at least 2 connected chakras to form a generator.")
             return
@@ -4685,19 +4706,32 @@ class Game:
         # baseline for scaling - if these aren't the pattern endpoints,
         # the pattern will explode in size after iterations.
         #
-        # Root is typically the "body" node; fall back to closest-to-origin.
+        # Root can be user-chosen (chakra_state.pattern_root). If not set,
+        # fall back to the schema root, then to closest-to-origin.
         root_hint = None
+        root_id = getattr(chakra_state, "pattern_root", None)
+        positions = None
         try:
-            root_id = body_schema.get("root")
-            if root_id:
-                positions = get_chakra_world_positions(body_schema, chakra_state, base_scale=1.0)
+            # Use the full recursive position map so spatial distances are
+            # consistent even if some ancestors are inactive.
+            positions_all = get_all_chakra_positions_recursive(
+                body_schema,
+                chakra_state,
+                base_scale=1.0,
+            )
+            positions = {nid: pos_u for nid, (pos_u, _state, _scale, _base) in positions_all.items()}
+            if root_id not in (positions or {}):
+                root_id = body_schema.get("root")
+            if root_id and positions:
                 root_hint = positions.get(root_id)
         except Exception:
             root_hint = None
 
         def dist_sq(p: tuple) -> float:
             return p[0] ** 2 + p[1] ** 2
-        if root_hint is not None:
+        if node_order is not None and root_id in node_order:
+            root_idx = node_order.index(root_id)
+        elif root_hint is not None:
             rx, ry = root_hint
             def dist_to_hint(idx: int) -> float:
                 dx = verts[idx][0] - rx
@@ -4707,15 +4741,38 @@ class Game:
         else:
             root_idx = min(range(len(verts)), key=lambda i: dist_sq(verts[i]))
 
-        # Find furthest vertex from root
+        # Find terminus as the farthest node in the chakra graph (path length),
+        # starting from the chosen root. Use node-id adjacency so we don't
+        # accidentally lose branches after edge pruning.
         root_pos = verts[root_idx]
 
-        def dist_from_root(p: tuple) -> float:
-            dx = p[0] - root_pos[0]
-            dy = p[1] - root_pos[1]
+        def dist_sq_from_root(idx: int) -> float:
+            dx = verts[idx][0] - root_pos[0]
+            dy = verts[idx][1] - root_pos[1]
             return dx * dx + dy * dy
 
-        furthest_idx = max(range(len(verts)), key=lambda i: dist_from_root(verts[i]))
+        furthest_idx = None
+        if node_order is not None and root_id and positions:
+            # Prefer the spatially furthest ACTIVE chakra from the root.
+            try:
+                root_pos = positions.get(root_id)
+                if root_pos is not None:
+                    rx, ry = root_pos
+                    candidates = [nid for nid in node_order if nid in chakra_state.active]
+                    if candidates:
+                        def dist2(nid: str) -> float:
+                            px, py = positions.get(nid, (rx, ry))
+                            dx = px - rx
+                            dy = py - ry
+                            return dx * dx + dy * dy
+                        furthest_id = max(candidates, key=dist2)
+                        if furthest_id in node_order:
+                            furthest_idx = node_order.index(furthest_id)
+            except Exception:
+                furthest_idx = None
+
+        if furthest_idx is None:
+            furthest_idx = max(range(len(verts)), key=lambda i: dist_sq_from_root(i))
 
         # Normalize the chakra shape so the baseline lies on +X axis.
         # This prevents unintended rotation and keeps the terminus aligned
@@ -4738,13 +4795,17 @@ class Game:
                 # Rotate so baseline aligns to +X
                 nx = dx * cos_a - dy * sin_a
                 ny = dx * sin_a + dy * cos_a
+                # Normalize by the baseline length so short roots don't
+                # blow up the generator scale when mapped onto segments.
+                nx /= base_len
+                ny /= base_len
                 norm_verts.append((nx, ny))
             verts = norm_verts
-
-            # Update root/terminus indices after normalization
-            root_idx = 0
-            # Terminus is now the furthest point along +X
-            furthest_idx = max(range(len(verts)), key=lambda i: verts[i][0])
+            # Pin the chosen root/terminus exactly to the baseline endpoints.
+            if 0 <= root_idx < len(verts):
+                verts[root_idx] = (0.0, 0.0)
+            if 0 <= furthest_idx < len(verts):
+                verts[furthest_idx] = (1.0, 0.0)
 
         # Build mapping from old indices to new indices
         # New order: root first, furthest last, everything else in between
@@ -4770,6 +4831,12 @@ class Game:
 
         verts = new_verts
         edges = new_edges
+        if node_order is not None:
+            new_node_order: List[str] = ["" for _ in range(len(new_verts))]
+            for old_idx, new_idx in old_to_new.items():
+                if old_idx < len(node_order):
+                    new_node_order[new_idx] = node_order[old_idx]
+            node_order = new_node_order
 
         # Get amplitude from param system (like custom generator)
         amp = self._param_value("chakra", "amplitude")
