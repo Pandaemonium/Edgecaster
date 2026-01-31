@@ -884,8 +884,16 @@ def get_all_chakra_positions_recursive(
             except Exception:
                 pass
 
-        # Recurse to children within this schema
-        child_scale = scale * size
+        # Recurse to children within this schema.
+        #
+        # IMPORTANT: Do NOT compound scale by node size for *in-schema* children.
+        # The layout coordinates already describe relative spacing within the
+        # schema's own coordinate system. Compounding size here causes deep
+        # chains (arm → hand → finger) to collapse into near-zero distances,
+        # which makes the chakra generator degenerate into a single line.
+        #
+        # Size should only affect how *sub-schemas* embed inside a branch root.
+        child_scale = scale
         for child_id in _get_node_children(node):
             walk(child_id, (x, y), child_scale)
 
@@ -914,37 +922,161 @@ def get_connected_active_nodes(
     If root_id is provided, only active nodes that can trace ancestry to
     root_id are included. This keeps the chakra graph connected to the
     chosen pattern root and excludes unrelated branches.
+
+    NOTE:
+    The chakra graph is a tree (with sub-schema edges), but the pattern
+    root can be *any* active node. When the root is not an ancestor of
+    another active node (e.g., root=elbow, active=calf), we still want
+    that node if it is reachable through the graph. That means we must
+    treat edges as **undirected** and include the full path from the
+    root to each active node (including intermediate connectors).
     """
     if not active:
         return set()
 
+    # Build undirected adjacency so we can reach nodes across branches.
+    adj: Dict[str, List[str]] = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+
+    # If a root is provided, include the path from root to each active node.
+    if root_id is not None:
+        if root_id not in adj:
+            return set()
+
+        # BFS to build a parent tree from the chosen root.
+        parent: Dict[str, Optional[str]] = {root_id: None}
+        stack = [root_id]
+        while stack:
+            cur = stack.pop()
+            for nb in adj.get(cur, []):
+                if nb not in parent:
+                    parent[nb] = cur
+                    stack.append(nb)
+
+        expanded: Set[str] = set()
+        for node in list(active):
+            if node not in parent:
+                continue
+            cur = node
+            while cur is not None:
+                expanded.add(cur)
+                if cur == root_id:
+                    break
+                cur = parent.get(cur)
+        # Always include the root itself.
+        expanded.add(root_id)
+        return expanded
+
+    # No root: keep legacy behavior (active + ancestors to schema root).
     parent_map: Dict[str, str] = {}
     for parent, child in edges:
-        # First parent wins; graph is a tree in practice.
         if child not in parent_map:
             parent_map[child] = parent
 
     expanded: Set[str] = set()
     for node in list(active):
-        # Walk up until we hit the root (if provided) or the top.
         cur = node
         chain: List[str] = [cur]
         while cur in parent_map:
             cur = parent_map[cur]
             chain.append(cur)
-            if root_id is not None and cur == root_id:
-                break
-
-        if root_id is not None:
-            # Only include nodes whose ancestry reaches the chosen root.
-            if root_id not in chain:
-                continue
         expanded.update(chain)
 
-    # Ensure the root itself is always included if valid.
-    if root_id is not None and root_id in active:
-        expanded.add(root_id)
     return expanded
+
+
+def get_compact_active_graph(
+    edges: List[Tuple[str, str]],
+    active: Set[str],
+    root_id: Optional[str] = None,
+) -> Tuple[Set[str], List[Tuple[str, str]]]:
+    """Return (active_nodes, compact_edges) for the chakra graph.
+
+    This keeps only ACTIVE chakras as vertices while still preserving
+    connectivity by *compressing* paths through inactive nodes.
+
+    Example:
+      arm -- upper_arm -- elbow -- forearm -- hand -- thumb
+
+    If only {arm, hand, thumb} are active, the compact graph becomes:
+      arm -- hand -- thumb
+
+    This prevents inactive "connector" chakras from creating extra
+    vertices in the pattern while still keeping branches connected.
+
+    If root_id is provided, we only keep active nodes reachable from
+    that root (using the full graph, including inactive nodes).
+    """
+    if not active:
+        return set(), []
+
+    # Build undirected adjacency for traversal.
+    adj: Dict[str, List[str]] = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+
+    # Filter active set to nodes reachable from root (if root is valid).
+    active_set = set(active)
+    if root_id and root_id in adj:
+        seen: Set[str] = {root_id}
+        queue = [root_id]
+        while queue:
+            cur = queue.pop()
+            for nxt in adj.get(cur, []):
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                queue.append(nxt)
+        active_set = {n for n in active_set if n in seen}
+
+    if not active_set:
+        return set(), []
+
+    # Choose a root for orientation. This prevents cycles and keeps
+    # branching behavior intuitive (each active node links to its
+    # nearest *active ancestor* toward the root).
+    if root_id and root_id in active_set:
+        root = root_id
+    else:
+        root = next(iter(active_set))
+
+    # Build parent map via BFS from the chosen root.
+    parent: Dict[str, str] = {}
+    queue = [root]
+    seen = {root}
+    while queue:
+        cur = queue.pop(0)
+        for nxt in adj.get(cur, []):
+            if nxt in seen:
+                continue
+            seen.add(nxt)
+            parent[nxt] = cur
+            queue.append(nxt)
+
+    # Recompute active_set to only include nodes reachable from root.
+    active_set = {n for n in active_set if n in seen}
+    if not active_set:
+        return set(), []
+
+    # Connect each active node to its nearest active ancestor.
+    compact_edges: Set[Tuple[str, str]] = set()
+    for node in active_set:
+        if node == root:
+            continue
+        cur = node
+        anc = parent.get(cur)
+        while anc is not None and anc not in active_set:
+            cur = anc
+            anc = parent.get(cur)
+        if anc is None:
+            continue
+        key = (node, anc) if node <= anc else (anc, node)
+        compact_edges.add(key)
+
+    return active_set, list(compact_edges)
 
 def chakras_to_seed_pattern(
     body_schema: Dict[str, Any],
@@ -977,12 +1109,17 @@ def chakras_to_seed_pattern(
         base_scale=base_scale,
     )
 
-    # Use connected active set so sub-schema nodes don't "float" disconnected.
+    # Build the full chakra graph and then compact it so only ACTIVE
+    # chakras become vertices (inactive connectors are compressed away).
     edges = get_chakra_connections_recursive(body_schema, chakra_state)
-    # Keep all active chakras (plus needed ancestors) regardless of which
-    # chakra is chosen as the pattern root. The root only affects ordering,
-    # not which vertices participate in the pattern.
-    active_nodes = get_connected_active_nodes(edges, chakra_state.active)
+    root_id = getattr(chakra_state, "pattern_root", None)
+    if root_id not in chakra_state.active:
+        root_id = None
+    active_nodes, compact_edges = get_compact_active_graph(
+        edges,
+        chakra_state.active,
+        root_id=root_id,
+    )
 
     positions = {
         node_id: pos_u
@@ -1009,7 +1146,7 @@ def chakras_to_seed_pattern(
     # Add edges following body tree structure (including sub-schemas).
     # An edge exists between parent and child if BOTH endpoints are in the
     # connected active set (so chains stay connected).
-    for parent_id, child_id in edges:
+    for parent_id, child_id in compact_edges:
         if parent_id in node_to_idx and child_id in node_to_idx:
             pattern.add_edge(
                 node_to_idx[parent_id],

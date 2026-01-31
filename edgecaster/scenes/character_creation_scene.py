@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple
 
 from edgecaster.character import Character, default_character
+from edgecaster.systems.chakras import ChakraState, collect_all_chakra_nodes
+from edgecaster.prototypes import resolve_body_schema
 
 from .base import (
     PanelScene,
@@ -31,6 +33,7 @@ CHAR_CLASSES: List[str] = [
     "Relativist",
     "Chromaticist",
     "Epiphenomenal",
+    "Monk",
 ]
 
 CLASS_DESCRIPTIONS = {
@@ -41,7 +44,13 @@ CLASS_DESCRIPTIONS = {
     "Relativist": "'Twould be folly to presume that everyone marches at the same pace.",
     "Chromaticist": "Disciple of the Eightfold Way, correct in the habit that water flows.",
     "Epiphenomenal": "What's in a name? Is there anything else besides?",
+    "Monk": "A living mandala. Your body is the rune, your chakras the pattern.",
 }
+
+# Species options (label -> template id)
+SPECIES_OPTIONS: List[Tuple[str, str]] = [
+    ("Human", "human_base"),
+]
 
 DEFAULT_NAME = "Pandaemonium"
 
@@ -101,6 +110,10 @@ class CharCreateState:
     char: Character
     class_idx: int = 0
 
+    # Species selection
+    species: List[Tuple[str, str]] = None  # type: ignore[assignment]
+    species_idx: int = 0
+
     # Kochbender-specific options
     generators: List[str] = None  # type: ignore[assignment]
     illuminators: List[str] = None  # type: ignore[assignment]
@@ -117,13 +130,27 @@ class CharCreateState:
     # embedded rune editor (only shown for Kochbender)
     rune: RuneEditorState = None  # type: ignore[assignment]
 
+    # Monk-specific chakra selection
+    monk_base: Optional[str] = None
+    monk_picks: List[str] = None  # type: ignore[assignment]
+    monk_state: Optional[ChakraState] = None
+    monk_scroll: int = 0
+
     def __post_init__(self) -> None:
         if self.generators is None:
             self.generators = ["custom", "koch", "branch", "zigzag"]
         if self.illuminators is None:
             self.illuminators = ["radius", "neighbors"]
+        if self.species is None:
+            self.species = list(SPECIES_OPTIONS)
         if self.rune is None:
             self.rune = RuneEditorState()
+        if self.monk_picks is None:
+            self.monk_picks = []
+        if self.monk_state is None:
+            self.monk_state = ChakraState(unlocked=set(), active=set())
+        if self.monk_base is None:
+            self.monk_base = "body"
 
         # Safeguards (preserve old behaviour)
         if not getattr(self.char, "name", None):
@@ -136,6 +163,12 @@ class CharCreateState:
             self.char.stats = {"con": 0, "agi": 0, "int": 0, "res": 0}
         if getattr(self.char, "point_pool", None) is None:
             self.char.point_pool = 10
+
+        if getattr(self.char, "species", None) is None:
+            try:
+                self.char.species = self.species_label.lower()
+            except Exception:
+                self.char.species = "human"
 
         # seed defaults
         if getattr(self.char, "seed", None) is None:
@@ -152,6 +185,17 @@ class CharCreateState:
 
     def is_kochbender(self) -> bool:
         return self.char_class == "Kochbender"
+
+    def is_monk(self) -> bool:
+        return self.char_class == "Monk"
+
+    @property
+    def species_label(self) -> str:
+        return self.species[self.species_idx % len(self.species)][0]
+
+    @property
+    def species_template(self) -> str:
+        return self.species[self.species_idx % len(self.species)][1]
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +233,9 @@ class CharacterCreationScene(PanelScene):
 
         self._hover_key: str | None = None
 
+        # monk list render metadata (used for scrolling)
+        self._monk_list_total: int = 0
+        self._monk_list_capacity: int = 0
 
 
     def _set_text_input(self, enabled: bool) -> None:
@@ -333,6 +380,16 @@ class CharacterCreationScene(PanelScene):
             if self._hits.get("rune_grid") and self._hits["rune_grid"].collidepoint(p):
                 return
 
+            # monk list scrolling
+            if st.is_monk():
+                lst = self._hits.get("monk_list")
+                if lst and lst.collidepoint(p):
+                    total = max(0, self._monk_list_total)
+                    cap = max(1, self._monk_list_capacity)
+                    max_scroll = max(0, total - cap)
+                    st.monk_scroll = max(0, min(max_scroll, st.monk_scroll - event.y))
+                    return
+
 
     def draw_panel(self, panel: pygame.Surface, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         if self.state is None:
@@ -374,6 +431,9 @@ class CharacterCreationScene(PanelScene):
         # Name field
         ty = self._draw_name(panel, (left_x, ty, left_w, 42), font, fg, sel, dim, st)
 
+        # Species field
+        ty = self._draw_species(panel, (left_x, ty, left_w, 42), font, fg, sel, dim, st)
+
         # Class section
         ty += 6
         ty = self._draw_class(panel, (left_x, ty, left_w, 140), font, small, fg, sel, dim, st)
@@ -414,6 +474,83 @@ class CharacterCreationScene(PanelScene):
 
         self.state = CharCreateState(char=ch, class_idx=0)
         self._name_touched = False
+        self._sync_monk_state()
+
+    # ------------------------------------------------------------------ #
+    # Monk chakra selection helpers
+    # ------------------------------------------------------------------ #
+
+    def _monk_body_schema(self) -> dict:
+        """Resolve the body schema for the currently selected species."""
+        assert self.state is not None
+        st = self.state
+        try:
+            return resolve_body_schema(st.species_template)
+        except Exception:
+            return resolve_body_schema("human_base")
+
+    def _monk_can_unlock(self, node_id: str, unlocked: set[str]) -> bool:
+        """Prefix-based gating: requires all parent prefixes to be unlocked."""
+        if node_id in unlocked:
+            return False
+        parts = node_id.split(".")
+        for i in range(1, len(parts)):
+            prefix = ".".join(parts[:i])
+            if prefix not in unlocked:
+                return False
+        return True
+
+    def _sync_monk_state(self) -> None:
+        """Rebuild monk chakra state from base + pick list."""
+        if self.state is None:
+            return
+        st = self.state
+        if not st.is_monk():
+            return
+
+        base = st.monk_base or "body"
+        # Build a fresh state so gating remains deterministic.
+        monk_state = ChakraState(unlocked=set(), active=set())
+        monk_state.unlocked = {base}
+        monk_state.active = {base}
+        monk_state.pattern_root = base
+
+        new_picks: List[str] = []
+        for node_id in st.monk_picks:
+            if self._monk_can_unlock(node_id, monk_state.unlocked):
+                monk_state.unlocked.add(node_id)
+                monk_state.active.add(node_id)
+                new_picks.append(node_id)
+
+        st.monk_picks = new_picks
+        st.monk_state = monk_state
+
+    def _monk_available_nodes(self) -> List[Tuple[str, str, int]]:
+        """Return available (unlockable) chakra nodes for Monk selection."""
+        if self.state is None:
+            return []
+        st = self.state
+        if not st.is_monk():
+            return []
+
+        body_schema = self._monk_body_schema()
+        state = st.monk_state or ChakraState(unlocked=set(), active=set())
+        unlocked = set(state.unlocked)
+
+        # All nodes that are currently visible per gating rules.
+        all_nodes = collect_all_chakra_nodes(body_schema, unlocked)
+
+        results: List[Tuple[str, str, int]] = []
+        for node_id, display, depth in all_nodes:
+            if node_id == st.monk_base:
+                continue
+            if node_id in st.monk_picks:
+                results.append((node_id, display, depth))
+                continue
+            if self._monk_can_unlock(node_id, unlocked):
+                results.append((node_id, display, depth))
+
+        return results
 
     def _commit_and_start(self, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         assert self.state is not None
@@ -441,10 +578,23 @@ class CharacterCreationScene(PanelScene):
         # apply class
         setattr(st.char, "char_class", st.char_class)
         setattr(st.char, "player_class", st.char_class)
+        st.char.species = st.species_label.lower()
+        st.char.template_id = st.species_template
 
         # apply Kochbender rune pattern only if relevant
         if st.is_kochbender() and st.char.generator == "custom":
             st.char.custom_pattern = st.rune.finalize()
+        else:
+            # non-Kochbender classes should not carry the custom pattern draft
+            st.char.custom_pattern = None
+
+        # apply Monk chakra init (if relevant)
+        if st.is_monk():
+            self._sync_monk_state()
+            if st.monk_state is not None:
+                st.char.chakra_init = st.monk_state.to_dict()
+        else:
+            st.char.chakra_init = None
 
         manager.character = st.char
 
@@ -566,6 +716,14 @@ class CharacterCreationScene(PanelScene):
 
             if st.focus == "class":
                 st.class_idx = (st.class_idx + delta) % len(CHAR_CLASSES)
+                if st.is_monk():
+                    self._sync_monk_state()
+                return
+
+            if st.focus == "species":
+                st.species_idx = (st.species_idx + delta) % len(st.species)
+                if st.is_monk():
+                    self._sync_monk_state()
                 return
 
             if st.focus == "stats":
@@ -640,6 +798,9 @@ class CharacterCreationScene(PanelScene):
             if r.collidepoint(pos):
                 if k == "name":
                     st.focus = "name"
+                    return
+                if k == "species":
+                    st.focus = "species"
                     return
                 if k == "class":
                     st.focus = "class"
@@ -720,6 +881,25 @@ class CharacterCreationScene(PanelScene):
                     self._rune_subfocus = "illum"
                     st.focus = "rune"
                     self._cycle_illuminator(+1)
+                    return
+
+                if k.startswith("monk_base:") and st.is_monk():
+                    base_id = k.split(":", 1)[1]
+                    st.focus = "chakra"
+                    st.monk_base = base_id
+                    st.monk_picks = []
+                    self._sync_monk_state()
+                    return
+
+                if k.startswith("monk_pick:") and st.is_monk():
+                    node_id = k.split(":", 1)[1]
+                    st.focus = "chakra"
+                    if node_id in st.monk_picks:
+                        st.monk_picks = [n for n in st.monk_picks if n != node_id]
+                    else:
+                        if len(st.monk_picks) < 3:
+                            st.monk_picks.append(node_id)
+                    self._sync_monk_state()
                     return
 
         st.seed_focus = False
@@ -831,6 +1011,35 @@ class CharacterCreationScene(PanelScene):
                 dy += s.get_height() + 2
 
         return y + h
+
+    def _draw_species(
+        self,
+        surf: pygame.Surface,
+        area: Tuple[int, int, int, int],
+        font: pygame.font.Font,
+        fg, sel, dim,
+        st: CharCreateState,
+    ) -> int:
+        x, y, w, h = area
+        hot = (st.focus == "species") or (self._hover_key == "species")
+        col = sel if hot else fg
+        lab = font.render("Species:", True, col)
+        surf.blit(lab, (x, y))
+
+        label = st.species_label
+        val_s = font.render(label, True, col if st.focus == "species" else fg)
+        val_rect = pygame.Rect(x + lab.get_width() + 10, y - 2, min(260, w - lab.get_width() - 10), val_s.get_height() + 10)
+        self._hits["species"] = val_rect
+
+        self._draw_box(
+            surf, val_rect,
+            fill=(18, 18, 30),
+            border=sel if hot else dim,
+            border_w=2 if (st.focus == "species") else 1,
+        )
+        surf.blit(val_s, (val_rect.x + 10, val_rect.y + 5))
+
+        return y + h + 6
 
     def _draw_stats(
         self,
@@ -959,6 +1168,10 @@ class CharacterCreationScene(PanelScene):
         panel = pygame.Rect(x, y, w, h)
         self._draw_box(surf, panel, fill=(14, 14, 24), border=(60, 60, 80), border_w=1)
 
+        if st.is_monk():
+            self._draw_monk_panel(surf, area, font, small, fg, sel, dim, bar_bg, st)
+            return
+
         if not st.is_kochbender():
             t = small.render("Class-specific panel", True, dim)
             surf.blit(t, (x + 14, y + 14))
@@ -1048,6 +1261,93 @@ class CharacterCreationScene(PanelScene):
 
         hint = small.render("Click to add points • Enter to commit • G/I cycle", True, dim)
         surf.blit(hint, (grid.x, clear.bottom + 8))
+
+    def _draw_monk_panel(
+        self,
+        surf: pygame.Surface,
+        area: Tuple[int, int, int, int],
+        font: pygame.font.Font,
+        small: pygame.font.Font,
+        fg, sel, dim, bar_bg,
+        st: CharCreateState,
+    ) -> None:
+        """Draw the Monk chakra selection panel (base + 3 picks)."""
+        x, y, w, h = area
+
+        head = font.render("Monk", True, fg)
+        surf.blit(head, (x + 14, y + 12))
+        y0 = y + head.get_height() + 12
+
+        # --- Base chakra selection ---
+        lab = small.render("Base Chakra (start here):", True, fg)
+        surf.blit(lab, (x + 14, y0))
+        y0 += lab.get_height() + 8
+
+        base_opts = [("body", "Body"), ("head", "Head"), ("arm", "Arm"), ("leg", "Leg")]
+        btn_w = (w - 40) // 2
+        btn_h = 28
+        for i, (bid, label) in enumerate(base_opts):
+            row = i // 2
+            col = i % 2
+            bx = x + 14 + col * (btn_w + 12)
+            by = y0 + row * (btn_h + 8)
+            rect = pygame.Rect(bx, by, btn_w, btn_h)
+            is_sel = (st.monk_base == bid)
+            hot = is_sel or (self._hover_key == f"monk_base:{bid}")
+            self._draw_box(
+                surf, rect,
+                fill=(24, 24, 36) if is_sel else (18, 18, 30),
+                border=sel if hot else dim,
+                border_w=2 if is_sel else 1,
+            )
+            t = small.render(label, True, sel if is_sel else fg)
+            surf.blit(t, (rect.centerx - t.get_width() // 2, rect.centery - t.get_height() // 2))
+            self._hits[f"monk_base:{bid}"] = rect
+
+        y0 += btn_h * 2 + 18
+
+        # --- Pick list ---
+        picks = len(st.monk_picks)
+        info = small.render(f"Choose 3 chakras (selected {picks}/3)", True, fg if picks < 3 else sel)
+        surf.blit(info, (x + 14, y0))
+        y0 += info.get_height() + 8
+
+        list_rect = pygame.Rect(x + 14, y0, w - 28, h - (y0 - y) - 16)
+        self._hits["monk_list"] = list_rect
+        self._draw_box(surf, list_rect, fill=(10, 10, 18), border=(40, 40, 60), border_w=1)
+
+        nodes = self._monk_available_nodes()
+        line_h = small.get_height() + 6
+        capacity = max(1, list_rect.h // line_h)
+        self._monk_list_total = len(nodes)
+        self._monk_list_capacity = capacity
+
+        max_scroll = max(0, len(nodes) - capacity)
+        st.monk_scroll = max(0, min(max_scroll, st.monk_scroll))
+
+        start = st.monk_scroll
+        end = min(len(nodes), start + capacity)
+
+        for idx in range(start, end):
+            node_id, display, depth = nodes[idx]
+            row_y = list_rect.y + (idx - start) * line_h
+            row_rect = pygame.Rect(list_rect.x + 4, row_y, list_rect.w - 8, line_h)
+
+            selected = node_id in st.monk_picks
+            col = sel if selected else fg
+            indent = 12 * max(0, depth)
+            label = f"{display}"
+
+            if selected:
+                pygame.draw.rect(surf, (40, 40, 64), row_rect)
+                pygame.draw.rect(surf, sel, row_rect, 1)
+
+            text = small.render(label, True, col if selected else fg)
+            surf.blit(text, (row_rect.x + 6 + indent, row_rect.y + (row_rect.h - text.get_height()) // 2))
+            self._hits[f"monk_pick:{node_id}"] = row_rect
+
+        hint = small.render("Click entries to toggle • Scroll to see more", True, dim)
+        surf.blit(hint, (list_rect.x, list_rect.bottom + 4))
 
     def _draw_rune_grid(self, surf: pygame.Surface, rect: pygame.Rect, font: pygame.font.Font, fg, sel, dim, st: CharCreateState) -> None:
         # Grid coordinates: x in 0..10, y in -5..5 (11x11)
@@ -1197,9 +1497,11 @@ class CharacterCreationScene(PanelScene):
         assert self.state is not None
         st = self.state
 
-        order = ["name", "class", "stats", "seed", "start"]
+        order = ["name", "species", "class", "stats", "seed", "start"]
         if st.is_kochbender():
-            order = ["name", "class", "stats", "seed", "rune", "start"]
+            order = ["name", "species", "class", "stats", "seed", "rune", "start"]
+        elif st.is_monk():
+            order = ["name", "species", "class", "stats", "seed", "chakra", "start"]
 
         try:
             i = order.index(st.focus)

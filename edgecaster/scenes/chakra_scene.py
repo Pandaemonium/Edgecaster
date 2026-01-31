@@ -1311,12 +1311,39 @@ class PatternPreviewWidget(Widget):
         body_schema = _get_body_schema(self.actor)
         chakra_state = self.state_override or _get_chakra_state(self.actor)
 
-        # Get positions of active chakras (includes sub-schema nodes)
-        positions = get_chakra_world_positions(
-            body_schema, chakra_state,
-            base_scale=50.0,  # Larger for preview
-            include_inactive=False,
+        # Get positions for active chakras and build a *compact* graph that
+        # removes inactive connector nodes. This mirrors the Chakra generator
+        # so the preview matches the in-game result.
+        from edgecaster.systems.chakras import (
+            get_all_chakra_positions_recursive,
+            get_chakra_connections_recursive,
+            get_compact_active_graph,
         )
+
+        all_positions = get_all_chakra_positions_recursive(
+            body_schema,
+            chakra_state,
+            base_scale=50.0,  # Larger for preview
+        )
+
+        edges = get_chakra_connections_recursive(body_schema, chakra_state)
+
+        # If a pattern root is set, mirror generator behavior by keeping only
+        # active nodes reachable from that root.
+        root_hint = getattr(chakra_state, "pattern_root", None)
+        if root_hint not in chakra_state.active:
+            root_hint = None
+        active_nodes, compact_edges = get_compact_active_graph(
+            edges,
+            chakra_state.active,
+            root_id=root_hint,
+        )
+
+        positions = {
+            node_id: pos_u
+            for node_id, (pos_u, _state, _scale, _base_pos) in all_positions.items()
+            if node_id in active_nodes
+        }
 
         if not positions:
             self._pattern_surface = None
@@ -1342,19 +1369,30 @@ class PatternPreviewWidget(Widget):
         if root_id and root_id in positions:
             root_pos = positions[root_id]
         else:
-            root_id = body_schema.get("root")
-            if root_id and root_id in positions:
+            # Avoid implicit body-root fallback; use any active chakra if available.
+            active_ids = [nid for nid in chakra_state.active if nid in positions]
+            if active_ids:
+                root_id = active_ids[0]
                 root_pos = positions[root_id]
             else:
-                # Fallback: closest to origin
-                root_pos = min(positions.values(), key=lambda p: p[0] ** 2 + p[1] ** 2)
+                # Fallback: closest to origin (only if no active nodes).
+                root_id, root_pos = min(positions.items(), key=lambda kv: kv[1][0] ** 2 + kv[1][1] ** 2)
 
-        def dist_sq_from_root(p: tuple) -> float:
-            dx = p[0] - root_pos[0]
-            dy = p[1] - root_pos[1]
+        # Pick terminus as the furthest ACTIVE node by Euclidean distance.
+        active_ids = [nid for nid in chakra_state.active if nid in positions]
+        if len(active_ids) > 1 and root_id in active_ids:
+            active_ids = [nid for nid in active_ids if nid != root_id]
+        if not active_ids:
+            active_ids = list(positions.keys())
+
+        def dist_sq_from_root(nid: str) -> float:
+            px, py = positions.get(nid, root_pos)
+            dx = px - root_pos[0]
+            dy = py - root_pos[1]
             return dx * dx + dy * dy
 
-        furthest_pos = max(positions.values(), key=dist_sq_from_root)
+        furthest_id = max(active_ids, key=dist_sq_from_root)
+        furthest_pos = positions.get(furthest_id, root_pos)
         base_len = math.hypot(furthest_pos[0] - root_pos[0], furthest_pos[1] - root_pos[1])
         if base_len < 1e-6:
             base_len = 1.0
@@ -1370,15 +1408,10 @@ class PatternPreviewWidget(Widget):
             py = int(center + (y - cy) * scale)
             mapped[node_id] = (px, py)
 
-        # Draw edges (recursive body connections, including sub-schemas)
+        # Draw edges (compact active graph)
         edge_color = (100, 180, 220, 180)
-        try:
-            from edgecaster.systems.chakras import get_chakra_connections_recursive
-            edges = get_chakra_connections_recursive(body_schema, chakra_state)
-        except Exception:
-            edges = []
 
-        for parent_id, child_id in edges:
+        for parent_id, child_id in compact_edges:
             if parent_id in mapped and child_id in mapped:
                 pygame.draw.aaline(
                     surf,

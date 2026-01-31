@@ -488,6 +488,19 @@ class Game:
             actions.append("place_rune_anchor")
             actions.append("lightning")
 
+        elif player_class == "Monk":
+            # Monk kit: core rune tools + chakra generator.
+            actions += [
+                "place",
+                "subdivide",
+                "extend",
+                "activate_seed",   # Activate N
+                "reset",
+                "meditate",
+                "push_pattern",
+                "chakra",
+            ]
+
         # For now, all other classes keep only move/wait (empty ability bar).
         player.actions = tuple(actions)
 
@@ -495,6 +508,15 @@ class Game:
         player.tags.setdefault("is_player", True)
         if player_class:
             player.tags.setdefault("class", player_class)
+
+        # Apply any character-defined chakra initialization (e.g., Monk setup).
+        chakra_init = getattr(self.character, "chakra_init", None)
+        if chakra_init:
+            try:
+                from edgecaster.systems.chakras import ChakraState
+                player.chakra_state = ChakraState.from_dict(chakra_init)
+            except Exception:
+                pass
 
 
         self.player_id = player.id
@@ -4653,6 +4675,79 @@ class Game:
         except Exception:
             node_order = None
 
+        # Debug logging: show active chakras + their seed positions.
+        try:
+            active_sorted = sorted(chakra_state.active)
+            self._debug(f"[chakra_gen] active={active_sorted}")
+            if node_order:
+                for idx, nid in enumerate(node_order):
+                    if idx < len(verts):
+                        vx, vy = verts[idx]
+                        flag = "ACTIVE" if nid in chakra_state.active else "inactive"
+                        self._debug(f"[chakra_gen] seed node[{idx}] {nid} {flag} pos=({vx:.4f},{vy:.4f})")
+            if edges:
+                self._debug(f"[chakra_gen] seed edges={edges}")
+        except Exception:
+            pass
+
+        # Remember the chosen pattern root early so we can preserve it if
+        # multiple chakras share the exact same position (e.g., arm + shoulder).
+        root_id = getattr(chakra_state, "pattern_root", None)
+
+        # Collapse duplicate vertices (same position) so we don't accidentally
+        # drop the chosen root when pruning degenerate edges. This can happen
+        # when a branch root overlaps its sub-root (arm == arm.shoulder).
+        if len(verts) >= 2:
+            # Group vertices by position key (rounded for stability).
+            key_for: List[tuple[float, float]] = [
+                (round(vx, 6), round(vy, 6)) for vx, vy in verts
+            ]
+            groups: Dict[tuple[float, float], List[int]] = {}
+            for idx, key in enumerate(key_for):
+                groups.setdefault(key, []).append(idx)
+
+            if any(len(g) > 1 for g in groups.values()):
+                # Pick a representative for each group. Prefer the selected root
+                # if it is part of this group.
+                rep_for_key: Dict[tuple[float, float], int] = {}
+                for key, idxs in groups.items():
+                    rep = idxs[0]
+                    if node_order is not None and root_id:
+                        for i in idxs:
+                            if node_order[i] == root_id:
+                                rep = i
+                                break
+                    rep_for_key[key] = rep
+
+                # Build old->new mapping, preserving a stable order.
+                rep_list: List[int] = []
+                old_to_new: Dict[int, int] = {}
+                for i, key in enumerate(key_for):
+                    rep = rep_for_key[key]
+                    if rep not in old_to_new:
+                        old_to_new[rep] = len(rep_list)
+                        rep_list.append(rep)
+                    old_to_new[i] = old_to_new[rep]
+
+                verts = [verts[i] for i in rep_list]
+                if node_order is not None:
+                    node_order = [node_order[i] for i in rep_list]
+
+                # Remap edges and drop any that collapse onto a single point.
+                new_edges: List[tuple[int, int]] = []
+                seen_edges: set[tuple[int, int]] = set()
+                for a, b in edges:
+                    na = old_to_new.get(a)
+                    nb = old_to_new.get(b)
+                    if na is None or nb is None or na == nb:
+                        continue
+                    key = (na, nb) if na <= nb else (nb, na)
+                    if key in seen_edges:
+                        continue
+                    seen_edges.add(key)
+                    new_edges.append((na, nb))
+                edges = new_edges
+
         # Drop orphan vertices (not referenced by any edge). These can
         # otherwise show up as stray points when applying the generator.
         if edges:
@@ -4672,6 +4767,14 @@ class Game:
         if len(verts) < 2 or not edges:
             self.log.add("Need at least 2 connected chakras to form a generator.")
             return
+
+        try:
+            if node_order:
+                self._debug(f"[chakra_gen] after dedupe node_order={node_order}")
+            self._debug(f"[chakra_gen] after dedupe verts={[(round(x,4), round(y,4)) for x,y in verts]}")
+            self._debug(f"[chakra_gen] after dedupe edges={edges}")
+        except Exception:
+            pass
 
         # Drop degenerate edges where endpoints collapse to the same spot.
         # These create tiny "orphan dots" when the generator is applied.
@@ -4701,49 +4804,32 @@ class Game:
             self.log.add("Need at least 2 connected chakras to form a generator.")
             return
 
+        try:
+            if node_order:
+                self._debug(f"[chakra_gen] after prune node_order={node_order}")
+            self._debug(f"[chakra_gen] after prune verts={[(round(x,4), round(y,4)) for x,y in verts]}")
+            self._debug(f"[chakra_gen] after prune edges={edges}")
+        except Exception:
+            pass
+
         # Reorder vertices so root is first and furthest point is last.
         # The CustomGraphGenerator uses vertices[0] and vertices[-1] as the
         # baseline for scaling - if these aren't the pattern endpoints,
         # the pattern will explode in size after iterations.
         #
-        # Root can be user-chosen (chakra_state.pattern_root). If not set,
-        # fall back to the schema root, then to closest-to-origin.
-        root_hint = None
-        root_id = getattr(chakra_state, "pattern_root", None)
-        positions = None
-        try:
-            # Use the full recursive position map so spatial distances are
-            # consistent even if some ancestors are inactive.
-            positions_all = get_all_chakra_positions_recursive(
-                body_schema,
-                chakra_state,
-                base_scale=1.0,
-            )
-            positions = {nid: pos_u for nid, (pos_u, _state, _scale, _base) in positions_all.items()}
-            if root_id not in (positions or {}):
-                root_id = body_schema.get("root")
-            if root_id and positions:
-                root_hint = positions.get(root_id)
-        except Exception:
-            root_hint = None
+        # Root must be explicitly chosen and active (no implicit body fallback).
+        if not root_id or root_id not in chakra_state.active:
+            self.log.add("Select an active chakra as the pattern root first.")
+            return
 
-        def dist_sq(p: tuple) -> float:
-            return p[0] ** 2 + p[1] ** 2
         if node_order is not None and root_id in node_order:
             root_idx = node_order.index(root_id)
-        elif root_hint is not None:
-            rx, ry = root_hint
-            def dist_to_hint(idx: int) -> float:
-                dx = verts[idx][0] - rx
-                dy = verts[idx][1] - ry
-                return dx * dx + dy * dy
-            root_idx = min(range(len(verts)), key=dist_to_hint)
         else:
-            root_idx = min(range(len(verts)), key=lambda i: dist_sq(verts[i]))
+            # If we can't resolve the root by id, abort to avoid unexpected fallback.
+            self.log.add("Pattern root not found in chakra pattern.")
+            return
 
-        # Find terminus as the farthest node in the chakra graph (path length),
-        # starting from the chosen root. Use node-id adjacency so we don't
-        # accidentally lose branches after edge pruning.
+        # Find terminus as the farthest ACTIVE node by Euclidean distance.
         root_pos = verts[root_idx]
 
         def dist_sq_from_root(idx: int) -> float:
@@ -4751,28 +4837,20 @@ class Game:
             dy = verts[idx][1] - root_pos[1]
             return dx * dx + dy * dy
 
-        furthest_idx = None
-        if node_order is not None and root_id and positions:
-            # Prefer the spatially furthest ACTIVE chakra from the root.
-            try:
-                root_pos = positions.get(root_id)
-                if root_pos is not None:
-                    rx, ry = root_pos
-                    candidates = [nid for nid in node_order if nid in chakra_state.active]
-                    if candidates:
-                        def dist2(nid: str) -> float:
-                            px, py = positions.get(nid, (rx, ry))
-                            dx = px - rx
-                            dy = py - ry
-                            return dx * dx + dy * dy
-                        furthest_id = max(candidates, key=dist2)
-                        if furthest_id in node_order:
-                            furthest_idx = node_order.index(furthest_id)
-            except Exception:
-                furthest_idx = None
+        if node_order is not None:
+            candidates = [i for i, nid in enumerate(node_order) if nid in chakra_state.active]
+        else:
+            candidates = list(range(len(verts)))
 
-        if furthest_idx is None:
-            furthest_idx = max(range(len(verts)), key=lambda i: dist_sq_from_root(i))
+        # Avoid choosing the root itself if we have other options.
+        if len(candidates) > 1 and root_idx in candidates:
+            candidates = [i for i in candidates if i != root_idx]
+
+        if not candidates:
+            self.log.add("Need at least 2 connected chakras to form a generator.")
+            return
+
+        furthest_idx = max(candidates, key=dist_sq_from_root)
 
         # Normalize the chakra shape so the baseline lies on +X axis.
         # This prevents unintended rotation and keeps the terminus aligned
@@ -4807,6 +4885,13 @@ class Game:
             if 0 <= furthest_idx < len(verts):
                 verts[furthest_idx] = (1.0, 0.0)
 
+        try:
+            self._debug(
+                f"[chakra_gen] root_idx={root_idx} furthest_idx={furthest_idx} base_len={base_len:.4f}"
+            )
+        except Exception:
+            pass
+
         # Build mapping from old indices to new indices
         # New order: root first, furthest last, everything else in between
         old_to_new = {}
@@ -4838,6 +4923,15 @@ class Game:
                     new_node_order[new_idx] = node_order[old_idx]
             node_order = new_node_order
 
+        try:
+            if node_order:
+                for idx, nid in enumerate(node_order):
+                    vx, vy = verts[idx]
+                    self._debug(f"[chakra_gen] final node[{idx}] {nid} pos=({vx:.4f},{vy:.4f})")
+            self._debug(f"[chakra_gen] final edges={edges}")
+        except Exception:
+            pass
+
         # Get amplitude from param system (like custom generator)
         amp = self._param_value("chakra", "amplitude")
         if amp is None:
@@ -4861,6 +4955,18 @@ class Game:
             self.log.add("Pattern capped at max vertices.")
 
         level.pattern = builder.Pattern.from_segments(segs)
+        # Preserve chakra seed metadata for future ability targeting.
+        try:
+            import json
+            if node_order is not None:
+                level.pattern.meta["chakra_seed_nodes"] = json.dumps(node_order)
+            level.pattern.meta["chakra_seed_verts"] = json.dumps(verts)
+            level.pattern.meta["chakra_seed_edges"] = json.dumps(edges)
+            level.pattern.meta["chakra_seed_root"] = str(root_id)
+            if node_order:
+                level.pattern.meta["chakra_seed_terminus"] = str(node_order[-1])
+        except Exception:
+            pass
         self.log.add(f"Chakra generator applied ({len(verts)} chakra vertices).")
 
         # Spend a bit of chakra charge when applying the generator.
