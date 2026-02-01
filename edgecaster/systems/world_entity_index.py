@@ -50,7 +50,12 @@ class WorldEntityIndex:
         except Exception:
             pass
         try:
-            setattr(ent, "pos", tuple(local_pos))
+            zx, zy, _z = zone_coord
+            setattr(
+                ent,
+                "abs_pos",
+                (int(zx) * self.zone_w + int(local_pos[0]), int(zy) * self.zone_h + int(local_pos[1])),
+            )
         except Exception:
             pass
 

@@ -248,6 +248,38 @@ class AsciiRenderer:
             return getattr(ui, name, default)
         return getattr(self, name, default)
 
+
+    def _zone_abs_offset(self, game: Game) -> Tuple[int, int]:
+        """Return the ABS tile offset of the current loaded zone.
+
+        Renderer math after the FoV/abs_pos refactor treats world coordinates as ABS.
+        Many gameplay systems (including targeting + rune patterns) still store tile/world
+        positions in the current LevelState's LOCAL frame. This helper bridges LOCAL→ABS
+        purely for drawing overlays.
+        """
+        try:
+            zx, zy, _zz = getattr(game, "zone_coord", (0, 0, 0))
+            zx = int(zx)
+            zy = int(zy)
+        except Exception:
+            zx = zy = 0
+        try:
+            zw = int(getattr(game.cfg, "world_width", 0) or 0)
+            zh = int(getattr(game.cfg, "world_height", 0) or 0)
+        except Exception:
+            zw = zh = 0
+        if zw <= 0 or zh <= 0:
+            return (0, 0)
+        return (zx * zw, zy * zh)
+
+    def _local_tile_to_abs(self, game: Game, tile_xy: Tuple[int, int]) -> Tuple[int, int]:
+        ox, oy = self._zone_abs_offset(game)
+        return (int(tile_xy[0] + ox), int(tile_xy[1] + oy))
+
+    def _local_world_to_abs(self, game: Game, world_xy: Tuple[float, float]) -> Tuple[float, float]:
+        ox, oy = self._zone_abs_offset(game)
+        return (float(world_xy[0] + ox), float(world_xy[1] + oy))
+
     def _to_surface(self, pos: Tuple[int, int]) -> Tuple[int, int]:
         """Convert display-space mouse coords to surface-space, accounting for letterbox and scale."""
         return (
@@ -335,9 +367,18 @@ class AsciiRenderer:
         """
         try:
             player = game.actors[game.player_id]
-            px, py = player.pos
+            ap = getattr(player, "abs_pos", None)
+            if ap is not None:
+                px, py = int(ap[0]), int(ap[1])
+            else:
+                # Legacy fallback: derive abs from current zone/local if possible
+                try:
+                    px, py = game.abs_from_zone_local(game.zone_coord, player.pos)
+                except Exception:
+                    px, py = player.pos
         except Exception:
             return
+
 
         cam = getattr(self, "camera", None)
 
@@ -510,8 +551,23 @@ class AsciiRenderer:
         """
         import math
 
+        # Localize optional imports for speed inside inner loops.
+        try:
+            from zones import get_zone_for_render as _get_zone_for_render
+        except Exception:
+            _get_zone_for_render = None
+
         # Always clear first to avoid trails while blending.
         self.surface.fill(self.bg)
+
+        # In tiles mode we want terrain tiles to be authoritative (no ASCII '.' fallbacks in virgin space).
+        # If the tiles pipeline isn't available, ASCII glyph LOD remains the fallback.
+        try:
+            from edgecaster.render.terrain_tiles import get_terrain_tile_surface  # noqa: F401
+            self.prefer_terrain_tiles = True
+        except Exception:
+            self.prefer_terrain_tiles = False
+
 
         # Use the SAME map rect / origin logic as draw_world_local so the camera/pan math
         # stays consistent at every LOD.
@@ -520,13 +576,31 @@ class AsciiRenderer:
         map_h = self.height - self.ability_bar_height - map_origin_y
         map_rect = pygame.Rect(map_origin_x, map_origin_y, max(1, map_w), max(1, map_h))
 
-        # Apply pan offsets (set by zoom/pan). This makes _render_lod_grid's inference stable.
-        self.origin_x = map_origin_x + self.pan_x
-        self.origin_y = map_origin_y + self.pan_y
+        # Apply pan/zoom from the authoritative TileCamera (post-abs_pos refactor).
+        # origin_x/origin_y are the screen position of ABSOLUTE world tile (0,0).
+        cam = getattr(game, "camera", None)
+        if cam is not None and hasattr(cam, "map_origin_px") and hasattr(cam, "tile_px"):
+            try:
+                self.origin_x, self.origin_y = cam.map_origin_px((float(map_origin_x), float(map_origin_y)))
+                # Keep renderer pan mirrors in sync for any legacy callers.
+                try:
+                    self.pan_x = float(getattr(cam, "pan_x", self.pan_x))
+                    self.pan_y = float(getattr(cam, "pan_y", self.pan_y))
+                    self.zoom = float(getattr(cam, "zoom", self.zoom))
+                except Exception:
+                    pass
+                world_scale = float(max(1, int(getattr(cam, "tile_px", int(self.base_tile)))))
+            except Exception:
+                self.origin_x = map_origin_x + self.pan_x
+                self.origin_y = map_origin_y + self.pan_y
+                world_scale = float(getattr(self, "tile_px", float(self.base_tile) * float(getattr(self, "zoom", 1.0))))
+        else:
+            self.origin_x = map_origin_x + self.pan_x
+            self.origin_y = map_origin_y + self.pan_y
+            world_scale = float(getattr(self, "tile_px", float(self.base_tile) * float(getattr(self, "zoom", 1.0))))
 
-        # TRUE world-tile -> screen pixels scale.
-        world_scale = float(getattr(self, "tile_px", float(self.base_tile) * float(self.zoom)))
-        world_scale = max(1e-6, world_scale)
+        world_scale = max(1e-6, float(world_scale))
+
 
         # ---------------------------------------------------------------------
         # Choose the two adjacent LODs to render.
@@ -640,24 +714,26 @@ class AsciiRenderer:
 
     def _infer_world_center_from_renderer(self, game, map_rect, world_scale, zone_w, zone_h):
         """
-        Infer ABSOLUTE world tile coordinates (global) from renderer pan/origin,
-        even when no game.camera exists.
+        Infer ABSOLUTE world tile coordinates (global) from renderer pan/origin.
 
-        We convert screen center -> local-tile coords, then add zone offset.
+        Post-abs_pos refactor invariant:
+        - origin_x/origin_y are the screen-space origin for ABSOLUTE world tile (0,0).
+        - Therefore we must NOT add any zone_coord offsets here.
+
+        This is purely the inverse of the current screen transform:
+            abs = (screen_center - origin) / world_scale
         """
-        cx_px = map_rect.centerx
-        cy_px = map_rect.centery
+        cx_px = float(map_rect.centerx)
+        cy_px = float(map_rect.centery)
 
-        dx_px = cx_px - self.origin_x
-        dy_px = cy_px - self.origin_y
+        dx_px = cx_px - float(self.origin_x)
+        dy_px = cy_px - float(self.origin_y)
 
-        local_wx = dx_px / max(1e-6, world_scale)
-        local_wy = dy_px / max(1e-6, world_scale)
-
-        zx, zy, _zz = getattr(game, "zone_coord", (0, 0, 0))
-        abs_wx = zx * zone_w + local_wx
-        abs_wy = zy * zone_h + local_wy
+        s = max(1e-6, float(world_scale))
+        abs_wx = dx_px / s
+        abs_wy = dy_px / s
         return float(abs_wx), float(abs_wy)
+
 
     def _overmap_signature(self, game) -> tuple:
         """Hashable signature for overmap sampling parameters (for cache keys)."""
@@ -720,10 +796,23 @@ class AsciiRenderer:
             return out
 
         # Determine world center in absolute world-tile coordinates.
+        # IMPORTANT: game.camera is pixel-pan based and does not store canonical world_x/world_y.
+        # We infer center from the camera transform (screen center -> local tiles) + zone offset.
         cam = getattr(game, "camera", None)
-        if cam is not None:
-            abs_wx = float(getattr(cam, "world_x", 0.0))
-            abs_wy = float(getattr(cam, "world_y", 0.0))
+        if cam is not None and hasattr(cam, "world_from_screen_px"):
+            try:
+                # TileCamera.world_from_screen_px returns ABSOLUTE world-tile coords
+                # (post-abs_pos refactor). Do NOT add zone offsets here.
+                abs_wx, abs_wy = cam.world_from_screen_px(
+                    (float(map_rect.centerx), float(map_rect.centery)),
+                    base_origin_px=(float(map_rect.x), float(map_rect.y)),
+                )
+                abs_wx = float(abs_wx)
+                abs_wy = float(abs_wy)
+            except Exception:
+                abs_wx, abs_wy = self._infer_world_center_from_renderer(
+                    game, map_rect=map_rect, world_scale=world_scale, zone_w=zone_w, zone_h=zone_h
+                )
         else:
             abs_wx, abs_wy = self._infer_world_center_from_renderer(
                 game, map_rect=map_rect, world_scale=world_scale, zone_w=zone_w, zone_h=zone_h
@@ -1099,10 +1188,15 @@ class AsciiRenderer:
                     # We don't need them for drawing, but other systems may query.
                 else:
                     # Cache miss (often during active panning/zooming before sampling runs).
-                    # In tiles mode, NEVER show ASCII placeholders; leave last frame's terrain visible.
+                    # In tiles mode, do NOT draw ASCII placeholder glyphs into virgin/unrendered space.
+                    # Leave it transparent so the base surface (black/fog) shows until the cache warms.
                     if bool(getattr(self, "prefer_terrain_tiles", False)):
-                        continue
-                    ch, orig_color = ('·', getattr(self, 'dim', (140, 140, 150)))
+                        ch = None
+                        orig_color = getattr(self, 'dim', (140, 140, 150))
+                    else:
+                        ch = '·'
+                        orig_color = getattr(self, 'dim', (140, 140, 150))
+
 
 
                 # Apply FOV-based dimming using the same tile.visible flags as entities.
@@ -1134,77 +1228,164 @@ class AsciiRenderer:
                         global_x = int(cx * cell_w_tiles)
                         global_y = int(cy * cell_h_tiles)
 
-                    local_x = global_x - zone_offset_x
-                    local_y = global_y - zone_offset_y
+                    # Resolve absolute tile -> (zone coord, local) without assuming the current zone owns terrain.
+                    # This is the core "quantum observer" invariant: abs-space is canonical; zones are just caches.
+                    tile = None
+                    try:
+                        zx0, zy0, zz0 = getattr(game, "zone_coord", (0, 0, 0))
+                        zz0 = int(zz0)
+                    except Exception:
+                        zx0 = zy0 = 0
+                        zz0 = 0
 
-                    if world.in_bounds(local_x, local_y):
-                        tile = world.get_tile(local_x, local_y)
-                        if tile:
-                            # At 1:1 scale, only override the sampled terrain glyph when the realized tile is a STRUCTURE.
-                            # Base terrain should still come from the field sampler so it stays consistent across LoD.
-                            if abs(cell_w_tiles - 1.0) < 1e-6:
-                                try:
-                                    tg = str(tile.glyph or "")
-                                    if tg:
-                                        tg = tg[0]
+                    # Compute the zone coordinate that contains (global_x, global_y). Works for negatives.
+                    try:
+                        zxt = int(math.floor(float(global_x) / float(zone_w)))
+                        zyt = int(math.floor(float(global_y) / float(zone_h)))
+                    except Exception:
+                        zxt = int(global_x // zone_w)
+                        zyt = int(global_y // zone_h)
 
-                                    if tg in structure_glyph_to_color:
-                                        ch = tg
-                                except Exception:
-                                    pass
+                    local_x = int(global_x - zxt * int(zone_w))
+                    local_y = int(global_y - zyt * int(zone_h))
 
-                            # In NORMAL vision, we do not render unexplored tiles.
-                            # In GOD vision, treat everything as explored.
-                            if (not god_vision) and (not tile.explored):
-                                continue
-
-                            # Color contract:
-                            # - Structures use intrinsic material colors (walls fixed gray)
-                            # - Otherwise terrain color comes ONLY from biome_id (no glyph-based colors)
-                            base_color = orig_color
-
-                            # If we're drawing a structure glyph (either sampled or overridden), use its intrinsic color.
-                            if ch in structure_glyph_to_color:
-                                base_color = structure_glyph_to_color[ch]
-                            else:
-                                if biome_id_to_color is not None:
-                                    try:
-                                        # Prefer cached biome_id (sampler truth). Fall back to tile.biome_id only if needed.
-                                        bid = cached_biome_id
-                                        if bid is None:
-                                            bid = int(getattr(tile, "biome_id", 0) or 0)
-                                        if 0 <= bid < 256:
-                                            base_color = biome_id_to_color[bid]
-                                    except Exception:
-                                        pass
-
-                            # In GOD vision, treat everything as visible (no dimming).
-                            if god_vision or tile.visible:
-                                color = base_color
-                            else:
-                                r, g, b = base_color
-                                color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
+                    # Try to peek realized tile (for structure overrides only). Do NOT treat missing tiles as "world ends".
+                    if zxt == int(zx0) and zyt == int(zy0):
+                        # Fast path: current loaded world.
+                        if world is not None and getattr(world, "in_bounds", None) and world.in_bounds(local_x, local_y):
+                            tile = world.get_tile(local_x, local_y)
                     else:
-                        # Outside realized world bounds. In god vision, still draw sampler output.
-                        if not god_vision:
-                            continue
+                        # Render-peek other loaded chunks only (never instantiate).
+                        try:
+                            lvl2 = _get_zone_for_render(game, (int(zxt), int(zyt), int(zz0))) if _get_zone_for_render else None
+                        except Exception:
+                            lvl2 = None
+                        if lvl2 is not None:
+                            w2 = getattr(lvl2, "world", None)
+                            if w2 is not None and getattr(w2, "in_bounds", None) and w2.in_bounds(local_x, local_y):
+                                tile = w2.get_tile(local_x, local_y)
+
+                    # --- Fog/visibility truth comes from ABS-space, not zone tile flags ---
+                    abs_tx = int(global_x)
+                    abs_ty = int(global_y)
+                    try:
+                        explored = bool(god_vision) or bool(game.is_abs_explored(abs_tx, abs_ty, depth=zz0))
+                    except Exception:
+                        explored = bool(god_vision)
+                    if (not explored) and (not god_vision):
+                        continue
+
+                    # Base terrain color from sampler (biome_id), regardless of whether a realized tile exists.
+                    base_color = orig_color
+                    if biome_id_to_color is not None:
+                        try:
+                            bid = cached_biome_id
+                            if bid is None and tile is not None:
+                                bid = int(getattr(tile, "biome_id", 0) or 0)
+                            if bid is not None and 0 <= int(bid) < 256:
+                                base_color = biome_id_to_color[int(bid)]
+                        except Exception:
+                            pass
+
+                    # At 1:1 scale, override glyph/color for realized STRUCTURES only.
+                    if tile is not None and abs(cell_w_tiles - 1.0) < 1e-6:
+                        try:
+                            tg = str(tile.glyph or "")
+                            if tg:
+                                tg = tg[0]
+                            if tg in structure_glyph_to_color:
+                                ch = tg
+                                base_color = structure_glyph_to_color[tg]
+                        except Exception:
+                            pass
+
+                    # Visibility (dimming) from ABS-space FoV truth
+                    try:
+                        visible_now = bool(god_vision) or bool(game.is_abs_visible(abs_tx, abs_ty, depth=zz0))
+                    except Exception:
+                        visible_now = bool(god_vision)
+
+                    # Alias used by the terrain-tiles underlay path below.
+                    abs_visible = bool(visible_now)
+
+                    if visible_now:
+                        color = base_color
+                    else:
+                        r, g, b = base_color
+                        color = (int(r * 0.4), int(g * 0.4), int(b * 0.4))
                 else:
                     # If we have no world/player context, just draw the cached sampler result.
                     # (This keeps renderer stable even in menus or transitional scenes.)
                     pass
 
 
-                # --- Terrain tiles POC: base tile underlay, glyphs only for structures ---
-                prefer_terrain_tiles = bool(getattr(self, "prefer_terrain_tiles", False))
+                # --- Terrain tiles: base tile underlay, glyphs only for structures ---
+                # Tie terrain-tiles to the same "graphics mode" switch as entity sprites.
+                # If the user is in ASCII mode (prefer_sprite_icons=False), we must NOT draw tile underlays.
+                prefer_terrain_tiles = bool(getattr(self, "prefer_terrain_tiles", False)) and bool(
+                    getattr(self, "prefer_sprite_icons", True)
+                )
 
                 drawn_tile = False
-                if prefer_terrain_tiles and val and len(val) > 3:
+                if prefer_terrain_tiles and val:
                     try:
                         from edgecaster.render.terrain_tiles import get_terrain_tile_surface
 
-                        cached_biome_id = int(val[2])
-                        cached_elev_cat = int(val[3])
-                        cached_corr_q = int(val[4])
+                        # Newer cache entries include explicit biome/elev/corr metadata:
+                        #   (ch, color, biome_id, elev_cat, corr_q)
+                        # Older entries (e.g. OvermapLodRenderer) only store:
+                        #   (ch, color)
+                        # In that case, infer biome/elev from the glyph + biome anchor color so tiles-mode
+                        # still previews correctly while the more expensive sampler cache warms up.
+                        if len(val) > 3:
+                            cached_biome_id = int(val[2])
+                            cached_elev_cat = int(val[3])
+                            cached_corr_q = int(val[4]) if len(val) > 4 else 0
+                        else:
+                            # Elev category ladder matches edgecaster.biome BIOME_GLYPHS order.
+                            glyph_to_elev_cat = {
+                                "≈": 0,
+                                "~": 1,
+                                ",": 2,
+                                ".": 3,
+                                '"': 4,
+                                "#": 5,
+                                "^": 6,
+                            }
+                            cached_elev_cat = int(glyph_to_elev_cat.get(ch, 3))
+                            cached_corr_q = 0
+
+                            cached_biome_id = 0
+                            try:
+                                # Fast path: exact reverse map from anchor color -> biome_id
+                                rev = getattr(self, "_biome_color_to_id", None)
+                                if rev is None:
+                                    rev = {}
+                                    if biome_id_to_color is not None:
+                                        for i, col_t in enumerate(biome_id_to_color):
+                                            # Many LUT entries may duplicate; that's fine.
+                                            if col_t not in rev:
+                                                rev[col_t] = int(i)
+                                    self._biome_color_to_id = rev
+
+                                if orig_color in rev:
+                                    cached_biome_id = int(rev[orig_color])
+                                else:
+                                    # Fallback: nearest BIOME_COLORS entry (rare)
+                                    from edgecaster.biome import BIOME_COLORS as _BC
+
+                                    r0, g0, b0 = int(orig_color[0]), int(orig_color[1]), int(orig_color[2])
+                                    best_id = 0
+                                    best_d = 10**18
+                                    for k, v in _BC.items():
+                                        rr, gg, bb = int(v[0]), int(v[1]), int(v[2])
+                                        d = (rr - r0) * (rr - r0) + (gg - g0) * (gg - g0) + (bb - b0) * (bb - b0)
+                                        if d < best_d:
+                                            best_d = d
+                                            best_id = int(k)
+                                    cached_biome_id = int(best_id)
+                            except Exception:
+                                cached_biome_id = 0
 
                         tile_surf = get_terrain_tile_surface(
                             elev_cat=cached_elev_cat,
@@ -1216,21 +1397,14 @@ class AsciiRenderer:
                             corruption_level=cached_corr_q,
                         )
 
-
-
                         # Apply the SAME fog-of-war dim vibe to terrain tiles.
-                        # (Your glyph logic uses ~0.4; we multiply RGB by ~0.4 here too.)
-                        if (player_pos is not None and world is not None) and (not god_vision):
-                            # If we managed to fetch a real tile above, we used tile.visible there.
-                            # But if anything fell through, safest is: dim when the chosen color is a dimmed one.
-                            # (We set 'color' to dimmed base_color in the logic above.)
+                        # If the ABS tile is not visible this tick (but *is* explored), dim it just like glyphs.
+                        if not god_vision:
                             try:
-                                # If tile exists in scope and is not visible, dim.
-                                if (not tile.visible):
+                                if not abs_visible:
                                     tile_surf = tile_surf.copy()
                                     tile_surf.fill((102, 102, 102, 255), special_flags=pygame.BLEND_RGBA_MULT)  # ~0.4
                             except Exception:
-                                # Fallback heuristic: if we’re in the dimmed branch (color already darker), dim tiles too.
                                 pass
 
                         out.blit(tile_surf, (px, py))
@@ -1241,11 +1415,12 @@ class AsciiRenderer:
 
                 # In tiles mode: draw glyphs only for structure overrides.
                 # In ASCII mode: draw glyphs for everything (original behavior).
-                if (not prefer_terrain_tiles) or (ch in structure_glyph_to_color) or (not drawn_tile):
+                if (ch is not None) and ((not prefer_terrain_tiles) or (ch in structure_glyph_to_color) or (not drawn_tile)):
                     surf = self._get_cached_glyph_surface(font=font, font_px=font_px, ch=ch, color=color, alpha_u8=255)
                     gx = px + (cell_px_w - surf.get_width()) // 2
                     gy = py + (cell_px_h - surf.get_height()) // 2
                     out.blit(surf, (gx, gy))
+
 
 
         return out
@@ -1275,6 +1450,13 @@ class AsciiRenderer:
         grid_surf = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
         if rect_w <= 0 or rect_h <= 0:
+            return grid_surf
+
+
+        # In terrain-tiles mode, the zoomed-out terrain underlay is drawn via
+        # the terrain tile renderer; this ASCII LOD grid should not draw any
+        # placeholder glyphs (which look like '.' in tiles mode).
+        if bool(getattr(self, 'prefer_terrain_tiles', False)):
             return grid_surf
 
         cam = getattr(game, "camera", None)
@@ -1521,6 +1703,11 @@ class AsciiRenderer:
         font_px = max(8, int(min(cell_px_w, cell_px_h) * 0.90))
         font = self._get_cached_map_font(font_px)
         dim = (140, 140, 150)
+
+        if bool(getattr(self, 'prefer_terrain_tiles', False)):
+            # In tiles mode, leave this layer empty; the terrain underlay handles
+            # unknown/virgin regions as black.
+            return grid_surf
 
         for r in range(rows):
             for c in range(cols):
@@ -2282,35 +2469,54 @@ class AsciiRenderer:
                     continue
             else:
                 obj = ent
-                pos = getattr(obj, "pos", None)
-                if pos is None:
-                    continue
-                try:
-                    lx, ly = int(pos[0]), int(pos[1])
-                except Exception:
-                    continue
-                ent_zone = getattr(game, "zone_coord", (0, 0, 0))
-                # Absolute coords for base-zone entities.
-                zx0, zy0, _zz0 = getattr(game, "zone_coord", (0, 0, 0))
-                zone_w0 = int(getattr(getattr(game, "cfg", None), "world_width", getattr(world, "width", 60) or 60))
-                zone_h0 = int(getattr(getattr(game, "cfg", None), "world_height", getattr(world, "height", 40) or 40))
-                zone_w0 = max(1, zone_w0)
-                zone_h0 = max(1, zone_h0)
-                abs_x = float(int(zx0) * zone_w0 + lx)
-                abs_y = float(int(zy0) * zone_h0 + ly)
 
-            # Convert absolute coords into the renderer's base-zone local frame for screen mapping.
-            zone_w = int(getattr(getattr(game, "cfg", None), "world_width", getattr(world, "width", 60) or 60))
-            zone_h = int(getattr(getattr(game, "cfg", None), "world_height", getattr(world, "height", 40) or 40))
-            zone_w = max(1, zone_w)
-            zone_h = max(1, zone_h)
+                # Prefer true absolute position if present.
+                ap = getattr(obj, "abs_pos", None)
+                if ap is not None:
+                    try:
+                        abs_x = float(ap[0])
+                        abs_y = float(ap[1])
+                    except Exception:
+                        continue
 
-            base_zx, base_zy, _base_zz = getattr(game, "zone_coord", (0, 0, 0))
-            base_abs_x0 = float(int(base_zx) * zone_w)
-            base_abs_y0 = float(int(base_zy) * zone_h)
+                    # Derive owning chunk + local for fog-of-war tile lookup.
+                    try:
+                        ent_zone, local_pos = game.zone_local_from_abs((int(round(abs_x)), int(round(abs_y))))
+                        lx, ly = int(local_pos[0]), int(local_pos[1])
+                    except Exception:
+                        # Fallback if conversion isn't available for some reason
+                        ent_zone = getattr(game, "zone_coord", (0, 0, 0))
+                        # Best-effort local guess
+                        pos = getattr(obj, "pos", None)
+                        if pos is None:
+                            continue
+                        lx, ly = int(pos[0]), int(pos[1])
 
-            x = float(abs_x - base_abs_x0)
-            y = float(abs_y - base_abs_y0)
+                else:
+                    # Legacy fallback: treat as local to current loaded chunk
+                    pos = getattr(obj, "pos", None)
+                    if pos is None:
+                        continue
+                    try:
+                        lx, ly = int(pos[0]), int(pos[1])
+                    except Exception:
+                        continue
+                    ent_zone = getattr(game, "zone_coord", (0, 0, 0))
+
+                    # Derive abs from current chunk membership
+                    try:
+                        abs_x, abs_y = game.abs_from_zone_local(ent_zone, (lx, ly))
+                        abs_x = float(abs_x)
+                        abs_y = float(abs_y)
+                    except Exception:
+                        # Last resort: assume local==abs (not ideal, but avoids crashing)
+                        abs_x = float(lx)
+                        abs_y = float(ly)
+
+            # ABS-space camera: abs_x/abs_y already live in the renderer's world coordinate frame.
+            x = float(abs_x)
+            y = float(abs_y)
+
 
             # Fog-of-war tile rules require a tile lookup in the entity's owning zone.
             tile = None
@@ -2630,6 +2836,7 @@ class AsciiRenderer:
         origin = game.pattern_anchor
         if origin is None:
             return
+        ox, oy = self._zone_abs_offset(game)
         verts = project_vertices(game.pattern, origin)
         # density-based sizing
         count = len(verts)
@@ -2649,10 +2856,10 @@ class AsciiRenderer:
                 b = verts[e.b]
             except IndexError:
                 continue
-            ax = a[0] * self.tile + self.tile * 0.5 + self.origin_x
-            ay = a[1] * self.tile + self.tile * 0.5 + self.origin_y
-            bx = b[0] * self.tile + self.tile * 0.5 + self.origin_x
-            by = b[1] * self.tile + self.tile * 0.5 + self.origin_y
+            ax = (a[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
+            ay = (a[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
+            bx = (b[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
+            by = (b[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
             dx = bx - ax
             dy = by - ay
             dist = max(1.0, math.hypot(dx, dy))
@@ -2681,8 +2888,8 @@ class AsciiRenderer:
         # vertices with glow sprites
         base_sprite = self._get_glow_sprite(v_radius, self.pattern_color)
         for vx, vy in verts:
-            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
             rect = base_sprite.get_rect(center=(px, py))
             self.verts_surface.blit(base_sprite, rect)
 
@@ -2703,6 +2910,7 @@ class AsciiRenderer:
             return
         sealed = bool(getattr(trial, "sealed", False))
 
+        ox, oy = self._zone_abs_offset(game)
         origin = trial.target_anchor
         try:
             verts = project_vertices(trial.target_pattern, origin)
@@ -2741,10 +2949,10 @@ class AsciiRenderer:
                 b = verts[edge.b]
             except Exception:
                 continue
-            ax = a[0] * self.tile + self.tile * 0.5 + self.origin_x
-            ay = a[1] * self.tile + self.tile * 0.5 + self.origin_y
-            bx = b[0] * self.tile + self.tile * 0.5 + self.origin_x
-            by = b[1] * self.tile + self.tile * 0.5 + self.origin_y
+            ax = (a[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
+            ay = (a[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
+            bx = (b[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
+            by = (b[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
 
             edge_key = (min(edge.a, edge.b), max(edge.a, edge.b))
             if edge_key in trial.missing_edge_keys:
@@ -2764,10 +2972,11 @@ class AsciiRenderer:
         if not root:
             return
 
+        ox, oy = self._zone_abs_offset(game)
         rx, ry = root
         tile_px = max(1, int(round(self.tile)))
-        x = int(rx * self.tile + self.origin_x)
-        y = int(ry * self.tile + self.origin_y)
+        x = int((rx + ox) * self.tile + self.origin_x)
+        y = int((ry + oy) * self.tile + self.origin_y)
 
         t = pygame.time.get_ticks() / 1000.0
         pulse = 0.5 + 0.5 * math.sin(t * (math.tau / 1.6))
@@ -2785,6 +2994,8 @@ class AsciiRenderer:
         preview = self._ui_attr("action_preview", None)
         if preview is None:
             return
+
+        ox, oy = self._zone_abs_offset(game)
 
         overlay = getattr(self, "_action_preview_surface", None)
         if overlay is None or overlay.get_size() != (self.width, self.height):
@@ -2808,14 +3019,14 @@ class AsciiRenderer:
                 indirect_col = (255, 255, 255, 45)
 
             for (tx, ty) in direct:
-                px = int(tx * self.tile + self.origin_x)
-                py = int(ty * self.tile + self.origin_y)
+                px = int((tx + ox) * self.tile + self.origin_x)
+                py = int((ty + oy) * self.tile + self.origin_y)
                 pygame.draw.rect(overlay, direct_col, pygame.Rect(px, py, tile_px, tile_px))
                 drew_any = True
 
             for (tx, ty) in indirect:
-                px = int(tx * self.tile + self.origin_x)
-                py = int(ty * self.tile + self.origin_y)
+                px = int((tx + ox) * self.tile + self.origin_x)
+                py = int((ty + oy) * self.tile + self.origin_y)
                 pygame.draw.rect(overlay, indirect_col, pygame.Rect(px, py, tile_px, tile_px))
                 drew_any = True
 
@@ -2843,10 +3054,10 @@ class AsciiRenderer:
                 except Exception:
                     continue
 
-                ax = a[0] * self.tile + self.tile * 0.5 + self.origin_x
-                ay = a[1] * self.tile + self.tile * 0.5 + self.origin_y
-                bx = b[0] * self.tile + self.tile * 0.5 + self.origin_x
-                by = b[1] * self.tile + self.tile * 0.5 + self.origin_y
+                ax = (a[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
+                ay = (a[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
+                bx = (b[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
+                by = (b[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
                 dx = bx - ax
                 dy = by - ay
                 dist = max(1.0, math.hypot(dx, dy))
@@ -2899,6 +3110,8 @@ class AsciiRenderer:
         if preview is None:
             return
 
+        ox, oy = self._zone_abs_offset(_game)
+
         texts = getattr(preview, "texts", None) or ()
         if not texts:
             return
@@ -2918,8 +3131,8 @@ class AsciiRenderer:
             except Exception:
                 continue
 
-            px = int(tx * self.tile + self.origin_x + self.tile * 0.5)
-            py = int(ty * self.tile + self.origin_y + self.tile * 0.5)
+            px = int((tx + ox) * self.tile + self.origin_x + self.tile * 0.5)
+            py = int((ty + oy) * self.tile + self.origin_y + self.tile * 0.5)
 
             try:
                 color = tuple(int(v) for v in item.color[:3])
@@ -2934,6 +3147,7 @@ class AsciiRenderer:
 
     def draw_aim_overlay(self, game: Game) -> None:
         pred = self._ui_attr("aim_prediction", None)
+        ox, oy = self._zone_abs_offset(game)
         aim_action = getattr(pred, "action", None) or self._ui_attr("aim_action", None)
         if aim_action not in ("activate_all", "activate_seed", "throw_flask"):
             return
@@ -2966,8 +3180,8 @@ class AsciiRenderer:
                     center = (tx + 0.5, ty + 0.5)
             else:
                 center = verts[hover_vertex]
-            cx = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
-            cy = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
+                cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
             r2 = radius * radius
             target_vertices = getattr(pred, "target_vertices", None)
@@ -2977,13 +3191,13 @@ class AsciiRenderer:
                 if idx < 0 or idx >= len(verts):
                     continue
                 vx, vy = verts[idx]
-                px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
-                py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+                px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
                 pygame.draw.circle(self.surface, (200, 240, 255), (px, py), max(3, self.tile // 5))
         else:  # activate_seed
             center = verts[hover_vertex]
-            px = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
+            px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
             target_vertices = getattr(pred, "target_vertices", None) or []
             seen = set()
@@ -2997,8 +3211,8 @@ class AsciiRenderer:
                 if idx < 0 or idx >= len(verts):
                     continue
                 vx, vy = verts[idx]
-                px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
-                py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+                px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
                 color = (200, 220, 255) if idx != hover_vertex else (255, 230, 120)
                 pygame.draw.circle(self.surface, color, (px, py), max(3, self.tile // 5))
                 tx = int(round(vx))
@@ -3026,8 +3240,8 @@ class AsciiRenderer:
                     tile = level.world.get_tile(ax, ay) if hasattr(level, "world") else None
                     if tile is not None and hasattr(tile, "visible") and not tile.visible:
                         continue
-                    px = ax * self.tile + self.origin_x + self.tile // 2
-                    py = ay * self.tile + self.origin_y + self.tile // 2
+                    px = (ax + ox) * self.tile + self.origin_x + self.tile // 2
+                    py = (ay + oy) * self.tile + self.origin_y + self.tile // 2
                     dmg_surf = dmg_font.render(str(dmg), True, (255, 160, 160))
                     surf = pygame.Surface((dmg_surf.get_width(), dmg_surf.get_height()), pygame.SRCALPHA)
                     surf.blit(dmg_surf, (0, 0))
@@ -3047,8 +3261,9 @@ class AsciiRenderer:
         if text_val:
             center = verts[hover_vertex]
             radius = getattr(pred, "radius", None) or 0
-            cx = int(center[0] * self.tile + self.tile * 0.5 + self.origin_x)
-            cy = int(center[1] * self.tile + self.tile * 0.5 + self.origin_y)
+            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+
             txt = self.small_font.render(text_val, True, (255, 180, 140))
             surf = pygame.Surface((txt.get_width(), txt.get_height()), pygame.SRCALPHA)
             surf.blit(txt, (0, 0))
@@ -3057,66 +3272,85 @@ class AsciiRenderer:
             offset = int(radius * self.tile) if radius else int(1.0 * self.tile)
             self.surface.blit(surf, (cx - txt.get_width() // 2, cy - offset - txt.get_height() - 4))
 
+
     def draw_activation_overlay(self, game: Game) -> None:
-        """Post-activation visuals only (no text)."""
+        """Post-activation visuals only (no text).
+
+        Activation points are currently stored in LOCAL level coordinates.
+        Convert to ABS for rendering, but keep visibility gating in LOCAL.
+        """
         if not game.activation_points or game.activation_ttl <= 0:
             return
         world = game.world
+        ox, oy = self._zone_abs_offset(game)
         for vx, vy in game.activation_points:
             tx = int(round(vx))
             ty = int(round(vy))
             if not world.in_bounds(tx, ty):
                 continue
             tile = world.get_tile(tx, ty)
-            if tile is None or not tile.visible:
+            if tile is None or not getattr(tile, "visible", True):
                 continue
-            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+
+            avx = vx + ox
+            avy = vy + oy
+            px = int(avx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(avy * self.tile + self.tile * 0.5 + self.origin_y)
             sprite = self._get_glow_sprite(max(3, self.tile // 8), self.rune_color)
             self.surface.blit(sprite, sprite.get_rect(center=(px, py)))
+
 
     def draw_target_cursor(self, game: Game) -> None:
         """
         Draw the tile highlight for unified TargetMode.
 
-        - For legacy rune placement, we still gate on game.awaiting_terminus.
-        - For look-style targeting, we draw whenever ui_state.target.kind == "look".
+        ui_state.target_cursor is LOCAL (current zone) but renderer origins are ABS.
+        Convert LOCAL→ABS for drawing so the yellow cursor stays visible.
         """
         t = self._ui_attr("target", None)
         tc = self._ui_attr("target_cursor", None)
+        tc_abs = self._ui_attr("target_cursor_abs", None)
 
-        if not tc:
-            return
-
-        # Draw for:
-        #  - legacy terminus mode (awaiting_terminus flag)
-        #  - look-style TargetMode (kind == "look")
         kind = getattr(t, "kind", None) if t is not None else None
-        draw_for_terminus = bool(game.awaiting_terminus)
+        mode = getattr(t, "mode", None) if t is not None else None
+
+        draw_for_terminus = (kind == "tile" and mode == "terminus")
         draw_for_look = (kind == "look")
+
 
         if not (draw_for_terminus or draw_for_look):
             return
 
-        tx, ty = tc
-        if not game.world.in_bounds(tx, ty):
-            return
+        # Prefer ABS cursor for look-mode and terminus-mode when available.
+        if (draw_for_look or draw_for_terminus) and tc_abs is not None:
+            ax, ay = int(tc_abs[0]), int(tc_abs[1])
+        else:
+            if not tc:
+                return
+            tx, ty = tc
+            if hasattr(game, "world") and hasattr(game.world, "in_bounds"):
+                if not game.world.in_bounds(tx, ty):
+                    return
+            ax, ay = self._local_tile_to_abs(game, (tx, ty))
+
+
 
         tile_px = float(self.tile)
         size = max(1, int(round(tile_px)))
 
-        px = int(round(tx * tile_px + self.origin_x))
-        py = int(round(ty * tile_px + self.origin_y))
+        px = int(round(ax * tile_px + self.origin_x))
+        py = int(round(ay * tile_px + self.origin_y))
 
         rect = pygame.Rect(px, py, size, size)
         pygame.draw.rect(self.surface, (255, 255, 120), rect, 2)
 
-        
-        
+
     def draw_look_overlay(self, game: Game) -> None:
         """
         When in look-style TargetMode, show the name of any actor under
         the cursor in a yellow label just beneath the tile.
+
+        Cursor tile is LOCAL, renderer pixels are ABS → convert for placement.
         """
         t = self._ui_attr("target", None)
         if not t or getattr(t, "kind", None) != "look":
@@ -3127,15 +3361,14 @@ class AsciiRenderer:
             return
 
         tx, ty = cursor_tile
-        world = game.world
-        if not world.in_bounds(tx, ty):
+        world = getattr(game, "world", None)
+        if world is None or not hasattr(world, "in_bounds") or not world.in_bounds(tx, ty):
             return
 
         tile = world.get_tile(tx, ty)
         if tile is None or (hasattr(tile, "visible") and not tile.visible):
             return
 
-        # Find any renderable entities (actors, items, features...) at this tile.
         try:
             renderables = game.renderables_current()
         except Exception:
@@ -3148,27 +3381,26 @@ class AsciiRenderer:
         if not entities_here:
             return
 
-        # For now, just show the "topmost" entity's name.
         ent = entities_here[-1]
         name = getattr(ent, "name", None) or getattr(ent, "label", None) or "something"
 
+        ax, ay = self._local_tile_to_abs(game, (tx, ty))
 
-        # Convert tile → pixel; center text under the tile
-        px = tx * self.tile + self.origin_x + self.tile // 2
-        py = ty * self.tile + self.origin_y + self.tile  # just below the tile
+        px = ax * self.tile + self.origin_x + self.tile // 2
+        py = ay * self.tile + self.origin_y + self.tile
 
-        text = self.small_font.render(name, True, self.sel)  # self.sel is your yellow-ish color
+        text = self.small_font.render(name, True, self.sel)
         self.surface.blit(text, (px - text.get_width() // 2, py))
-
 
 
     def draw_place_overlay(self, game: Game) -> None:
         """Subtle pulsing circle showing placement range when selecting a terminus."""
-        if not game.awaiting_terminus:
+        if not getattr(game, "awaiting_terminus", False):
             return
         player = game.actors[game.player_id]
-        cx = player.pos[0] * self.tile + self.tile * 0.5 + self.origin_x
-        cy = player.pos[1] * self.tile + self.tile * 0.5 + self.origin_y
+        ax, ay = self._local_tile_to_abs(game, player.pos)
+        cx = ax * self.tile + self.tile * 0.5 + self.origin_x
+        cy = ay * self.tile + self.tile * 0.5 + self.origin_y
         radius = game.place_range * self.tile
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 350.0)
         alpha = int(25 + 30 * pulse)
@@ -3176,6 +3408,7 @@ class AsciiRenderer:
         color = (120, 200, 255, alpha)
         pygame.draw.circle(overlay, color, (int(cx), int(cy)), int(radius), width=2)
         self.surface.blit(overlay, (0, 0))
+
 
     def draw_push_preview(self, game: Game) -> None:
         """Draw source/target boxes and ghost pattern for push_pattern targeting."""
@@ -3188,55 +3421,59 @@ class AsciiRenderer:
         if source is None or target is None:
             return
 
+        ox, oy = self._zone_abs_offset(game)
+
         def _to_px(pt: Tuple[float, float]) -> Tuple[int, int]:
-            # Align to tile centers so ghost matches where the pattern will land.
+            ax = pt[0] + ox
+            ay = pt[1] + oy
             return (
-                int(pt[0] * self.tile + self.tile * 0.5 + self.origin_x),
-                int(pt[1] * self.tile + self.tile * 0.5 + self.origin_y),
+                int(ax * self.tile + self.tile * 0.5 + self.origin_x),
+                int(ay * self.tile + self.tile * 0.5 + self.origin_y),
             )
 
-        def _draw_box(center: Tuple[int, int], color_top, color_bottom) -> None:
-            cx, cy = center
-            size = int(half * self.tile)
-            left = cx - size
-            right = cx + size
-            top = cy - size
-            bottom = cy + size
-            pygame.draw.line(self.surface, color_top, (left, top), (right, top), 2)
-            pygame.draw.line(self.surface, color_bottom, (left, bottom), (right, bottom), 2)
-            steps = max(2, bottom - top)
-            for i in range(steps + 1):
-                t = i / max(1, steps)
-                col = (
-                    int(color_top[0] + (color_bottom[0] - color_top[0]) * t),
-                    int(color_top[1] + (color_bottom[1] - color_top[1]) * t),
-                    int(color_top[2] + (color_bottom[2] - color_top[2]) * t),
-                )
-                y = top + i
-                pygame.draw.line(self.surface, col, (left, y), (left + 1, y))
-                pygame.draw.line(self.surface, col, (right, y), (right - 1, y))
+        sx, sy = _to_px(source)
+        tx, ty = _to_px(target)
 
-        _draw_box(_to_px(source), (0, 0, 0), (255, 255, 255))
-        _draw_box(_to_px(target), (30, 30, 30), (240, 240, 240))
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
-        tgt_verts = preview.get("target_verts") or []
-        edges = preview.get("edges") or []
-        if tgt_verts and edges:
-            tval = pygame.time.get_ticks() / 1000.0
-            alpha = int(80 + 80 * (0.5 + 0.5 * math.sin(tval * 2 * math.pi)))
-            ghost = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        box = int(max(1, half * self.tile * 2))
+        pygame.draw.rect(overlay, (120, 220, 255, 70), pygame.Rect(sx - box // 2, sy - box // 2, box, box), 2)
+        pygame.draw.rect(overlay, (255, 220, 120, 80), pygame.Rect(tx - box // 2, ty - box // 2, box, box), 2)
+
+        pygame.draw.line(overlay, (220, 220, 220, 90), (sx, sy), (tx, ty), 2)
+
+
+        # --- Ghost pattern (push) -----------------------------------------
+        verts = preview.get("target_verts")
+        edges = preview.get("edges")
+        if verts and edges:
+            # Draw ghost edges (green-ish) from target verts.
             for a, b in edges:
-                if a >= len(tgt_verts) or b >= len(tgt_verts):
+                try:
+                    p0 = _to_px(verts[a])
+                    p1 = _to_px(verts[b])
+                except Exception:
                     continue
-                ax, ay = tgt_verts[a]
-                bx, by = tgt_verts[b]
-                pygame.draw.aaline(
-                    ghost,
-                    (180, 255, 200, alpha),
-                    _to_px((ax, ay)),
-                    _to_px((bx, by)),
-                )
-            self.surface.blit(ghost, (0, 0))
+                pygame.draw.line(overlay, (180, 255, 180, 110), p0, p1, 2)
+                pygame.draw.aaline(overlay, (180, 255, 180, 110), p0, p1)
+
+            # Optional: vertex pips (helps readability)
+            r = max(2, int(self.tile * 0.12))
+            for vx, vy in verts:
+                px, py = _to_px((vx, vy))
+                pygame.draw.circle(overlay, (200, 255, 200, 130), (px, py), r)
+
+
+        tiles = preview.get("ghost_tiles") or []
+        for gx, gy in tiles:
+            agx = gx + ox
+            agy = gy + oy
+            px = int(agx * self.tile + self.origin_x)
+            py = int(agy * self.tile + self.origin_y)
+            rect = pygame.Rect(px, py, int(self.tile), int(self.tile))
+            pygame.draw.rect(overlay, (180, 255, 180, 55), rect, 1)
+
+        self.surface.blit(overlay, (0, 0))
 
     def draw_status(self, game: Game) -> None:
         """Draw the top header HUD (delegates to StatusHeaderWidget)."""
@@ -3321,6 +3558,7 @@ class AsciiRenderer:
         state = getattr(level, "ignite_state", None)
         if not state:
             return
+        ox, oy = self._zone_abs_offset(game)
         direct = state.get("direct_tiles") or []
         indirect = state.get("indirect_tiles") or []
         remaining = float(state.get("remaining", 0))
@@ -3333,8 +3571,8 @@ class AsciiRenderer:
 
         def draw_tile(tile_pos, color):
             tx, ty = tile_pos
-            px = int(tx * self.tile + self.origin_x)
-            py = int(ty * self.tile + self.origin_y)
+            px = int((tx + ox) * self.tile + self.origin_x)
+            py = int((ty + oy) * self.tile + self.origin_y)
             rect = pygame.Rect(px, py, self.tile, self.tile)
             pygame.draw.rect(overlay, color, rect)
 
@@ -3349,8 +3587,8 @@ class AsciiRenderer:
         anchor = getattr(level, "pattern_anchor", None)
         if anchor:
             ax, ay = anchor
-            cx = ax * self.tile + self.origin_x + self.tile * 0.5
-            cy = ay * self.tile + self.origin_y + self.tile * 0.5
+            cx = (ax + ox) * self.tile + self.origin_x + self.tile * 0.5
+            cy = (ay + oy) * self.tile + self.origin_y + self.tile * 0.5
             radius = self.tile * 1.0
             col = (255, 120, 60, int(80 * alpha_scale))
             pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
@@ -3367,6 +3605,7 @@ class AsciiRenderer:
         state = getattr(level, "regrow_state", None)
         if not state:
             return
+        ox, oy = self._zone_abs_offset(game)
         direct = state.get("direct_tiles") or []
         indirect = state.get("indirect_tiles") or []
         remaining = float(state.get("remaining", 0))
@@ -3379,8 +3618,8 @@ class AsciiRenderer:
 
         def draw_tile(tile_pos, color):
             tx, ty = tile_pos
-            px = int(tx * self.tile + self.origin_x)
-            py = int(ty * self.tile + self.origin_y)
+            px = int((tx + ox) * self.tile + self.origin_x)
+            py = int((ty + oy) * self.tile + self.origin_y)
             rect = pygame.Rect(px, py, self.tile, self.tile)
             pygame.draw.rect(overlay, color, rect)
 
@@ -3394,8 +3633,8 @@ class AsciiRenderer:
         anchor = getattr(level, "pattern_anchor", None)
         if anchor:
             ax, ay = anchor
-            cx = ax * self.tile + self.origin_x + self.tile * 0.5
-            cy = ay * self.tile + self.origin_y + self.tile * 0.5
+            cx = (ax + ox) * self.tile + self.origin_x + self.tile * 0.5
+            cy = (ay + oy) * self.tile + self.origin_y + self.tile * 0.5
             radius = self.tile * 1.0
             col = (120, 255, 180, int(70 * alpha_scale))
             pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
@@ -3418,6 +3657,7 @@ class AsciiRenderer:
         state = getattr(level, "sparkle_state", None)
         if not state:
             return
+        ox, oy = self._zone_abs_offset(game)
 
         try:
             t0 = float(state.get("t0", 0.0))
@@ -3476,10 +3716,10 @@ class AsciiRenderer:
                     continue
                 ax, ay = verts[a_idx]
                 bx, by = verts[b_idx]
-                x0 = ax * self.tile + self.tile * 0.5 + self.origin_x
-                y0 = ay * self.tile + self.tile * 0.5 + self.origin_y
-                x1 = bx * self.tile + self.tile * 0.5 + self.origin_x
-                y1 = by * self.tile + self.tile * 0.5 + self.origin_y
+                x0 = (ax + ox) * self.tile + self.tile * 0.5 + self.origin_x
+                y0 = (ay + oy) * self.tile + self.tile * 0.5 + self.origin_y
+                x1 = (bx + ox) * self.tile + self.tile * 0.5 + self.origin_x
+                y1 = (by + oy) * self.tile + self.tile * 0.5 + self.origin_y
                 pygame.draw.line(overlay, col, (x0, y0), (x1, y1), width=width)
                 pygame.draw.aaline(overlay, col, (x0, y0), (x1, y1))
 
@@ -3518,8 +3758,8 @@ class AsciiRenderer:
         for _ in range(min(sparkle_count, 200)):
             idx = rng.randrange(0, len(verts))
             vx, vy = verts[idx]
-            px = int(vx * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int(vy * self.tile + self.tile * 0.5 + self.origin_y)
+            px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
             if jitter:
                 px += rng.randint(-jitter, jitter)
                 py += rng.randint(-jitter, jitter)
@@ -3543,8 +3783,8 @@ class AsciiRenderer:
         if spark_t < 1.0 and len(verts) >= 2:
             sx = sum(float(v[0]) for v in verts) / max(1, len(verts))
             sy = sum(float(v[1]) for v in verts) / max(1, len(verts))
-            cx = int(sx * self.tile + self.tile * 0.5 + self.origin_x)
-            cy = int(sy * self.tile + self.tile * 0.5 + self.origin_y)
+            cx = int((sx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int((sy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
 
             # Fast attack + exponential-ish decay (matches the inspiration).
             attack = 0.05
@@ -3590,6 +3830,7 @@ class AsciiRenderer:
         state = getattr(level, "lightning_state", None)
         if not state:
             return
+        ox, oy = self._zone_abs_offset(game)
 
         try:
             t0 = float(state.get("t0", 0.0))
@@ -3676,8 +3917,8 @@ class AsciiRenderer:
 
         min_x, min_y, max_x, max_y = tile_bbox
         pad_px = int(max(10, self.tile * 2.0))
-        left = int(min_x * self.tile + self.origin_x) - pad_px
-        top = int(min_y * self.tile + self.origin_y) - pad_px
+        left = int((min_x + ox) * self.tile + self.origin_x) - pad_px
+        top = int((min_y + oy) * self.tile + self.origin_y) - pad_px
         width = int((max_x - min_x + 1) * self.tile) + pad_px * 2
         height = int((max_y - min_y + 1) * self.tile) + pad_px * 2
 
@@ -3691,8 +3932,8 @@ class AsciiRenderer:
 
         def to_local_px(wx: float, wy: float) -> tuple[int, int]:
             # World-space (tile units) -> local pixel coords (centered on tile centers).
-            px = wx * self.tile + self.origin_x + self.tile * 0.5 - fx_rect.x
-            py = wy * self.tile + self.origin_y + self.tile * 0.5 - fx_rect.y
+            px = (wx + ox) * self.tile + self.origin_x + self.tile * 0.5 - fx_rect.x
+            py = (wy + oy) * self.tile + self.origin_y + self.tile * 0.5 - fx_rect.y
             return (int(px), int(py))
 
         # TUNING: reveal speed (how quickly the bolt "runs" along the path).
@@ -3901,15 +4142,11 @@ class AsciiRenderer:
             x1 = (float(map_rect.right) - float(getattr(self, "origin_x", map_origin_x))) / world_scale
             y1 = (float(map_rect.bottom) - float(getattr(self, "origin_y", map_origin_y))) / world_scale
 
-            zone_w = int(getattr(getattr(game, "cfg", None), "world_width", getattr(game.world, "width", 60) or 60))
-            zone_h = int(getattr(getattr(game, "cfg", None), "world_height", getattr(game.world, "height", 40) or 40))
-            zone_w = max(1, zone_w)
-            zone_h = max(1, zone_h)
-            zx, zy, _zz = getattr(game, "zone_coord", (0, 0, 0))
-            abs_off_x = float(int(zx) * zone_w)
-            abs_off_y = float(int(zy) * zone_h)
+            # Visible rect in ABSOLUTE world-tile coords.
+            # NOTE: origin_x/origin_y are now assumed to be an abs-space mapping
+            # (because pan is centered using player.abs_pos).
+            abs_rect = (float(x0), float(y0), float(x1), float(y1))
 
-            abs_rect = (abs_off_x + float(x0), abs_off_y + float(y0), abs_off_x + float(x1), abs_off_y + float(y1))
 
             # cam_lod = log2(1 / zoom)
             cam_lod = 0.0

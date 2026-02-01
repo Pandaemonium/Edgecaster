@@ -75,6 +75,7 @@ def choose_lod_blend(
     return cell0, cell1, float(a0), float(a1), lod0, lod1
 
 
+
 def infer_world_center_from_renderer(
     *,
     game: object,
@@ -84,10 +85,17 @@ def infer_world_center_from_renderer(
     zone_w: int,
     zone_h: int,
 ) -> Tuple[float, float]:
-    """Infer absolute world tile coords of the map rect center.
+    """Infer absolute world-tile coords of the map rect center (fallback).
 
-    Used only when no game.camera exists (fallback). The renderer provides:
-    - origin_px: where world tile (0,0) of the *current zone* lands in screen pixels.
+    Used only when no game.camera exists.
+
+    IMPORTANT (post-abs_pos refactor):
+      - origin_px is the screen position of absolute world tile (0,0),
+        NOT "tile (0,0) of the current zone".
+      - Therefore, we must NOT add any zone_coord offset here.
+
+    This function simply inverts the current screen transform:
+        abs = (screen - origin_px) / world_scale
     """
     cx_px = float(map_rect.centerx)
     cy_px = float(map_rect.centery)
@@ -97,19 +105,10 @@ def infer_world_center_from_renderer(
     dy_px = cy_px - oy
 
     s = max(1e-6, float(world_scale))
-    local_wx = dx_px / s
-    local_wy = dy_px / s
-
-    try:
-        zx, zy, _zz = getattr(game, "zone_coord", (0, 0, 0))
-        zx = int(zx)
-        zy = int(zy)
-    except Exception:
-        zx = zy = 0
-
-    abs_wx = float(local_wx + zx * int(zone_w))
-    abs_wy = float(local_wy + zy * int(zone_h))
+    abs_wx = float(dx_px / s)
+    abs_wy = float(dy_px / s)
     return abs_wx, abs_wy
+
 
 
 def overmap_signature(game: object) -> Tuple:
@@ -214,14 +213,10 @@ class OvermapLodRenderer:
             return out
 
         # Determine world center in absolute world-tile coordinates.
-        cam = getattr(game, "camera", None)
-        if cam is not None:
-            abs_wx = float(getattr(cam, "world_x", 0.0))
-            abs_wy = float(getattr(cam, "world_y", 0.0))
-        else:
-            abs_wx, abs_wy = infer_world_center_from_renderer(
-                game=game, map_rect=map_rect, origin_px=origin_px, world_scale=world_scale, zone_w=zone_w, zone_h=zone_h
-            )
+        # NOTE: TileCamera does not store canonical world_x/world_y. Use a stable inference path.
+        abs_wx, abs_wy = infer_world_center_from_renderer(
+            game=game, map_rect=map_rect, origin_px=origin_px, world_scale=world_scale, zone_w=zone_w, zone_h=zone_h
+        )
 
         # Visible span in world tiles covered by on-screen map rect.
         world_scale = max(1e-6, float(world_scale))

@@ -55,6 +55,7 @@ class DungeonUIState:
     """Scene-owned view-model for UI state previously held by the renderer."""
     target: TargetState | None = None
     target_cursor: tuple[int, int] = (0, 0)
+    target_cursor_abs: tuple[int, int] | None = None
     aim_action: str | None = None
     hover_vertex: int | None = None
     hover_neighbors: list[int] | None = None
@@ -84,7 +85,7 @@ class DungeonScene(Scene):
 
     uses_live_loop = True
     # --- Music declaration ---
-    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth", "warp_whistle", "hornpipe", "real_boy", "baal_cycle"]
+    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth", "warp_whistle", "hornpipe", "real_boy", "baal_cycle", "creche"]
     music_loop = True
     music_fade_out_ms = 1200
     music_fade_in_ms = 1200
@@ -172,6 +173,40 @@ class DungeonScene(Scene):
 
     # ------------------------------------------------------------------ #
     # Live-loop hooks
+
+    def _entity_source_px_from_world(
+        self,
+        renderer,
+        world_pos: tuple[int, int] | None,
+    ) -> tuple[int, int] | None:
+        """Screen pixel for center of an entity at renderer tile coords.
+
+        This matches the same coordinate convention used by the dungeon renderer:
+        (tx, ty) are in the *current drawn tile space* (currently the loaded chunk's
+        local tile coordinates). This is the same convention InventoryScene uses
+        when no explicit source_px is provided (owner.pos).
+        """
+        if renderer is None or world_pos is None:
+            return None
+        try:
+            tx, ty = int(world_pos[0]), int(world_pos[1])
+        except Exception:
+            return None
+        try:
+            ox = float(getattr(renderer, "origin_x", 0.0))
+            oy = float(getattr(renderer, "origin_y", 0.0))
+        except Exception:
+            ox = oy = 0.0
+        try:
+            tile_px = float(getattr(renderer, "tile_px", float(getattr(renderer, "tile", 1) or 1)))
+        except Exception:
+            tile_px = 1.0
+        if tile_px <= 0:
+            tile_px = 1.0
+        sx = int(round(ox + (float(tx) + 0.5) * tile_px))
+        sy = int(round(oy + (float(ty) + 0.5) * tile_px))
+        return (sx, sy)
+
     def handle_event(self, event, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         # Keep keybindings in sync with manager settings.
         if hasattr(manager, "keybindings"):
@@ -284,6 +319,8 @@ class DungeonScene(Scene):
                     self.ui_state.action_preview = None
             except Exception:
                 self.ui_state.action_preview = None
+
+
 
         # Keep aim preview in sync with any param/hover changes.
         self._refresh_aim_prediction(game)
@@ -726,12 +763,28 @@ class DungeonScene(Scene):
         )
         self.ui_state.target = tstate
 
-        # Look-style generic tile cursor (no legacy flags, no game.awaiting_terminus).
+        # Look-style generic tile cursor (ABS-canonical; LOCAL is derived if in-zone).
         if kind == "look":
             if origin_tile is not None:
                 tstate.cursor_tile = origin_tile
                 self.ui_state.target_cursor = origin_tile
+
+                # Compute canonical ABS cursor from the origin actor if possible.
+                abs_origin = None
+                if actor_id is not None and getattr(game, "actors", None):
+                    a = game.actors.get(actor_id)
+                    abs_origin = getattr(a, "abs_pos", None)
+
+                if abs_origin is None:
+                    # Fall back: derive ABS from current zone + local origin tile.
+                    try:
+                        abs_origin = game.abs_from_zone_local(getattr(game, "zone_coord", (0, 0, 0)), origin_tile)
+                    except Exception:
+                        abs_origin = None
+
+                self.ui_state.target_cursor_abs = abs_origin
             return
+
 
         # Backwards-compat bridge for rune terminus targeting:
         if kind == "tile" and mode == "terminus":
@@ -746,6 +799,7 @@ class DungeonScene(Scene):
             self.ui_state.aim_action = action
 
             # Seed hover at nearest vertex to the origin tile (usually the player).
+            # NOTE: origin_tile is in current-zone local coords, which matches nearest_vertex() space.
             idx = None
             if origin_tile is not None:
                 tx, ty = origin_tile
@@ -801,6 +855,8 @@ class DungeonScene(Scene):
         self.ui_state.push_preview = None
         self.ui_state.seal_snap_active = False
         self.ui_state.seal_root_hint = None
+        self.ui_state.target_cursor_abs = None
+
         # Clear legacy terminus flag for any tile/terminus targeting.
         if t and t.kind == "tile" and getattr(t, "mode", None) == "terminus":
             game.awaiting_terminus = False
@@ -813,20 +869,34 @@ class DungeonScene(Scene):
 
         # TILE TARGETING (e.g. Kochbender 'place' / rune terminus)
         if t.kind == "tile":
+            if getattr(t, "mode", None) == "terminus":
+                # Terminus placement is ABS-canonical; allow off-zone cursor.
+                abs_tgt = getattr(self.ui_state, "target_cursor_abs", None)
+
+                if abs_tgt is None and t.cursor_tile is not None:
+                    try:
+                        abs_tgt = game.abs_from_zone_local(game.zone_coord, t.cursor_tile)
+                    except Exception:
+                        abs_tgt = None
+
+                if abs_tgt is None:
+                    return
+
+                if hasattr(game, "try_place_terminus"):
+                    game.try_place_terminus((int(abs_tgt[0]), int(abs_tgt[1])))
+                return
+
+            # Non-terminus tile targeting still requires a concrete local tile for now.
             if t.cursor_tile is None:
                 return
 
-            if getattr(t, "mode", None) == "terminus":
-                # Generic "terminus" semantics: place a rune terminus at the tile.
-                if hasattr(game, "try_place_terminus"):
-                    game.try_place_terminus(t.cursor_tile)
-            else:
-                # Future: tile-based ranged attacks, teleports, etc.
-                trigger_ability_effect(
-                    game,
-                    t.action,
-                    target_tile=t.cursor_tile,
-                )
+            # Future: tile-based ranged attacks, teleports, etc.
+            trigger_ability_effect(
+                game,
+                t.action,
+                target_tile=t.cursor_tile,
+            )
+
 
         # VERTEX TARGETING (e.g. activate_all / activate_seed)
         elif t.kind == "vertex":
@@ -861,34 +931,66 @@ class DungeonScene(Scene):
         - Fall back to a tile description if no entity is present.
         """
         t = self.ui_state.target
-        if not t or t.cursor_tile is None:
+        if not t:
             self.cancel_target_mode(game)
             return
 
-        tx, ty = t.cursor_tile
+        # Prefer canonical ABS cursor; fall back to deriving from local if needed.
+        abs_tile = getattr(self.ui_state, "target_cursor_abs", None)
+        if abs_tile is None and t.cursor_tile is not None:
+            try:
+                abs_tile = game.abs_from_zone_local(getattr(game, "zone_coord", (0, 0, 0)), t.cursor_tile)
+            except Exception:
+                abs_tile = None
+
+        if abs_tile is None:
+            # As an absolute last resort, look at the player.
+            a = game.actors[game.player_id]
+            abs_tile = getattr(a, "abs_pos", None)
+            if abs_tile is None:
+                self.cancel_target_mode(game)
+                return
+
+        # If the ABS cursor is in the current zone, derive a local tile for in-zone entity inspection.
+        tx_ty: tuple[int, int] | None = None
+        try:
+            zone, local = game.zone_local_from_abs(abs_tile, depth=getattr(game, "zone_coord", (0, 0, 0))[2], clamp_to_world=True)
+            if zone == getattr(game, "zone_coord", None) and local is not None:
+                tx_ty = (int(local[0]), int(local[1]))
+        except Exception:
+            tx_ty = None
+
         level = game._level() if hasattr(game, "_level") else None
 
         title = "You look around..."
         body: str | None = None
 
         if level is not None:
-            # Prefer any renderable entities on this tile (actors, items, features, etc.).
-            try:
-                renderables = game.renderables_current()
-            except Exception:
-                renderables = []
+            entities_here = []
 
-            # Gather unique entities at this tile (avoid actor duplicates mirrored in entities).
-            seen = {}
-            for e in renderables:
-                if getattr(e, "pos", None) != (tx, ty):
-                    continue
-                eid = getattr(e, "id", None)
-                key = eid if eid is not None else id(e)
-                if key in seen:
-                    continue
-                seen[key] = e
-            entities_here = list(seen.values())
+            # Only scan for concrete entity instances when the target lies in the current loaded zone.
+            # Out-of-zone look should not attempt to match instance-local .pos.
+            if tx_ty is not None:
+                tx, ty = tx_ty
+
+                # Prefer any renderable entities on this tile (actors, items, features, etc.).
+                try:
+                    renderables = game.renderables_current()
+                except Exception:
+                    renderables = []
+
+                # Gather unique entities at this tile (avoid actor duplicates mirrored in entities).
+                seen = {}
+                for e in renderables:
+                    if getattr(e, "pos", None) != (tx, ty):
+                        continue
+                    eid = getattr(e, "id", None)
+                    key = eid if eid is not None else id(e)
+                    if key in seen:
+                        continue
+                    seen[key] = e
+                entities_here = list(seen.values())
+
 
             if entities_here:
                 if len(entities_here) > 1:
@@ -917,6 +1019,11 @@ class DungeonScene(Scene):
                                     game,
                                     owner_id=str(ent_id),
                                     title=info.get("name", "You inspect...") or "You inspect...",
+                                    source_px=self._entity_source_px_from_world(
+                                        getattr(mgr, "renderer", None),
+                                        getattr(ent, "abs_pos", None) or getattr(ent, "pos", None),
+                                    ),
+                                    source_glyph_px=int(getattr(getattr(mgr, "renderer", None), "glyph_px", getattr(getattr(mgr, "renderer", None), "tile", 1) or 1)),
                                 )
                             )
                             return
@@ -959,14 +1066,19 @@ class DungeonScene(Scene):
 
                 ent_id = getattr(primary, "id", None)
                 if LookScene is not None and ent_id is not None:
+                    rend = getattr(manager, "renderer", None)
+                    world_pos = getattr(primary, "abs_pos", None) or getattr(primary, "pos", None)
                     manager.push_scene(
                         LookScene(
                             game,
                             owner_id=str(ent_id),
                             title=info.get("name", "You inspect...") or "You inspect...",
+                            source_px=self._entity_source_px_from_world(rend, world_pos),
+                            source_glyph_px=int(getattr(rend, "glyph_px", getattr(rend, "tile", 1) or 1)),
                         )
                     )
                     return
+
 
                 # Fallback if LookScene can't be imported / entity has no id
                 title = info.get("name", title) or title
@@ -992,10 +1104,13 @@ class DungeonScene(Scene):
                 body = "\n".join(lines)
             else:
                 # No entities here: fall back to a tile description if available.
-                if hasattr(game, "describe_tile_at"):
-                    body = game.describe_tile_at((tx, ty))
+                if tx_ty is not None and hasattr(game, "describe_tile_at"):
+                    body = game.describe_tile_at(tx_ty)
+                elif hasattr(game, "describe_abs_tile_at"):
+                    body = game.describe_abs_tile_at((int(abs_tile[0]), int(abs_tile[1])))
                 else:
-                    body = f"You look at the tile at {tx}, {ty}."
+                    body = f"You look at a distant tile at ABS {abs_tile}."
+
 
         else:
             body = f"You look at the tile at {tx}, {ty}."
@@ -1055,6 +1170,48 @@ class DungeonScene(Scene):
         return cursor_tile
 
 
+    def _abs_tile_to_local_current_zone(
+        self,
+        game: Game,
+        abs_tile: tuple[int, int],
+    ) -> tuple[int, int] | None:
+        """Convert an ABS world-tile to LOCAL coords in the *current* loaded zone.
+
+        Post-abs_pos refactor: renderer.origin is anchored to ABS (0,0), so mouse-derived
+        tiles are ABS. Most dungeon gameplay systems (movement, runes, seal trials) still
+        operate in the current LevelState's local coordinate frame.
+        """
+        try:
+            ax, ay = int(abs_tile[0]), int(abs_tile[1])
+        except Exception:
+            return None
+
+        try:
+            zx, zy, _zz = getattr(game, "zone_coord", (0, 0, 0))
+            zx = int(zx)
+            zy = int(zy)
+        except Exception:
+            zx = zy = 0
+
+        try:
+            zw = int(getattr(game.cfg, "world_width", 0) or 0)
+            zh = int(getattr(game.cfg, "world_height", 0) or 0)
+        except Exception:
+            zw = zh = 0
+
+        if zw <= 0 or zh <= 0:
+            # Fallback: assume abs==local (legacy single-zone worlds)
+            return (ax, ay)
+
+        lx = ax - zx * zw
+        ly = ay - zy * zh
+
+        if 0 <= lx < zw and 0 <= ly < zh:
+            return (int(lx), int(ly))
+        return None
+
+
+
     def _update_hover_from_mouse(
         self,
         game: Game,
@@ -1073,18 +1230,33 @@ class DungeonScene(Scene):
         wx = (mx - renderer.origin_x) / renderer.tile
         wy = (my - renderer.origin_y) / renderer.tile
 
+        # NOTE (Yoga): screen->tile is currently in ABS tile-space (camera anchored in abs).
+        # Most gameplay targeting (runes/look/terminus) still has local-zone legacy, but the
+        # canonical cursor state should be ABS so we can traverse vestigial zone boundaries.
         if t.kind in ("tile", "look", "position"):
-            tx = int((mx - renderer.origin_x) // renderer.tile)
-            ty = int((my - renderer.origin_y) // renderer.tile)
-            if game.world.in_bounds(tx, ty):
+            abs_tx = int((mx - renderer.origin_x) // renderer.tile)
+            abs_ty = int((my - renderer.origin_y) // renderer.tile)
+
+            # ABS cursor is canonical for ALL tile-ish targeting modes.
+            self.ui_state.target_cursor_abs = (abs_tx, abs_ty)
+
+            # Try to also derive local cursor when the hovered tile lies in the current zone.
+            local = self._abs_tile_to_local_current_zone(game, (abs_tx, abs_ty))
+
+            if local is not None and game.world.in_bounds(*local):
+                tx, ty = local
                 cursor = (tx, ty)
+
                 if t.kind == "tile" and getattr(t, "mode", None) == "terminus":
                     cursor = self._apply_seal_snap(game, t, cursor)
                 else:
                     self.ui_state.seal_snap_active = False
                     self.ui_state.seal_root_hint = None
+
                 t.cursor_tile = cursor
                 self.ui_state.target_cursor = cursor
+
+                # Push preview: prefer ABS target tile (world) to avoid zone-boundary clamp/desync.
                 if getattr(t, "action", None) == "push_pattern":
                     lvl = game._level()
                     pattern = getattr(lvl, "pattern", None)
@@ -1092,8 +1264,45 @@ class DungeonScene(Scene):
                     if pattern and anchor and pattern.vertices:
                         com = pattern_motion.center_of_mass(pattern)
                         com_world = (com[0] + anchor[0], com[1] + anchor[1])
-                        dx = tx - com_world[0]
-                        dy = ty - com_world[1]
+
+                        # Mouse target in world tile coords.
+                        ox, oy = renderer._zone_abs_offset(game)
+                        mouse_world = (abs_tx - ox, abs_ty - oy)
+
+                        dx = mouse_world[0] - com_world[0]
+                        dy = mouse_world[1] - com_world[1]
+                        dist = (dx * dx + dy * dy) ** 0.5
+                        max_range = getattr(t.constraints, "max_range", None) if t.constraints else None
+                        if max_range is None:
+                            max_range = 5.0
+                        if dist > max_range and dist > 0:
+                            scale = max_range / dist
+                            dx *= scale
+                            dy *= scale
+                        tgt = (com_world[0] + dx, com_world[1] + dy)
+                        self.ui_state.push_target = tgt
+                        self.ui_state.push_preview = pattern_motion.build_push_preview(
+                            pattern, anchor, tgt, self.ui_state.push_rotation, max_range
+                        )
+            else:
+                # Out-of-zone: keep ABS cursor, but clear local cursor so nothing "sticks".
+                t.cursor_tile = None
+                self.ui_state.target_cursor = None
+
+                # If we are in push mode, we can still compute a preview using ABS.
+                if getattr(t, "action", None) == "push_pattern":
+                    lvl = game._level()
+                    pattern = getattr(lvl, "pattern", None)
+                    anchor = getattr(lvl, "pattern_anchor", None)
+                    if pattern and anchor and pattern.vertices:
+                        com = pattern_motion.center_of_mass(pattern)
+                        com_world = (com[0] + anchor[0], com[1] + anchor[1])
+
+                        ox, oy = renderer._zone_abs_offset(game)
+                        mouse_world = (abs_tx - ox, abs_ty - oy)
+
+                        dx = mouse_world[0] - com_world[0]
+                        dy = mouse_world[1] - com_world[1]
                         dist = (dx * dx + dy * dy) ** 0.5
                         max_range = getattr(t.constraints, "max_range", None) if t.constraints else None
                         if max_range is None:
@@ -1108,8 +1317,11 @@ class DungeonScene(Scene):
                             pattern, anchor, tgt, self.ui_state.push_rotation, max_range
                         )
 
+            return
+
         elif t.kind == "vertex":
-            idx = game.nearest_vertex((wx, wy))
+            ox, oy = renderer._zone_abs_offset(game)
+            idx = game.nearest_vertex((wx - ox, wy - oy))
             self.ui_state.hover_vertex = idx
             t.cursor_vertex = idx
 
@@ -1120,6 +1332,7 @@ class DungeonScene(Scene):
                 self.ui_state.hover_neighbors = []
 
             self._refresh_aim_prediction(game)
+            return
 
     # ------------------------------------------------------------------ #
     # Command handling
@@ -1178,7 +1391,8 @@ class DungeonScene(Scene):
             mx, my = surface_pos
             wx = (mx - renderer.origin_x) / renderer.tile
             wy = (my - renderer.origin_y) / renderer.tile
-            idx = game.nearest_vertex((wx, wy))
+            ox, oy = renderer._zone_abs_offset(game)
+            idx = game.nearest_vertex((wx - ox, wy - oy))
             _set_ui("hover_vertex", idx)
             if idx is not None and spec.neighbor_depth_param:
                 depth = game.get_param_value(aim, spec.neighbor_depth_param)
@@ -1372,24 +1586,33 @@ class DungeonScene(Scene):
         # ------------------------------------------------------------
         if in_terminus_mode:
             if kind == "move" and vec is not None and in_target_mode and t.kind == "tile":
-                tx, ty = t.cursor_tile or game.actors[game.player_id].pos
+                # ABS cursor so we can target across zone boundaries.
+                # Store abs cursor on ui_state to avoid overloading cursor_tile.
+                cur_abs = getattr(self.ui_state, "target_cursor_abs", None)
+                if cur_abs is None:
+                    # Seed from current tile cursor if available, else from player ABS
+                    if t.cursor_tile is not None:
+                        cur_abs = game.abs_from_zone_local(game.zone_coord, t.cursor_tile)
+                    else:
+                        cur_abs = game._get_player_abs()
+
                 dx, dy = vec
-                nt = (tx + dx, ty + dy)
-                if game.world.in_bounds(*nt):
-                    cursor = self._apply_seal_snap(game, t, nt)
+                new_abs = (int(cur_abs[0] + dx), int(cur_abs[1] + dy))
+                self.ui_state.target_cursor_abs = new_abs
+
+                # If the ABS cursor lies in the current zone, expose a local tile cursor for UI.
+                dest_coord, dest_local = game.zone_local_from_abs(
+                    new_abs, depth=game.zone_coord[2], clamp_to_world=True
+                )
+                if dest_coord == game.zone_coord:
+                    cursor = self._apply_seal_snap(game, t, dest_local)
                     t.cursor_tile = cursor
                     self.ui_state.target_cursor = cursor
+                else:
+                    # Cursor is off-zone; keep tile cursor unset so we don't clamp it.
+                    t.cursor_tile = None
                 return
 
-            if kind == "confirm" and in_target_mode:
-                self.confirm_target(game)
-                return
-
-            # Let mouse_* commands pass through to the mouse handler.
-            if kind not in ("mouse_click", "mouse_move", "mouse_wheel"):
-                # Everything else (examine, pickup, etc.) is ignored
-                # while we're choosing a terminus.
-                return
 
         # ------------------------------------------------------------
         # 4) Vertex targeting mode (activate_all / activate_seed)
@@ -1406,7 +1629,9 @@ class DungeonScene(Scene):
                     # Aim at the vertex nearest to the center of this tile.
                     wx = nt[0] + 0.5
                     wy = nt[1] + 0.5
-                    idx = game.nearest_vertex((wx, wy))
+                    ox, oy = renderer._zone_abs_offset(game)
+                    idx = game.nearest_vertex((wx - ox, wy - oy))
+
                     t.cursor_vertex = idx
                     ui.hover_vertex = idx
 
@@ -1517,18 +1742,38 @@ class DungeonScene(Scene):
         # ------------------------------------------------------------
         if in_look_mode and t:
             if kind == "move" and vec is not None:
-                tx, ty = t.cursor_tile or game.actors[game.player_id].pos
                 dx, dy = vec
-                nt = (tx + dx, ty + dy)
-                if game.world.in_bounds(*nt):
-                    t.cursor_tile = nt
-                    self.ui_state.target_cursor = nt
+
+                # Start from canonical ABS cursor if we have it; otherwise derive from local.
+                cur_abs = getattr(self.ui_state, "target_cursor_abs", None)
+                if cur_abs is None:
+                    base_local = t.cursor_tile
+                    if base_local is None:
+                        base_local = game.actors[game.player_id].pos
+                    try:
+                        cur_abs = game.abs_from_zone_local(getattr(game, "zone_coord", (0, 0, 0)), base_local)
+                    except Exception:
+                        cur_abs = (0, 0)
+
+                new_abs = (int(cur_abs[0] + dx), int(cur_abs[1] + dy))
+                self.ui_state.target_cursor_abs = new_abs
+
+                # Derive LOCAL cursor only if the ABS tile lies in the currently loaded zone.
+                try:
+                    zone, local = game.zone_local_from_abs(new_abs, depth=getattr(game, "zone_coord", (0, 0, 0))[2], clamp_to_world=True)
+                except Exception:
+                    zone, local = None, None
+
+                if zone == getattr(game, "zone_coord", None) and local is not None:
+                    t.cursor_tile = (int(local[0]), int(local[1]))
+                    self.ui_state.target_cursor = t.cursor_tile
+                else:
+                    # Out of current zone: LOCAL cursor becomes undefined, but ABS remains authoritative.
+                    t.cursor_tile = None
+
                 # Swallow movement so the player never walks in look mode.
                 return
 
-            # Swallow any 'move' commands even if we didn’t step (e.g. boundary).
-            if kind == "move":
-                return
 
         # ------------------------------------------------------------
         # 5) Ability bar: page cycling + hotkeys + quick 'f'

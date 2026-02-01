@@ -89,6 +89,7 @@ class SceneManager:
             "hornpipe": "assets/music/hornpipe.ogg",
             "real_boy": "assets/music/real_boy.ogg",
             "baal_cycle": "assets/music/baal_cycle.ogg",
+            "creche": "assets/music/creche.ogg",
 
             # Event stingers
             "imp_cackle": "assets/music/imp_cackle.wav",

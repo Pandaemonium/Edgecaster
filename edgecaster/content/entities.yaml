@@ -46,6 +46,27 @@
     site: true
 
 
+- id: berry_patch
+  name: Berry Patch
+  parent: entity
+  glyph: '♣'
+  color: [120, 200, 120]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 8
+  description: A patch of berry shrubs. Resolves into individual berries when observed closely.
+  tags:
+    world_entity: true
+    aggregate: true
+    aggregate_kind: berry_patch
+    detail_mode: cluster
+    detail_child: blueberry
+    radius: 6
+    density: 0.25
+    detail_lod_threshold: -1.25
+
+
 - id: berry
   name: Berry
   glyph: b

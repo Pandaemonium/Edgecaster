@@ -29,7 +29,7 @@ def _next_id(prefix: str = "enemy") -> str:
     return eid
 
 
-def spawn_enemy(tmpl_id: str, pos: Tuple[int, int]) -> Actor:
+def spawn_enemy(tmpl_id: str, pos: Tuple[int, int], abs_pos: Tuple[int, int] | None = None) -> Actor:
     """Create an Actor from a prototype id at the given position."""
     try:
         spec = prototypes.resolve_proto(tmpl_id)
@@ -57,6 +57,7 @@ def spawn_enemy(tmpl_id: str, pos: Tuple[int, int]) -> Actor:
             },
             aid=_next_id(),
             pos=pos,
+            abs_pos=abs_pos
         )
 
     # Normal case: build actor from resolved proto
@@ -64,4 +65,5 @@ def spawn_enemy(tmpl_id: str, pos: Tuple[int, int]) -> Actor:
         spec=spec,
         aid=_next_id(),
         pos=pos,
+        abs_pos=abs_pos
     )
