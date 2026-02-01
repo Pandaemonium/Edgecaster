@@ -2,20 +2,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Any
+from typing import Any, Dict, Optional, Tuple
 
 Pos = Tuple[int, int]
+ZoneCoord = Tuple[int, int, int]
 
 
 @dataclass
 class Entity:
-    """Generic thing that exists on a map tile.
+    """Generic thing that exists in the world.
 
-    Actors, items, features, spell effects, etc. will all be Entities.
+    Canonical truth:
+    - abs_pos is the authoritative world position in absolute tile coordinates.
+    - pos is a *cached* local position (typically relative to a loaded zone/LevelState).
+
+    During the ongoing migration away from zone-metaphysics, some legacy code may
+    still construct entities with only `pos`. In those cases, abs_pos can be
+    backfilled deterministically given a zone coordinate and zone dimensions.
     """
     id: str
     name: str
     pos: Pos
+
+    # Canonical world position (absolute tiles). Optional during migration.
+    abs_pos: Optional[Pos] = None
 
     # Visuals
     glyph: str = "?"
@@ -33,8 +43,22 @@ class Entity:
 
     @property
     def x(self) -> int:
-        return self.pos[0]
+        return int(self.pos[0])
 
     @property
     def y(self) -> int:
-        return self.pos[1]
+        return int(self.pos[1])
+
+    def ensure_abs_pos(self, *, zone_coord: ZoneCoord, zone_w: int, zone_h: int) -> Pos:
+        """Ensure abs_pos is populated, deriving from (zone_coord, pos) if needed."""
+        if self.abs_pos is None:
+            zx, zy, _z = zone_coord
+            self.abs_pos = (
+                int(zx) * int(zone_w) + int(self.pos[0]),
+                int(zy) * int(zone_h) + int(self.pos[1]),
+            )
+        return (int(self.abs_pos[0]), int(self.abs_pos[1]))
+
+    def set_abs_pos(self, abs_pos: Pos) -> None:
+        """Set canonical ABS position."""
+        self.abs_pos = (int(abs_pos[0]), int(abs_pos[1]))

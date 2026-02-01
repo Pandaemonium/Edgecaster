@@ -111,30 +111,32 @@ def begin_place_mode(game: "Game") -> None:
     game.log.add(f"Select terminus within {game.place_range} tiles (click or arrows+Enter).")
 
 
-def try_place_terminus(game: "Game", target: Tuple[int, int]) -> None:
-    """Attempt to place the pattern terminus at the target position."""
+def try_place_terminus(game: "Game", target_abs: Tuple[int, int]) -> None:
+    """Attempt to place the pattern terminus at the ABS target position."""
     lvl = game._level()
     if not lvl.awaiting_terminus:
         return
 
     trial = getattr(lvl, "seal_trial", None)
     use_trial_anchor = False
-    anchor_x: int
-    anchor_y: int
+    anchor_local: Tuple[int, int]
 
     if trial is not None and not getattr(trial, "sealed", False):
-        # Trial placement: when snapped to the canonical terminus,
-        # force the pattern anchor to the canonical root so alignment is exact.
-        if target == tuple(trial.terminus_tile):
+        # Trial placement: snapped to canonical terminus → force canonical root anchor.
+        trial_term = tuple(getattr(trial, "terminus_tile", ()))
+        if trial_term and target_abs == game.abs_from_zone_local(game.zone_coord, trial_term):
             use_trial_anchor = True
-            anchor_x, anchor_y = trial.root_tile
+            anchor_local = tuple(trial.root_tile)
         else:
-            anchor_x, anchor_y = game._player().pos
+            anchor_local = game._player().pos
     else:
-        anchor_x, anchor_y = game._player().pos
+        anchor_local = game._player().pos
 
-    dx = target[0] - anchor_x
-    dy = target[1] - anchor_y
+    # Canonical ABS anchor is derived from the local anchor in the current zone.
+    anchor_abs = game.abs_from_zone_local(game.zone_coord, anchor_local)
+
+    dx = int(target_abs[0] - anchor_abs[0])
+    dy = int(target_abs[1] - anchor_abs[1])
     dist2 = dx * dx + dy * dy
 
     if not use_trial_anchor and dist2 > game.place_range * game.place_range:
@@ -142,19 +144,33 @@ def try_place_terminus(game: "Game", target: Tuple[int, int]) -> None:
         return
 
     def do_place() -> None:
-        lvl.pattern = builder.line_pattern((0.0, 0.0), (dx, dy))
-        lvl.pattern_anchor = (anchor_x, anchor_y)
+        # Build pattern in pattern-local coords; anchor is canonical ABS.
+        pat = builder.line_pattern((0.0, 0.0), (dx, dy))
+
+        st = game._pattern_state(depth=game.zone_coord[2])
+        st["pattern"] = pat
+        st["anchor_abs"] = (int(anchor_abs[0]), int(anchor_abs[1]))
+        st["activation_points"] = []
+        st["activation_ttl"] = 0
+        st["pattern_motion"] = None
+
+        # Keep level view consistent immediately.
+        game._sync_level_pattern_view(lvl)
         lvl.pattern_motion = None
-        lvl.acidic_pattern = False  # Clear corrosive melt on new pattern
-        # Clear fern growth state on new pattern
+        lvl.acidic_pattern = False
         lvl.fern_active = False
         lvl.fern_growth_tips = []
         lvl.fern_accum = 0.0
-        game.log.add(f"Terminus placed at {target}.")
+        if hasattr(game, "_commit_pattern_state_from_level"):
+            game._commit_pattern_state_from_level(lvl)
+        
+
+        game.log.add(f"Terminus placed at ABS {target_abs}.")
 
     game._schedule(lvl, game.cfg.place_time_ticks, do_place)
     game._advance_time(lvl, game.cfg.place_time_ticks)
     lvl.awaiting_terminus = False
+
 
 
 # ---------------------------------------------------------------------------
@@ -164,19 +180,28 @@ def try_place_terminus(game: "Game", target: Tuple[int, int]) -> None:
 def reset_pattern(game: "Game") -> None:
     """Reset the pattern to empty and restore coherence."""
     lvl = game._level()
-    lvl.pattern = builder.Pattern()
-    lvl.pattern_anchor = None
-    lvl.activation_points = []
-    lvl.activation_ttl = 0
-    lvl.acidic_pattern = False  # Clear corrosive melt
-    # Clear fern growth state
+
+    st = game._pattern_state(depth=game.zone_coord[2])
+    st["pattern"] = builder.Pattern()
+    st["anchor_abs"] = None
+    st["activation_points"] = []
+    st["activation_ttl"] = 0
+    st["pattern_motion"] = None
+
+    game._sync_level_pattern_view(lvl)
+
+    lvl.acidic_pattern = False
     lvl.fern_active = False
     lvl.fern_growth_tips = []
     lvl.fern_accum = 0.0
-    # restore coherence to max when manually resetting
+
     player = game._player()
     player.stats.coherence = player.stats.max_coherence
+    if hasattr(game, "_commit_pattern_state_from_level"):
+        game._commit_pattern_state_from_level(lvl)
+
     game.log.add("Rune reset.")
+
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +242,8 @@ def push_pattern(
         dy *= scale
 
     pattern_motion.start_motion(level, (dx, dy), rotation_deg, interval=10)
+    if hasattr(game, "_commit_pattern_state_from_level"):
+        game._commit_pattern_state_from_level(level)
 
 
 # ---------------------------------------------------------------------------

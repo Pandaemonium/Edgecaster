@@ -1,0 +1,459 @@
+Edgecaster Yoga Treatise
+Observer-Driven Reality, Absolute Space, and Scale-Aware Simulation
+
+This document is meant to be copied into future threads as the “north star” for Edgecaster’s architecture. It captures the philosophy (“the yoga”), why we’re doing it, and the practical rules that keep us from slipping back into spaghetti “zone metaphysics.”
+
+1) The Core Problem We Are Solving
+
+Edgecaster began with a traditional roguelike “zone/chunk” worldview:
+
+The world is partitioned into rectangular zones.
+
+Entities and terrain are stored and simulated primarily in zone-local coordinates.
+
+Transitioning zones triggers spawn, cleanup, and other behavior.
+
+Rendering and targeting depend on “what zone you’re in.”
+
+This is a dead-end for Edgecaster’s actual ambition:
+
+Multi-scale world (planetary/cosmic → regional → local → microscopic)
+
+Fractal/continuous map logic (fields sampled continuously)
+
+“Quantum observer” gameplay (what you observe becomes real)
+
+Aggregate entities that resolve and coarsen dynamically
+
+The same underlying bug kept surfacing in many disguises:
+
+cursors stuck to player / targeting desync
+
+overlay effects invisible
+
+UI transitions flying in from (0,0)
+
+patterns “forgetting” across boundaries
+
+entities vanishing despite being in view
+
+These weren’t separate bugs. They were authority mismatches:
+different systems disagreed about what coordinate space was “real.”
+
+2) Canonical Truths (Non-Negotiable)
+2.1 Absolute space is truth
+
+Every entity, effect, tile sample, and interaction must ultimately be representable in absolute world coordinates:
+
+abs_x, abs_y (and a notion of scale)
+
+Anything else is a cache or derived view
+
+Zones may exist, but only as:
+
+memory/performance caches
+
+data containers
+
+streaming boundaries
+
+They are not metaphysical.
+
+Rule of thumb
+
+If something changes behavior at a zone boundary, that’s a bug unless explicitly designed as a streaming limitation.
+
+2.2 Rendering projects reality — it does not invent it
+
+The renderer’s job is:
+
+take canonical world data (ABS + scale)
+
+project to screen through camera transform
+
+apply FoV/visibility rules
+
+It should never be forced to “guess” or “repair” broken game state.
+
+If something is being drawn wrong:
+
+it’s usually not “rendering is wrong”
+
+it’s the renderer exposing a worldview mismatch upstream
+
+2.3 Observation defines perception
+
+Edgecaster is an observer-driven game:
+
+The camera + attention field defines what must be realized in high fidelity.
+
+The rest of the world can be abstracted, coarsened, or represented as aggregates.
+
+But: observation affects representation, not retroactive truth.
+
+If you possess a bird and fly 1000 km away:
+
+your human vessel doesn’t cease to exist
+
+it becomes cold/abstracted
+
+when you return, it’s still there (modulo time passing or events)
+
+3) “The Player Is Not Special” (and the subtlety)
+
+The player entity should be “just another entity”:
+
+same data model
+
+same spawn pipeline
+
+same coordinate rules
+
+same rendering rules
+
+What is special is the observer:
+
+the camera/attention field
+
+the currently inhabited actor id
+
+what is simulated at what fidelity
+
+This matters because eventually:
+
+you can body-swap
+
+the “player” moves from human → bird → demon → city-avatar
+
+the observer follows, not the original vessel
+
+So:
+
+entities are not special
+
+observation is special
+
+4) Scale is Real: Entities Exist on a Continuum
+
+Edgecaster isn’t one grid. It’s a multi-scale cosmos.
+
+A cricket, a player, a city, and a Leviathan can all exist in the same “world,” but at different scales.
+
+Canonical position is continuous
+
+An entity’s “abs position” is meaningful only alongside scale:
+
+the “tile” you use depends on the LoD / scale context
+
+coarse entities (cities) occupy many fine tiles
+
+fine entities (crickets) exist within the footprint of coarse tiles
+
+Implication
+
+Caching/performance buckets must be scale-dependent.
+
+Old rigid rectangles (“zones”) are:
+
+arbitrary
+
+scale-blind
+
+incompatible with a Leviathan spanning many zones
+
+meaningless for tiny entities where a zone is enormous
+
+So the long-term replacement is:
+
+A dynamic, nested “attention field grid” (multi-level) that tracks what should be realized at each scale near the observer.
+
+5) The Attention Field: The Future Replacement for Zones
+
+Zones were an attempt at:
+
+memory containment
+
+generation boundaries
+
+But Edgecaster needs a continuous model:
+
+The attention field is a spatial/scale heatmap
+
+hottest: near camera AND similar scale
+
+colder: far away OR wrong scale
+
+Examples:
+
+zoomed in: berries and crickets matter
+
+zoomed out: only berry groves / forests matter
+
+scrying a far battle: battalions tick, not individual soldiers
+
+far away: war resolves as abstract dice-roll outcomes
+
+This implies a hierarchy of entity representations
+
+city → districts → buildings → walls → NPCs
+
+forest → woods → trees → berry patches → berries
+
+army → battalions → squads → individuals
+
+And a system of deltas / persistent state:
+
+if you pick a berry, that delta must persist
+
+regeneration can happen later when cold
+
+if you kill a bear, it stays dead (unless designed otherwise)
+
+if a bear wanders 3 screens away, that displacement persists
+
+6) Transitional Doctrine: Bridges Are Allowed
+
+During migration, it is acceptable to have:
+
+ABS truth
+
+plus local caches/views
+
+As long as the directionality is correct:
+
+Truth → View is always possible
+View → Truth must happen whenever the view mutates reality
+
+This prevents:
+
+“two realities” (one per zone)
+
+effects resurrecting after crossing boundaries
+
+UI projection desync
+
+Practical migration pattern
+
+Create canonical state object(s) (ABS)
+
+Make zones/levels view those canonical objects
+
+If legacy code still writes to LevelState, immediately “commit back” to canonical state
+
+Over time, remove legacy writes entirely
+
+7) UI & Targeting Yoga: One Spatial Contract
+
+Input and UI are where the yoga is most fragile.
+
+The contract
+
+mouse and keyboard targeting must agree
+
+cursor should be canonical in ABS tile-space
+
+local cursor is optional “if representable”
+
+You can’t have:
+
+name preview correct but cursor box stuck
+
+arrow keys work but mouse doesn’t
+
+“look” can target but runes can’t
+
+Rule
+
+All targeting state should be stored in ABS (target_cursor_abs).
+If you also maintain target_cursor (local), it must be derived.
+
+8) Rune/Overlay Yoga: One Pattern, One Truth
+
+Runecasting is a perfect microcosm of the yoga:
+
+A rune pattern is a world object:
+
+it has geometry
+
+modifiers (subdivide/rainbow/acid/fern/etc.)
+
+motion state (push)
+
+activation state (TTL / preview)
+
+It must exist as a single canonical reality:
+
+one pattern
+
+one anchor
+
+one modifier state
+
+persistent across streaming boundaries
+
+never “different status per zone”
+
+Rule
+
+Rune state must be canonical (ABS).
+Zone-level pattern fields are only views/caches.
+
+If a rune disappears, reappears, forgets modifiers, or resurrects after crossing a boundary:
+
+the system is still zone-metaphysical
+
+canonical state is not being updated correctly
+
+9) Practical Debug Heuristics (“How to Smell a Yoga Violation”)
+
+These are the classic symptoms that tell you you’ve violated the worldview:
+
+9.1 “Flies in from upper-left”
+
+UI animation anchored from (0,0) means:
+
+you used zone-local coords
+
+or you used uninitialized coords
+
+or you projected using wrong basis
+
+9.2 Mouse and keyboard disagree
+
+If arrow keys work but mouse doesn’t (or vice versa):
+
+you have two coordinate conversion paths
+
+one of them double-converts or clamps
+
+9.3 Things change at zone boundaries
+
+If something disappears, resets, or resurrects when stepping across boundaries:
+
+canonical state is still zone-owned
+
+or view->truth commit is missing
+
+9.4 Overlays exist logically but not visually
+
+If logs say “Terminus placed” but nothing appears:
+
+the stored data is being overwritten by a “canonical sync”
+
+or the renderer projects it using the wrong coordinate frame
+
+9.5 “Always chooses the rightmost vertex”
+
+Classic sign:
+
+nearest-neighbor selection is running in the wrong coordinate space
+
+often ABS vs local-world mismatch
+
+10) The Long Roadmap (High-Level, Not Bug Fixes)
+
+This is the intended sequence of evolution:
+
+Stage 1 — Coordinate authority unification (now)
+
+ABS is truth for entities and world effects
+
+zones become caches/views
+
+targeting uses ABS
+
+UI transitions use real on-screen anchors
+
+Stage 2 — Centralize coordinate transforms
+
+Create helper APIs like:
+
+renderer.screen_to_abs_tile()
+
+renderer.abs_tile_to_screen_px()
+
+game.abs_from_zone_local(...) (temporary bridge)
+…and eliminate ad-hoc math scattered across code.
+
+Stage 3 — Attention field caching replaces vestigial zones
+
+dynamic nested grid keyed by scale
+
+“hotness” determines simulation fidelity and representation
+
+deterministic realization/coarsening
+
+persistent deltas
+
+Stage 4 — Macro entity hierarchy
+
+entities can resolve into sub-entities
+
+coarsen back into aggregates
+
+armies, cities, forests become first-class
+
+Stage 5 — Scheduling / simulation budget
+
+a global energy queue whose tick granularity depends on attention field
+
+high fidelity near observer
+
+abstract resolution far away
+
+11) Examples to Keep the Vision Concrete
+Example A: Body swap
+
+You possess a bird:
+
+camera follows bird
+
+nearby entities resolve around bird
+
+your old human body remains in the world (cold)
+
+if you return later, it is still there (or changed via events)
+
+Example B: Forest resolution
+
+Far away: one “forest” entity
+Closer: splits into “woods” and “clearings”
+Closer: trees, berry patches
+Closest: individual berries
+
+Picking a berry creates a delta:
+
+patch remembers depletion
+
+regen system may refill later when cold
+
+Example C: Army simulation
+
+Far away: “army” entity (strength, morale)
+Near: battalions tick
+Very near: soldiers tick
+
+Looking away reduces fidelity but should preserve outcomes deterministically.
+
+Example D: Rune across boundaries
+
+A rune drawn across a former zone seam:
+
+persists
+
+pushes across
+
+modifiers persist
+
+does not reset when you step over an invisible boundary
+
+12) Final Mantra
+
+Absolute space is truth.
+Zones are caches.
+The camera is the observer.
+Scale is real.
+Projection must be consistent.
+If you see boundary ghosts, you have violated the yoga.
+
+This is the guiding constraint that prevents Edgecaster from collapsing back into ad-hoc zone spaghetti as complexity rises.

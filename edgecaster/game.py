@@ -28,6 +28,8 @@ from edgecaster.state.actors import Actor, Stats, Human
 from edgecaster.state.entities import Entity
 from edgecaster.enemies import factory as enemy_factory
 from edgecaster.systems.world_entity_index import WorldEntityIndex
+from edgecaster.systems import aggregate_resolution as aggregate_system
+
 from edgecaster import prototypes
 from edgecaster import spawn_factory
 from edgecaster.systems.sites import load_site_types
@@ -326,6 +328,13 @@ class Game:
         # initialize overmap parameters/grid eagerly (fixed bounds) and kick off async render
         self._init_overmap_params_and_grid()
 
+        # ---------------------------------------------------------------------
+        # Canonical rune pattern state (ABS-space, per-depth).
+        # Zones/LevelStates are just caches; the pattern should not be.
+        # ---------------------------------------------------------------------
+        self._pattern_state_by_depth: dict[int, dict] = {}
+
+
         # Site registry for biome-based POI placement.
         # Populated after overmap_params/tile_julia_grid are set up.
         from edgecaster.systems.sites import SiteRegistry
@@ -523,6 +532,11 @@ class Game:
         lvl = self._level()
         lvl.actors[player.id] = player
         lvl.entities[player.id] = player
+
+        # Canonical absolute position (Phase 1.5 yoga)
+        # This makes abs-space the source of truth for player movement/render queries later.
+        player.abs_pos = self.abs_from_zone_local(self.zone_coord, player.pos)
+
 
         # --- Give the player a recursive inventory test item -----------------
         #
@@ -912,6 +926,12 @@ class Game:
                 logger.addHandler(handler)
             except Exception as e:
                 print(f"Error adding handler to debug log: {e}", file=sys.stderr)
+
+        # --- ABS-space fog-of-war caches (authoritative for terrain rendering) ---
+        # Visible this tick: (abs_x, abs_y, depth)
+        self.fov_visible_abs: set[tuple[int, int, int]] = set()
+        # Explored memory: depth -> {(abs_x, abs_y), ...}
+        self.fov_explored_abs: dict[int, set[tuple[int, int]]] = {}
         self._logger = logger
         self._debug("Debug logging initialized.")
 
@@ -1427,13 +1447,16 @@ class Game:
                 ax, ay, _ = academy
                 self.log.add(f"You hear of an Academy at ({ax},{ay}).")
 
-        # scatter some test berries on overworld levels
+        # Realize aggregate details into this loaded zone (simulation allowed).
+        # This replaces the old global berry scattering test.
         if coord[2] == 0:  # depth == 0
-            # Don't scatter berries in lairs (they manage their own content).
             if not getattr(world, "is_lair", False):
-                self._scatter_test_berries(lvl, count=10)
+                self._realize_aggregate_details_in_zone(lvl, coord)
 
+        # Ensure this zone views the canonical pattern state
+        self._sync_level_pattern_view(lvl)
         return lvl
+
 
 
 
@@ -1792,7 +1815,7 @@ class Game:
                         if pos is None:
                             continue
                         try:
-                            mob = enemy_factory.spawn_enemy(enemy_id, pos)
+                            mob = enemy_factory.spawn_enemy(enemy_id, pos,abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos))
                             mob.tags = getattr(mob, "tags", None) or {}
                             mob.tags["poi_id"] = pid
                             spawning_system.register_actor(self, level, mob, schedule_ai=True)
@@ -1874,7 +1897,7 @@ class Game:
                                 continue
                             if self._blocking_entity_at(level, (tx, ty)):
                                 continue
-                            mob = enemy_factory.spawn_enemy(base_proto, (tx, ty))
+                            mob = enemy_factory.spawn_enemy(base_proto, (tx, ty),abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos))
                             level.actors[mob.id] = mob
                             level.entities[mob.id] = mob
                             self._schedule(
@@ -1926,7 +1949,7 @@ class Game:
                 if spawn_pos is None:
                     continue
                 if spec.npc_id == "caged_demon":
-                    actor = enemy_factory.spawn_enemy("caged_demon", spawn_pos)
+                    actor = enemy_factory.spawn_enemy("caged_demon", spawn_pos,abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos))
                     actor.faction = "neutral"
                     actor.actions = ()
                     actor.ai = "idle"
@@ -1940,7 +1963,7 @@ class Game:
                     actor.regen_per_tick = (1, 10)
                     self._start_regen(level, actor.id, amount=1, interval=10)
                 elif spec.npc_id == "merchant":
-                    actor = enemy_factory.spawn_enemy("merchant", spawn_pos)
+                    actor = enemy_factory.spawn_enemy("merchant", spawn_pos,abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos))
                     actor.faction = "npc"
                     actor.actions = ()
                     actor.ai = "idle"
@@ -1974,6 +1997,7 @@ class Game:
                         id=aid,
                         name=name,
                         pos=spawn_pos,
+                        abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos),
                         faction="npc",
                         stats=Stats(hp=50, max_hp=50),
                         tags={"npc_id": spec.npc_id},
@@ -2540,6 +2564,24 @@ class Game:
         # ------------------------------------------------------------
         self._ensure_world_site_entities(zone_w=zone_w, zone_h=zone_h)
 
+        # Aggregate world entities (berry patches today; goblin bands/forests tomorrow).
+        # Safe: adds to WorldEntityIndex only; no zone instantiation.
+        if not too_many_zones:
+            try:
+                self._ensure_world_aggregate_entities(
+                    zone_w=zone_w,
+                    zone_h=zone_h,
+                    zx0=zx0,
+                    zx1=zx1,
+                    zy0=zy0,
+                    zy1=zy1,
+                    zz=zz,
+                    kinds=("berry_patch",),
+                )
+            except Exception:
+                pass
+
+
         try:
             if getattr(self, "world_entity_index", None) is not None:
                 for ref in self.world_entity_index.query_abs_rect((ax0, ay0, ax1, ay1), z=zz, zone_span_cap=None):
@@ -2568,6 +2610,36 @@ class Game:
                         continue
 
                     sc = _score(abs_size, abs_x, abs_y)
+                    # Detail resolution (render-only) for aggregates when zoomed in.
+                    # This MUST NOT instantiate zones or create gameplay state.
+                    try:
+                        tags = getattr(obj, "tags", {}) or {}
+                        if isinstance(tags, dict) and tags.get("aggregate"):
+                            for p in aggregate_system.resolve_detail_proxies(
+                                self,
+                                aggregate_ent=obj,
+                                zone_coord=(int(zx), int(zy), int(zz)),
+                                local_pos=(int(ox), int(oy)),
+                                zone_w=zone_w,
+                                zone_h=zone_h,
+                                cam_lod=cam_lod,
+                            ):
+                                bobj = p.ent
+                                bx = int(p.abs_x)
+                                by = int(p.abs_y)
+                                bsize = self._size_for_render(bobj)
+                                b_lod = math.log2(bsize) if bsize > 0 else -30.0
+                                bdelta = float(cam_lod) - float(b_lod)
+                                if bdelta < (float(dmin) - float(fade_w)) or bdelta > (float(dmax) + float(fade_w)):
+                                    continue
+                                bhalf = 0.5 * float(bsize)
+                                if (bx + bhalf) <= ax0 or (bx - bhalf) >= ax1 or (by + bhalf) <= ay0 or (by - bhalf) >= ay1:
+                                    continue
+                                bsc = _score(bsize, bx, by)
+                                candidates.append((bobj, bx, by, p.zone_coord, p.local_pos, bsc))
+                    except Exception:
+                        pass
+
                     candidates.append((obj, abs_x, abs_y, (int(zx), int(zy), int(zz)), (int(ox), int(oy)), sc))
         except Exception:
             # World entities are best-effort; never crash rendering.
@@ -2818,6 +2890,76 @@ class Game:
 
 
 
+
+    def _ensure_world_aggregate_entities(
+        self,
+        *,
+        zone_w: int,
+        zone_h: int,
+        zx0: int,
+        zx1: int,
+        zy0: int,
+        zy1: int,
+        zz: int,
+        kinds=None,
+    ) -> None:
+        """Ensure aggregate world entities exist in WorldEntityIndex (no gameplay side effects).
+
+        General-purpose mechanism used for berry patches today; goblin bands / forests / armies tomorrow.
+        """
+        # If the world_entity_index was rebuilt (e.g. zone dims changed), aggregates must be re-added.
+        wh = (int(zone_w), int(zone_h))
+        prev = getattr(self, "_agg_world_entity_index_wh", None)
+        if prev != wh:
+            try:
+                # Clear incremental generation tracking so we can repopulate the fresh index.
+                if hasattr(self, "_agg_worldgen_done"):
+                    self._agg_worldgen_done.clear()
+            except Exception:
+                pass
+            self._agg_world_entity_index_wh = wh
+
+        aggregate_system.ensure_world_aggregates(
+            self,
+            zone_w=int(zone_w),
+            zone_h=int(zone_h),
+            zx0=int(zx0),
+            zx1=int(zx1),
+            zy0=int(zy0),
+            zy1=int(zy1),
+            zz=int(zz),
+            kinds=kinds,
+        )
+
+    def _realize_aggregate_details_in_zone(self, level: "LevelState", coord: Tuple[int, int, int], kinds=None) -> None:
+        """When a zone is created/entered (simulation allowed), realize aggregate details into real entities."""
+        cfg = getattr(self, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+
+        # Ensure aggregates for this bucket exist in the world index first.
+        self._ensure_world_aggregate_entities(
+            zone_w=zone_w,
+            zone_h=zone_h,
+            zx0=int(coord[0]),
+            zx1=int(coord[0]),
+            zy0=int(coord[1]),
+            zy1=int(coord[1]),
+            zz=int(coord[2]),
+            kinds=kinds,
+        )
+
+        aggregate_system.realize_details_for_loaded_zone(
+            self,
+            level,
+            zone_coord=(int(coord[0]), int(coord[1]), int(coord[2])),
+            zone_w=zone_w,
+            zone_h=zone_h,
+            kinds=kinds,
+        )
+
+
+
     # --- player helpers ---
 
     def _level(self) -> LevelState:
@@ -2863,6 +3005,27 @@ class Game:
 
         # Otherwise, describe whatever is here.
         self._describe_tile(level, pos, observer_id=self.player_id, auto=False)
+
+
+    def describe_abs_tile_at(self, abs_pos: Tuple[int, int]) -> str:
+        """
+        Describe an ABS tile that may be outside the currently loaded zone.
+
+        For now:
+        - If it's in the current zone, delegate to describe_tile_at(local).
+        - Otherwise, return a safe, honest "not loaded" description.
+        """
+        try:
+            zone, local = self.zone_local_from_abs(abs_pos, depth=getattr(self, "zone_coord", (0, 0, 0))[2], clamp_to_world=True)
+        except Exception:
+            zone, local = None, None
+
+        if zone == getattr(self, "zone_coord", None) and local is not None:
+            return self.describe_tile_at((int(local[0]), int(local[1])))
+
+        zx, zy, _zz = zone if zone is not None else ("?", "?", "?")
+        ax, ay = int(abs_pos[0]), int(abs_pos[1])
+        return f"You peer into the distance at ABS ({ax}, {ay}) in zone ({zx}, {zy}). The area is not currently realized."
 
 
     def describe_tile_at(self, pos: Tuple[int, int]) -> str:
@@ -3484,9 +3647,11 @@ class Game:
         ny = y + dy
 
         if not level.world.in_bounds(nx, ny):
-            # only player can transition zones
+            # Phase 1.5: player movement is canonical in abs-space.
+            # Crossing a chunk boundary is just membership/caching, not metaphysics.
             if id == self.player_id:
-                self._transition_edge(actor, dx, dy)
+                ax, ay = self._get_player_abs()
+                self._move_player_to_abs((ax + int(dx), ay + int(dy)))
             return
 
         # stair use is explicit, so only move/attack here
@@ -3539,46 +3704,282 @@ class Game:
                     mx, my = master.pos
                     cur_d = max(abs(x - mx), abs(y - my))
                     new_d = max(abs(nx - mx), abs(ny - my))
-                    if cur_d <= CHAIN_RANGE:
-                        # Normal case: prevent exceeding the leash.
-                        if new_d > CHAIN_RANGE:
-                            return
-                    else:
-                        # Recovery case (e.g. after a teleport): allow only moves that don't stretch further.
-                        if new_d > cur_d:
-                            return
-
-            # Slavers: cannot step farther than CHAIN_RANGE from any still-chained brutes.
-            if proto_id == "slaver":
-                for other in level.actors.values():
-                    otags = getattr(other, "tags", None) or {}
-                    if otags.get("slaver_master_id") != actor.id:
-                        continue
-                    bx, by = other.pos
-                    cur_d = max(abs(x - bx), abs(y - by))
-                    new_d = max(abs(nx - bx), abs(ny - by))
-                    if cur_d <= CHAIN_RANGE:
-                        if new_d > CHAIN_RANGE:
-                            return
-                    else:
-                        if new_d > cur_d:
-                            return
+                    if new_d > CHAIN_RANGE and new_d > cur_d:
+                        # Block the move if it would extend the chain.
+                        if id == self.player_id:
+                            self.log.add("The chain tugs you back.")
+                        return
         except Exception:
             pass
 
+        # Update local cached position (zone-relative)
         actor.pos = (nx, ny)
+
+        # Canonical ABS update applies to *all* actors.
+        # During migration, some actors may not yet have abs_pos; derive from
+        # the current zone coord deterministically.
+        try:
+            cur_abs = getattr(actor, "abs_pos", None)
+            if cur_abs is None:
+                ax, ay = self.abs_from_zone_local(level.coord, (x, y))
+            else:
+                ax, ay = int(cur_abs[0]), int(cur_abs[1])
+            new_abs = (ax + int(dx), ay + int(dy))
+            setattr(actor, "abs_pos", new_abs)
+            if id == self.player_id:
+                # Keep legacy helpers consistent; player is not special-cased in truth,
+                # but other subsystems may still consult _get/_set_player_abs during migration.
+                self._set_player_abs(new_abs)
+        except Exception:
+            # If an unusual object lacks abs_pos support, fail soft (render bridge can still derive).
+            pass
+
         if id == self.player_id:
             level.need_fov = True
             # Auto-look when the player steps onto a tile (but don't describe yourself)
-            self._describe_tile(level, actor.pos, observer_id=actor.id, auto=True)
-            # auto-trigger lab console if standing on it
-            tile = level.world.get_tile(nx, ny)
-            if tile and tile.glyph == "=":
-                self.request_fractal_editor()
+            try:
+                self._auto_look(level)
+            except Exception:
+                pass
+
 
     def _attack(self, level: LevelState, attacker: Actor, defender: Actor) -> None:
         """Resolve an attack. Delegates to combat_system."""
         combat_system.attack(self, level, attacker, defender)
+
+    # --- Absolute position yoga (Phase 1.5) ---------------------------------
+    # Canonical truth for the player (and later all actors) is absolute tile coords.
+    # We keep zone/local as a *cache addressing / LevelState membership* detail.
+
+    def _zone_dims(self) -> tuple[int, int]:
+        return int(self.cfg.world_width), int(self.cfg.world_height)
+
+    @staticmethod
+    def _floor_divmod(a: int, b: int) -> tuple[int, int]:
+        """
+        Like divmod, but explicitly guarantees:
+          a = q*b + r with r in [0, b-1] even for negative a.
+        """
+        # Python's // already floors for negatives, but make it explicit + readable.
+        q = a // b
+        r = a - q * b
+        if r < 0:
+            q -= 1
+            r += b
+        return q, r
+
+    def abs_from_zone_local(
+        self,
+        zone_coord: tuple[int, int, int],
+        local_pos: tuple[int, int],
+    ) -> tuple[int, int]:
+        zx, zy, _zz = zone_coord
+        lx, ly = int(local_pos[0]), int(local_pos[1])
+        zw, zh = self._zone_dims()
+        return int(zx) * zw + lx, int(zy) * zh + ly
+
+    def zone_local_from_abs(
+        self,
+        abs_pos: tuple[int, int],
+        *,
+        depth: int | None = None,
+        clamp_to_world: bool = True,
+    ) -> tuple[tuple[int, int, int], tuple[int, int]]:
+        ax, ay = int(abs_pos[0]), int(abs_pos[1])
+        zw, zh = self._zone_dims()
+
+        zx, lx = self._floor_divmod(ax, zw)
+        zy, ly = self._floor_divmod(ay, zh)
+
+        if clamp_to_world:
+            max_screen = max(0, int(self.cfg.world_map_screens) - 1)
+            zx = max(0, min(max_screen, zx))
+            zy = max(0, min(max_screen, zy))
+            # Re-clamp locals too, just in case rounding/edge weirdness occurs
+            lx = max(0, min(zw - 1, lx))
+            ly = max(0, min(zh - 1, ly))
+
+        zz = int(depth if depth is not None else self.zone_coord[2])
+        return (int(zx), int(zy), int(zz)), (int(lx), int(ly))
+
+    def _get_player_abs(self) -> tuple[int, int]:
+        p = self._player()
+        ap = getattr(p, "abs_pos", None)
+        if ap is None:
+            # Backfill from current membership (legacy compatibility)
+            ap = self.abs_from_zone_local(self.zone_coord, p.pos)
+            setattr(p, "abs_pos", ap)
+        return int(ap[0]), int(ap[1])
+
+    def _set_player_abs(self, abs_pos: tuple[int, int]) -> None:
+        p = self._player()
+        setattr(p, "abs_pos", (int(abs_pos[0]), int(abs_pos[1])))
+
+    def _move_player_to_abs(self, abs_pos: tuple[int, int]) -> None:
+        """
+        Canonical movement primitive for the player:
+        - compute dest chunk membership from abs
+        - move between LevelStates if needed (cache)
+        - update local pos, zone_coord, abs_pos
+        - update FOV
+        """
+        player = self._player()
+        old_level = self._level()
+
+        dest_coord, dest_local = self.zone_local_from_abs(abs_pos, depth=self.zone_coord[2], clamp_to_world=True)
+        (dzx, dzy, dzz) = dest_coord
+
+        # Ensure destination chunk exists (boring cache behavior)
+        dest_level = zones_system.get_zone(self, dest_coord, up_pos=None)
+
+        # Commit rune scalar state from the current zone view back into canonical storage.
+        try:
+            self._commit_pattern_state_from_level(self._level())
+        except Exception:
+            pass
+
+
+        # Move between levels if membership changes
+        if getattr(old_level, "coord", None) != dest_coord:
+            # remove from old level
+            try:
+                del old_level.actors[self.player_id]
+            except Exception:
+                pass
+            try:
+                # Some code mirrors actors into entities
+                del old_level.entities[self.player_id]
+            except Exception:
+                pass
+
+            self.zone_coord = dest_coord
+            player.pos = dest_local
+            dest_level.actors[self.player_id] = player
+
+
+            try:
+                dest_level.entities[self.player_id] = player
+            except Exception:
+                pass
+        else:
+            # Same chunk, just update local pos
+            player.pos = dest_local
+
+        # Update canonical absolute
+        self._set_player_abs(abs_pos)
+
+        # Keep continuity: update FOV and Lorenz storm
+        try:
+            dest_level.need_fov = True
+        except Exception:
+            pass
+        self._update_fov(dest_level)
+        self._reset_lorenz_on_zone_change(player)
+        # Ensure the new zone views canonical pattern state
+        self._sync_level_pattern_view(dest_level)
+
+
+    # ---------------------------------------------------------------------
+    # Canonical rune pattern state (ABS-space, per-depth)
+    # ---------------------------------------------------------------------
+    def _pattern_state(self, depth: int | None = None) -> dict:
+        d = int(self.zone_coord[2] if depth is None else depth)
+        state = self._pattern_state_by_depth.get(d)
+        if state is None:
+            state = {
+                "pattern": builder.Pattern(),
+                "anchor_abs": None,            # (ax, ay) in ABS tiles
+                "activation_points": [],
+                "activation_ttl": 0,
+                # Secondary / modifier state that MUST persist across zone views:
+                "pattern_motion": None,         # motion dict (see motion.py)
+                "acidic_pattern": False,
+                "fern_active": False,
+                "fern_growth_tips": [],
+                "fern_accum": 0.0,
+            }
+            self._pattern_state_by_depth[d] = state
+
+        # Back-compat: earlier versions used "motion"
+        if "pattern_motion" not in state and "motion" in state:
+            state["pattern_motion"] = state.get("motion")
+        return state
+
+    def pattern_anchor_abs(self) -> tuple[int, int] | None:
+        return self._pattern_state().get("anchor_abs")
+
+    def _set_pattern_anchor_abs(self, anchor_abs: tuple[int, int] | None) -> None:
+        st = self._pattern_state()
+        st["anchor_abs"] = (int(anchor_abs[0]), int(anchor_abs[1])) if anchor_abs is not None else None
+
+    def _commit_pattern_state_from_level(self, level: "LevelState") -> None:
+        """
+        Write the *current zone view* (LevelState) back into canonical pattern state.
+
+        This is the critical bridge: LevelState is a cache/view; Game is truth.
+        Without this, crossing a zone boundary can resurrect older canonical state.
+        """
+        coord = getattr(level, "coord", self.zone_coord)
+        zx, zy, d = coord
+        st = self._pattern_state(depth=d)
+
+        # Pattern object
+        st["pattern"] = getattr(level, "pattern", builder.Pattern())
+
+        # Anchor: level stores zone-local; canonical stores ABS
+        anchor_local = getattr(level, "pattern_anchor", None)
+        if anchor_local is None:
+            st["anchor_abs"] = None
+        else:
+            zw, zh = self._zone_dims()
+            ox = zx * zw
+            oy = zy * zh
+            # anchor_local can be float-ish in some code paths; canonical is int tiles
+            ax = int(round(anchor_local[0] + ox))
+            ay = int(round(anchor_local[1] + oy))
+            st["anchor_abs"] = (ax, ay)
+
+        # Activation preview
+        st["activation_points"] = list(getattr(level, "activation_points", []) or [])
+        st["activation_ttl"] = int(getattr(level, "activation_ttl", 0) or 0)
+
+        # Motion + modifiers
+        st["pattern_motion"] = getattr(level, "pattern_motion", None)
+        st["acidic_pattern"] = bool(getattr(level, "acidic_pattern", False))
+        st["fern_active"] = bool(getattr(level, "fern_active", False))
+        st["fern_growth_tips"] = list(getattr(level, "fern_growth_tips", []) or [])
+        st["fern_accum"] = float(getattr(level, "fern_accum", 0.0) or 0.0)
+
+    def _sync_level_pattern_view(self, level: "LevelState") -> None:
+        """
+        Make the current LevelState view the canonical Game pattern state.
+        Keeps legacy code working while we migrate systems.
+        """
+        st = self._pattern_state(depth=getattr(level, "coord", self.zone_coord)[2])
+
+        # Core pattern + secondary state
+        level.pattern = st["pattern"]
+        level.pattern_motion = st.get("pattern_motion", None)
+        level.acidic_pattern = bool(st.get("acidic_pattern", False))
+        level.fern_active = bool(st.get("fern_active", False))
+        level.fern_growth_tips = list(st.get("fern_growth_tips", []) or [])
+        level.fern_accum = float(st.get("fern_accum", 0.0) or 0.0)
+
+        # Activation preview
+        level.activation_points = list(st.get("activation_points", []) or [])
+        level.activation_ttl = int(st.get("activation_ttl", 0) or 0)
+
+        # Derive a *zone-local* anchor from canonical ABS anchor.
+        anchor_abs = st.get("anchor_abs")
+        if anchor_abs is None:
+            level.pattern_anchor = None
+            return
+
+        zx, zy, _ = getattr(level, "coord", self.zone_coord)
+        zw, zh = self._zone_dims()
+        ox = zx * zw
+        oy = zy * zh
+        level.pattern_anchor = (int(anchor_abs[0] - ox), int(anchor_abs[1] - oy))
 
 
 
@@ -4505,17 +4906,32 @@ class Game:
         if radius is None:
             radius = 4
 
-        # Create the polygon pattern and anchor it on the player
-        level.pattern = builder.regular_polygon_pattern(num_sides, radius)
-        level.pattern_anchor = player.pos
+        # Create the polygon pattern and anchor it on the player (CANONICAL ABS).
+        pat = builder.regular_polygon_pattern(num_sides, radius)
+
+        # Compute canonical ABS anchor at the player's current position.
+        anchor_abs = getattr(player, "abs_pos", None)
+        if anchor_abs is None:
+            anchor_abs = self.abs_from_zone_local(self.zone_coord, player.pos)
+
+        st = self._pattern_state(depth=self.zone_coord[2])
+        st["pattern"] = pat
+        st["anchor_abs"] = (int(anchor_abs[0]), int(anchor_abs[1]))
+        st["activation_points"] = []
+        st["activation_ttl"] = 0
+        st["pattern_motion"] = None
+
+        # Sync the current zone view to canonical state immediately.
+        self._sync_level_pattern_view(level)
+
+        # Clear per-level auxiliaries tied to the current pattern.
         level.pattern_motion = None
-        level.activation_points = []
-        level.activation_ttl = 0
-        level.acidic_pattern = False  # Clear corrosive melt on new pattern
-        # Clear fern growth state on new pattern
+        level.acidic_pattern = False
         level.fern_active = False
         level.fern_growth_tips = []
         level.fern_accum = 0.0
+
+        self._commit_pattern_state_from_level(level)
 
         self.log.add(f"Polygon ({num_sides} sides, radius {radius}) placed.")
 
@@ -4542,17 +4958,29 @@ class Game:
         if inner_radius is None:
             inner_radius = 2
 
-        # Create the star pattern and anchor it on the player
-        level.pattern = builder.star_pattern(num_points, outer_radius, inner_radius)
-        level.pattern_anchor = player.pos
+        # Create the star pattern and anchor it on the player (CANONICAL ABS).
+        pat = builder.star_pattern(num_points, outer_radius, inner_radius)
+
+        anchor_abs = getattr(player, "abs_pos", None)
+        if anchor_abs is None:
+            anchor_abs = self.abs_from_zone_local(self.zone_coord, player.pos)
+
+        st = self._pattern_state(depth=self.zone_coord[2])
+        st["pattern"] = pat
+        st["anchor_abs"] = (int(anchor_abs[0]), int(anchor_abs[1]))
+        st["activation_points"] = []
+        st["activation_ttl"] = 0
+        st["pattern_motion"] = None
+
+        self._sync_level_pattern_view(level)
+
         level.pattern_motion = None
-        level.activation_points = []
-        level.activation_ttl = 0
-        level.acidic_pattern = False  # Clear corrosive melt on new pattern
-        # Clear fern growth state on new pattern
+        level.acidic_pattern = False
         level.fern_active = False
         level.fern_growth_tips = []
         level.fern_accum = 0.0
+
+        self._commit_pattern_state_from_level(level)
 
         self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
@@ -5112,6 +5540,7 @@ class Game:
             segs = segs[: self.cfg.max_vertices]
             self.log.add("Pattern capped at max vertices.")
         lvl.pattern = builder.Pattern.from_segments(segs)
+        self._commit_pattern_state_from_level(lvl)
 
 
     def _reset_pattern_core(self, lvl: LevelState) -> None:
@@ -5424,18 +5853,29 @@ class Game:
 
 
     def _update_fov(self, level: LevelState, radius: int = 8) -> None:
+        """Update visibility/exploration flags using ABS-space as the source of truth.
+
+        This MUST be continuous across chunk boundaries.
+        Zones/chunks are cache buckets only: FoV is computed in ABS coordinates and
+        projected into whatever chunks are touched.
+        """
         if self.player_id not in level.actors:
             return
 
         # Apply view bonus from equipment
         view_bonus = self.effective_character_stats().get("view", 0)
-        radius = radius + view_bonus
+        radius = int(radius + view_bonus)
+        if radius < 1:
+            radius = 1
 
-        px, py = level.actors[self.player_id].pos
-        level.world.clear_visibility()
+        depth = int(self.zone_coord[2])
 
-        # God Vision mode: reveal entire map, no FOV restrictions
+        # Canonical player absolute position
+        p_absx, p_absy = self._get_player_abs()
+
+        # God Vision mode: keep existing behavior stable (zone-local reveal)
         if getattr(self, "god_vision", False):
+            level.world.clear_visibility()
             for y in range(level.world.height):
                 for x in range(level.world.width):
                     tile = level.world.get_tile(x, y)
@@ -5445,47 +5885,161 @@ class Game:
                     actor = self._actor_at(level, (x, y))
                     if actor and actor.id not in level.spotted:
                         level.spotted.add(actor.id)
-            # Apply lighting after visibility changes (consistent behavior)
+            # Lighting is zone-local; apply to current chunk only.
             from edgecaster.systems import lighting
+            px, py = level.actors[self.player_id].pos
             lighting.update_level_lighting(self, level, (px, py))
             level.need_fov = False
             return
 
-        # Build set of opaque positions from entities (walls, closed doors, etc.)
-        opaque: set[Tuple[int, int]] = set()
-        for ent in level.entities.values():
-            if getattr(ent, "blocks_vision", False):
-                opaque.add(ent.pos)
+        # Clear ABS-space visibility for this tick (explored is persistent)
+        try:
+            self.fov_visible_abs.clear()
+        except Exception:
+            self.fov_visible_abs = set()
 
+        # --- Determine which chunks are observed by this FoV update ---
+        zw, zh = self._zone_dims()
+        min_ax = int(p_absx - radius)
+        max_ax = int(p_absx + radius)
+        min_ay = int(p_absy - radius)
+        max_ay = int(p_absy + radius)
 
+        zminx, _ = self._floor_divmod(min_ax, zw)
+        zmaxx, _ = self._floor_divmod(max_ax, zw)
+        zminy, _ = self._floor_divmod(min_ay, zh)
+        zmaxy, _ = self._floor_divmod(max_ay, zh)
 
-        # Normal FOV calculation
-        r2 = radius * radius
-        for y in range(py - radius, py + radius + 1):
-            for x in range(px - radius, px + radius + 1):
-                if not level.world.in_bounds(x, y):
+        observed: dict[tuple[int, int, int], LevelState] = {}
+        for zy in range(int(zminy), int(zmaxy) + 1):
+            for zx in range(int(zminx), int(zmaxx) + 1):
+                zc = (int(zx), int(zy), int(depth))
+                zl = zones_system.get_zone(self, zc)
+                if zl is not None:
+                    observed[zc] = zl
+
+        # Clear visibility across all observed chunks so 'forgetting' works across boundaries
+        for zl in observed.values():
+            zl.world.clear_visibility()
+
+        # Build ABS-space opaque set from vision-blocking entities across observed chunks
+        opaque_abs: set[tuple[int, int]] = set()
+        for zc, zl in observed.items():
+            for ent in zl.entities.values():
+                if getattr(ent, "blocks_vision", False):
+                    ax, ay = self.abs_from_zone_local(zc, ent.pos)
+                    opaque_abs.add((int(ax), int(ay)))
+
+        # ABS-space terrain occluder query (walls/cliffs/etc.)
+        def _blocks_vision_abs(ax: int, ay: int) -> bool:
+            # Resolve ABS -> (zone, local) without world clamping
+            zc, local = self.zone_local_from_abs((ax, ay), depth=depth, clamp_to_world=False)
+            zl = observed.get(zc)
+            if zl is None:
+                zl = zones_system.get_zone(self, zc)
+                if zl is None:
+                    return False  # unknown chunk: do not create a phantom wall
+                observed[zc] = zl
+            lx, ly = local
+            tile = zl.world.get_tile(int(lx), int(ly))
+            if tile is None:
+                return False
+            return bool(getattr(tile, "blocks_vision", False))
+
+        # ABS-space LOS test from a -> b (allows seeing the target square itself)
+        def _los_abs(a_abs: tuple[int, int], b_abs: tuple[int, int]) -> bool:
+            for (tx, ty) in _line_points(a_abs[0], a_abs[1], b_abs[0], b_abs[1]):
+                tx = int(tx); ty = int(ty)
+
+                # Always allow seeing the target square itself.
+                if (tx, ty) == (int(b_abs[0]), int(b_abs[1])):
+                    return True
+
+                # Skip the origin cell
+                if (tx, ty) == (int(a_abs[0]), int(a_abs[1])):
                     continue
-                dx = x - px
-                dy = y - py
+
+                # Entity occluders (doors, wall-entities, etc.)
+                if (tx, ty) in opaque_abs:
+                    return False
+
+                # Terrain occluders
+                if _blocks_vision_abs(tx, ty):
+                    return False
+            return True
+
+        # Recompute 'spotted' from scratch for the observed area (prevents sticky visibility across chunks)
+        prev_spotted = set(level.spotted)
+        new_spotted: set[str] = set()
+        new_spotted.add(self.player_id)
+
+        r2 = radius * radius
+        for ay in range(min_ay, max_ay + 1):
+            dy = ay - p_absy
+            for ax in range(min_ax, max_ax + 1):
+                dx = ax - p_absx
                 if dx * dx + dy * dy > r2:
                     continue
 
-                if _los(level.world, (px, py), (x, y), opaque=opaque):
-                    tile = level.world.get_tile(x, y)
-                    if tile:
-                        tile.visible = True
-                        tile.explored = True
-                    actor = self._actor_at(level, (x, y))
-                    if actor and actor.id not in level.spotted:
-                        level.spotted.add(actor.id)
-                        if actor.id != self.player_id:
-                            self.log.add(f"You spot a {actor.name}.")
+                # Resolve ABS -> (zone, local)
+                zc, local = self.zone_local_from_abs((ax, ay), depth=depth, clamp_to_world=False)
+                zl = observed.get(zc)
+                if zl is None:
+                    zl = zones_system.get_zone(self, zc)
+                    if zl is None:
+                        continue
+                    observed[zc] = zl
 
-        # Apply lighting from light-emitting entities (e.g., dropped Glowing Band)
-        #from edgecaster.systems import lighting
-        #lighting.update_level_lighting(self, level, (px, py))
+                lx, ly = int(local[0]), int(local[1])
 
+                if not _los_abs((p_absx, p_absy), (ax, ay)):
+                    continue
+
+                # ABS-space FOV truth (renderer consults this first)
+                self.fov_visible_abs.add((int(ax), int(ay), int(depth)))
+                self.fov_explored_abs.setdefault(int(depth), set()).add((int(ax), int(ay)))
+
+                # Project into chunk-local tile flags as cache/persistence.
+                tile = zl.world.get_tile(lx, ly)
+                if tile is not None:
+                    tile.visible = True
+                    tile.explored = True
+
+                actor = self._actor_at(zl, (lx, ly))
+                if actor:
+                    new_spotted.add(actor.id)
+                    if actor.id != self.player_id and actor.id not in prev_spotted:
+                        self.log.add(f"You spot a {actor.name}.")
+
+        level.spotted = new_spotted
         level.need_fov = False
+
+
+    # --- ABS-space fog queries (authoritative for terrain rendering) ---
+    def is_abs_visible(self, abs_x: int, abs_y: int, depth: int | None = None) -> bool:
+        """True if this ABS tile is visible THIS tick."""
+        if depth is None:
+            try:
+                depth = int(self.zone_coord[2])
+            except Exception:
+                depth = 0
+        try:
+            return (int(abs_x), int(abs_y), int(depth)) in self.fov_visible_abs
+        except Exception:
+            return False
+
+    def is_abs_explored(self, abs_x: int, abs_y: int, depth: int | None = None) -> bool:
+        """True if this ABS tile has ever been seen (persistent exploration)."""
+        if depth is None:
+            try:
+                depth = int(self.zone_coord[2])
+            except Exception:
+                depth = 0
+        s = self.fov_explored_abs.get(int(depth))
+        if not s:
+            return False
+        return (int(abs_x), int(abs_y)) in s
+
 
 
     # --- exposed for renderer ---

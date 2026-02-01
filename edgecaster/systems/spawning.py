@@ -241,7 +241,14 @@ def spawn_entity_from_template(
     Uses prototypes.resolve_proto() so inheritance works across entities.yaml/enemies.yaml/etc.
     `overrides` merges on top; `tags` merge dict-wise (entity-style).
     """
-    spec = prototypes.resolve_proto(template_id)
+    from edgecaster.prototypes import resolve_proto
+    from edgecaster import spawn_factory
+
+    proto_bucket = game.proto_bucket
+    if proto_bucket is None:
+        raise RuntimeError("Game.proto_bucket is not initialized")
+
+    spec = resolve_proto(proto_bucket, template_id)
     if not spec:
         raise KeyError(f"Unknown prototype id {template_id!r}")
 
@@ -250,6 +257,7 @@ def spawn_entity_from_template(
         spec=spec,
         eid=eid,
         pos=pos,
+        abs_pos=game.abs_from_zone_local(game.zone_coord, pos),
         overrides=overrides,
     )
 
@@ -257,6 +265,7 @@ def spawn_entity_from_template(
     _init_entity_charges(game, ent)
 
     return ent
+
 
 
 def _init_entity_charges(game: "Game", ent: "Entity") -> None:
@@ -306,6 +315,15 @@ def register_actor(
         actor: The actor to register
         schedule_ai: If True, schedule the AI turn for this actor
     """
+    # Ensure canonical ABS truth exists at birth.
+    # This prevents UI anchoring / look-scene transitions from "flying in"
+    # until the entity has moved once.
+    try:
+        if getattr(actor, "abs_pos", None) is None:
+            actor.abs_pos = game.abs_from_zone_local(level.coord, actor.pos)
+    except Exception:
+        pass
+
     level.actors[actor.id] = actor
     level.entities[actor.id] = actor
 
@@ -709,9 +727,9 @@ def spawn_mentor(game: "Game", level: "LevelState") -> Optional["Actor"]:
         )
         mentor.description = "Old, one-eyed, and syphilitic, yet unerringly optimistic."
 
-        level.actors[aid] = mentor
-        level.entities[aid] = mentor
+        register_actor(game, level, mentor, schedule_ai=False)
         return mentor
+
 
     return None
 
@@ -757,10 +775,10 @@ def spawn_intro_npcs(game: "Game", level: "LevelState") -> int:
             )
             npc.description = description
 
-            level.actors[aid] = npc
-            level.entities[aid] = npc
+            register_actor(game, level, npc, schedule_ai=False)
             placed += 1
             break
+
 
     return placed
 
@@ -803,9 +821,9 @@ def spawn_npcs(
             disposition=npc_data.get("base_disposition", 0),
             affiliations=tuple(npc_data.get("factions", [])),
         )
-        level.actors[aid] = actor
-        level.entities[aid] = actor
+        register_actor(game, level, actor, schedule_ai=False)
         placed += 1
+
 
     return placed
 

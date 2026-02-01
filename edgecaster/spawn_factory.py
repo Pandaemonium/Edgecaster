@@ -150,8 +150,10 @@ def build_entity_from_spec(
     spec: Dict[str, Any],
     eid: str,
     pos: Tuple[int, int],
+    abs_pos: Optional[Tuple[int, int]] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> Entity:
+
     """Build a plain Entity from a resolved prototype spec.
 
     `overrides` merges on top; `tags` merges dict-wise.
@@ -195,6 +197,9 @@ def build_entity_from_spec(
         # Common optional ctor args (only used if Entity accepts them):
         "blocks_movement": bool(s.get("blocks_movement", False)),
         "blocks_vision": bool(s.get("blocks_vision", False)),
+        "pos": tuple(pos),
+        "abs_pos": (tuple(abs_pos) if abs_pos is not None else None),
+
     }
 
     ent = Entity(**_ctor_kwargs_for(Entity, desired_kwargs))
@@ -237,8 +242,10 @@ def build_actor_from_spec(
     spec: Dict[str, Any],
     aid: str,
     pos: Tuple[int, int],
+    abs_pos: Optional[Tuple[int, int]] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> Actor:
+
     """Build an Actor from a resolved prototype spec (enemies.yaml style).
 
     YAML tags handling:
@@ -291,6 +298,9 @@ def build_actor_from_spec(
         "actions": actions,
         # Some projects put these directly on Actor.__init__ as well:
         "blocks_vision": bool(s.get("blocks_vision", False)),
+        "pos": tuple(pos),
+        "abs_pos": (tuple(abs_pos) if abs_pos is not None else None),
+
     }
 
     actor = Actor(**_ctor_kwargs_for(Actor, desired_kwargs))

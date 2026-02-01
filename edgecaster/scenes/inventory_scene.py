@@ -3310,8 +3310,15 @@ class InventoryScene(PopupMenuScene):
 
         # Optional override: when opening a nested inventory, the source glyph
         # is often a glyph in the *parent* inventory list (not a world tile).
+        #
+        # IMPORTANT:
+        #   - For nested inventories (parent_owner_id is not None), source_px is in the
+        #     *parent panel's* coordinate space, so we mark _source_from_parent_panel True.
+        #   - For LookScene (mode == "look"), dungeon.py passes a world-space screen pixel
+        #     (renderer.surface coords). In that case, we must NOT treat it as a parent-panel
+        #     coordinate, or the diagrammatic zoom will appear to fly in from (0,0).
         if source_px is not None:
-            self._source_from_parent_panel = True
+            self._source_from_parent_panel = bool(parent_owner_id) and (mode != "look")
             try:
                 self._zoom_source_px = (int(source_px[0]), int(source_px[1]))
             except Exception:
@@ -3385,13 +3392,28 @@ class InventoryScene(PopupMenuScene):
         self._inherit_owner_visual_effects()
 
         # Cache owner's world position for source pixel calc.
+        # IMPORTANT: we want ABS-space here. Zone-local (pos) will make the
+        # diagrammatic zoom appear to fly in from offscreen (typically up-left)
+        # once the camera / renderer origin is expressed in abs space.
         _owner = self._find_owner_entity()
-        _pos = getattr(_owner, "pos", None)
-        if _pos is not None:
+        _abs = getattr(_owner, "abs_pos", None)
+        if _abs is not None:
             try:
-                self._zoom_owner_world = (int(_pos[0]), int(_pos[1]))
+                self._zoom_owner_world = (int(_abs[0]), int(_abs[1]))
             except Exception:
                 self._zoom_owner_world = None
+        elif getattr(_owner, "abs_x", None) is not None and getattr(_owner, "abs_y", None) is not None:
+            try:
+                self._zoom_owner_world = (int(getattr(_owner, "abs_x")), int(getattr(_owner, "abs_y")))
+            except Exception:
+                self._zoom_owner_world = None
+        else:
+            _pos = getattr(_owner, "pos", None)
+            if _pos is not None:
+                try:
+                    self._zoom_owner_world = (int(_pos[0]), int(_pos[1]))
+                except Exception:
+                    self._zoom_owner_world = None
 
         self._refresh_rows()
         if self._list:
@@ -5867,18 +5889,36 @@ class InventoryScene(PopupMenuScene):
             try:
                 renderer = getattr(manager, "renderer", None)
                 if renderer is not None:
-                    tile_px = float(getattr(renderer, "tile_px", getattr(renderer, "tile", 0.0)))
+                    tile_px_f = float(getattr(renderer, "tile_px", getattr(renderer, "tile", 0.0)))
                     ox = float(getattr(renderer, "origin_x", 0.0))
                     oy = float(getattr(renderer, "origin_y", 0.0))
-                    if tile_px > 0.0:
+                    if tile_px_f > 0.0:
                         tx, ty = self._zoom_owner_world
+
                         # Center of the tile in *current* screen space.
-                        px = int(round(float(tx) * tile_px + ox + tile_px * 0.5))
-                        py = int(round(float(ty) * tile_px + oy + tile_px * 0.5))
+                        px = int(round(float(tx) * tile_px_f + ox + tile_px_f * 0.5))
+                        py = int(round(float(ty) * tile_px_f + oy + tile_px_f * 0.5))
                         self._zoom_source_px = (px, py)
+
+                        # Also estimate the on-screen pixel size of the owner's glyph/sprite
+                        # as actually rendered in the dungeon view. This matters for large/small
+                        # entities (abs_size) so the diagrammatic zoom starts at the correct size.
+                        if self._zoom_source_glyph_px is None:
+                            try:
+                                owner = self._find_owner_entity()
+                                abs_size = getattr(owner, "abs_size", getattr(owner, "size", 1.0))
+                                abs_size_f = float(abs_size) if isinstance(abs_size, (int, float, str)) else 1.0
+                                if not (abs_size_f > 0.0):
+                                    abs_size_f = 1e-6
+                            except Exception:
+                                abs_size_f = 1.0
+                            try:
+                                want_px = int(round(float(tile_px_f) * float(abs_size_f)))
+                                self._zoom_source_glyph_px = max(2, min(2048, want_px))
+                            except Exception:
+                                self._zoom_source_glyph_px = None
             except Exception:
                 self._zoom_source_px = None
-
         super().update(dt_ms, manager)
     # ---------------------------------------------------------------------
     # Background dim fade (smooth with zoom)
