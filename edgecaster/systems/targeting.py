@@ -45,11 +45,19 @@ def predict_aim_preview(
 
     Returns an AimPrediction containing damage numbers + fail text only;
     caller/renderer can use pattern geometry to draw.
+
+    YOGA: All coordinates here are in ABS space. Actor positions use abs_pos.
     """
     if action not in ("activate_all", "activate_seed", "throw_flask"):
         return None
 
-    origin = getattr(game, "pattern_anchor", None)
+    # YOGA: Use ABS anchor for pattern projection
+    origin = getattr(game, "pattern_anchor_abs", lambda: None)()
+    if origin is None:
+        # Fallback: derive from zone-local if ABS not available
+        local_anchor = getattr(game, "pattern_anchor", None)
+        if local_anchor is not None:
+            origin = game.abs_from_zone_local(game.zone_coord, local_anchor)
     pattern = getattr(game, "pattern", None)
     if origin is None or pattern is None or not getattr(pattern, "vertices", None):
         return None
@@ -101,19 +109,26 @@ def predict_aim_preview(
             fail_text = None
 
         # Summarize damage per-actor using the same coverage math as activation.
+        # YOGA: center is in ABS space, so actor positions must also be ABS
         try:
             level = game._level()
             for actor in getattr(level, "actors", {}).values():
                 if not getattr(actor, "alive", False):
                     continue
-                ax, ay = getattr(actor, "pos", (None, None))
-                if ax is None or ay is None:
+                # Zone-local pos for visibility check
+                local_pos = getattr(actor, "pos", (None, None))
+                if local_pos[0] is None or local_pos[1] is None:
                     continue
                 if actor.id == getattr(game, "player_id", None) or getattr(actor, "faction", None) == "player":
                     continue
-                tile = level.world.get_tile(ax, ay) if hasattr(level, "world") else None
+                tile = level.world.get_tile(*local_pos) if hasattr(level, "world") else None
                 if tile is not None and hasattr(tile, "visible") and not tile.visible:
                     continue
+                # YOGA: Use ABS pos for distance to ABS center
+                abs_pos = getattr(actor, "abs_pos", None)
+                if abs_pos is None:
+                    abs_pos = game.abs_from_zone_local(game.zone_coord, local_pos)
+                ax, ay = abs_pos
                 # tile square center distance to circle, approximate coverage factor
                 dx = (ax + 0.5) - center[0]
                 dy = (ay + 0.5) - center[1]
@@ -166,6 +181,7 @@ def predict_aim_preview(
         ]
         active_verts = [verts[i] for i in target_vertices]
 
+        # YOGA: active_verts are in ABS space, so actor positions must be ABS too
         try:
             level = game._level()
             for actor in getattr(level, "actors", {}).values():
@@ -173,12 +189,18 @@ def predict_aim_preview(
                     continue
                 if actor.id == getattr(game, "player_id", None) or getattr(actor, "faction", None) == "player":
                     continue
-                tile = level.world.get_tile(*actor.pos) if hasattr(level, "world") else None
+                # Zone-local pos for visibility check
+                local_pos = getattr(actor, "pos", (None, None))
+                tile = level.world.get_tile(*local_pos) if hasattr(level, "world") else None
                 if tile is not None and hasattr(tile, "visible") and not tile.visible:
                     continue
+                # YOGA: Use ABS pos for damage calculation
+                abs_pos = getattr(actor, "abs_pos", None)
+                if abs_pos is None:
+                    abs_pos = game.abs_from_zone_local(game.zone_coord, local_pos)
                 dmg = damage_from_vertices(
                     active_verts,
-                    actor.pos,
+                    abs_pos,
                     radius,
                     dmg_per_vertex,
                     cap=cap,

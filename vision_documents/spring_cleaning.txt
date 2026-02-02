@@ -1,11 +1,12 @@
 SPRING CLEANING - ACTIONABLE PLAN
-Updated: 2026-01-09
+Updated: 2026-02-01
 Status: UI migration largely complete; map zoom refactor complete; game.py decomposition largely complete
 
 Legend:
 [CLEANUP] structure / correctness
 [BEHAVIOR] gameplay change
 [VISION] long-term direction
+[YOGA] required for observer-driven reality (see the_yoga.txt)
 
 ===============================================================================
 SLICE 1 — TARGETMODE (FOUNDATION COMPLETE)
@@ -18,6 +19,8 @@ Next:
 [BEHAVIOR] Cone / line targeting shapes
 [BEHAVIOR] Ranged preview overlays
 [BEHAVIOR] Multi-step targeting for complex spells
+[YOGA] Ensure all targeting uses ABS coordinates as source of truth
+[YOGA] Mouse and keyboard targeting must use same coordinate path
 
 ===============================================================================
 SLICE 2 — MENU & UI SYSTEM (MAJOR MILESTONE REACHED)
@@ -70,6 +73,8 @@ Next:
 [CLEANUP] Define canonical menu background + popup dim level
 [CLEANUP] Small library of panel styles (fullscreen / compact / wide)
 [CLEANUP] Re-audit overlay brightness (avoid unintended lightening)
+[YOGA] Overlay effects must project from ABS coordinates
+[YOGA] "Overlay exists logically but not visually" = wrong coord frame
 
 ===============================================================================
 INVENTORY_SCENE / LOOK_SCENE FOLLOW-UPS (edgecaster/scenes/inventory_scene.py)
@@ -83,6 +88,11 @@ Status:
 - Deduplicate small inner helpers inside render paths (e.g., repeated u->px mapping closures) and remove dead locals.
 - Reduce nested "fail-soft" try/except where already inside a fail-soft region (keep optional render guardrails, but avoid redundant nesting).
 - Identify "public entry points" referenced externally (e.g., LookScene) before deleting anything else.
+
+[YOGA] Diagrammatic zoom anchoring
+- Scene open/close animations must anchor to source glyph's world position
+- "Fly-in from (0,0)" = uninitialized or zone-local coords (yoga violation)
+- Entity preview glyph must project consistently with world rendering
 
 [BEHAVIOR] UI / interaction wishlist
 - Tile examine UX: when a tile contains multiple entities, allow cycling through entities (and/or a list) without leaving the examine flow.
@@ -119,6 +129,9 @@ Remaining:
 [CLEANUP] Further slim ascii.py (pure renderer invariant)
 [CLEANUP] Document LoD constants and tuning knobs
 [CLEANUP] Tune zoom step curve/feel
+[YOGA] Create canonical coordinate transform helpers (screen↔ABS↔local)
+[YOGA] Renderer should project from ABS truth, not invent state
+[YOGA] Scale-aware caching: current LoD system is precursor to attention field
 
 ===============================================================================
 SLICE 5 - GAME.PY DECOMPOSITION
@@ -162,12 +175,267 @@ ONGOING ENGINE CLEANUPS
 [CLEANUP] Import-time module loading / circular import audit
 [CLEANUP] Threading model ownership (overmap cache + corruption rerender)
 [CLEANUP] Renderer UI state migration (ascii.py should be draw-only)
+[YOGA] "Player is not special" audit
+  - Player entity should use same data model as other actors
+  - Same spawn pipeline, coordinate rules, rendering rules
+  - What's special is the observer (camera, inhabited actor id), not the entity
+  - Prepare for body-swap: observer follows, vessel remains in world
 
 ===============================================================================
 TESTING NOTES
 
 - Run tests with: python -m pytest
   (Avoid calling bare "pytest" on PATH because it may point at a different Python install.)
+
+YOGA REFACTOR TESTS (tests/test_yoga_coordinates.py):
+
+Purpose: Validate Stage 1 yoga invariants and prepare for refactor.
+
+Test Classes (34 tests total):
+- TestAbsFromZoneLocal: abs_from_zone_local() transform correctness
+- TestZoneLocalFromAbs: zone_local_from_abs() transform correctness
+- TestCoordinateRoundTrip: Bidirectional transform consistency
+- TestEntityAbsPos: Entity.abs_pos field and helpers
+- TestSpawnAbsPos: Spawn paths populate abs_pos correctly
+- TestPatternStateCanonical: Pattern state stored in ABS space
+- TestYogaInvariants: Core yoga invariants don't regress
+- TestTargetingState: Targeting state structure (documents desired behavior)
+
+Run yoga tests only:
+  python -m pytest tests/test_yoga_coordinates.py -v
+
+These tests serve as a safety net during the yoga refactor - any
+regression in coordinate handling will cause failures.
+
+EXISTING TEST FAILURES (pre-existing, not from yoga work):
+
+Some tests in test_zones.py, test_spawning.py, test_pattern_ops.py, and
+test_combat.py are failing due to earlier code changes. These should be
+fixed as part of ongoing maintenance.
+
+===============================================================================
+YOGA ROADMAP — OBSERVER-DRIVEN REALITY (see vision_documents/the_yoga.txt)
+
+The yoga defines Edgecaster's long-term architecture: absolute space is truth,
+zones are caches, the camera is the observer, and scale is real.
+
+This section tracks the 5-stage migration from zone-metaphysical to observer-driven.
+
+-------------------------------------------------------------------------------
+STAGE 1 — COORDINATE AUTHORITY UNIFICATION (Active)
+
+Goal: ABS coordinates are truth for all entities, effects, and world state.
+Zones become views/caches, not metaphysical containers.
+
+AUDIT FINDINGS (2026-02-01, updated 2026-02-01):
+
+✓ GOOD: Entity.abs_pos exists on dataclass (state/entities.py:28)
+✓ GOOD: game.abs_from_zone_local() and zone_local_from_abs() helpers exist
+✓ GOOD: _pattern_state_by_depth stores canonical ABS pattern anchor
+✓ GOOD: _move_player_to_abs() uses ABS as source of truth
+✓ GOOD: spawn_entity_from_template() sets abs_pos on creation
+✓ GOOD: register_actor() backfills abs_pos if not set
+✓ GOOD: zones.py has yoga-aware docstrings ("boring chunks")
+✓ DONE: target_cursor_abs is now canonical; target_cursor derived via _set_cursor_abs()
+✓ DONE: targeting.py uses pattern_anchor_abs() for ABS-space damage calculations
+✓ DONE: Actor damage calculations use abs_pos for coordinate consistency
+
+✓ DONE: game.set_target_cursor() dead stub removed (no callers).
+✓ DONE: spawn_enemies() passes abs_pos to enemy_factory.spawn_enemy()
+✓ DONE: spawn_imps_near, spawn_echoes_near, spawn_enemies_for_biome pass abs_pos
+✓ DONE: _spawn_slaver_pack() passes abs_pos for shackled_brute spawns
+
+PATTERN ANCHOR CALLERS (audited 2026-02-01):
+
+Many systems still use level.pattern_anchor (zone-local view). This is acceptable
+when the entire calculation is in zone-local space. The bridge pattern handles it:
+- _commit_pattern_state_from_level(): zone-local → canonical ABS
+- _update_pattern_view_from_abs(): canonical ABS → zone-local view
+
+Systems using zone-local pattern_anchor (OK for now):
+- pattern_ops.py: projected_vertices(), nearest_vertex() - all in zone-local
+- fern_growth.py: pattern growth calculations - zone-local
+- seal_trials.py: pattern geometry checks - zone-local
+- motion.py: push/translation - zone-local, commits back to ABS
+
+Systems that needed ABS (FIXED):
+- targeting.py: predict_aim_preview() now uses pattern_anchor_abs()
+- Actor damage: uses abs_pos to match ABS-space vertices
+
+[YOGA] Migrate targeting to ABS authority - DONE
+  - ✓ target_cursor_abs is canonical (set via _set_cursor_abs helper)
+  - ✓ target_cursor (local) is DERIVED from target_cursor_abs
+  - ✓ Mouse and keyboard targeting both set ABS first, then derive local
+
+[YOGA] UI transition anchoring
+  - Scene transitions must use real on-screen anchors (not (0,0))
+  - "Fly-in from upper-left" symptom = uninitialized or zone-local coords
+  - Inventory/popup animations should anchor to source glyph world position
+
+[YOGA] Rune/pattern canonical state
+  - ✓ _pattern_state_by_depth stores ABS anchor
+  - ✓ Bridge pattern (_commit/_update) keeps zone-local view in sync
+  - ✓ targeting.py uses ABS for damage calculations
+
+[YOGA] Zone boundary behavior audit
+  - Identify all systems that change behavior at zone boundaries
+  - Effects that disappear/resurrect at boundaries = yoga violation
+  - Streaming limitations are acceptable; metaphysical resets are not
+
+NOTE: Multi-zone click handling (dungeon.py ~line 2060) has a latent bug:
+tx, ty are ABS (from mouse relative to ABS origin), but game.world.in_bounds()
+checks against zone-local dimensions. Works for single-zone or zone (0,0,depth).
+
+FILES WITH YOGA REFACTOR COMMENTS (added 2026-02-01):
+
+- edgecaster/game.py (lines 7-40): Overview of Stage 1 status + TODO list
+- edgecaster/game.py (~line 6130): set_target_cursor() stub explanation
+- edgecaster/scenes/dungeon.py (DungeonUIState docstring): Targeting state notes
+- edgecaster/scenes/dungeon.py (_set_cursor_abs): NEW helper for ABS-canonical cursor
+- edgecaster/systems/targeting.py: predict_aim_preview() uses ABS pattern anchor
+- edgecaster/systems/spawning.py (module docstring): Yoga compliance status
+- edgecaster/render/ascii.py (module docstring): Renderer yoga invariants
+- edgecaster/render/ascii.py (~line 4117): Sets target_cursor_abs on init
+
+-------------------------------------------------------------------------------
+STAGE 2 — CENTRALIZE COORDINATE TRANSFORMS
+
+Goal: Eliminate ad-hoc coordinate math scattered across codebase.
+Create canonical helper APIs for all conversions.
+
+[YOGA] Create transform helper API (camera.py or new module)
+  - renderer.screen_to_abs_tile(screen_px) -> (abs_x, abs_y)
+  - renderer.abs_tile_to_screen_px(abs_x, abs_y) -> (px, py)
+  - game.abs_from_zone_local(zone, local_x, local_y) (temporary bridge)
+  - game.zone_local_from_abs(abs_x, abs_y) (temporary bridge)
+
+[YOGA] Audit and consolidate coordinate conversions
+  - Search for ad-hoc px/tile math in scenes, renderers, UI
+  - Replace with canonical helpers
+  - Document coordinate spaces (screen px, world tiles, ABS tiles)
+
+[YOGA] Renderer projection consistency
+  - Verify all render paths use same camera transform
+  - Entity rendering, effects, UI overlays must project identically
+  - "Overlays exist logically but not visually" = wrong coord frame
+
+-------------------------------------------------------------------------------
+STAGE 3 — ATTENTION FIELD CACHING (Future)
+
+Goal: Replace vestigial zones with dynamic, scale-aware attention field.
+What's "hot" (near camera + similar scale) gets realized; rest is abstracted.
+
+[VISION] Design attention field data structure
+  - Spatial/scale heatmap centered on observer
+  - Nested grid keyed by scale level
+  - "Hotness" determines simulation fidelity
+
+[VISION] Deterministic realization/coarsening
+  - Hot regions spawn/realize detailed entities
+  - Cold regions coarsen to aggregates
+  - Transitions must be deterministic (same seed = same result)
+
+[VISION] Persistent delta system
+  - Changes to world must persist when region goes cold
+  - Berry picked = patch remembers depletion
+  - Bear killed = stays dead (unless designed otherwise)
+  - Entity displacement persists across hot/cold cycles
+
+[VISION] Scale-dependent bucket caching
+  - Performance caches must be scale-aware
+  - A Leviathan spans many "zones" - old rigid rectangles don't work
+  - Tiny entities exist within footprint of coarse tiles
+
+-------------------------------------------------------------------------------
+STAGE 4 — MACRO ENTITY HIERARCHY (Future)
+
+Goal: Entities can resolve into sub-entities and coarsen back into aggregates.
+First-class support for multi-scale entities: armies, cities, forests.
+
+[VISION] Entity resolution/coarsening system
+  - forest → woods → trees → berry patches → berries
+  - city → districts → buildings → walls → NPCs
+  - army → battalions → squads → individuals
+
+[VISION] Aggregate entity representation
+  - Coarse entities carry summary stats (strength, morale, resources)
+  - Resolution spawns detailed entities from aggregate state
+  - Coarsening computes aggregate from detailed state
+
+[VISION] Sub-entity spawning rules
+  - Define resolution triggers (proximity, zoom, attention)
+  - Ensure bidirectional consistency (resolve then coarsen = original)
+  - Handle partial resolution (edge of attention field)
+
+-------------------------------------------------------------------------------
+STAGE 5 — SCHEDULING / SIMULATION BUDGET (Future)
+
+Goal: Global energy queue with attention-dependent tick granularity.
+High fidelity near observer, abstract resolution far away.
+
+[VISION] Attention-based simulation fidelity
+  - Nearby entities tick every frame
+  - Distant entities tick less frequently or as dice-roll outcomes
+  - Scale matters: crickets tick when zoomed in, not zoomed out
+
+[VISION] Abstract event resolution
+  - Far-away battles resolve as aggregate outcomes
+  - Time skips apply abstract rules, not full simulation
+  - Results should be deterministic given same seed
+
+[VISION] Body-swap / observer migration
+  - Camera/attention follows inhabited actor, not "player entity"
+  - Old vessel persists in world (cold simulation)
+  - Return to vessel: it's still there (modulo time/events)
+  - Entity data model same for player and NPCs
+
+-------------------------------------------------------------------------------
+YOGA DEBUG HEURISTICS
+
+Use these to smell yoga violations during development:
+
+1. "Flies in from upper-left"
+   → UI using zone-local or uninitialized coords
+
+2. Mouse and keyboard disagree
+   → Two coordinate conversion paths; one double-converts or clamps
+
+3. Things change at zone boundaries
+   → Canonical state still zone-owned; view->truth commit missing
+
+4. Overlays exist logically but not visually
+   → Stored data overwritten by canonical sync, or wrong coord frame
+
+5. "Always chooses the rightmost vertex"
+   → Nearest-neighbor running in wrong coordinate space (ABS vs local)
+
+===============================================================================
+CHAKRA SYSTEM FOLLOW-UPS (edgecaster/scenes/chakra_scene.py)
+
+Status:
+- Core chakra scene implemented with Shift+C keybind
+- 3-layer glow, pulse animations, energy flow lines working
+- Sub-schema chakras (arm.shoulder, arm.hand.wrist, etc.) now visible
+
+[CLEANUP] Zoom navigation into sub-schemas
+  - Click hand chakra → zoom to hand sub-schema showing fingers
+  - Smooth camera transition with smoothstep easing (220ms)
+  - Backspace/right-click to zoom out
+  - Breadcrumb trail showing zoom path
+
+[BEHAVIOR] Drag-select for chakra clusters
+  - Click-drag to highlight multiple chakras
+  - Option to activate or deactivate selected group
+  - Useful when chakras are too close to click individually
+
+[BEHAVIOR] List-view alternative interface
+  - Toggle between visual body view and list view
+  - List shows all unlocked chakras with toggle on/off
+  - Filter by body region (arms, legs, torso, head)
+
+[CLEANUP] Hand chakras visibility
+  - Ensure finger chakras appear when hand is unlocked
+  - Verify nested sub-schema resolution (hand → fingers → knuckles)
 
 ===============================================================================
 GUIDING PRINCIPLES
@@ -176,3 +444,5 @@ GUIDING PRINCIPLES
 - Preserve functional parity before aesthetics
 - Let systems compose instead of special-casing
 - Keep the geometry weird
+- Absolute space is truth; zones are caches
+- The camera is the observer; scale is real

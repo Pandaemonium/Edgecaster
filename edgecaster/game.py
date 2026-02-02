@@ -4,6 +4,44 @@ from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
 from collections import deque
 
+# =============================================================================
+# YOGA REFACTOR NOTES (see vision_documents/the_yoga.txt)
+# =============================================================================
+#
+# STAGE 1 (Active): Coordinate Authority Unification
+#
+# Current Status:
+#   - abs_pos is defined on Entity but not consistently populated on spawn
+#   - abs_from_zone_local / zone_local_from_abs helpers exist and are used
+#   - _pattern_state_by_depth provides canonical ABS pattern storage
+#   - Player movement uses _move_player_to_abs() which is yoga-compliant
+#
+# TODO (YOGA):
+#   [1] Entity abs_pos population: MOSTLY DONE.
+#       - ✓ spawning_system.spawn_enemies() now sets abs_pos on each spawn
+#       - ✓ spawning_system.spawn_entity_from_template() sets abs_pos
+#       - ✓ spawn_imps_near, spawn_echoes_near, spawn_enemies_for_biome set abs_pos
+#       - _spawn_poi_contents() should set abs_pos on all NPCs/entities (TODO)
+#
+#   [2] LevelState.entities: Still stores entities by zone-local membership.
+#       - Eventually should be an index/view, not authoritative storage
+#       - Migration path: WorldEntityIndex is the precursor
+#
+#   [3] Targeting: DONE - target_cursor_abs is now canonical.
+#       - DungeonScene._set_cursor_abs() sets ABS first, derives local
+#       - set_target_cursor() stub removed (was never called)
+#
+#   [4] Pattern anchor: _pattern_state stores anchor_abs, but many code
+#       paths still read level.pattern_anchor (zone-local).
+#       - Audit callers of level.pattern_anchor and migrate to game.pattern_anchor_abs()
+#
+# STAGE 2 (Next): Centralize Coordinate Transforms
+#   - abs_from_zone_local / zone_local_from_abs exist but are on Game
+#   - Should be accessible from renderer without full game reference
+#   - Consider creating camera.py or coords.py helper module
+#
+# =============================================================================
+
 @dataclass
 class RenderProxy:
     """Lightweight wrapper for rendering objects that may live in other zones.
@@ -6091,10 +6129,6 @@ class Game:
     @awaiting_terminus.setter
     def awaiting_terminus(self, value: bool) -> None:
         self._level().awaiting_terminus = value
-
-    def set_target_cursor(self, pos: Tuple[int, int]) -> None:
-        # helper for renderer if needed
-        pass
 
     # --- debug logging ---
     def _debug(self, msg: str) -> None:

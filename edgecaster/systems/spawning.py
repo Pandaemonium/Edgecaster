@@ -9,6 +9,13 @@ This module manages:
 
 Extracted from game.py as part of the SLICE 5 refactor.
 See vision_documents/spring_cleaning.txt for details.
+
+YOGA COMPLIANCE NOTE:
+- spawn_entity_from_template() sets abs_pos on creation via abs_from_zone_local().
+- register_actor() backfills abs_pos if not already set.
+- spawn_enemies() relies on register_actor() for abs_pos backfill.
+- All spawn paths should produce entities with valid abs_pos.
+- See vision_documents/the_yoga.txt Stage 1 for coordinate authority requirements.
 """
 
 from __future__ import annotations
@@ -478,7 +485,9 @@ def spawn_enemies(
 
         tmpl_id = game.rng.choice(enemy_ids)
 
-        mob = enemy_factory.spawn_enemy(tmpl_id, pos)
+        # YOGA: Compute ABS position for canonical storage
+        abs_pos = game.abs_from_zone_local(level.coord, pos)
+        mob = enemy_factory.spawn_enemy(tmpl_id, pos, abs_pos=abs_pos)
 
         # 20% bismuth imps
         if tmpl_id == "imp" and game.rng.random() < 0.2:
@@ -536,7 +545,9 @@ def _spawn_slaver_pack(
         if game._entity_at(level, (tx, ty)):
             continue
 
-        brute = enemy_factory.spawn_enemy("shackled_brute", (tx, ty))
+        # YOGA: Compute ABS position for canonical storage
+        brute_abs_pos = game.abs_from_zone_local(level.coord, (tx, ty))
+        brute = enemy_factory.spawn_enemy("shackled_brute", (tx, ty), abs_pos=brute_abs_pos)
         brute.tags = getattr(brute, "tags", None) or {}
         brute.tags["slaver_master_id"] = slaver.id
         brute.tags["slaver_group_id"] = group_id
@@ -558,7 +569,9 @@ def spawn_imps_near(
     """Spawn up to `count` imps within `radius` tiles of center."""
 
     def place_imp(pos: Tuple[int, int]) -> None:
-        imp = enemy_factory.spawn_enemy("imp", pos)
+        # YOGA: Compute ABS position for canonical storage
+        abs_pos = game.abs_from_zone_local(level.coord, pos)
+        imp = enemy_factory.spawn_enemy("imp", pos, abs_pos=abs_pos)
 
         # 20% chance bismuth
         if game.rng.random() < 0.2:
@@ -581,7 +594,9 @@ def spawn_echoes_near(
     """Spawn hostile fractal echoes within `radius` of center."""
 
     def place_echo(pos: Tuple[int, int]) -> None:
-        echo = enemy_factory.spawn_enemy("fractal_echo", pos)
+        # YOGA: Compute ABS position for canonical storage
+        abs_pos = game.abs_from_zone_local(level.coord, pos)
+        echo = enemy_factory.spawn_enemy("fractal_echo", pos, abs_pos=abs_pos)
         register_actor(game, level, echo, schedule_ai=True)
 
     return spawn_entities_near(game, level, center, count, place_echo, radius)
@@ -976,7 +991,9 @@ def spawn_enemies_for_biome(
         tmpl_id = game.rng.choice(pool)
 
         try:
-            mob = enemy_factory.spawn_enemy(tmpl_id, pos)
+            # YOGA: Compute ABS position for canonical storage
+            abs_pos = game.abs_from_zone_local(level.coord, pos)
+            mob = enemy_factory.spawn_enemy(tmpl_id, pos, abs_pos=abs_pos)
             register_actor(game, level, mob, schedule_ai=True)
             spawned += 1
         except Exception:

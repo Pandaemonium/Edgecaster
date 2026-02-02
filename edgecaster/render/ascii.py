@@ -1,4 +1,27 @@
-"""Pygame-based ASCII-style renderer with ability bar and targeting."""
+"""Pygame-based ASCII-style renderer with ability bar and targeting.
+
+YOGA REFACTOR NOTES (see vision_documents/the_yoga.txt):
+------------------------------------------------------------------------
+This renderer is transitioning from zone-local to ABS-based coordinates.
+
+Current Status:
+- Player position uses abs_pos for camera centering (see draw(), ~line 370)
+- Entity rendering derives screen position from ABS via camera transform
+- Pattern/rune rendering still uses zone-local anchor in some paths
+
+TODO (YOGA Stage 2 - Centralize Coordinate Transforms):
+- Create helper API: renderer.abs_tile_to_screen_px(abs_x, abs_y)
+- Consolidate all tile->screen conversions to use this helper
+- Eliminate ad-hoc coordinate math scattered across draw methods
+
+Key Invariant (Yoga Compliant):
+- Renderer should ONLY project from ABS world state to screen pixels
+- It must not "repair" or "invent" positions from zone-local data
+- If something draws wrong, the bug is upstream (game state), not here
+
+See vision_documents/spring_cleaning.txt SLICE 4 for related map/camera refactor.
+------------------------------------------------------------------------
+"""
 import pygame
 import math
 import random
@@ -4092,8 +4115,12 @@ class AsciiRenderer:
         self.reset_camera(game)
 
         # Start target cursor at player position (scene/ui_state drives it)
+        # YOGA: Set ABS cursor as canonical, local is derived
         player = game.actors[game.player_id]
         if getattr(self, "ui_state", None) is not None:
+            abs_pos = getattr(player, "abs_pos", None)
+            if abs_pos is not None:
+                self.ui_state.target_cursor_abs = abs_pos  # type: ignore[attr-defined]
             self.ui_state.target_cursor = player.pos  # type: ignore[attr-defined]
 
 

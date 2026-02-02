@@ -52,10 +52,17 @@ class TargetState:
 
 @dataclass
 class DungeonUIState:
-    """Scene-owned view-model for UI state previously held by the renderer."""
+    """Scene-owned view-model for UI state previously held by the renderer.
+
+    YOGA REFACTOR NOTE:
+    - target_cursor_abs should be the CANONICAL source of truth for cursor position.
+    - target_cursor (zone-local) should be DERIVED from target_cursor_abs.
+    - DONE: target_cursor_abs is canonical; target_cursor derived via _set_cursor_abs()
+    - See vision_documents/the_yoga.txt "UI & Targeting Yoga: One Spatial Contract"
+    """
     target: TargetState | None = None
-    target_cursor: tuple[int, int] = (0, 0)
-    target_cursor_abs: tuple[int, int] | None = None
+    target_cursor: tuple[int, int] = (0, 0)  # Derived from target_cursor_abs via _set_cursor_abs
+    target_cursor_abs: tuple[int, int] | None = None  # YOGA: Canonical (ABS) cursor position
     aim_action: str | None = None
     hover_vertex: int | None = None
     hover_neighbors: list[int] | None = None
@@ -763,36 +770,33 @@ class DungeonScene(Scene):
         )
         self.ui_state.target = tstate
 
-        # Look-style generic tile cursor (ABS-canonical; LOCAL is derived if in-zone).
+        # Look-style generic tile cursor (ABS-canonical; LOCAL is derived).
         if kind == "look":
             if origin_tile is not None:
-                tstate.cursor_tile = origin_tile
-                self.ui_state.target_cursor = origin_tile
-
                 # Compute canonical ABS cursor from the origin actor if possible.
                 abs_origin = None
                 if actor_id is not None and getattr(game, "actors", None):
                     a = game.actors.get(actor_id)
                     abs_origin = getattr(a, "abs_pos", None)
-
                 if abs_origin is None:
-                    # Fall back: derive ABS from current zone + local origin tile.
-                    try:
-                        abs_origin = game.abs_from_zone_local(getattr(game, "zone_coord", (0, 0, 0)), origin_tile)
-                    except Exception:
-                        abs_origin = None
-
-                self.ui_state.target_cursor_abs = abs_origin
+                    abs_origin = game.abs_from_zone_local(game.zone_coord, origin_tile)
+                # YOGA: ABS is canonical; local is derived
+                self._set_cursor_abs(game, abs_origin)
+                tstate.cursor_tile = self.ui_state.target_cursor
             return
 
 
         # Backwards-compat bridge for rune terminus targeting:
         if kind == "tile" and mode == "terminus":
             if hasattr(game, "begin_place_mode"):
-                # Ensure game-side place state (e.g. place_range) is initialized.
                 game.begin_place_mode()
             game.awaiting_terminus = True
-            self.ui_state.target_cursor = origin_tile or (0, 0)
+            # YOGA: Compute ABS from origin, derive local
+            if origin_tile is not None:
+                abs_origin = game.abs_from_zone_local(game.zone_coord, origin_tile)
+                self._set_cursor_abs(game, abs_origin)
+            else:
+                self._set_cursor_abs(game, None)
 
         if kind == "vertex":
             # Enter generic vertex targeting (e.g. activate_all / activate_seed).
@@ -829,16 +833,21 @@ class DungeonScene(Scene):
             if pattern and anchor and pattern.vertices:
                 com = pattern_motion.center_of_mass(pattern)
                 com_world = (com[0] + anchor[0], com[1] + anchor[1])
-                tstate.cursor_tile = (int(round(com_world[0])), int(round(com_world[1])))
-                self.ui_state.target_cursor = tstate.cursor_tile
+                local_tile = (int(round(com_world[0])), int(round(com_world[1])))
+                # YOGA: Compute ABS from zone-local COM
+                abs_tile = game.abs_from_zone_local(game.zone_coord, local_tile)
+                self._set_cursor_abs(game, abs_tile)
+                tstate.cursor_tile = self.ui_state.target_cursor
                 self.ui_state.push_target = com_world
                 self.ui_state.push_rotation = 0.0
                 self.ui_state.push_preview = pattern_motion.build_push_preview(
                     pattern, anchor, com_world, 0.0, max_range
                 )
             elif origin_tile is not None:
-                tstate.cursor_tile = origin_tile
-                self.ui_state.target_cursor = origin_tile
+                # YOGA: Compute ABS from origin
+                abs_origin = game.abs_from_zone_local(game.zone_coord, origin_tile)
+                self._set_cursor_abs(game, abs_origin)
+                tstate.cursor_tile = self.ui_state.target_cursor
                 self.ui_state.push_target = (origin_tile[0], origin_tile[1])
                 self.ui_state.push_rotation = 0.0
                 self.ui_state.push_preview = None
@@ -884,6 +893,8 @@ class DungeonScene(Scene):
 
                 if hasattr(game, "try_place_terminus"):
                     game.try_place_terminus((int(abs_tgt[0]), int(abs_tgt[1])))
+                # Exit targeting mode after successful placement
+                self.cancel_target_mode(game)
                 return
 
             # Non-terminus tile targeting still requires a concrete local tile for now.
@@ -1210,7 +1221,26 @@ class DungeonScene(Scene):
             return (int(lx), int(ly))
         return None
 
+    def _set_cursor_abs(
+        self,
+        game: Game,
+        abs_pos: tuple[int, int] | None,
+    ) -> None:
+        """Set cursor position from ABS coordinates (canonical source of truth).
 
+        YOGA: target_cursor_abs is the single source of truth for cursor position.
+        target_cursor (zone-local) is derived from it for backward compatibility.
+        """
+        self.ui_state.target_cursor_abs = abs_pos
+        if abs_pos is None:
+            self.ui_state.target_cursor = (0, 0)
+            return
+        local = self._abs_tile_to_local_current_zone(game, abs_pos)
+        if local is not None:
+            self.ui_state.target_cursor = local
+        else:
+            # Off-zone: keep local at last known or origin
+            self.ui_state.target_cursor = (0, 0)
 
     def _update_hover_from_mouse(
         self,
@@ -1730,6 +1760,9 @@ class DungeonScene(Scene):
                     tx = int(round(tgt[0]))
                     ty = int(round(tgt[1]))
                     if game.world.in_bounds(tx, ty):
+                        # YOGA: Set ABS cursor as canonical, local is derived
+                        abs_tile = game.abs_from_zone_local(game.zone_coord, (tx, ty))
+                        self.ui_state.target_cursor_abs = abs_tile
                         t.cursor_tile = (tx, ty)
                         self.ui_state.target_cursor = (tx, ty)
 
@@ -2033,9 +2066,14 @@ class DungeonScene(Scene):
                 return
 
             # Terminus placement via click (legacy).
+            # NOTE (YOGA): tx, ty are ABS coords (from mouse relative to ABS origin).
+            # The in_bounds check above is suspect for multi-zone worlds.
             if getattr(game, "awaiting_terminus", False):
-                _set_ui("target_cursor", (tx, ty))
+                # ABS cursor is canonical; try_place_terminus expects ABS
+                self._set_cursor_abs(game, (tx, ty))
                 game.try_place_terminus((tx, ty))
+                # Clear any target mode that might be lingering
+                self.cancel_target_mode(game)
                 return
 
             # Default: click-to-move / stairs / wait.
