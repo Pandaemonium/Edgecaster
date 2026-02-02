@@ -13,7 +13,10 @@
       "Bash(dir \"c:\\\\Games\\\\Edgecaster\")",
       "Bash(git fetch:*)",
       "Bash(cd:*)",
-      "Bash(python -m py_compile:*)"
+      "Bash(python -m py_compile:*)",
+      "Bash(grep:*)",
+      "Bash(python3 -m pip install:*)",
+      "Bash(python3:*)"
     ]
   }
 }

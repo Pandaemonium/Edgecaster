@@ -42,13 +42,12 @@ from .base import (
     MENU_ACTION_FULLSCREEN,
 )
 
-from edgecaster.ui.widgets import Widget, WidgetContext, LabelWidget, ButtonWidget
+from edgecaster.ui.widgets import Widget, WidgetContext, ButtonWidget
+from edgecaster.math_utils import lerp, smoothstep, lerp_rgb
 from edgecaster.systems.chakras import (
     ChakraState,
-    can_unlock_chakra,
     toggle_chakra_active,
     check_resonance_bonuses,
-    get_chakra_world_positions,
     get_all_chakra_positions_recursive,
     collect_all_chakra_nodes,
     get_resonance_modifiers,
@@ -70,7 +69,6 @@ COLOR_UNLOCKED = (120, 160, 220)
 COLOR_ACTIVE = (255, 220, 100)
 COLOR_HOVER = (255, 255, 255)
 COLOR_ENERGY_FLOW = (200, 180, 255)
-COLOR_GATED = (180, 60, 60)
 
 # Glow layer multipliers: (radius_mul, alpha_mul)
 GLOW_LAYERS = [
@@ -82,11 +80,9 @@ GLOW_LAYERS = [
 # Animation timing
 PULSE_PERIOD_MS = 1600
 ENERGY_FLOW_PERIOD_MS = 2000
-ZOOM_DURATION_MS = 220
 
 # Layout
 BODY_PANEL_WIDTH_FRAC = 0.60  # Left 60% for body
-PREVIEW_PANEL_WIDTH_FRAC = 0.40  # Right 40% for pattern preview
 BASE_CHAKRA_RADIUS = 12
 
 # Display-only scale for laying out the body nodes in the Chakra scene.
@@ -127,26 +123,6 @@ TOOLTIP_WARN = (200, 120, 120)
 # HELPER FUNCTIONS
 # =============================================================================
 
-def _smoothstep(t: float) -> float:
-    """Smooth easing function for animations."""
-    t = max(0.0, min(1.0, t))
-    return t * t * (3.0 - 2.0 * t)
-
-
-def _lerp(a: float, b: float, t: float) -> float:
-    """Linear interpolation."""
-    return a + (b - a) * t
-
-
-def _lerp_color(c1: Tuple[int, int, int], c2: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
-    """Interpolate between two RGB colors."""
-    return (
-        int(_lerp(c1[0], c2[0], t)),
-        int(_lerp(c1[1], c2[1], t)),
-        int(_lerp(c1[2], c2[2], t)),
-    )
-
-
 def _draw_vertical_gradient(
     surface: pygame.Surface,
     rect: pygame.Rect,
@@ -160,7 +136,7 @@ def _draw_vertical_gradient(
 
     for i in range(rect.height):
         t = i / max(1, rect.height - 1)
-        col = _lerp_color(top, bottom, t)
+        col = lerp_rgb(top, bottom, t)
         y = rect.y + i
         pygame.draw.line(surface, col, (rect.x, y), (rect.right - 1, y))
 
@@ -587,12 +563,12 @@ class ChakraSilhouetteWidget(Widget):
         else:
             t = (now - start_ms) / dur_ms
 
-        t = _smoothstep(max(0.0, min(1.0, t)))
+        t = smoothstep(max(0.0, min(1.0, t)))
 
         # Interpolate
-        cx = _lerp(from_center[0], to_center[0], t)
-        cy = _lerp(from_center[1], to_center[1], t)
-        scale = _lerp(from_scale, to_scale, t)
+        cx = lerp(from_center[0], to_center[0], t)
+        cy = lerp(from_center[1], to_center[1], t)
+        scale = lerp(from_scale, to_scale, t)
 
         # Clear animation when done
         if t >= 1.0:
@@ -814,8 +790,8 @@ class ChakraSilhouetteWidget(Widget):
         t = (now_ms % ENERGY_FLOW_PERIOD_MS) / ENERGY_FLOW_PERIOD_MS
 
         # Position along line
-        px = int(_lerp(start[0], end[0], t))
-        py = int(_lerp(start[1], end[1], t))
+        px = int(lerp(start[0], end[0], t))
+        py = int(lerp(start[1], end[1], t))
 
         # Draw pulse glow
         pulse_radius = 4
@@ -859,7 +835,7 @@ class ChakraSilhouetteWidget(Widget):
 
         # Hover highlight
         if point.node_id == self._hovered_id:
-            base_color = _lerp_color(base_color, COLOR_HOVER, 0.4)
+            base_color = lerp_rgb(base_color, COLOR_HOVER, 0.4)
             base_alpha = 255
             # Extra soft halo for hover (helps eye find tooltips quickly)
             halo_radius = int(BASE_CHAKRA_RADIUS * 3.0)

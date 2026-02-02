@@ -9,10 +9,10 @@ Current Status:
 - Entity rendering derives screen position from ABS via camera transform
 - Pattern/rune rendering still uses zone-local anchor in some paths
 
-TODO (YOGA Stage 2 - Centralize Coordinate Transforms):
-- Create helper API: renderer.abs_tile_to_screen_px(abs_x, abs_y)
-- Consolidate all tile->screen conversions to use this helper
-- Eliminate ad-hoc coordinate math scattered across draw methods
+YOGA Stage 2 - Centralize Coordinate Transforms (IN PROGRESS):
+- [DONE] Created helper APIs: screen_to_abs_tile(), screen_to_abs_tile_int(), abs_tile_to_screen_px()
+- [TODO] Consolidate all tile->screen conversions to use these helpers
+- [TODO] Eliminate ad-hoc coordinate math scattered across draw methods
 
 Key Invariant (Yoga Compliant):
 - Renderer should ONLY project from ABS world state to screen pixels
@@ -28,9 +28,8 @@ import random
 import time
 from pathlib import Path
 from typing import Tuple, List, Dict
-from edgecaster.render.overmap_lod import OvermapLodRenderer, choose_lod_blend
-from edgecaster.camera import TileCamera
-
+from edgecaster.render.overmap_lod import OvermapLodRenderer
+from edgecaster.math_utils import smoothstep_range, lerp_rgb
 
 from edgecaster.game import Game
 from edgecaster.state.world import World
@@ -303,6 +302,38 @@ class AsciiRenderer:
         ox, oy = self._zone_abs_offset(game)
         return (float(world_xy[0] + ox), float(world_xy[1] + oy))
 
+    # -------------------------------------------------------------------------
+    # YOGA Stage 2: Centralized Coordinate Transforms
+    # -------------------------------------------------------------------------
+    # These helpers replace ad-hoc coordinate math scattered across dungeon.py
+    # and other input-handling code. Use these instead of manual calculations.
+
+    def screen_to_abs_tile(self, screen_px: Tuple[float, float]) -> Tuple[float, float]:
+        """Convert screen pixels to ABS world-tile coordinates (floating-point).
+
+        Use this for sub-tile precision (e.g., vertex targeting, smooth positioning).
+        """
+        sx, sy = screen_px
+        t = max(1, self.tile)
+        return ((sx - self.origin_x) / t, (sy - self.origin_y) / t)
+
+    def screen_to_abs_tile_int(self, screen_px: Tuple[float, float]) -> Tuple[int, int]:
+        """Convert screen pixels to ABS world-tile coordinates (integer, floored).
+
+        Use this for tile-based targeting (e.g., terminus placement, rune casting).
+        """
+        sx, sy = screen_px
+        t = max(1, self.tile)
+        return (int((sx - self.origin_x) // t), int((sy - self.origin_y) // t))
+
+    def abs_tile_to_screen_px(self, abs_x: float, abs_y: float) -> Tuple[float, float]:
+        """Convert ABS world-tile coordinates to screen pixels.
+
+        Use this for positioning UI elements at world locations.
+        """
+        t = max(1, self.tile)
+        return (abs_x * t + self.origin_x, abs_y * t + self.origin_y)
+
     def _to_surface(self, pos: Tuple[int, int]) -> Tuple[int, int]:
         """Convert display-space mouse coords to surface-space, accounting for letterbox and scale."""
         return (
@@ -551,17 +582,6 @@ class AsciiRenderer:
 
 
 
-    
-    def _smoothstep(self, a: float, b: float, x: float) -> float:
-        """Smoothly interpolate from 0..1 as x moves from a..b."""
-        if a == b:
-            return 1.0 if x >= b else 0.0
-        t = (x - a) / (b - a)
-        t = max(0.0, min(1.0, t))
-        return t * t * (3.0 - 2.0 * t)
-
-
-
     def draw_world_zoomed(self, game: Game) -> None:
         """Draw geography using an arbitrary power-of-two LOD stack.
 
@@ -659,7 +679,7 @@ class AsciiRenderer:
         snap_base = float(max(cell0, cell1))
 
         # Smooth the blend so it's not too "linear" around the midpoint.
-        blend = self._smoothstep(0.0, 1.0, frac)
+        blend = smoothstep_range(0.0, 1.0, frac)
 
         # Small deadband: when we're effectively at one LOD, don't spend time on the other.
         eps = 0.06
@@ -694,7 +714,7 @@ class AsciiRenderer:
             ratio = float(world_scale) / max(1.0, min_dim)
             start = float(getattr(self, "entity_micro_fade_start", 0.55))
             end = float(getattr(self, "entity_micro_fade_end", 0.90))
-            ent_a = 1.0 - self._smoothstep(start, end, ratio)
+            ent_a = 1.0 - smoothstep_range(start, end, ratio)
 
         ent_a = max(0.0, min(1.0, ent_a))
         self._local_fade_alpha = int(round(255 * ent_a))
@@ -2641,9 +2661,9 @@ class AsciiRenderer:
             if delta < dmin - fade_w or delta > dmax + fade_w:
                 continue
             if delta < dmin:
-                vis_a = self._smoothstep(dmin - fade_w, dmin, delta)
+                vis_a = smoothstep_range(dmin - fade_w, dmin, delta)
             elif delta > dmax:
-                vis_a = 1.0 - self._smoothstep(dmax, dmax + fade_w, delta)
+                vis_a = 1.0 - smoothstep_range(dmax, dmax + fade_w, delta)
             else:
                 vis_a = 1.0
 
@@ -2667,7 +2687,7 @@ class AsciiRenderer:
             if want_px_f >= min_px_full:
                 pix_a = 1.0
             else:
-                pix_a = self._smoothstep(min_px_hide, min_px_full, want_px_f)
+                pix_a = smoothstep_range(min_px_hide, min_px_full, want_px_f)
 
             # Apply pixel-size fade to alpha (still before any sprite cache lookups).
             draw_alpha_u8 = int(round(float(draw_alpha_u8) * float(pix_a)))
@@ -2901,9 +2921,9 @@ class AsciiRenderer:
                 ):
                     c0 = tuple(int(v) for v in col[0][:3])
                     c1 = tuple(int(v) for v in col[1][:3])
-                    col = self._lerp_color(c0, c1, (t0 + t1) * 0.5)
+                    col = lerp_rgb(c0, c1, (t0 + t1) * 0.5)
                 if not col:
-                    col = self._lerp_color(self.pattern_color, self.pattern_color_end, (t0 + t1) * 0.5)
+                    col = lerp_rgb(self.pattern_color, self.pattern_color_end, (t0 + t1) * 0.5)
                 core_col = (*col, 220)
                 pygame.draw.line(self.edges_surface, core_col, (x0, y0), (x1, y1), width=self.edge_width_base)
                 pygame.draw.aaline(self.edges_surface, core_col, (x0, y0), (x1, y1))
@@ -3103,10 +3123,10 @@ class AsciiRenderer:
                     ):
                         c0 = tuple(int(v) for v in seg_col[0][:3])
                         c1 = tuple(int(v) for v in seg_col[1][:3])
-                        seg_col = self._lerp_color(c0, c1, (t0 + t1) * 0.5)
+                        seg_col = lerp_rgb(c0, c1, (t0 + t1) * 0.5)
 
                     if not seg_col:
-                        seg_col = self._lerp_color(base0, base1, (t0 + t1) * 0.5)
+                        seg_col = lerp_rgb(base0, base1, (t0 + t1) * 0.5)
 
                     try:
                         rgb = tuple(int(v) for v in seg_col[:3])
@@ -4418,14 +4438,6 @@ class AsciiRenderer:
 
         self._starburst_cache[key] = surf
         return surf
-
-    def _lerp_color(self, c1: Tuple[int, int, int], c2: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
-        t = max(0.0, min(1.0, t))
-        return (
-            int(c1[0] + (c2[0] - c1[0]) * t),
-            int(c1[1] + (c2[1] - c1[1]) * t),
-            int(c1[2] + (c2[2] - c1[2]) * t),
-        )
 
     def _log_debug(self, msg: str) -> None:
         """No-op placeholder retained for call-site compatibility."""

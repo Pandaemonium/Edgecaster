@@ -244,6 +244,8 @@ AUDIT FINDINGS (2026-02-01, updated 2026-02-01):
 ✓ DONE: spawn_enemies() passes abs_pos to enemy_factory.spawn_enemy()
 ✓ DONE: spawn_imps_near, spawn_echoes_near, spawn_enemies_for_biome pass abs_pos
 ✓ DONE: _spawn_slaver_pack() passes abs_pos for shackled_brute spawns
+✓ DONE: _spawn_poi_contents() fixed: abs_pos for legendary boss/minions, ruin enemies
+        (bug fix: was using undefined 'spawn_pos' variable instead of correct pos)
 
 PATTERN ANCHOR CALLERS (audited 2026-02-01):
 
@@ -277,7 +279,9 @@ Systems that needed ABS (FIXED):
   - ✓ Bridge pattern (_commit/_update) keeps zone-local view in sync
   - ✓ targeting.py uses ABS for damage calculations
 
-[YOGA] Zone boundary behavior audit
+[YOGA] Zone boundary behavior audit - PARTIALLY DONE
+  - ✓ FIXED: transition_edge(), fast_travel_to_zone(), use_stairs_up/down
+    now update actor.abs_pos on zone transitions (was yoga violation)
   - Identify all systems that change behavior at zone boundaries
   - Effects that disappear/resurrect at boundaries = yoga violation
   - Streaming limitations are acceptable; metaphysical resets are not
@@ -298,21 +302,22 @@ FILES WITH YOGA REFACTOR COMMENTS (added 2026-02-01):
 - edgecaster/render/ascii.py (~line 4117): Sets target_cursor_abs on init
 
 -------------------------------------------------------------------------------
-STAGE 2 — CENTRALIZE COORDINATE TRANSFORMS
+STAGE 2 — CENTRALIZE COORDINATE TRANSFORMS (IN PROGRESS)
 
 Goal: Eliminate ad-hoc coordinate math scattered across codebase.
 Create canonical helper APIs for all conversions.
 
-[YOGA] Create transform helper API (camera.py or new module)
-  - renderer.screen_to_abs_tile(screen_px) -> (abs_x, abs_y)
-  - renderer.abs_tile_to_screen_px(abs_x, abs_y) -> (px, py)
-  - game.abs_from_zone_local(zone, local_x, local_y) (temporary bridge)
-  - game.zone_local_from_abs(abs_x, abs_y) (temporary bridge)
+[YOGA] ✓ Create transform helper API (ascii.py renderer)
+  - ✓ renderer.screen_to_abs_tile(screen_px) -> (abs_x, abs_y) [float]
+  - ✓ renderer.screen_to_abs_tile_int(screen_px) -> (abs_x, abs_y) [int, floored]
+  - ✓ renderer.abs_tile_to_screen_px(abs_x, abs_y) -> (px, py)
+  - ✓ game.abs_from_zone_local(zone, local_x, local_y) (temporary bridge)
+  - ✓ game.zone_local_from_abs(abs_x, abs_y) (temporary bridge)
 
-[YOGA] Audit and consolidate coordinate conversions
-  - Search for ad-hoc px/tile math in scenes, renderers, UI
-  - Replace with canonical helpers
-  - Document coordinate spaces (screen px, world tiles, ABS tiles)
+[YOGA] Audit and consolidate coordinate conversions (PARTIAL)
+  - ✓ Replaced ad-hoc px/tile math in dungeon.py targeting (~line 1260, 1422, 2063)
+  - [TODO] Search for remaining ad-hoc math in other scenes/renderers
+  - [TODO] Document coordinate spaces (screen px, world tiles, ABS tiles)
 
 [YOGA] Renderer projection consistency
   - Verify all render paths use same camera transform

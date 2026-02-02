@@ -61,7 +61,6 @@ Usage:
 from __future__ import annotations
 
 import math
-import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -542,24 +541,6 @@ def unlock_chakra(
     return True
 
 
-def lock_chakra(chakra_state: ChakraState, node_id: str) -> bool:
-    """
-    Lock a previously unlocked chakra.
-
-    This removes it from both unlocked and active sets.
-    Used for temporary chakra effects or curses.
-
-    Returns:
-        True if was unlocked (and is now locked), False otherwise
-    """
-    if node_id not in chakra_state.unlocked:
-        return False
-
-    chakra_state.unlocked.discard(node_id)
-    chakra_state.active.discard(node_id)
-    return True
-
-
 def toggle_chakra_active(
     chakra_state: ChakraState,
     node_id: str,
@@ -599,112 +580,9 @@ def toggle_chakra_active(
         return False
 
 
-def set_chakra_alignment(
-    chakra_state: ChakraState,
-    node_id: str,
-    dx: float,
-    dy: float
-) -> None:
-    """
-    Set the alignment offset for a chakra.
-
-    Alignment offsets adjust the chakra's position from its default
-    body layout position, allowing fine-tuning of the generated pattern.
-
-    Args:
-        chakra_state: The chakra state to modify
-        node_id: The chakra to align
-        dx: X-axis offset (typically -0.5 to 0.5)
-        dy: Y-axis offset (typically -0.5 to 0.5)
-    """
-    chakra_state.alignments[node_id] = (float(dx), float(dy))
-
-
-def clear_chakra_alignment(chakra_state: ChakraState, node_id: str) -> None:
-    """Remove any alignment offset for a chakra."""
-    chakra_state.alignments.pop(node_id, None)
-
-
-# =============================================================================
-# ALIGNMENT WOBBLE (DEXTERITY-BASED)
-# =============================================================================
-
-def apply_alignment_wobble(
-    chakra_state: ChakraState,
-    dexterity: int = 0,
-    seed: Optional[int] = None
-) -> None:
-    """
-    Apply random wobble to all active chakra alignments based on dexterity.
-
-    Higher dexterity = less wobble = more precise pattern casting.
-    This simulates the "shakiness" of channeling energy through chakras.
-
-    Args:
-        chakra_state: The chakra state to modify
-        dexterity: Actor's dexterity stat (0-20 typical range)
-        seed: Optional random seed for reproducible wobble
-
-    Wobble formula:
-        max_wobble = 0.3 - (dexterity * 0.015)
-        Clamped to [0.02, 0.3] range
-
-    At 0 dex: up to 0.30 units of wobble (very shaky)
-    At 10 dex: up to 0.15 units of wobble (moderate)
-    At 20 dex: up to 0.02 units of wobble (very precise)
-    """
-    if seed is not None:
-        random.seed(seed)
-
-    # Calculate max wobble based on dexterity
-    max_wobble = 0.3 - (dexterity * 0.015)
-    max_wobble = max(0.02, min(0.3, max_wobble))
-
-    for node_id in chakra_state.active:
-        # Get existing alignment or (0, 0)
-        existing = chakra_state.alignments.get(node_id, (0.0, 0.0))
-
-        # Add random wobble
-        dx = existing[0] + random.uniform(-max_wobble, max_wobble)
-        dy = existing[1] + random.uniform(-max_wobble, max_wobble)
-
-        chakra_state.alignments[node_id] = (dx, dy)
-
-
 # =============================================================================
 # POSITION EXTRACTION
 # =============================================================================
-
-def get_chakra_world_positions(
-    body_schema: Dict[str, Any],
-    chakra_state: ChakraState,
-    base_scale: float = 5.0,
-    include_inactive: bool = False
-) -> Dict[str, Vec2]:
-    """
-    Convert chakra node positions to world-space coordinates.
-
-    IMPORTANT:
-    This now includes sub-schema chakras (e.g., hand/finger nodes) once their
-    branch root is unlocked, so gated chakras can affect the pattern.
-    """
-    # Use the recursive position helper so sub-schemas are included.
-    all_positions = get_all_chakra_positions_recursive(
-        body_schema,
-        chakra_state,
-        base_scale=base_scale,
-    )
-
-    # Determine which nodes to include
-    target_nodes = chakra_state.active if not include_inactive else chakra_state.unlocked
-    positions: Dict[str, Vec2] = {}
-
-    for node_id, (pos_u, _state, _scale, _base_pos) in all_positions.items():
-        if node_id in target_nodes:
-            positions[node_id] = pos_u
-
-    return positions
-
 
 def get_chakra_connections_recursive(
     body_schema: Dict[str, Any],
@@ -1236,72 +1114,6 @@ def generate_chakra_pattern(
     # Apply fractal iteration
     steps = [(generator, iterations)]
     return apply_chain(seed, steps, max_segments=5000)
-
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-
-def count_active_chakras(chakra_state: ChakraState) -> int:
-    """Count the number of active chakras."""
-    return len(chakra_state.active)
-
-
-def count_unlocked_chakras(chakra_state: ChakraState) -> int:
-    """Count the number of unlocked chakras."""
-    return len(chakra_state.unlocked)
-
-
-def get_unlockable_chakras(
-    body_schema: Dict[str, Any],
-    chakra_state: ChakraState,
-    proto_index: Optional[Dict[str, Any]] = None
-) -> List[str]:
-    """
-    Get list of chakras that can currently be unlocked.
-
-    Returns node IDs for chakras that:
-    1. Exist in body schema
-    2. Are not yet unlocked
-    3. Have all gating prerequisites met
-    """
-    nodes = _get_nodes(body_schema)
-    unlockable: List[str] = []
-
-    for node_id in nodes:
-        if can_unlock_chakra(body_schema, chakra_state, node_id, proto_index):
-            unlockable.append(node_id)
-
-    return unlockable
-
-
-def get_chakra_info(
-    body_schema: Dict[str, Any],
-    node_id: str
-) -> Dict[str, Any]:
-    """
-    Get descriptive information about a chakra node.
-
-    Returns dict with:
-    - name: Display name
-    - proto: Prototype ID
-    - position: (x, y) layout position
-    - size: Scale factor
-    - children: List of child node IDs
-    """
-    nodes = _get_nodes(body_schema)
-    node = nodes.get(node_id)
-
-    if not node:
-        return {"name": node_id, "proto": "", "position": (0, 0), "size": 0.5, "children": []}
-
-    return {
-        "name": node_id.replace("_", " ").title(),
-        "proto": node.get("proto", ""),
-        "position": _get_node_layout(node),
-        "size": _get_node_size(node),
-        "children": _get_node_children(node),
-    }
 
 
 # =============================================================================

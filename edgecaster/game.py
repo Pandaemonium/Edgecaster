@@ -4,6 +4,8 @@ from typing import Dict, Tuple, List, Optional, Callable
 from pathlib import Path
 from collections import deque
 
+from edgecaster.math_utils import smoothstep_range
+
 # =============================================================================
 # YOGA REFACTOR NOTES (see vision_documents/the_yoga.txt)
 # =============================================================================
@@ -17,11 +19,11 @@ from collections import deque
 #   - Player movement uses _move_player_to_abs() which is yoga-compliant
 #
 # TODO (YOGA):
-#   [1] Entity abs_pos population: MOSTLY DONE.
+#   [1] Entity abs_pos population: DONE.
 #       - ✓ spawning_system.spawn_enemies() now sets abs_pos on each spawn
 #       - ✓ spawning_system.spawn_entity_from_template() sets abs_pos
 #       - ✓ spawn_imps_near, spawn_echoes_near, spawn_enemies_for_biome set abs_pos
-#       - _spawn_poi_contents() should set abs_pos on all NPCs/entities (TODO)
+#       - ✓ _spawn_poi_contents() fixed: abs_pos for all actor spawns (bug: was using wrong var)
 #
 #   [2] LevelState.entities: Still stores entities by zone-local membership.
 #       - Eventually should be an index/view, not authoritative storage
@@ -59,8 +61,7 @@ class RenderProxy:
 
 
 
-import heapq
-from edgecaster import config, events
+from edgecaster import config
 from edgecaster.state.world import World
 from edgecaster.state.actors import Actor, Stats, Human
 from edgecaster.state.entities import Entity
@@ -79,7 +80,6 @@ from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
 from edgecaster.content import npcs
-from edgecaster.systems.actions import get_action, action_delay
 from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import item_grants
 from edgecaster.systems import ai
@@ -1853,7 +1853,8 @@ class Game:
                         if pos is None:
                             continue
                         try:
-                            mob = enemy_factory.spawn_enemy(enemy_id, pos,abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos))
+                            # YOGA: Use correct variable (pos, not spawn_pos)
+                            mob = enemy_factory.spawn_enemy(enemy_id, pos, abs_pos=self.abs_from_zone_local(coord, pos))
                             mob.tags = getattr(mob, "tags", None) or {}
                             mob.tags["poi_id"] = pid
                             spawning_system.register_actor(self, level, mob, schedule_ai=True)
@@ -1879,7 +1880,8 @@ class Game:
                     center = boss_hint if boss_hint else (level.world.width // 2, level.world.height // 2)
                     spot = nearest_walkable(center)
                     if spot:
-                        actor = enemy_factory.spawn_enemy(base_proto, spot)
+                        # YOGA: Set abs_pos for legendary boss
+                        actor = enemy_factory.spawn_enemy(base_proto, spot, abs_pos=self.abs_from_zone_local(coord, spot))
                         if legend_name:
                             actor.name = str(legend_name)
                         actor.tags = getattr(actor, "tags", {}) or {}
@@ -1935,7 +1937,8 @@ class Game:
                                 continue
                             if self._blocking_entity_at(level, (tx, ty)):
                                 continue
-                            mob = enemy_factory.spawn_enemy(base_proto, (tx, ty),abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos))
+                            # YOGA: Use correct variable ((tx, ty), not spawn_pos)
+                            mob = enemy_factory.spawn_enemy(base_proto, (tx, ty), abs_pos=self.abs_from_zone_local(coord, (tx, ty)))
                             level.actors[mob.id] = mob
                             level.entities[mob.id] = mob
                             self._schedule(
@@ -3343,15 +3346,7 @@ class Game:
                 cell1 = float(LOD_RADIX ** lod1)
 
                 # Same smoothstep + deadband as ascii.py
-                def _smoothstep(a: float, b: float, t: float) -> float:
-                    if t <= a:
-                        return 0.0
-                    if t >= b:
-                        return 1.0
-                    x = (t - a) / (b - a)
-                    return x * x * (3.0 - 2.0 * x)
-
-                blend = _smoothstep(0.0, 1.0, frac)
+                blend = smoothstep_range(0.0, 1.0, frac)
                 eps = 0.06
                 if blend <= eps:
                     a0, a1 = 1.0, 0.0

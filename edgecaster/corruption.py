@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Iterable, Optional, Tuple
 
+from edgecaster.math_utils import clamp, smoothstep_range
+
 
 @dataclass(frozen=True)
 class CorruptionParams:
@@ -409,7 +411,7 @@ def _noise_lut(
         for ix in range(res):
             zx = _LUT_MIN_Z + ix * step
             x_norm = (float(zx) - float(j_min_x)) / span
-            m = smoothstep(mountain_start, 1.0, x_norm)
+            m = smoothstep_range(mountain_start, 1.0, x_norm)
             m_by_ix[ix] = (m ** sharpness) * right_weight
 
         for iy in range(res):
@@ -447,7 +449,7 @@ def _noise_lut(
                 sx = zx * float(spot_freq)
                 sy = zy * float(spot_freq)
                 s = abs(_fbm_value_noise_2d(sx, sy, seed + 9001, octaves=3, persistence=0.6, lacunarity=2.0))
-                spots_tex[idx] = float(smoothstep(float(spot_threshold), 1.0, s) * float(spot_weight))
+                spots_tex[idx] = float(smoothstep_range(float(spot_threshold), 1.0, s) * float(spot_weight))
 
         # Normalize H to ~[-1,1] like the prototype: subtract mean, divide by max-abs.
         mean_h = float(sum(h_tex) / max(1, len(h_tex)))
@@ -747,18 +749,6 @@ def _anchor_lut(
     return out
 
 
-def clamp(x: float, lo: float, hi: float) -> float:
-    return lo if x < lo else hi if x > hi else x
-
-
-def smoothstep(edge0: float, edge1: float, x: float) -> float:
-    if edge1 == edge0:
-        return 0.0
-    t = (x - edge0) / (edge1 - edge0)
-    t = clamp(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
-
-
 def _hash_u32(n: int) -> int:
     n &= 0xFFFFFFFF
     n ^= (n >> 16)
@@ -844,7 +834,7 @@ def corruption_envelope(
     else:
         x_norm = (zx - j_min_x) / span
 
-    right = smoothstep(params.right_start, 1.0, x_norm)
+    right = smoothstep_range(params.right_start, 1.0, x_norm)
     if params.right_sharpness > 0:
         right = right ** params.right_sharpness
     right *= params.right_weight
@@ -860,7 +850,7 @@ def corruption_envelope(
             lacunarity=2.0,
         )
     )
-    spots = smoothstep(params.spot_threshold, 1.0, s) * params.spot_weight
+    spots = smoothstep_range(params.spot_threshold, 1.0, s) * params.spot_weight
 
     hot = 0.0
     if params.hotspots:
@@ -869,7 +859,7 @@ def corruption_envelope(
     # Keep the far-left side clean by default: gate random "spots" by the right-side
     # cloud. Important left-side corruption should be represented by explicit hotspots.
     right01 = clamp(float(right), 0.0, 1.0)
-    spot_mask = smoothstep(0.0, 0.5, right01)
+    spot_mask = smoothstep_range(0.0, 0.5, right01)
 
     # Global corruption scales *everything* (including explicit hotspots) so that a
     # "scale to 0" UI can cleanly return to the classic Julia set.
@@ -974,13 +964,13 @@ def distortion_dz(
         else:
             x_norm = (float(zx) - float(j_min_x)) / span
 
-        right = smoothstep(float(params.right_start), 1.0, x_norm)
+        right = smoothstep_range(float(params.right_start), 1.0, x_norm)
         if params.right_sharpness > 0:
             right = right ** float(params.right_sharpness)
         right *= float(params.right_weight)
 
         right01 = clamp(float(right), 0.0, 1.0)
-        spot_mask = smoothstep(0.0, 0.5, right01)
+        spot_mask = smoothstep_range(0.0, 0.5, right01)
 
         # We threshold the *magnitude* so the right side contains quiet valleys
         # (near-zero corruption) and distinct "mountains" rather than a uniform fog.
@@ -990,7 +980,7 @@ def distortion_dz(
         field_y = bw * spot_boost * ny + hot * hot_dir_y
 
         mag = math.sqrt(field_x * field_x + field_y * field_y)
-        mount = smoothstep(float(params.mount_mag_floor), float(params.mount_mag_ceil), mag)
+        mount = smoothstep_range(float(params.mount_mag_floor), float(params.mount_mag_ceil), mag)
         if mount <= 0.0:
             return 0.0, 0.0, 0.0
 

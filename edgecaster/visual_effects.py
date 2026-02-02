@@ -24,6 +24,7 @@ import random
 import pygame
 import math
 from edgecaster.visuals import VisualProfile
+from edgecaster.math_utils import clamp_u8, lerp, lerp_rgb
 
 RGB = Tuple[int, int, int]
 
@@ -32,24 +33,9 @@ RGB = Tuple[int, int, int]
 # Utilities
 # ---------------------------------------------------------------------------
 
-def _clamp_u8(x: float) -> int:
-    return max(0, min(255, int(x)))
-
-
 def _mul_rgb(col: RGB, m: float) -> RGB:
-    return (_clamp_u8(col[0] * m), _clamp_u8(col[1] * m), _clamp_u8(col[2] * m))
-
-
-def _lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
-
-
-def _lerp_rgb(a: RGB, b: RGB, t: float) -> RGB:
-    return (
-        _clamp_u8(_lerp(a[0], b[0], t)),
-        _clamp_u8(_lerp(a[1], b[1], t)),
-        _clamp_u8(_lerp(a[2], b[2], t)),
-    )
+    """Multiply an RGB color by a scalar."""
+    return (clamp_u8(col[0] * m), clamp_u8(col[1] * m), clamp_u8(col[2] * m))
 
 
 def concat_effect_names(*lists: Iterable[str]) -> List[str]:
@@ -620,7 +606,7 @@ def _mirror_y_profile(p: VisualProfile, t: int) -> VisualProfile:
 def _ghostly_color(ent: Any, base: RGB, t: int) -> RGB:
     phase = (t % 1200) / 1200.0
     tri = 1.0 - abs(phase * 2.0 - 1.0)
-    pale = _lerp_rgb(base, (210, 220, 255), 0.40)
+    pale = lerp_rgb(base, (210, 220, 255), 0.40)
     return _mul_rgb(pale, 0.70 + 0.20 * tri)
 
 
@@ -630,8 +616,8 @@ def _bismuth_color(ent: Any, base: RGB, t: int) -> RGB:
     idx = (t // 450) % len(targets)
     nxt = (idx + 1) % len(targets)
     local_t = (t % 450) / 450.0
-    target = _lerp_rgb(targets[idx], targets[nxt], local_t)
-    return _lerp_rgb(base, target, 0.35)
+    target = lerp_rgb(targets[idx], targets[nxt], local_t)
+    return lerp_rgb(base, target, 0.35)
 
 
 def _bismuth_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
@@ -682,8 +668,8 @@ def _fiery_color(ent: Any, base: RGB, t: int) -> RGB:
     b = (255, 200, 80)
     phase = (t % 140) / 140.0
     tri = 1.0 - abs(phase * 2.0 - 1.0)
-    hot = _lerp_rgb(a, b, tri)
-    return _lerp_rgb(base, hot, 0.55)
+    hot = lerp_rgb(a, b, tri)
+    return lerp_rgb(base, hot, 0.55)
 
 
 def _fiery_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
@@ -894,7 +880,7 @@ def _malfunctioning_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t
         (rect.right, y),
     )
 def _carbonated_color(ent: Any, base: RGB, t: int) -> RGB:
-    return _lerp_rgb(base, (170, 255, 170), 0.45)
+    return lerp_rgb(base, (170, 255, 170), 0.45)
 
 
 def _carbonated_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
@@ -1187,7 +1173,7 @@ def _octonionic_color(ent: Any, base: RGB, t: int) -> RGB:
     # RGB cycling every ~300ms
     cols = [(255, 90, 90), (90, 255, 120), (90, 140, 255)]
     idx = (t // 300) % 3
-    return _lerp_rgb(base, cols[idx], 0.55)
+    return lerp_rgb(base, cols[idx], 0.55)
 
 
 def _underwhelming_profile(p: VisualProfile, t: int) -> VisualProfile:
@@ -1257,7 +1243,7 @@ def _toasty_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -
 
 def _toasty_color(ent: Any, base: RGB, t: int) -> RGB:
     # dull toaster red/orange
-    return _lerp_rgb(base, (210, 90, 60), 0.40)
+    return lerp_rgb(base, (210, 90, 60), 0.40)
 
 
 def _arctic_profile(p: VisualProfile, t: int) -> VisualProfile:
@@ -1319,12 +1305,12 @@ def _arctic_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -
 
 
 def _arctic_color(ent: Any, base: RGB, t: int) -> RGB:
-    return _lerp_rgb(base, (170, 210, 255), 0.40)
+    return lerp_rgb(base, (170, 210, 255), 0.40)
 
 
 def _syrupy_color(ent: Any, base: RGB, t: int) -> RGB:
     # caramelize
-    return _lerp_rgb(base, (120, 85, 35), 0.45)
+    return lerp_rgb(base, (120, 85, 35), 0.45)
 
 def _syrupy_overlay(obj: Any, surf: pygame.Surface, rect: pygame.Rect, t: int) -> None:
     # Big gooey brown drips that slide down slowly.
@@ -1445,7 +1431,7 @@ def _radiant_yellow_color(ent: Any, base: RGB, t: int) -> RGB:
     pulse = 0.5 + 0.5 * math.sin(phase * 2.0 * math.pi)
     yellow = (255, 230, 100)
     # Stronger color shift toward yellow
-    return _lerp_rgb(base, yellow, 0.5 + 0.4 * pulse)
+    return lerp_rgb(base, yellow, 0.5 + 0.4 * pulse)
 
 
 def _radiant_yellow_overlay_rect(obj: Any, base: pygame.Rect, t: int) -> pygame.Rect:

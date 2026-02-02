@@ -16,25 +16,13 @@ import math
 from edgecaster import corruption as corruption_system
 from edgecaster.content import pois as poi_content
 from edgecaster import prototypes
+from edgecaster.math_utils import clamp, smoothstep_range
 import yaml
 
 # Type alias for readability.
 ZoneCoord = Tuple[int, int, int]
 
 
-def _clamp(val: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    if val < lo:
-        return lo
-    if val > hi:
-        return hi
-    return val
-
-
-def _smoothstep(edge0: float, edge1: float, x: float) -> float:
-    if edge0 == edge1:
-        return 0.0
-    t = _clamp((x - edge0) / (edge1 - edge0))
-    return t * t * (3.0 - 2.0 * t)
 
 
 def _hash2(ix: int, iy: int, seed: int) -> float:
@@ -146,7 +134,7 @@ class DifficultyConfig:
 def danger_to_tier(danger: float, *, tiers: int) -> int:
     """Map danger in [0,1] to tier 1..tiers."""
     tiers = max(1, int(tiers))
-    danger = _clamp(float(danger))
+    danger = clamp(float(danger))
     # 0.0 -> 1, 0.999 -> tiers.
     return max(1, min(tiers, int(danger * tiers) + 1))
 
@@ -170,7 +158,7 @@ def compute_zone_difficulty(
     # Base west->east gradient.
     screens = max(1, int(getattr(game.cfg, "world_map_screens", 1)))
     x_norm = float(zx) / float(max(1, screens - 1))
-    base = _smoothstep(config.gradient_start, config.gradient_end, x_norm)
+    base = smoothstep_range(config.gradient_start, config.gradient_end, x_norm)
     if config.gradient_power != 1.0:
         base = base ** float(config.gradient_power)
     sources["base_gradient"] = base
@@ -259,7 +247,7 @@ def compute_zone_difficulty(
         danger = float(overrides[coord])
         sources["override"] = danger
 
-    danger = _clamp(danger, 0.0, 1.0)
+    danger = clamp(danger, 0.0, 1.0)
 
     # Starting-zone safety clamp.
     try:
@@ -271,7 +259,7 @@ def compute_zone_difficulty(
     except Exception:
         pass
 
-    danger = _clamp(danger, 0.0, 1.0)
+    danger = clamp(danger, 0.0, 1.0)
     return danger, sources
 
 

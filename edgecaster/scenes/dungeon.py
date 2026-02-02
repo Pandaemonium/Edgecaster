@@ -1257,15 +1257,14 @@ class DungeonScene(Scene):
             return
 
         mx, my = surface_pos
-        wx = (mx - renderer.origin_x) / renderer.tile
-        wy = (my - renderer.origin_y) / renderer.tile
+        # YOGA Stage 2: Use centralized coordinate helpers instead of ad-hoc math.
+        wx, wy = renderer.screen_to_abs_tile((mx, my))
 
         # NOTE (Yoga): screen->tile is currently in ABS tile-space (camera anchored in abs).
         # Most gameplay targeting (runes/look/terminus) still has local-zone legacy, but the
         # canonical cursor state should be ABS so we can traverse vestigial zone boundaries.
         if t.kind in ("tile", "look", "position"):
-            abs_tx = int((mx - renderer.origin_x) // renderer.tile)
-            abs_ty = int((my - renderer.origin_y) // renderer.tile)
+            abs_tx, abs_ty = renderer.screen_to_abs_tile_int((mx, my))
 
             # ABS cursor is canonical for ALL tile-ish targeting modes.
             self.ui_state.target_cursor_abs = (abs_tx, abs_ty)
@@ -1419,8 +1418,8 @@ class DungeonScene(Scene):
                 return
 
             mx, my = surface_pos
-            wx = (mx - renderer.origin_x) / renderer.tile
-            wy = (my - renderer.origin_y) / renderer.tile
+            # YOGA Stage 2: Use centralized coordinate helpers instead of ad-hoc math.
+            wx, wy = renderer.screen_to_abs_tile((mx, my))
             ox, oy = renderer._zone_abs_offset(game)
             idx = game.nearest_vertex((wx - ox, wy - oy))
             _set_ui("hover_vertex", idx)
@@ -2060,8 +2059,8 @@ class DungeonScene(Scene):
                         return
 
             # Map / world clicks.
-            tx = int((mx - renderer.origin_x) // renderer.tile)
-            ty = int((my - renderer.origin_y) // renderer.tile)
+            # YOGA Stage 2: Use centralized coordinate helpers instead of ad-hoc math.
+            tx, ty = renderer.screen_to_abs_tile_int((mx, my))
             if not game.world.in_bounds(tx, ty):
                 return
 

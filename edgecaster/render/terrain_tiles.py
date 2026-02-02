@@ -6,6 +6,8 @@ from typing import Dict, Tuple, Optional
 
 import pygame
 
+from edgecaster.math_utils import clamp_u8, lerp_rgb
+
 try:
     # Project-side biome enum + palette
     from edgecaster.biome import Biome, BIOME_COLORS
@@ -27,18 +29,6 @@ def _stable_variant(cx: int, cy: int, n: int = _VARIANTS) -> int:
     return int(v % max(1, int(n)))
 
 
-def _clamp_u8(x: int) -> int:
-    return 0 if x < 0 else 255 if x > 255 else x
-
-
-def _mix_rgb(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
-    ar, ag, ab = a
-    br, bg, bb = b
-    return (
-        _clamp_u8(int(ar + (br - ar) * t)),
-        _clamp_u8(int(ag + (bg - ag) * t)),
-        _clamp_u8(int(ab + (bb - ab) * t)),
-    )
 
 
 @dataclass(frozen=True)
@@ -151,8 +141,8 @@ class TerrainTileBank:
 
         # Elevation contrast: mountains sharper, plains softer.
         contrast = 1.0 + 0.15 * float(max(0, min(6, elev_cat)))
-        top = _mix_rgb(base, (0, 0, 0), 0.25 * contrast)
-        bot = _mix_rgb(base, (255, 255, 255), 0.15 * contrast)
+        top = lerp_rgb(base, (0, 0, 0), 0.25 * contrast)
+        bot = lerp_rgb(base, (255, 255, 255), 0.15 * contrast)
         self._fill_vertical_gradient(s, top, bot)
 
         # Biome color wash (multiply): strong but not crushing.
@@ -212,7 +202,7 @@ class TerrainTileBank:
             return
         for y in range(h):
             t = y / float(h - 1)
-            c = _mix_rgb(top, bot, t)
+            c = lerp_rgb(top, bot, t)
             pygame.draw.line(s, (*c, 255), (0, y), (w, y))
 
     def _draw_seam_softener(self, s: pygame.Surface, *, variant: int) -> None:

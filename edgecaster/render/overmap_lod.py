@@ -19,17 +19,7 @@ from typing import Callable, Dict, Optional, Tuple
 import math
 import pygame
 
-
-def clamp(x: float, lo: float, hi: float) -> float:
-    return lo if x < lo else hi if x > hi else x
-
-
-def smoothstep(edge0: float, edge1: float, x: float) -> float:
-    if edge1 == edge0:
-        return 0.0
-    t = (x - edge0) / (edge1 - edge0)
-    t = clamp(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
+from edgecaster.math_utils import clamp
 
 
 def choose_lod_blend(

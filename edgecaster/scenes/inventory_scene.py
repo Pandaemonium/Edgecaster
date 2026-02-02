@@ -6,6 +6,8 @@ from typing import Any, Optional, TYPE_CHECKING
 import pygame
 import math
 
+from edgecaster.math_utils import lerp, smoothstep, clamp01
+
 # Font sizing / glyph sizing limits.
 # Big on purpose: user wants proportionality over crispness.
 FONT_PX_MIN = 1
@@ -351,18 +353,6 @@ def _embed_positions(pos_local_u: dict[str, tuple[float, float]], offset_u: tupl
 
 
 
-
-def _clamp01(x: float) -> float:
-    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
-
-
-def _smoothstep(x: float) -> float:
-    x = _clamp01(x)
-    return x * x * (3.0 - 2.0 * x)
-
-
-def _lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
 
 # ---------------------------------------------------------------------------
 # Body-plan overlay helpers (read-only for now)
@@ -2245,7 +2235,7 @@ class BodyPlanGraphWidget(Widget):
                 cur_stack = tuple(str(x) for x in (getattr(scene, "_body_zoom_stack", []) or []))
                 if _to_stack == cur_stack and isinstance(_start_ms, int) and isinstance(_dur_ms, int) and _dur_ms > 0:
                     now = int(pygame.time.get_ticks())
-                    fade_t = _smoothstep((float(now - _start_ms)) / float(_dur_ms))
+                    fade_t = smoothstep((float(now - _start_ms)) / float(_dur_ms))
                     fade_dir = str(fade_dir)
                 else:
                     fade_dir = None
@@ -5854,11 +5844,11 @@ class InventoryScene(PopupMenuScene):
         # Opening (zoom-in) vs closing (zoom-out) animation.
         if not self._closing:
             self._zoom_elapsed = min(self.ZOOM_MS, self._zoom_elapsed + int(dt_ms))
-            self._zoom_progress = _clamp01(self._zoom_elapsed / float(max(1, self.ZOOM_MS)))
+            self._zoom_progress = clamp01(self._zoom_elapsed / float(max(1, self.ZOOM_MS)))
         else:
             self._close_elapsed = min(self.CLOSE_MS, self._close_elapsed + int(dt_ms))
-            t = _clamp01(self._close_elapsed / float(max(1, self.CLOSE_MS)))
-            self._zoom_progress = _clamp01(1.0 - t)
+            t = clamp01(self._close_elapsed / float(max(1, self.CLOSE_MS)))
+            self._zoom_progress = clamp01(1.0 - t)
             if t >= 1.0:
                 # Finish: pop ourselves for real (without re-triggering begin_pop).
                 if hasattr(manager, "_force_pop_scene"):
@@ -5929,7 +5919,7 @@ class InventoryScene(PopupMenuScene):
         if not getattr(self, "dim_background", True):
             return 0
         try:
-            p = _smoothstep(_clamp01(float(self._zoom_progress)))
+            p = smoothstep(clamp01(float(self._zoom_progress)))
         except Exception:
             p = 1.0
         return int(140 * float(p))
@@ -5960,7 +5950,7 @@ class InventoryScene(PopupMenuScene):
         # Start with inherited scene effects (time-based too).
         base = build_visual_profile(VisualProfile(), self.visual_effects)
 
-        p = _smoothstep(_clamp01(float(self._zoom_progress)))
+        p = smoothstep(clamp01(float(self._zoom_progress)))
 
         # --- Affine animation (optional) -------------------------------------
         # By default we *do not* animate rotation/flips during the zoom.
@@ -5968,7 +5958,7 @@ class InventoryScene(PopupMenuScene):
         if self.animate_affine:
             # Rotation ramps in.
             try:
-                base.angle = _lerp(0.0, float(base.angle), p)
+                base.angle = lerp(0.0, float(base.angle), p)
             except Exception:
                 pass
 
@@ -6066,15 +6056,15 @@ class InventoryScene(PopupMenuScene):
                     pass
 
         start_scale = float(self._zoom_start_scale) if self._zoom_start_scale is not None else float(s0)
-        panel_scale = _lerp(start_scale, 1.0, p)
+        panel_scale = lerp(start_scale, 1.0, p)
 
         # Apply recursion depth scaling at all times (scales text, glyphs, spacing).
         panel_scale *= float(self._depth_visual_scale)
 
-        panel_scale *= _lerp(self.PANEL_SCALE_START, self.PANEL_SCALE_END, p)
+        panel_scale *= lerp(self.PANEL_SCALE_START, self.PANEL_SCALE_END, p)
 
         # Fade the PANEL only.
-        zoom_alpha = _lerp(self.PANEL_ALPHA_START, self.PANEL_ALPHA_END, p)
+        zoom_alpha = lerp(self.PANEL_ALPHA_START, self.PANEL_ALPHA_END, p)
         base.alpha = float(base.alpha) * float(zoom_alpha)
 
         # Apply zoom scale multiplicatively (preserve other effect scales).
@@ -6124,8 +6114,8 @@ class InventoryScene(PopupMenuScene):
 
             if self._zoom_source_px is not None:
                 sx, sy = self._zoom_source_px
-                desired_x = _lerp(float(sx), float(final_anchor_x), p)
-                desired_y = _lerp(float(sy), float(final_anchor_y), p)
+                desired_x = lerp(float(sx), float(final_anchor_x), p)
+                desired_y = lerp(float(sy), float(final_anchor_y), p)
             else:
                 desired_x, desired_y = float(final_anchor_x), float(final_anchor_y)
 

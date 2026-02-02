@@ -97,6 +97,8 @@ def use_stairs_down(game: "Game") -> None:
         del lvl.actors[game.player_id]
         dest_pos = dest_level.up_stairs or dest_level.world.entry
         player.pos = dest_pos
+        # YOGA: Update abs_pos to maintain canonical position
+        player.abs_pos = game.abs_from_zone_local(target_coord, dest_pos)
         dest_level.actors[game.player_id] = player
         game.zone_coord = target_coord
         game.log.add(f"You descend to depth {game.zone_coord[2]}.")
@@ -127,6 +129,8 @@ def use_stairs_up(game: "Game") -> None:
         del lvl.actors[game.player_id]
         dest_pos = dest_level.down_stairs or dest_level.world.entry
         player.pos = dest_pos
+        # YOGA: Update abs_pos to maintain canonical position
+        player.abs_pos = game.abs_from_zone_local(target_coord, dest_pos)
         dest_level.actors[game.player_id] = player
         game.zone_coord = target_coord
         game.log.add(f"You ascend to depth {game.zone_coord[2]}.")
@@ -171,6 +175,8 @@ def transition_edge(game: "Game", actor: "Actor", dx: int, dy: int) -> None:
     if game.player_id in level.actors:
         del level.actors[game.player_id]
     actor.pos = (dest_x, dest_y)
+    # YOGA: Update abs_pos to maintain canonical position
+    actor.abs_pos = game.abs_from_zone_local(dest_coord, (dest_x, dest_y))
     dest_level.actors[game.player_id] = actor
     game.zone_coord = dest_coord
 
@@ -198,6 +204,8 @@ def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
     if game.player_id in level.actors:
         del level.actors[game.player_id]
     actor.pos = dest_level.world.entry
+    # YOGA: Update abs_pos to maintain canonical position
+    actor.abs_pos = game.abs_from_zone_local(dest_coord, dest_level.world.entry)
     dest_level.actors[game.player_id] = actor
     game.zone_coord = dest_coord
     dest_level.need_fov = True

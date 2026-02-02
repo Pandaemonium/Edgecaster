@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 import pygame
 
 from .base import Scene
+from edgecaster.math_utils import lerp_rgb
 
 
 Color = Tuple[int, int, int]
@@ -94,18 +95,10 @@ class FractalEditorScene(Scene):
     # ------------------------------------------------------------
     # Utility helpers
 
-    def _lerp(self, a: Color, b: Color, t: float) -> Color:
-        t = max(0.0, min(1.0, t))
-        return (
-            int(a[0] + (b[0] - a[0]) * t),
-            int(a[1] + (b[1] - a[1]) * t),
-            int(a[2] + (b[2] - a[2]) * t),
-        )
-
     def _color_for_x(self, x: float) -> Color:
         denom = max(1e-6, (self.state.grid_x_max - self.state.grid_x_min))
         t = (x - self.state.grid_x_min) / denom
-        return self._lerp(YELLOW, PURPLE, t)
+        return lerp_rgb(YELLOW, PURPLE, t)
 
     def _grid_to_screen(self, gx: float, gy: float, panel: pygame.Rect) -> Tuple[int, int]:
         if self.cell_size <= 0:
@@ -681,7 +674,7 @@ class FractalEditorScene(Scene):
             for s in range(1, steps + 1):
                 t = s / steps
                 nxt = (int(pa[0] + (pb[0] - pa[0]) * t), int(pa[1] + (pb[1] - pa[1]) * t))
-                col = self._lerp(col_a, col_b, t)
+                col = lerp_rgb(col_a, col_b, t)
                 pygame.draw.line(overlay, col, prev, nxt, max(2, self.cell_size // 3))
                 prev = nxt
             if self.selected_edge == i:
