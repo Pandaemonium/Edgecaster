@@ -2550,12 +2550,11 @@ class Game:
         if ax1 == ax0 or ay1 == ay0:
             return []
 
-        # Zone dimensions MUST match the actual zone tile dimensions used everywhere else.
-        # Prefer cfg.world_width/world_height (canonical), fall back to current level/world defaults.
         cfg = getattr(self, "cfg", None)
+
+        # Zone dimensions MUST match actual zone tile dims.
         zone_w = int(getattr(cfg, "world_width", 0) or 0)
         zone_h = int(getattr(cfg, "world_height", 0) or 0)
-
         if zone_w <= 0 or zone_h <= 0:
             try:
                 lvl0 = self._level()
@@ -2565,20 +2564,48 @@ class Game:
                 zone_w = 60
                 zone_h = 40
 
-
         # Which depth are we on?
         _czx, _czy, zz = getattr(self, "zone_coord", (0, 0, 0))
         zz = int(zz)
 
-        # Zone span covered by camera rect.
-        zx0 = int(math.floor(ax0 / float(zone_w)))
-        zy0 = int(math.floor(ay0 / float(zone_h)))
-        zx1 = int(math.floor((ax1 - 1e-9) / float(zone_w)))
-        zy1 = int(math.floor((ay1 - 1e-9) / float(zone_h)))
+        # ------------------------------------------------------------
+        # WARM RECT (IMPORTANT): drive *candidate gathering* from warmth,
+        # not from the razor-thin camera rect. This prevents "player disappears
+        # when panning a few pixels" due to float/rounding/tight rect edges.
+        # ------------------------------------------------------------
+        # Default padding in ABS tiles around camera rect (offscreen pursuit / warmth)
+        pad_tiles = float(getattr(cfg, "entity_render_pad_tiles", 0.0) or 0.0)
+        if pad_tiles <= 0.0:
+            try:
+                pad_tiles = 0.5 * max((ax1 - ax0), (ay1 - ay0))
+            except Exception:
+                pad_tiles = 0.0
 
-        # If the camera spans a ridiculous number of zones, we should NOT iterate through them
-        # (that would freeze), but we STILL want world-index entities to appear anywhere in view.
-        max_zone_span = int(getattr(getattr(self, "cfg", None), "render_max_zone_span", 9) or 9)
+        wx0 = ax0 - pad_tiles
+        wy0 = ay0 - pad_tiles
+        wx1 = ax1 + pad_tiles
+        wy1 = ay1 + pad_tiles
+
+        # Union with inhabited actor position (keeps the fovea "warm" even if camera pans slightly)
+        pax = pay = None
+        try:
+            pax, pay = self._get_player_abs()
+            wx0 = min(wx0, float(pax) - pad_tiles)
+            wy0 = min(wy0, float(pay) - pad_tiles)
+            wx1 = max(wx1, float(pax) + pad_tiles)
+            wy1 = max(wy1, float(pay) + pad_tiles)
+        except Exception:
+            pax = pay = None
+
+        # ------------------------------------------------------------
+        # Zone span covered by *warm rect* (NOT raw camera rect)
+        # ------------------------------------------------------------
+        zx0 = int(math.floor(wx0 / float(zone_w)))
+        zy0 = int(math.floor(wy0 / float(zone_h)))
+        zx1 = int(math.floor((wx1 - 1e-9) / float(zone_w)))
+        zy1 = int(math.floor((wy1 - 1e-9) / float(zone_h)))
+
+        max_zone_span = int(getattr(cfg, "render_max_zone_span", 9) or 9)
         max_zone_span = max(1, max_zone_span)
         span_x = (zx1 - zx0 + 1)
         span_y = (zy1 - zy0 + 1)
@@ -2587,7 +2614,7 @@ class Game:
         out: List[RenderProxy] = []
         candidates: List[Tuple[object, float, float, Tuple[int, int, int], Tuple[int, int], float]] = []
 
-        # Camera center for scoring (prefer big + near center).
+        # Camera center for scoring (raw camera center, not warm center)
         ccx = 0.5 * (ax0 + ax1)
         ccy = 0.5 * (ay0 + ay1)
 
@@ -2598,12 +2625,9 @@ class Game:
 
         # ------------------------------------------------------------
         # 1) WORLD INDEX ENTITIES (sites, later forests/cities/etc.)
-        #    IMPORTANT: do NOT zone-span-cap this query, or you'll get the "center window" bug.
         # ------------------------------------------------------------
         self._ensure_world_site_entities(zone_w=zone_w, zone_h=zone_h)
 
-        # Aggregate world entities (berry patches today; goblin bands/forests tomorrow).
-        # Safe: adds to WorldEntityIndex only; no zone instantiation.
         if not too_many_zones:
             try:
                 self._ensure_world_aggregate_entities(
@@ -2619,10 +2643,10 @@ class Game:
             except Exception:
                 pass
 
-
+        # Query world index using WARM rect so panning doesn't "drop" things on the edge.
         try:
             if getattr(self, "world_entity_index", None) is not None:
-                for ref in self.world_entity_index.query_abs_rect((ax0, ay0, ax1, ay1), z=zz, zone_span_cap=None):
+                for ref in self.world_entity_index.query_abs_rect((wx0, wy0, wx1, wy1), z=zz, zone_span_cap=None):
                     obj = ref.ent
                     zx, zy, _z = ref.zone_coord
                     ox, oy = ref.local_pos
@@ -2634,22 +2658,21 @@ class Game:
                     ent_lod = math.log2(abs_size) if abs_size > 0 else -30.0
                     delta = float(cam_lod) - float(ent_lod)
 
-                    # Fade band gating (matches your existing LoD philosophy).
                     if delta < (float(dmin) - float(fade_w)) or delta > (float(dmax) + float(fade_w)):
                         continue
 
-                    # Tight rect intersection: treat as a box of side abs_size around its center.
+                    # Intersection test against WARM rect (gather candidates), not camera rect.
                     half = 0.5 * float(abs_size)
                     ex0 = abs_x - half
                     ey0 = abs_y - half
                     ex1 = abs_x + half
                     ey1 = abs_y + half
-                    if ex1 <= ax0 or ex0 >= ax1 or ey1 <= ay0 or ey0 >= ay1:
+                    if ex1 <= wx0 or ex0 >= wx1 or ey1 <= wy0 or ey0 >= wy1:
                         continue
 
                     sc = _score(abs_size, abs_x, abs_y)
-                    # Detail resolution (render-only) for aggregates when zoomed in.
-                    # This MUST NOT instantiate zones or create gameplay state.
+
+                    # Render-only detail proxies for aggregates when zoomed in.
                     try:
                         tags = getattr(obj, "tags", {}) or {}
                         if isinstance(tags, dict) and tags.get("aggregate"):
@@ -2663,15 +2686,15 @@ class Game:
                                 cam_lod=cam_lod,
                             ):
                                 bobj = p.ent
-                                bx = int(p.abs_x)
-                                by = int(p.abs_y)
+                                bx = float(p.abs_x)
+                                by = float(p.abs_y)
                                 bsize = self._size_for_render(bobj)
                                 b_lod = math.log2(bsize) if bsize > 0 else -30.0
                                 bdelta = float(cam_lod) - float(b_lod)
                                 if bdelta < (float(dmin) - float(fade_w)) or bdelta > (float(dmax) + float(fade_w)):
                                     continue
                                 bhalf = 0.5 * float(bsize)
-                                if (bx + bhalf) <= ax0 or (bx - bhalf) >= ax1 or (by + bhalf) <= ay0 or (by - bhalf) >= ay1:
+                                if (bx + bhalf) <= wx0 or (bx - bhalf) >= wx1 or (by + bhalf) <= wy0 or (by - bhalf) >= wy1:
                                     continue
                                 bsc = _score(bsize, bx, by)
                                 candidates.append((bobj, bx, by, p.zone_coord, p.local_pos, bsc))
@@ -2680,7 +2703,6 @@ class Game:
 
                     candidates.append((obj, abs_x, abs_y, (int(zx), int(zy), int(zz)), (int(ox), int(oy)), sc))
         except Exception:
-            # World entities are best-effort; never crash rendering.
             pass
 
         # ------------------------------------------------------------
@@ -2690,7 +2712,7 @@ class Game:
 
         if too_many_zones:
             # Camera spans many zones; do NOT iterate them all.
-            # But we *must* still render entities from zones that already exist in memory.
+            # But do render entities from zones already in memory that intersect WARM rect.
             try:
                 for coord in getattr(self, "levels", {}).keys():
                     try:
@@ -2700,12 +2722,11 @@ class Game:
                     if int(zdepth) != int(zz):
                         continue
 
-                    # Does this zone's absolute rect intersect the camera rect?
                     zax0 = float(zx * zone_w)
                     zay0 = float(zy * zone_h)
                     zax1 = zax0 + float(zone_w)
                     zay1 = zay0 + float(zone_h)
-                    if zax1 <= ax0 or zax0 >= ax1 or zay1 <= ay0 or zay0 >= ay1:
+                    if zax1 <= wx0 or zax0 >= wx1 or zay1 <= wy0 or zay0 >= wy1:
                         continue
 
                     coords_to_check.append((int(zx), int(zy), int(zz)))
@@ -2725,17 +2746,15 @@ class Game:
             if level is None:
                 continue
 
-            # Ensure bins exist for this zone.
             if getattr(level, "spatial_dirty", True) or not getattr(level, "spatial_bins", None):
                 self._rebuild_spatial_bins(level)
 
-            # Local rect within this zone.
-            lx0 = ax0 - float(zx * zone_w)
-            ly0 = ay0 - float(zy * zone_h)
-            lx1 = ax1 - float(zx * zone_w)
-            ly1 = ay1 - float(zy * zone_h)
+            # Local rect within this zone for WARM rect.
+            lx0 = wx0 - float(zx * zone_w)
+            ly0 = wy0 - float(zy * zone_h)
+            lx1 = wx1 - float(zx * zone_w)
+            ly1 = wy1 - float(zy * zone_h)
 
-            # Clamp to zone bounds.
             if lx1 <= 0 or ly1 <= 0 or lx0 >= zone_w or ly0 >= zone_h:
                 continue
             lx0 = max(0.0, min(float(zone_w), lx0))
@@ -2792,15 +2811,163 @@ class Game:
                         sc = _score(abs_size, abs_x, abs_y)
                         candidates.append((obj, abs_x, abs_y, coord, (int(ox), int(oy)), sc))
 
-
         if not candidates:
             return []
 
-        # Downselect if needed.
-        if max_count > 0 and len(candidates) > max_count:
-            candidates = heapq.nlargest(max_count, candidates, key=lambda t: t[5])
+        # ------------------------------------------------------------
+        # Banded multi-scale attention selection
+        # ------------------------------------------------------------
+        band_width = int(getattr(cfg, "entity_band_width", 4) or 4)
+        band_width = max(1, band_width)
 
-        for obj, abs_x, abs_y, coord, local_pos, _sc in candidates:
+        bucket_slack = int(getattr(cfg, "entity_bucket_slack", 3) or 3)
+
+        k_cell = int(getattr(cfg, "entity_render_k_cell", 12) or 12)
+        k_cell = max(1, k_cell)
+
+        k_layer = int(getattr(cfg, "entity_render_k_layer", max_count) or max_count)
+        if k_layer <= 0:
+            k_layer = max_count
+
+        # Band overlap allows adjacent bands to still render (prevents "sites vanish entirely")
+        band_overlap = int(getattr(cfg, "entity_band_overlap", 1) or 1)
+        band_overlap = max(0, band_overlap)
+
+        cam_lod_f = float(cam_lod)
+
+        # Bias lets you zoom in closer before band transitions.
+        zoom_in_bias = float(getattr(cfg, "entity_zoom_in_bias_lod", 3.0) or 3.0)
+        cam_lod_f += zoom_in_bias
+
+        # Optional additional band bias (simple constant nudge).
+        band_bias = float(getattr(cfg, "entity_band_bias", 0.0) or 0.0)
+        cam_lod_f += band_bias
+
+        if not hasattr(self, "_entity_active_band"):
+            self._entity_active_band = int(math.floor(cam_lod_f / float(band_width)))
+
+        b = int(getattr(self, "_entity_active_band", 0) or 0)
+
+        # Less sticky hysteresis by default.
+        h = float(getattr(cfg, "entity_band_hysteresis", 0.05) or 0.05)
+
+        if cam_lod_f > ((b + 1) * band_width + h):
+            b = int(math.floor(cam_lod_f / float(band_width)))
+        elif cam_lod_f < (b * band_width - h):
+            b = int(math.floor(cam_lod_f / float(band_width)))
+
+        self._entity_active_band = b
+
+        lod_min = b * band_width
+        lod_max = lod_min + (band_width - 1)
+
+        cell_lod_min = lod_min + bucket_slack
+        cell_lod_max = lod_max + bucket_slack
+
+        def _ent_lod(sz: float) -> float:
+            return math.log2(sz) if sz and sz > 0.0 else -30.0
+
+        # Bucket candidates by native cell.
+        cell_map = {}
+        for obj, ex, ey, coord, local_pos, _sc in candidates:
+            try:
+                abs_size = float(self._size_for_render(obj))
+            except Exception:
+                abs_size = 1.0
+
+            e_lod = _ent_lod(abs_size)
+            e_band = int(math.floor(e_lod / float(band_width)))
+
+            # Allow overlap bands around active band.
+            if abs(e_band - b) > band_overlap:
+                continue
+
+            try:
+                native_cell_lod = int(math.floor(e_lod)) + int(bucket_slack)
+            except Exception:
+                native_cell_lod = cell_lod_min
+
+            if native_cell_lod < cell_lod_min:
+                native_cell_lod = cell_lod_min
+            elif native_cell_lod > cell_lod_max:
+                native_cell_lod = cell_lod_max
+
+            cell_size = float(2 ** int(native_cell_lod))
+            cx = int(math.floor(float(ex) / cell_size))
+            cy = int(math.floor(float(ey) / cell_size))
+
+            key = (int(native_cell_lod), cx, cy)
+            cell_map.setdefault(key, []).append((obj, float(ex), float(ey), coord, local_pos, abs_size))
+
+        if not cell_map:
+            return []
+
+        selected = []
+
+        # Iterate cell LODs for this band
+        for cell_lod in range(int(cell_lod_min), int(cell_lod_max) + 1):
+            cell_size = float(2 ** int(cell_lod))
+
+            # Hot cells from WARM rect
+            cx0 = int(math.floor(wx0 / cell_size))
+            cy0 = int(math.floor(wy0 / cell_size))
+            cx1 = int(math.floor((wx1 - 1e-9) / cell_size))
+            cy1 = int(math.floor((wy1 - 1e-9) / cell_size))
+
+            hot_keys = []
+            for cx in range(cx0, cx1 + 1):
+                for cy in range(cy0, cy1 + 1):
+                    key = (int(cell_lod), cx, cy)
+                    if key not in cell_map:
+                        continue
+                    ccx_cell = (float(cx) + 0.5) * cell_size
+                    ccy_cell = (float(cy) + 0.5) * cell_size
+                    dx = ccx_cell - ccx
+                    dy = ccy_cell - ccy
+                    hot_keys.append((dx * dx + dy * dy, key))
+
+            hot_keys.sort(key=lambda t: t[0])
+
+            for _d2, key in hot_keys:
+                ents = cell_map.get(key, [])
+                if not ents:
+                    continue
+
+                def _rank(rec):
+                    _obj, _x, _y, _coord, _lp, _sz = rec
+                    dx = _x - ccx
+                    dy = _y - ccy
+                    return (dx * dx + dy * dy, id(_obj))
+
+                ents.sort(key=_rank)
+                for rec in ents[:k_cell]:
+                    selected.append(rec)
+
+                if k_layer > 0 and len(selected) >= k_layer:
+                    break
+
+            if k_layer > 0 and len(selected) >= k_layer:
+                break
+
+        if max_count > 0 and len(selected) > max_count:
+            selected = selected[:max_count]
+
+        # Hard guarantee: include player if we can find it.
+        # (Not a "render special-case"; it's an observer invariant.)
+        try:
+            p = getattr(self, "player", None)
+            if p is not None:
+                pid = getattr(p, "id", None)
+                if pid is not None:
+                    has_player = any(getattr(rec[0], "id", None) == pid for rec in selected)
+                    if not has_player and pax is not None and pay is not None:
+                        # If player was in candidates, it would've been selected; but if not,
+                        # include it anyway to satisfy "fovea never disappears".
+                        selected.append((p, float(pax), float(pay), getattr(self, "zone_coord", (0, 0, zz)), (0, 0), 1.0))
+        except Exception:
+            pass
+
+        for obj, abs_x, abs_y, coord, local_pos, _abs_size in selected:
             out.append(
                 RenderProxy(
                     obj=obj,
@@ -2810,7 +2977,12 @@ class Game:
                     local_pos=local_pos,
                 )
             )
+
         return out
+
+
+
+
 
 
 

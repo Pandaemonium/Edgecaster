@@ -211,6 +211,282 @@ if you kill a bear, it stays dead (unless designed otherwise)
 
 if a bear wanders 3 screens away, that displacement persists
 
+Section 5.5 — Macro Entities Are Not Just “Big Entities”
+
+(Insert after Section 5: The Attention Field)
+
+Macro entities are ontologically different from local entities.
+
+A city, forest, site, or army is not simply:
+
+a very large creature, or
+
+a normal entity rendered at a larger scale.
+
+Instead, macro entities are:
+
+summaries of many possible finer states
+
+representations chosen by the observer’s scale
+
+anchors for refinement and coarsening
+
+Key rule:
+
+A macro entity should not be created, destroyed, or multiplied simply because the camera zooms or pans.
+
+If macro entities appear/disappear erratically with camera movement, that indicates:
+
+generation is tied to view mechanics instead of world structure, or
+
+indexing depends on transient buckets rather than canonical identity.
+
+Macro entities must have:
+
+a stable identity (even if cold / abstract)
+
+a stable footprint in absolute space
+
+a defined scale band where they are the preferred representation
+
+Section 5.6 — Camera Attention ≠ World Generation
+
+(Directly addresses what went wrong)
+
+The camera determines what is observed, not what exists.
+
+Therefore:
+
+The camera / attention field may select representations
+
+It must not be the primary driver of world generation
+
+Anti-pattern:
+
+“When the camera enters a region or zoom level, generate entities for that scale.”
+
+This leads to:
+
+density explosions
+
+rings / blooms around the observer
+
+entities that exist only because they were looked at
+
+Correct model:
+
+World structure exists independently (even if abstracted)
+
+The camera selects which layer of that structure is rendered or simulated
+
+Observation chooses fidelity, not existence.
+
+Section 5.7 — Stable Buckets Before Fractal Buckets
+
+(This is the big lesson from the failed attempt)
+
+Before introducing fully fractal, multi-LoD spatial buckets, the system must satisfy this invariant:
+
+An entity’s membership in a spatial container must not change solely due to zoom level.
+
+In practice, this means:
+
+Do not re-index entities into different spatial buckets every frame
+
+Do not rebuild global indices as camera scale changes
+
+Do not let “cell size” drift with zoom unless the entity itself is changing representation
+
+Transitional guideline:
+
+Prefer fixed, absolute-space buckets (even if coarse)
+
+Layer scale logic on top of a stable spatial index
+
+Only introduce nested / fractal buckets once:
+
+representation ladders are explicit
+
+refinement/coarsening is deterministic
+
+identity is preserved across transitions
+
+This avoids “thrashing” where entities vanish, duplicate, or reset.
+
+Section 5.8 — Representation Ladders Are Explicit, Not Emergent
+
+(Clarifies elephants vs humans vs cities, etc.)
+
+Entities that can exist at multiple scales must declare a representation ladder.
+
+Example:
+
+forest
+→ woods
+→ tree clusters
+→ trees
+→ berries
+
+This ladder is:
+
+explicit (declared in data or code)
+
+ordered
+
+reversible (coarsening is as real as refinement)
+
+Rule:
+
+An entity should never “fade into nothing” when crossing a scale boundary.
+It must either:
+
+remain as a token, or
+
+hand off to a parent/child representation.
+
+If zooming causes an entity to disappear without replacement, the ladder is incomplete.
+
+New Section 5.9 — Attention Budget Is a Selection Problem, Not a Creation Problem
+
+The attention system’s job is:
+
+deciding what to simulate
+
+deciding what to render
+
+deciding what to defer
+
+It is not responsible for:
+
+creating entities
+
+destroying entities
+
+redefining world structure
+
+Budgets apply to:
+
+simulation ticks
+
+render proxies
+
+detail resolution
+
+They must never apply to:
+
+canonical identity
+
+persistence
+
+world history
+
+This distinction prevents:
+
+“player disappears because too many berries”
+
+“entities vanish when stepping off a zone”
+
+simulation depending on incidental ordering
+
+Section 5.10 — Warmness Must Govern Candidate Gathering
+
+Key lesson: It is not enough to apply “attention” at the final selection step.
+Warmness must be applied before candidate enumeration, or the observer can fall out of reality.
+
+The bug we hit
+
+Even with a smart multi-scale selection step, the player (and other critical entities) could still “disappear” when panning the camera without zooming.
+
+This was not a renderer problem. This was not “too many entities.”
+
+It was a pipeline authority mismatch:
+
+The candidate list was built from a tight camera rect (with float → int boundary effects)
+
+The “warm fovea” logic was applied after candidates existed
+
+So a tiny pan could exclude the player from candidates, and downstream selection could not resurrect them
+
+The invariant
+
+Attention (warmness) must drive candidate gathering.
+
+This means:
+
+Build a warm rect = (camera rect) + padding
+
+Union it with the inhabited actor fovea (player position)
+
+Use this warm rect for:
+
+world-index queries (macro entities)
+
+loaded-zone spatial bin queries (micro entities)
+
+any other pre-filter candidate scan
+
+Once an entity is absent from candidates, it is effectively “nonexistent” for the frame — and this is a yoga violation if the entity is in the observer fovea.
+
+Section 5.11 — Selection Churn Is Not Motion
+
+Symptom
+
+“Entities shift around when panning, without world motion.”
+
+Cause
+
+This can be caused by selection mechanics, not simulation.
+
+If the per-frame selection logic picks “nearest K entities to camera center” inside a cell, then panning changes the ordering, and the visible subset changes each frame. That looks like objects moving, but it’s actually culling churn.
+
+Rule of thumb
+
+Prefer selection orders that are stable under small camera motion.
+
+Example: per-cell selection should rank by distance to cell center, not distance to camera center, unless there’s a compelling reason.
+
+Insert: New Section 5.12 — Bands Are for Legibility, Not Ontological Guillotines
+
+(Insert after 5.8 “Representation Ladders” or near the “bands” discussion)
+
+Symptom
+
+Macro entities (sites/berry patches) vanish entirely when zoomed in, even though they should still be “present” or represented.
+
+Cause
+
+Overly strict band filtering such as:
+
+“entity must be in the one active band” (e_band == b)
+
+This makes adjacent-scale entities disappear without any representation ladder handoff.
+
+Guidance
+
+Until representation ladders are fully implemented, allow a small band overlap (e.g., ±1 band) as a transitional bridge:
+
+Bands remain the main legibility filter
+
+But we avoid hard discontinuities where important entities vanish with no substitute
+
+This is not “overlapping realities”; it is a pragmatic bridge until explicit handoffs exist.
+
+Section 5.13 — World Index Entities Must Render Without Zone Iteration
+
+The scalable rule
+
+When the camera spans many zones, never iterate all zones to gather candidates.
+
+Instead:
+
+Query macro/world entities via a global spatial index in absolute space
+
+Only scan loaded zones (caches) for local entities
+
+Never instantiate zones during rendering
+
+This preserves performance while keeping “world truth” visible at any scale.
+
 6) Transitional Doctrine: Bridges Are Allowed
 
 During migration, it is acceptable to have:
@@ -349,6 +625,17 @@ Classic sign:
 nearest-neighbor selection is running in the wrong coordinate space
 
 often ABS vs local-world mismatch
+
+When debugging “entities disappear / shift / flicker”:
+
+Is the entity present in candidates?
+If not: warm rect is wrong or coordinate conversion is wrong.
+
+If yes: is selection stable?
+If selection changes with tiny camera motion, you may be ranking by camera center.
+
+If yes: is the entity filtered out by strict band logic?
+Consider band overlap as a bridge until ladders exist.
 
 10) The Long Roadmap (High-Level, Not Bug Fixes)
 
