@@ -42,6 +42,16 @@ def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
     - Cooldown ticks
     - Pattern motion
     """
+    
+    # Yoga safety net: ensure staged ontology matches last known view before ticking
+    try:
+        abs_rect = getattr(game, "_last_view_abs_rect", None)
+        cam_lod = getattr(game, "_last_view_cam_lod", None)
+        if abs_rect is not None and cam_lod is not None:
+            game.sync_attention_instantiation(abs_rect, cam_lod=float(cam_lod))
+    except Exception:
+        pass
+
     # Import here to avoid circular imports
     from edgecaster.patterns import motion as pattern_motion
 

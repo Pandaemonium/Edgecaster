@@ -2516,6 +2516,262 @@ class Game:
         level.spatial_bins = bins
         level.spatial_dirty = False
 
+
+    def sync_attention_instantiation(self, abs_rect: tuple[float, float, float, float], *, cam_lod: float) -> None:
+        """
+        Phase-1 LifecycleManager: stage/unstage real micro entities based on attention.
+
+        - May instantiate/de-instantiate entities as camera pans/zooms (even while paused).
+        - Must NOT advance time or apply simulation deltas.
+        - Deterministic layout for berry_patch -> blueberries (cluster mode).
+        - Basic persistence: if a spawned berry disappears from level.entities (picked up),
+          we record its slot as harvested on the aggregate so it won't respawn.
+        """
+        # Remember latest view (used as a safety net before time advances)
+        try:
+            self._last_view_abs_rect = tuple(map(float, abs_rect))
+            self._last_view_cam_lod = float(cam_lod)
+        except Exception:
+            pass
+
+        try:
+            ax0, ay0, ax1, ay1 = map(float, abs_rect)
+        except Exception:
+            return
+        if ax1 < ax0:
+            ax0, ax1 = ax1, ax0
+        if ay1 < ay0:
+            ay0, ay1 = ay1, ay0
+        if ax1 == ax0 or ay1 == ay0:
+            return
+
+        cfg = getattr(self, "cfg", None)
+
+        # Zone dimensions
+        zone_w = int(getattr(cfg, "world_width", 0) or 0)
+        zone_h = int(getattr(cfg, "world_height", 0) or 0)
+        if zone_w <= 0 or zone_h <= 0:
+            try:
+                lvl0 = self._level()
+                zone_w = int(getattr(lvl0.world, "width", 60) or 60)
+                zone_h = int(getattr(lvl0.world, "height", 40) or 40)
+            except Exception:
+                zone_w = 60
+                zone_h = 40
+
+        # Current depth only in Phase 1
+        _czx, _czy, zz = getattr(self, "zone_coord", (0, 0, 0))
+        zz = int(zz)
+
+        # Warm rect (reuse same idea as renderables_in_abs_rect)
+        pad_tiles = float(getattr(cfg, "entity_render_pad_tiles", 0.0) or 0.0)
+        if pad_tiles <= 0.0:
+            pad_tiles = 0.5 * max((ax1 - ax0), (ay1 - ay0))
+
+        wx0 = ax0 - pad_tiles
+        wy0 = ay0 - pad_tiles
+        wx1 = ax1 + pad_tiles
+        wy1 = ay1 + pad_tiles
+
+        # Union with player abs_pos to keep fovea warm
+        try:
+            pax, pay = self._get_player_abs()
+            wx0 = min(wx0, float(pax) - pad_tiles)
+            wy0 = min(wy0, float(pay) - pad_tiles)
+            wx1 = max(wx1, float(pax) + pad_tiles)
+            wy1 = max(wy1, float(pay) + pad_tiles)
+        except Exception:
+            pass
+
+        # Nothing to do without an index
+        world_index = getattr(self, "world_entity_index", None)
+        if world_index is None:
+            return
+
+        # Query macro aggregates in warm rect
+        max_zone_span = int(getattr(cfg, "render_max_zone_span", 9) or 9)
+        try:
+            refs = world_index.query_abs_rect((wx0, wy0, wx1, wy1), z=zz, zone_span_cap=max_zone_span)
+        except Exception:
+            return
+
+        # Track which aggregates are "in scope" per loaded zone this frame
+        in_scope_by_zone: dict[tuple[int, int, int], set[str]] = {}
+
+        for r in refs:
+            ent = getattr(r, "ent", None)
+            if ent is None:
+                continue
+
+            tags = getattr(ent, "tags", {}) or {}
+            if not isinstance(tags, dict):
+                continue
+
+            # Phase 1: only berry_patch aggregates
+            if not tags.get("aggregate"):
+                continue
+            if str(tags.get("aggregate_kind", "")) != "berry_patch":
+                continue
+
+            # Only refine when zoomed in enough
+            thresh = float(tags.get("detail_lod_threshold", -1.25))
+            if float(cam_lod) > thresh:
+                continue
+
+            zc = tuple(getattr(r, "zone_coord", (0, 0, zz)))
+            if len(zc) != 3:
+                continue
+
+            # Only operate on already-loaded zones (no zone instantiation on look in Phase 1)
+            level = None
+            try:
+                level = self.get_zone_for_render(zc)
+            except Exception:
+                level = None
+            if level is None:
+                continue
+
+            agg_id = str(getattr(ent, "id", "") or "")
+            if not agg_id:
+                continue
+
+            in_scope_by_zone.setdefault(zc, set()).add(agg_id)
+
+            # Per-level active mapping: agg_id -> {slot:int -> eid:str}
+            active = getattr(level, "_active_agg_children", None)
+            if not isinstance(active, dict):
+                active = {}
+                try:
+                    setattr(level, "_active_agg_children", active)
+                except Exception:
+                    pass
+
+            slot_to_eid = active.get(agg_id)
+            if not isinstance(slot_to_eid, dict):
+                slot_to_eid = {}
+                active[agg_id] = slot_to_eid
+
+            # Harvest persistence stored on the aggregate itself (truthy macro object)
+            harvested = getattr(ent, "_agg_harvested_slots", None)
+            if not isinstance(harvested, set):
+                harvested = set()
+                try:
+                    setattr(ent, "_agg_harvested_slots", harvested)
+                except Exception:
+                    pass
+
+            # If something removed a berry from the level (pickup), record its slot harvested
+            try:
+                for s, eid in list(slot_to_eid.items()):
+                    if eid not in level.entities:
+                        harvested.add(int(s))
+                        del slot_to_eid[s]
+            except Exception:
+                pass
+
+            # Deterministic child layout (local coords)
+            try:
+                child_id, pts = aggregate_system.compute_cluster_children_layout(
+                    self,
+                    aggregate_ent=ent,
+                    zone_coord=zc,
+                    local_pos=tuple(getattr(r, "local_pos", (0, 0))),
+                    zone_w=zone_w,
+                    zone_h=zone_h,
+                )
+            except Exception:
+                continue
+            if not child_id or not pts:
+                continue
+
+            # Resolve child prototype once
+            try:
+                child_proto = prototypes.resolve_proto(str(child_id))
+            except Exception:
+                continue
+
+            zx, zy, _z = map(int, zc)
+
+            # Ensure each desired child exists (skip harvested slots)
+            for slot, (lx, ly) in enumerate(pts):
+                if slot in harvested:
+                    continue
+
+                ax = int(zx * int(zone_w) + int(lx))
+                ay = int(zy * int(zone_h) + int(ly))
+
+                # Keep within warm rect (prevents weird edge-instantiation)
+                if ax < wx0 or ax >= wx1 or ay < wy0 or ay >= wy1:
+                    continue
+
+                eid = f"{agg_id}:{child_id}:{slot}"
+                if eid in level.entities:
+                    slot_to_eid[slot] = eid
+                    continue
+
+                # Spawn real entity
+                try:
+                    bent = spawn_factory.build_entity_from_spec(
+                        spec=child_proto,
+                        eid=eid,
+                        pos=(int(lx), int(ly)),
+                        abs_pos=(int(ax), int(ay)),
+                        overrides={
+                            "tags": {
+                                "from_aggregate": agg_id,
+                                "aggregate_slot": int(slot),
+                                "aggregate_kind": "berry_patch",
+                            }
+                        },
+                    )
+                except Exception:
+                    continue
+
+                try:
+                    level.entities[eid] = bent
+                    level.spatial_dirty = True  # NEW: ensure render + "you see here" queries update
+
+                except Exception:
+                    continue
+
+                slot_to_eid[slot] = eid
+
+        # Evict children for aggregates that are no longer in scope (coarsen-on-look)
+        try:
+            # Only iterate loaded zones we actually touched or have active children
+            for zc, level in list(getattr(self, "levels", {}).items()):
+                if not isinstance(zc, tuple) or len(zc) != 3:
+                    continue
+                if int(zc[2]) != zz:
+                    continue
+
+                active = getattr(level, "_active_agg_children", None)
+                if not isinstance(active, dict) or not active:
+                    continue
+
+                keep = in_scope_by_zone.get(zc, set())
+
+                for agg_id, slot_map in list(active.items()):
+                    if agg_id in keep:
+                        continue
+
+                    if isinstance(slot_map, dict):
+                        for _slot, eid in list(slot_map.items()):
+                            try:
+                                if eid in level.entities:
+                                    del level.entities[eid]
+                                    level.spatial_dirty = True  
+                            except Exception:
+                                pass
+                    try:
+                        del active[agg_id]
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
+
     def renderables_in_abs_rect(
         self,
         abs_rect: Tuple[float, float, float, float],
@@ -2676,33 +2932,10 @@ class Game:
                     sc = _score(abs_size, abs_x, abs_y)
 
                     # Render-only detail proxies for aggregates when zoomed in.
-                    try:
-                        tags = getattr(obj, "tags", {}) or {}
-                        if isinstance(tags, dict) and tags.get("aggregate"):
-                            for p in aggregate_system.resolve_detail_proxies(
-                                self,
-                                aggregate_ent=obj,
-                                zone_coord=(int(zx), int(zy), int(zz)),
-                                local_pos=(int(ox), int(oy)),
-                                zone_w=zone_w,
-                                zone_h=zone_h,
-                                cam_lod=cam_lod,
-                            ):
-                                bobj = p.ent
-                                bx = float(p.abs_x)
-                                by = float(p.abs_y)
-                                bsize = self._size_for_render(bobj)
-                                b_lod = math.log2(bsize) if bsize > 0 else -30.0
-                                bdelta = float(cam_lod) - float(b_lod)
-                                if bdelta < (float(dmin) - float(fade_w)) or bdelta > (float(dmax) + float(fade_w)):
-                                    continue
-                                bhalf = 0.5 * float(bsize)
-                                if (bx + bhalf) <= wx0 or (bx - bhalf) >= wx1 or (by + bhalf) <= wy0 or (by - bhalf) >= wy1:
-                                    continue
-                                bsc = _score(bsize, bx, by)
-                                candidates.append((bobj, bx, by, p.zone_coord, p.local_pos, bsc))
-                    except Exception:
-                        pass
+                    # NOTE (Yoga): detail proxies are disabled.
+                    # If berries/soldiers/etc. are visible at a given band, they must be real entities
+                    # staged into LevelState.entities by the attention lifecycle (not invented here).
+                    pass
 
                     candidates.append((obj, abs_x, abs_y, (int(zx), int(zy), int(zz)), (int(ox), int(oy)), sc))
         except Exception:

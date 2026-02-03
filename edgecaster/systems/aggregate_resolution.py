@@ -242,6 +242,61 @@ def _cluster_points(
     return pts
 
 
+def compute_cluster_children_layout(
+    game: "Game",
+    *,
+    aggregate_ent: object,
+    zone_coord: Tuple[int, int, int],
+    local_pos: Tuple[int, int],
+    zone_w: int,
+    zone_h: int,
+) -> Tuple[str, List[Tuple[int, int]]]:
+    """
+    Deterministically compute cluster child layout for an aggregate.
+
+    Returns: (child_proto_id, pts_local)
+      - child_proto_id: e.g. "blueberry"
+      - pts_local: list of (x,y) points in *local zone coords*
+
+    IMPORTANT:
+    - Pure function of (seed, agg_id, child_id, center, radius, count, zone dims)
+    - No camera/LoD dependence (prevents shuffling on zoom)
+    """
+    tags = _tags(aggregate_ent)
+    if not isinstance(tags, dict) or not tags.get("aggregate"):
+        return ("", [])
+
+    # Only cluster mode supported in Phase 1
+    mode = str(tags.get("detail_mode", "cluster"))
+    if mode != "cluster":
+        return ("", [])
+
+    agg_id = str(getattr(aggregate_ent, "id", "") or "")
+    if not agg_id:
+        return ("", [])
+
+    child_id = str(tags.get("detail_child") or tags.get("child") or "blueberry")
+
+    radius = float(tags.get("radius", 6.0))
+    density = float(tags.get("density", 0.25))
+    max_children = int(tags.get("detail_max_children", 120))
+    approx = int(max(1, min(max_children, density * math.pi * radius * radius)))
+
+    ox0, oy0 = map(int, local_pos)
+
+    pts = _cluster_points(
+        game,
+        agg_id=agg_id,
+        child_id=child_id,
+        center=(ox0, oy0),
+        radius=radius,
+        count=approx,
+        zone_w=int(zone_w),
+        zone_h=int(zone_h),
+    )
+    return (child_id, pts)
+
+
 def resolve_detail_proxies(
     game: "Game",
     *,

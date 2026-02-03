@@ -351,6 +351,22 @@ What's "hot" (near camera + similar scale) gets realized; rest is abstracted.
   - A Leviathan spans many "zones" - old rigid rectangles don't work
   - Tiny entities exist within footprint of coarse tiles
 
+
+[YOGA] Lifecycle staging (proof of concept: berry_patch → berries)
+
+Proxies disabled for berry detail; berries are now real entities.
+
+Implemented camera-driven stage/unstage (pan/zoom while paused sets the stage).
+
+Implemented deterministic slot mapping + persistent harvested slots stored on the aggregate.
+
+Required cache invalidation (“spatial_dirty”) when spawning/despawning so entities are immediately renderable and inspectable.
+
+[BUG/YOGA] Occasional flicker: player/nearby entities briefly disappear → likely a candidate-gathering or spatial index update issue (membership/bucketing or warm-rect mismatch).
+
+[BUG] “You see here … blueberry” messaging does not reliably trigger even when berries are real → likely auto-look gating or describe-tile pipeline issue.
+
+[YOGA] Ensure lifecycle staging runs from a single authoritative place (probably per-frame render prepass + safety net before time advance) to avoid desync.
 -------------------------------------------------------------------------------
 STAGE 4 — MACRO ENTITY HIERARCHY (Future)
 
