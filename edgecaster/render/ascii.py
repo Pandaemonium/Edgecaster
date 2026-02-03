@@ -308,6 +308,38 @@ class AsciiRenderer:
     # These helpers replace ad-hoc coordinate math scattered across dungeon.py
     # and other input-handling code. Use these instead of manual calculations.
 
+
+    def get_camera_abs_rect_and_lod(self, game) -> tuple[tuple[float, float, float, float], float]:
+        """
+        Return ((ax0,ay0,ax1,ay1), cam_lod) using renderer camera state, without drawing.
+        ax/ay are in absolute world-tile coordinates.
+        """
+        map_origin_x, map_origin_y = self._map_origin_base()
+
+        map_w = self.width - map_origin_x
+        map_h = self.height - self.ability_bar_height - map_origin_y
+        map_rect = pygame.Rect(map_origin_x, map_origin_y, max(1, map_w), max(1, map_h))
+
+        world_scale = float(getattr(self, "tile_px", float(self.base_tile) * float(getattr(self, "zoom", 1.0))))
+        world_scale = max(1e-6, world_scale)
+
+        x0 = (float(map_rect.left) - float(getattr(self, "origin_x", map_origin_x))) / world_scale
+        y0 = (float(map_rect.top) - float(getattr(self, "origin_y", map_origin_y))) / world_scale
+        x1 = (float(map_rect.right) - float(getattr(self, "origin_x", map_origin_x))) / world_scale
+        y1 = (float(map_rect.bottom) - float(getattr(self, "origin_y", map_origin_y))) / world_scale
+
+        abs_rect = (float(x0), float(y0), float(x1), float(y1))
+
+        try:
+            cam_lod = math.log2(float(self.base_tile) / world_scale)
+        except Exception:
+            cam_lod = 0.0
+
+        return abs_rect, float(cam_lod)
+
+
+
+
     def screen_to_abs_tile(self, screen_px: Tuple[float, float]) -> Tuple[float, float]:
         """Convert screen pixels to ABS world-tile coordinates (floating-point).
 

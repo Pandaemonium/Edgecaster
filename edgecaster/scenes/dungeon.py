@@ -214,6 +214,23 @@ class DungeonScene(Scene):
         sy = int(round(oy + (float(ty) + 0.5) * tile_px))
         return (sx, sy)
 
+
+    def _sync_attention_stage(self, game, renderer) -> None:
+        """Stage/unstage micro entities based on current camera view (no time advance)."""
+        try:
+            if not hasattr(game, "sync_attention_instantiation"):
+                return
+            if not hasattr(renderer, "get_camera_abs_rect_and_lod"):
+                return
+            abs_rect, cam_lod = renderer.get_camera_abs_rect_and_lod(game)
+            game.sync_attention_instantiation(abs_rect, cam_lod=float(cam_lod))
+        except Exception:
+            pass
+
+
+
+
+
     def handle_event(self, event, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         # Keep keybindings in sync with manager settings.
         if hasattr(manager, "keybindings"):
@@ -271,6 +288,9 @@ class DungeonScene(Scene):
                         renderer.pan_x += dx
                     if hasattr(renderer, "pan_y"):
                         renderer.pan_y += dy
+
+                self._sync_attention_stage(game, renderer)
+
                 return
 
             cmds = self.input.handle_mousemotion(event)
@@ -1925,6 +1945,8 @@ class DungeonScene(Scene):
                             cmd.wheel_y,
                             renderer._to_surface(pygame.mouse.get_pos()),
                         )
+                        self._sync_attention_stage(game, renderer)
+
             return
 
 
@@ -1933,6 +1955,8 @@ class DungeonScene(Scene):
             try:
                 snap = bool(getattr(renderer, "zoom", 1.0) < 0.35)
                 renderer.reset_camera(game)
+                self._sync_attention_stage(game, renderer)
+
             except Exception:
                 pass
             return

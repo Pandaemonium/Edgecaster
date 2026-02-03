@@ -99,6 +99,47 @@ it becomes cold/abstracted
 
 when you return, it’s still there (modulo time passing or events)
 
+2.4 Observation Selects Simulation Regime (Not Just Representation)
+
+A common misunderstanding is that “the camera must not create gameplay state.”
+
+This is only half true.
+
+The correct rule is:
+
+The camera must not invent arbitrary or irreversible world state —
+but it does select the simulation regime under which the world advances when time ticks.
+
+Zooming or panning alone must not:
+
+create entities
+
+destroy entities
+
+apply deltas
+
+However, when time advances, the world advances at the fidelity implied by the current observation scale.
+
+Consequence:
+
+If the player zooms into a battle and presses “advance time,”
+soldiers and arrows visible at that scale are real and simulated.
+
+Zooming back out coarsens the simulation, but must preserve outcomes deterministically.
+
+This is observer-driven reality, not camera-driven hallucination.
+
+Camera motion may stage/unstage entities without advancing time.
+Zoom/pan/look should be allowed to instantiate and de-instantiate entities purely to set the stage (e.g., berry_patch ⇄ berries), even while paused. This does not violate “camera must not invent irreversible world state,” because staging does not apply deltas or advance simulation; it only ensures that if time advances now, the correct ontology is present.
+
+Practical rule:
+
+Render must never realize entities.
+
+Lifecycle may stage/unstage entities based on attention.
+
+Time advancement commits changes only through simulation and player actions.
+
 3) “The Player Is Not Special” (and the subtlety)
 
 The player entity should be “just another entity”:
@@ -281,6 +322,18 @@ The camera selects which layer of that structure is rendered or simulated
 
 Observation chooses fidelity, not existence.
 
+Important clarification
+
+“Camera attention ≠ world generation” does not mean that the camera is inert.
+
+It means:
+
+the camera must not be the source of entities
+
+but it is allowed to select which simulation model is authoritative when time advances
+
+The camera chooses how the world is simulated, not whether it exists.
+
 Section 5.7 — Stable Buckets Before Fractal Buckets
 
 (This is the big lesson from the failed attempt)
@@ -345,6 +398,40 @@ remain as a token, or
 hand off to a parent/child representation.
 
 If zooming causes an entity to disappear without replacement, the ladder is incomplete.
+
+
+Observed = Real Is a Valid Mode (Proxies Are Optional)
+
+Edgecaster supports (and currently prefers) the following rule:
+
+If an entity is visible at a given scale and time advances, it is real at that scale.
+
+Under this doctrine:
+
+Zooming into a battle before pressing “advance time” performs deterministic realization.
+
+Pressing “advance time” causes arrows to fly, soldiers to move, and spells to interact at that fidelity.
+
+Zooming out coarsens the simulation but must preserve results deterministically.
+
+Render-only proxies are not mandatory.
+
+They are an optional optimization for:
+
+explanatory detail without commitment
+
+performance budgets at extreme densities
+
+Future contributors must not assume proxies are inevitable.
+The baseline model is:
+
+Observed entities are real when time advances.
+
+Proxies are optional — and turning them off is a useful truth test.
+Render-only detail proxies can make the game “look right” while the ontology is wrong (entities visible but not interactable, not inspectable, not removable, not persistent). During yoga work, it can be valuable to disable proxies entirely so the world becomes honest: if berries/soldiers are visible, they must exist as real entities in LevelState.entities and participate in “You see here…”, look/inspect, pickup/removal, and persistence.
+
+This is the canonical first-pass doctrine for Edgecaster:
+if you can see it at the active scale, it is real (and 'real' means it goes through the canonical spawn path, can be queried, and can be modified by deltas). Proxies may return later only as an optimization.
 
 New Section 5.9 — Attention Budget Is a Selection Problem, Not a Creation Problem
 
@@ -427,6 +514,9 @@ any other pre-filter candidate scan
 
 Once an entity is absent from candidates, it is effectively “nonexistent” for the frame — and this is a yoga violation if the entity is in the observer fovea.
 
+Dirty flags / cache invalidation is yoga-critical.
+When lifecycle spawns or despawns entities (or moves them), any spatial bins / fast lookup caches must be invalidated immediately (mark dirty) so that rendering, “You see here…”, look/inspect, and targeting all see the same reality in the same frame. Otherwise you get “half-real” entities: present in level.entities but missing from queries and rendering.
+
 Section 5.11 — Selection Churn Is Not Motion
 
 Symptom
@@ -445,9 +535,7 @@ Prefer selection orders that are stable under small camera motion.
 
 Example: per-cell selection should rank by distance to cell center, not distance to camera center, unless there’s a compelling reason.
 
-Insert: New Section 5.12 — Bands Are for Legibility, Not Ontological Guillotines
-
-(Insert after 5.8 “Representation Ladders” or near the “bands” discussion)
+Section 5.12 — Bands Are for Legibility, Not Ontological Guillotines
 
 Symptom
 
@@ -733,6 +821,30 @@ pushes across
 modifiers persist
 
 does not reset when you step over an invisible boundary
+
+
+Example E: Arrows and Wind Wall
+
+The player zooms into a battlefield and sees arrows mid-air.
+
+Zooming alone does not advance time.
+
+The arrows are deterministically realized from battalion state.
+
+If the player casts Wind Wall before advancing time:
+
+the spell applies to those realized arrows
+
+When the player presses “advance time”:
+
+arrows fly
+
+wind deflects them
+
+outcomes persist even if the player zooms back out
+
+The arrows do not “freeze,” teleport, or re-roll.
+This is required for a coherent observer-driven world.
 
 12) Final Mantra
 
