@@ -760,6 +760,32 @@ class DungeonScene(Scene):
             manager.push_scene(WorldMapScene(game, span=16))
             return
 
+        # 8) Camera recenter requested (after zone transition / fast travel)
+        if getattr(game, "camera_needs_recenter", False):
+            game.camera_needs_recenter = False
+            try:
+                with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                    player = game.actors.get(game.player_id)
+                    abs_pos = getattr(player, "abs_pos", None) if player else None
+                    old_pan = (getattr(renderer, "pan_x", 0), getattr(renderer, "pan_y", 0))
+                    f.write(f"[dungeon] Camera recenter triggered, player abs_pos={abs_pos}, zone={game.zone_coord}, old_pan={old_pan}\n")
+            except Exception:
+                pass
+            try:
+                renderer.center_camera_on_player(game, snap_zoom=False)  # Don't snap zoom, just recenter
+                try:
+                    with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                        new_pan = (getattr(renderer, "pan_x", 0), getattr(renderer, "pan_y", 0))
+                        f.write(f"[dungeon] Camera recenter done, new_pan={new_pan}\n")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                        f.write(f"[dungeon] Camera recenter FAILED: {e}\n")
+                except Exception:
+                    pass
+
     # ------------------------------------------------------------------ #
     # Unified TargetMode helpers
     # ------------------------------------------------------------------ #

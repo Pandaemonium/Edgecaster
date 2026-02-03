@@ -508,10 +508,18 @@ class AsciiRenderer:
         world_scale = float(getattr(self, "tile_px", getattr(cam, "tile_px", self.base_tile)))
         world_scale = max(1.0, world_scale)
 
+        old_pan = (self.pan_x, self.pan_y)
         self.pan_x = float(cx - map_origin_x - float(px) * world_scale)
         self.pan_y = float(cy - map_origin_y - float(py) * world_scale)
 
-        # Keep TileCamera in sync if you’re using it elsewhere.
+        # Debug logging
+        try:
+            with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                f.write(f"[center_camera_on_player] px={px}, py={py}, world_scale={world_scale}, map_center=({cx},{cy}), old_pan={old_pan}, new_pan=({self.pan_x},{self.pan_y})\n")
+        except Exception:
+            pass
+
+        # Keep TileCamera in sync if you're using it elsewhere.
         if cam is not None:
             try:
                 cam.pan_x = float(self.pan_x)
@@ -628,7 +636,7 @@ class AsciiRenderer:
 
         # Localize optional imports for speed inside inner loops.
         try:
-            from zones import get_zone_for_render as _get_zone_for_render
+            from edgecaster.systems.zones import get_zone_for_render as _get_zone_for_render
         except Exception:
             _get_zone_for_render = None
 
@@ -2593,6 +2601,9 @@ class AsciiRenderer:
             y = float(abs_y)
 
 
+            # Debug: track player entity rendering (check early for logging)
+            _is_player = getattr(obj, "id", None) == getattr(game, "player_id", None)
+
             # Fog-of-war tile rules require a tile lookup in the entity's owning zone.
             tile = None
             if hasattr(game, "get_zone_for_render"):
@@ -2606,17 +2617,29 @@ class AsciiRenderer:
             if lvl is None:
                 # Fall back to current world (single-zone).
                 if not world.in_bounds(lx, ly):
+                    if _is_player:
+                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                            f.write(f"[EntityRender] PLAYER SKIPPED: lvl=None and ({lx},{ly}) out of bounds in fallback world, ent_zone={ent_zone}\n")
                     continue
                 tile = world.get_tile(lx, ly)
             else:
                 wld = getattr(lvl, "world", None)
                 if wld is None:
+                    if _is_player:
+                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                            f.write(f"[EntityRender] PLAYER SKIPPED: lvl.world is None for zone {ent_zone}\n")
                     continue
                 if not wld.in_bounds(lx, ly):
+                    if _is_player:
+                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                            f.write(f"[EntityRender] PLAYER SKIPPED: ({lx},{ly}) out of bounds in zone {ent_zone} world (size={wld.width}x{wld.height})\n")
                     continue
                 tile = wld.get_tile(lx, ly)
 
             if not tile:
+                if _is_player:
+                    with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                        f.write(f"[EntityRender] PLAYER SKIPPED: no tile at ({lx},{ly}) in zone {ent_zone}, lvl={lvl}\n")
                 continue
 
             # From here down, treat 'ent' as the underlying object.
@@ -2624,6 +2647,9 @@ class AsciiRenderer:
 
             # In normal vision, never draw anything on unexplored tiles.
             if (not god_vision) and (not getattr(tile, "explored", False)):
+                if _is_player:
+                    with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                        f.write(f"[EntityRender] PLAYER SKIPPED: tile not explored at ({lx},{ly}) in zone {ent_zone}, tile.explored={getattr(tile, 'explored', 'N/A')}\n")
                 continue
 
             # Determine whether we are allowed to draw this entity when not currently visible.
@@ -2636,12 +2662,24 @@ class AsciiRenderer:
                     tags = {}
                 draw_in_fog = bool(tags.get("remember_in_fog", False))
                 if not draw_in_fog:
+                    if _is_player:
+                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                            f.write(f"[EntityRender] PLAYER SKIPPED: not visible and no remember_in_fog at ({lx},{ly}) in zone {ent_zone}, tile.visible={getattr(tile, 'visible', 'N/A')}\n")
                     continue
 
             # If we're drawing from explored fog memory, dim the entity.
             dim_in_fog = (not visible_now) and draw_in_fog
             fog_alpha_u8 = 110  # ~0.43 of 255, matches your terrain 0.4 dim vibe
             base_alpha_u8 = fog_alpha_u8 if dim_in_fog else 255
+
+            # Debug: log when player rendering passes visibility checks (only once per second to avoid spam)
+            if _is_player and not getattr(self, "_last_player_render_log", 0):
+                import time as _t
+                _now = int(_t.time())
+                if _now != getattr(self, "_last_player_render_log_time", 0):
+                    self._last_player_render_log_time = _now
+                    with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                        f.write(f"[EntityRender] PLAYER RENDERED: abs=({abs_x},{abs_y}), zone={ent_zone}, local=({lx},{ly}), tile.vis={getattr(tile, 'visible', 'N/A')}, tile.exp={getattr(tile, 'explored', 'N/A')}\n")
 
             px_f = x * tile_px_f + float(self.origin_x)
             py_f = y * tile_px_f + float(self.origin_y)

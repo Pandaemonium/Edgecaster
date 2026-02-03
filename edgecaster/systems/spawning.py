@@ -251,11 +251,8 @@ def spawn_entity_from_template(
     from edgecaster.prototypes import resolve_proto
     from edgecaster import spawn_factory
 
-    proto_bucket = game.proto_bucket
-    if proto_bucket is None:
-        raise RuntimeError("Game.proto_bucket is not initialized")
-
-    spec = resolve_proto(proto_bucket, template_id)
+    # resolve_proto uses the global master bucket (loaded lazily from content/*.yaml)
+    spec = resolve_proto(template_id)
     if not spec:
         raise KeyError(f"Unknown prototype id {template_id!r}")
 

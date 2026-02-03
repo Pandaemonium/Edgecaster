@@ -168,6 +168,132 @@ Follow-ups:
 [CLEANUP] Keep subsystem APIs stable (game passed as first arg) and avoid circular imports.
 
 ===============================================================================
+SLICE 6 — POI SYSTEM MIGRATION (YOGA-COMPLIANT)
+
+Status:
+✓ Phase 1-3 complete: yoga-compliant POI data structures implemented
+✓ ABSRect, POISpec, POIContentState dataclasses created (state/pois.py)
+✓ POIRegistry with multi-index lookup implemented (systems/poi_registry.py)
+✓ Loader supports both legacy and v2 formats (content/pois.py)
+✓ game.py integrated with poi_registry
+✓ Backwards compatibility verified - existing POIs still work
+
+Key files:
+- edgecaster/state/pois.py: ABSRect, POISpec, NPCSpawnSpecV2, StructureSpec, POIContentState
+- edgecaster/systems/poi_registry.py: POIRegistry with spatial/hierarchy indices
+- edgecaster/content/pois.py: load_poi_registry(), get_poi_registry(), legacy POIS dict
+- edgecaster/content/pois.yaml: POI definitions (legacy + v2 formats)
+
+-------------------------------------------------------------------------------
+POI MIGRATION PHASES
+
+PHASE 1-3 (COMPLETE): Foundation
+  ✓ ABSRect for ABS-space bounding boxes
+  ✓ POISpec with footprint, hierarchy, content specs
+  ✓ POIRegistry with spatial queries (get_at_zone, get_in_abs_rect)
+  ✓ Loader auto-converts legacy coord → ABSRect footprint
+  ✓ game.py uses registry for zone creation and NPC spawning
+
+PHASE 4: Multi-zone POI realization
+  [TODO] Implement partial zone realization for multi-zone POIs
+    - When zone loads, only spawn POI contents that fall within that zone
+    - Track realized_zones per POI to avoid duplicate spawning
+    - Handle entities that span zone boundaries gracefully
+  [TODO] Test with large POIs (3+ zones)
+  [TODO] Coordinate multi-zone structure building (e.g., colosseum walls)
+
+PHASE 5: Nested POI support
+  [TODO] Implement parent/child POI realization ordering
+    - Parent POIs realize structures before children spawn contents
+    - Example: city walls built → then shops realize inside
+  [TODO] Add nesting examples to pois.yaml (city → district → shop)
+  [TODO] Verify hierarchy queries (get_children, get_ancestors) in gameplay
+
+PHASE 6: Content state persistence
+  [TODO] Hook POIContentState into save/load system
+    - killed_npcs persists across zone unload/reload
+    - removed_items persists
+    - visited/cleared flags persist
+  [TODO] Add _on_actor_killed() hook to mark NPC death in registry
+  [TODO] Add _on_item_picked_up() hook to mark item removal
+  [TODO] Test: kill NPC, leave zone, return - NPC stays dead
+
+PHASE 7: Legacy code removal
+  [TODO] Migrate all pois.yaml entries to v2 format
+    - Replace coord: [zx, zy, depth] with footprint: {x0, y0, x1, y1}
+    - Replace offsets with abs_positions
+    - Add explicit kind, name, anchor_abs
+  [TODO] Remove legacy POI class from content/pois.py
+  [TODO] Remove legacy NPCSpawnSpec class
+  [TODO] Remove legacy POIS dict (module-level)
+  [TODO] Remove _load_pois() function
+  [TODO] Update all callers to use get_poi_registry() exclusively
+  [TODO] Remove poi_content.POIS references from:
+    - game.py (poi_locations, _make_zone initial check)
+    - _spawn_poi_contents() legacy fallback path
+    - mapgen.py apply_pois() legacy path
+  [TODO] Clean up coord_to_abs_rect conversion helpers (no longer needed)
+
+PHASE 8: Dynamic POI injection cleanup
+  [TODO] Refactor runtime POI injection (lab, inventor, failing_rune, destabilizer_ruin)
+    - Currently these modify poi_content.POIS dict at runtime
+    - Should instead add POISpec to registry with poi_registry.add()
+    - Use v2 format with explicit footprints
+  [TODO] Audit poi_locations dict usage
+    - Currently populated from legacy POI.coord
+    - Should derive from registry spatial queries
+
+-------------------------------------------------------------------------------
+V2 POI FORMAT REFERENCE
+
+Legacy format (deprecated):
+  academy:
+    coord: [1, 0, 0]
+    npcs:
+      - npc_id: mentor
+        offsets: [[0, 0], [1, 0]]
+
+V2 format (preferred):
+  trader_city:
+    kind: city
+    name: "Port Tradeswind"
+    footprint: {x0: 3000, y0: 2000, x1: 3180, y1: 2120}
+    depth: 0
+    anchor_abs: [3090, 2060]
+    parent_id: null
+    child_ids: [general_store, blacksmith]
+    npcs:
+      - npc_id: mayor
+        abs_positions: [[3090, 2060]]
+    structures:
+      - kind: city_wall
+        abs_rect: {x0: 3000, y0: 2000, x1: 3180, y1: 2120}
+    entities:
+      - proto_id: torch
+        abs_positions: [[3010, 2010], [3170, 2010]]
+    tags:
+      faction: merchants_guild
+      difficulty_tier: 2
+
+-------------------------------------------------------------------------------
+YOGA COMPLIANCE NOTES
+
+[YOGA] POIs exist in ABS space independent of zone loading
+  - POISpec.footprint is ABSRect, not zone coord
+  - Multi-zone POIs supported via spatial overlap queries
+  - Zone is just a cache; POI is the truth
+
+[YOGA] Querying does not trigger gameplay side effects
+  - registry.get_at_zone() is pure lookup
+  - Content realization is separate from querying
+  - Camera attention selects what to realize, not what exists
+
+[YOGA] Content state persists across zone loads
+  - POIContentState tracks killed_npcs, removed_items
+  - NPC killed in zone A stays dead when returning from zone B
+  - This is the "berry picked = patch remembers depletion" principle
+
+===============================================================================
 ONGOING ENGINE CLEANUPS
 
 [CLEANUP] Scheduler semantics and typing (edgecaster/systems/scheduling.py)

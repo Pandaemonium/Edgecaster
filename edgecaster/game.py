@@ -76,6 +76,8 @@ from edgecaster.systems.sites import load_site_types
 from edgecaster import mapgen
 from edgecaster import mapgen_sites
 from edgecaster.content import pois as poi_content
+from edgecaster.content.pois import get_poi_registry
+from edgecaster.systems.poi_registry import POIRegistry
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
@@ -350,6 +352,7 @@ class Game:
         self.map_requested = False
         self.fractal_editor_requested = False
         self.fractal_editor_state = None
+        self.camera_needs_recenter = False  # Set by zone transitions to signal camera update
 
 
         # debug flags
@@ -384,6 +387,10 @@ class Game:
         zone_h_init = int(getattr(getattr(self, "cfg", None), "world_height", 40) or 40)
         self.world_entity_index: WorldEntityIndex = WorldEntityIndex(zone_w=zone_w_init, zone_h=zone_h_init)
         self._world_entities_built: bool = False
+
+        # POI registry for yoga-compliant POI management.
+        # Supports multi-zone POIs, nesting, and ABS footprints.
+        self.poi_registry: POIRegistry = get_poi_registry(zone_w=zone_w_init, zone_h=zone_h_init)
 
         # Difficulty field configuration (tunable, decoupled from biomes).
         # Adjust this in one place to change zone difficulty behavior.
@@ -1351,21 +1358,21 @@ class Game:
         x, y, depth = coord
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
         # Determine any POIs that hit this coord (used for lab/structures).
-        poi_hits = [pid for pid, poi in poi_content.POIS.items() if tuple(poi.coord) == tuple(coord)]
+        # Use registry spatial query for multi-zone POI support.
+        poi_specs = self.poi_registry.get_at_zone(x, y, depth)
+        poi_hits = [p.id for p in poi_specs]
         is_lab_zone = False
         is_lair_zone = False
         lair_layout = "multi_room"
-        for pid in poi_hits:
-            poi = poi_content.POIS.get(pid)
-            if not poi:
-                continue
-            for struct in getattr(poi, "structures", []) or []:
-                if struct.get("kind") == "lab":
+        for poi_spec in poi_specs:
+            # Check v2 structure specs
+            for struct_spec in poi_spec.structure_specs:
+                if struct_spec.kind == "lab":
                     is_lab_zone = True
                     break
-                if struct.get("kind") == "legendary_lair":
+                if struct_spec.kind == "legendary_lair":
                     is_lair_zone = True
-                    lair_layout = str(struct.get("layout") or lair_layout)
+                    lair_layout = str(struct_spec.tags.get("layout") or lair_layout)
             if is_lab_zone:
                 break
             if is_lair_zone:
@@ -1418,7 +1425,8 @@ class Game:
             mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
             lab_state = None
         # Apply POIs (records ids on world)
-        poi_hits = mapgen.apply_pois(world, coord)
+        # Use the registry for spatial queries (supports multi-zone POIs)
+        poi_hits = mapgen.apply_pois(world, coord, poi_registry=self.poi_registry)
         # Build starting structures (e.g., depotdepot)
         if "starting_zone" in poi_hits:
             try:
@@ -1540,6 +1548,14 @@ class Game:
     def _spawn_poi_contents(self, level: LevelState, coord: Tuple[int, int, int]) -> None:
         """Spawn NPCs defined by any POIs attached to this level."""
         poi_ids = getattr(level.world, "poi_ids", [])
+
+        # Debug logging for POI spawning
+        try:
+            with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                f.write(f"[_spawn_poi_contents] coord={coord}, poi_ids={poi_ids}\n")
+        except Exception:
+            pass
+
         if not poi_ids:
             return
         entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
@@ -1665,11 +1681,24 @@ class Game:
             return None
 
         for pid in poi_ids:
-            poi = poi_content.POIS.get(pid)
-            if not poi:
+            # Try registry first (v2 format), fall back to legacy
+            poi_spec = self.poi_registry.get(pid)
+            legacy_poi = poi_content.POIS.get(pid)
+            if not poi_spec and not legacy_poi:
                 continue
-            # Handle structures
-            for struct in getattr(poi, "structures", []) or []:
+
+            # Handle structures - use v2 structure_specs or legacy structures
+            structures_to_process: List[dict] = []
+            if poi_spec:
+                # Convert v2 structure_specs to dict format for compatibility
+                for ss in poi_spec.structure_specs:
+                    struct_dict = {"kind": ss.kind}
+                    struct_dict.update(ss.tags)
+                    structures_to_process.append(struct_dict)
+            elif legacy_poi:
+                structures_to_process = list(getattr(legacy_poi, "structures", []) or [])
+
+            for struct in structures_to_process:
                 if struct.get("kind") == "item_depot" and depot_info:
                     # --- Walls (entities) ---
                     for pos in (depot_info.get("wall_positions") or []):
@@ -1947,6 +1976,108 @@ class Game:
                                 lambda aid=mob.id, lvl=level: self._monster_act(lvl, aid),
                             )
                             spawned += 1
+                elif struct.get("kind") == "colosseum_arena":
+                    # Build oval arena structure - can span multiple zones
+                    # Get the POI's ABS footprint to determine arena bounds
+                    if poi_spec is None:
+                        continue
+                    fp = poi_spec.footprint
+                    zx, zy, _ = coord
+                    zone_w = self.cfg.world_width
+                    zone_h = self.cfg.world_height
+
+                    # Debug logging for colosseum structure application
+                    try:
+                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                            f.write(f"[colosseum_arena] Applying to zone ({zx}, {zy}), footprint=({fp.x0}, {fp.y0})-({fp.x1}, {fp.y1})\n")
+                    except Exception:
+                        pass
+
+                    # Calculate ellipse center and radii from footprint
+                    arena_cx = (fp.x0 + fp.x1) / 2.0
+                    arena_cy = (fp.y0 + fp.y1) / 2.0
+                    # Radii are half the footprint dimensions
+                    arena_rx = (fp.x1 - fp.x0) / 2.0  # horizontal radius
+                    arena_ry = (fp.y1 - fp.y0) / 2.0  # vertical radius
+
+                    # Get wall thickness from struct tags (default 3)
+                    wall_thickness = int(struct.get("wall_thickness", 3))
+
+                    # Colors for arena
+                    wall_color = (140, 120, 100)    # Stone walls
+                    floor_color = (180, 160, 120)   # Sand/dirt floor
+                    track_color = (160, 140, 100)   # Track area (slightly different)
+
+                    # Zone bounds in ABS space
+                    zone_abs_x0 = zx * zone_w
+                    zone_abs_y0 = zy * zone_h
+
+                    world = level.world
+
+                    # Iterate through all tiles in this zone
+                    for ty in range(zone_h):
+                        for tx in range(zone_w):
+                            # Convert zone-local to ABS
+                            abs_x = zone_abs_x0 + tx
+                            abs_y = zone_abs_y0 + ty
+
+                            # Calculate normalized distance from ellipse center
+                            # For an ellipse: (x-cx)²/rx² + (y-cy)²/ry² = 1 is the boundary
+                            dx = abs_x - arena_cx
+                            dy = abs_y - arena_cy
+                            if arena_rx <= 0 or arena_ry <= 0:
+                                continue
+
+                            # Normalized distance: <1 inside, =1 on boundary, >1 outside
+                            dist_norm = (dx * dx) / (arena_rx * arena_rx) + (dy * dy) / (arena_ry * arena_ry)
+
+                            # Inner ellipse boundary (for track inner edge)
+                            inner_rx = arena_rx - wall_thickness
+                            inner_ry = arena_ry - wall_thickness
+                            if inner_rx > 0 and inner_ry > 0:
+                                inner_dist = (dx * dx) / (inner_rx * inner_rx) + (dy * dy) / (inner_ry * inner_ry)
+                            else:
+                                inner_dist = 0
+
+                            tile = world.get_tile(tx, ty)
+                            if tile is None:
+                                continue
+
+                            if dist_norm <= 1.0:
+                                # Inside or on the ellipse boundary
+                                if inner_dist >= 1.0:
+                                    # On the wall (between outer and inner ellipse)
+                                    tile.walkable = False
+                                    tile.glyph = "█"
+                                    tile.color = wall_color
+                                else:
+                                    # Inside the arena floor
+                                    tile.walkable = True
+                                    tile.glyph = "."
+                                    tile.color = floor_color
+
+                    # Add entrance gaps in the walls (N, S, E, W)
+                    entrance_width = 4
+                    entrances = [
+                        (int(arena_cx), fp.y0 + wall_thickness // 2),  # North
+                        (int(arena_cx), fp.y1 - wall_thickness // 2 - 1),  # South
+                        (fp.x0 + wall_thickness // 2, int(arena_cy)),  # West
+                        (fp.x1 - wall_thickness // 2 - 1, int(arena_cy)),  # East
+                    ]
+                    for ent_abs_x, ent_abs_y in entrances:
+                        for offset in range(-entrance_width // 2, entrance_width // 2 + 1):
+                            # Horizontal entrances (N/S) vary x, vertical (E/W) vary y
+                            for ex, ey in [(ent_abs_x + offset, ent_abs_y), (ent_abs_x, ent_abs_y + offset)]:
+                                # Convert ABS to zone-local
+                                local_x = ex - zone_abs_x0
+                                local_y = ey - zone_abs_y0
+                                if 0 <= local_x < zone_w and 0 <= local_y < zone_h:
+                                    tile = world.get_tile(local_x, local_y)
+                                    if tile is not None:
+                                        tile.walkable = True
+                                        tile.glyph = "."
+                                        tile.color = floor_color
+
             # Extra: drop some starting bismuth piles in the starting zone.
             if pid == "starting_zone":
                 world = level.world
@@ -1971,20 +2102,50 @@ class Game:
                         dropped += 1
                     except Exception:
                         continue
-            for spec in poi.npcs:
+            # Get NPC specs from v2 or legacy format
+            npc_specs_to_process = []
+            if poi_spec:
+                npc_specs_to_process = poi_spec.npc_specs
+            elif legacy_poi:
+                npc_specs_to_process = getattr(legacy_poi, "npcs", []) or []
+
+            for spec in npc_specs_to_process:
                 npc_def = npcs.NPC_DEFS.get(spec.npc_id, {})
                 name = spec.name or npc_def.get("name", spec.npc_id.title())
                 glyph = spec.glyph or npc_def.get("glyph", "@")
                 color = spec.color or tuple(npc_def.get("color", (255, 255, 255)))
+
+                # V2 format supports abs_positions; convert to zone-local for spawning
+                abs_positions = getattr(spec, "abs_positions", []) or []
                 offsets = spec.offsets or [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
-                # Try explicit offsets first
+
                 spawn_pos = None
-                for dx, dy in offsets:
-                    candidate = (entry[0] + dx, entry[1] + dy)
-                    spot = nearest_walkable(candidate)
-                    if spot:
-                        spawn_pos = spot
-                        break
+
+                # Try ABS positions first (v2 feature)
+                if abs_positions:
+                    zx, zy, _ = coord
+                    zone_w = self.cfg.world_width
+                    zone_h = self.cfg.world_height
+                    for abs_x, abs_y in abs_positions:
+                        # Convert ABS to zone-local
+                        local_x = abs_x - (zx * zone_w)
+                        local_y = abs_y - (zy * zone_h)
+                        # Check if this position is in the current zone
+                        if 0 <= local_x < zone_w and 0 <= local_y < zone_h:
+                            spot = nearest_walkable((local_x, local_y))
+                            if spot:
+                                spawn_pos = spot
+                                break
+
+                # Fall back to offsets from entry (legacy behavior)
+                if spawn_pos is None:
+                    for dx, dy in offsets:
+                        candidate = (entry[0] + dx, entry[1] + dy)
+                        spot = nearest_walkable(candidate)
+                        if spot:
+                            spawn_pos = spot
+                            break
+
                 if spawn_pos is None:
                     spawn_pos = nearest_walkable(entry)
                 if spawn_pos is None:
@@ -2883,9 +3044,10 @@ class Game:
             return abs_size * 1000.0 - (dx * dx + dy * dy)
 
         # ------------------------------------------------------------
-        # 1) WORLD INDEX ENTITIES (sites, later forests/cities/etc.)
+        # 1) WORLD INDEX ENTITIES (sites, POIs, later forests/cities/etc.)
         # ------------------------------------------------------------
         self._ensure_world_site_entities(zone_w=zone_w, zone_h=zone_h)
+        self._ensure_world_poi_entities(zone_w=zone_w, zone_h=zone_h)
 
         if not too_many_zones:
             try:
@@ -3199,7 +3361,18 @@ class Game:
                     if not has_player and pax is not None and pay is not None:
                         # If player was in candidates, it would've been selected; but if not,
                         # include it anyway to satisfy "fovea never disappears".
-                        selected.append((p, float(pax), float(pay), getattr(self, "zone_coord", (0, 0, zz)), (0, 0), 1.0))
+                        # Compute correct local_pos (not 0,0!) for tile lookup in rendering.
+                        try:
+                            p_zone_coord, p_local = self.zone_local_from_abs((int(pax), int(pay)), depth=zz)
+                            p_local_pos = (int(p_local[0]), int(p_local[1]))
+                        except Exception:
+                            # Fallback: use player.pos if abs conversion fails
+                            p_zone_coord = getattr(self, "zone_coord", (0, 0, zz))
+                            p_local_pos = getattr(p, "pos", (0, 0))
+                        # Debug: log when player fallback is triggered
+                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                            f.write(f"[RenderSelect] PLAYER FALLBACK: abs=({pax},{pay}), zone={p_zone_coord}, local={p_local_pos}, not in {len(selected)} candidates\n")
+                        selected.append((p, float(pax), float(pay), p_zone_coord, p_local_pos, 1.0))
         except Exception:
             pass
 
@@ -3334,7 +3507,121 @@ class Game:
         if new_count and hasattr(self, "_debug"):
             self._debug(f"[world_entities] added {new_count} site proxies (total={len(self._world_site_ids_built)})")
 
+    def _ensure_world_poi_entities(self, *, zone_w: int, zone_h: int) -> None:
+        """Incrementally build world-level POI entities (macro renderables) from the POIRegistry.
 
+        This creates visible markers for v2-style POIs (like ancient_colosseum) that have
+        show_on_map=True in their tags, allowing them to appear on the normal dungeon map
+        at appropriate zoom levels.
+
+        Important properties:
+        - No gameplay side effects. Does NOT stamp walls/NPCs/etc.
+        - Incrementally adds newly-placed or newly-discovered POIs.
+        """
+        # Initialize tracking
+        if not hasattr(self, "_world_poi_ids_built"):
+            self._world_poi_ids_built = set()
+
+        # Get POI registry
+        poi_reg = getattr(self, "poi_registry", None)
+        if poi_reg is None:
+            return
+
+        # If zone dims changed, clear tracking
+        prev_wh = getattr(self, "_world_poi_entity_wh", None)
+        wh = (int(zone_w), int(zone_h))
+        if prev_wh != wh:
+            self._world_poi_ids_built.clear()
+            self._world_poi_entity_wh = wh
+
+        # Ensure world_entity_index exists
+        if getattr(self, "world_entity_index", None) is None:
+            return
+
+        # Resolve settlement prototype for POI markers
+        try:
+            settlement_proto = prototypes.resolve_proto("settlement")
+        except Exception:
+            settlement_proto = {
+                "id": "settlement",
+                "name": "Settlement",
+                "glyph": "§",
+                "color": [240, 220, 160],
+                "kind": "feature",
+                "base_size": 64,
+                "tags": {},
+            }
+
+        new_count = 0
+
+        for poi in poi_reg:
+            try:
+                poi_id = poi.id
+                eid = f"poi:{poi_id}"
+                if eid in self._world_poi_ids_built:
+                    continue
+
+                # Only show POIs with show_on_map=True
+                tags = poi.tags or {}
+                if not tags.get("show_on_map", False):
+                    continue
+
+                # Get POI display properties
+                name = poi.name or poi.kind or "Unknown"
+                glyph = tags.get("map_glyph", "?")
+                color_raw = tags.get("map_color", [200, 200, 200])
+                if isinstance(color_raw, (list, tuple)) and len(color_raw) >= 3:
+                    color = [int(color_raw[0]), int(color_raw[1]), int(color_raw[2])]
+                else:
+                    color = [200, 200, 200]
+
+                # Get anchor position in ABS coordinates
+                anchor_x, anchor_y = poi.anchor_abs
+                depth = poi.depth
+
+                # Convert to zone + local position
+                zx = anchor_x // zone_w
+                zy = anchor_y // zone_h
+                ox = anchor_x % zone_w
+                oy = anchor_y % zone_h
+
+                # Calculate a reasonable base_size based on footprint
+                footprint = poi.footprint
+                poi_width = footprint.x1 - footprint.x0
+                poi_height = footprint.y1 - footprint.y0
+                base_size = max(poi_width, poi_height, 64)
+
+                overrides = {
+                    "name": name,
+                    "glyph": glyph,
+                    "color": color,
+                    "kind": "feature",
+                    "base_size": base_size,
+                    "tags": {
+                        "world_entity": True,
+                        "poi": True,
+                        "poi_id": poi_id,
+                        "poi_kind": poi.kind,
+                        **tags,
+                    },
+                }
+
+                ent = spawn_factory.build_entity_from_spec(
+                    spec=settlement_proto,
+                    eid=eid,
+                    pos=(ox, oy),
+                    overrides=overrides,
+                )
+
+                self.world_entity_index.add(ent, zone_coord=(zx, zy, depth), local_pos=(ox, oy))
+                self._world_poi_ids_built.add(eid)
+                new_count += 1
+
+            except Exception:
+                continue
+
+        if new_count and hasattr(self, "_debug"):
+            self._debug(f"[world_entities] added {new_count} POI proxies (total={len(self._world_poi_ids_built)})")
 
 
     def _ensure_world_aggregate_entities(
@@ -4263,9 +4550,18 @@ class Game:
         """
         player = self._player()
         old_level = self._level()
+        old_coord = self.zone_coord
+        old_level_coord = getattr(old_level, "coord", None)
 
         dest_coord, dest_local = self.zone_local_from_abs(abs_pos, depth=self.zone_coord[2], clamp_to_world=True)
         (dzx, dzy, dzz) = dest_coord
+
+        # Debug logging - always log when called (boundary crossing)
+        try:
+            with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                f.write(f"[_move_player_to_abs] Called: abs_pos={abs_pos}, old_coord={old_coord}, old_level_coord={old_level_coord}, dest_coord={dest_coord}, dest_local={dest_local}\n")
+        except Exception:
+            pass
 
         # Ensure destination chunk exists (boring cache behavior)
         dest_level = zones_system.get_zone(self, dest_coord, up_pos=None)
@@ -4278,7 +4574,14 @@ class Game:
 
 
         # Move between levels if membership changes
-        if getattr(old_level, "coord", None) != dest_coord:
+        level_changed = getattr(old_level, "coord", None) != dest_coord
+        try:
+            with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                f.write(f"[_move_player_to_abs] level_changed={level_changed}, old_level.coord={getattr(old_level, 'coord', None)}, dest_coord={dest_coord}\n")
+        except Exception:
+            pass
+
+        if level_changed:
             # remove from old level
             try:
                 del old_level.actors[self.player_id]
@@ -4297,6 +4600,14 @@ class Game:
 
             try:
                 dest_level.entities[self.player_id] = player
+            except Exception:
+                pass
+
+            # Signal camera to recenter on player after zone change
+            self.camera_needs_recenter = True
+            try:
+                with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                    f.write(f"[_move_player_to_abs] Set camera_needs_recenter=True\n")
             except Exception:
                 pass
         else:

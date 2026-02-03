@@ -92,12 +92,30 @@ def generate_lab(world: World, rng) -> None:
     world.down_stairs = None
     world.is_lab = True
 
-def apply_pois(world: World, coord: Tuple[int, int, int]) -> List[str]:
-    """Return list of POI ids that apply to this coord."""
+def apply_pois(
+    world: World,
+    coord: Tuple[int, int, int],
+    poi_registry: Optional["POIRegistry"] = None,  # type: ignore[name-defined]
+) -> List[str]:
+    """Return list of POI ids that apply to this coord.
+
+    If poi_registry is provided, uses spatial queries to find POIs that
+    overlap this zone (supporting multi-zone POIs). Otherwise falls back
+    to legacy exact coord matching.
+    """
+    zx, zy, depth = coord
     hits = []
-    for pid, poi in pois.POIS.items():
-        if tuple(poi.coord) == tuple(coord):
-            hits.append(pid)
+
+    if poi_registry is not None:
+        # V2: Use registry spatial query (supports multi-zone POIs)
+        for poi_spec in poi_registry.get_at_zone(zx, zy, depth):
+            hits.append(poi_spec.id)
+    else:
+        # Legacy: Exact coord match
+        for pid, poi in pois.POIS.items():
+            if tuple(poi.coord) == tuple(coord):
+                hits.append(pid)
+
     world.poi_ids = hits  # type: ignore[attr-defined]
     return hits
 

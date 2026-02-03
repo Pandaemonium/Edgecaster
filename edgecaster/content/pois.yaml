@@ -81,3 +81,62 @@ lab:
   npcs: []
   structures:
     - kind: lab
+
+# =============================================================================
+# V2 FORMAT POIs (yoga-compliant, ABS footprints)
+# =============================================================================
+
+# Ancient Colosseum - a multi-zone POI spanning roughly 6 zones
+# Center: (2117, 1223) - zone (35, 30) with 17, 23 tile offset
+# Size: 175 x 85 tiles (~2.9 x 2.1 zones)
+# Overlaps zones: x=[33-36], y=[29-31] (up to 12 zone coords, ~6 zones of content)
+ancient_colosseum:
+  kind: ruins
+  name: "The Shattered Colosseum"
+  footprint:
+    x0: 2030
+    y0: 1181
+    x1: 2205
+    y1: 1266
+  depth: 0
+  anchor_abs: [2117, 1223]
+  npcs:
+    # The Lanista - a ghostly gladiator master who still trains fighters
+    - npc_id: colosseum_lanista
+      name: "The Lanista"
+      glyph: "@"
+      color: [180, 180, 220]
+      abs_positions: [[2117, 1223], [2115, 1225], [2119, 1221]]
+      description: "A spectral figure in tattered arena robes, still calling out commands to fighters long dead."
+    # Spectral gladiators wandering the arena floor
+    - npc_id: spectral_gladiator
+      name: "Spectral Gladiator"
+      glyph: "G"
+      color: [150, 200, 255]
+      abs_positions: [[2080, 1210], [2100, 1240], [2140, 1200], [2160, 1230]]
+      description: "The shade of a fallen warrior, still seeking glory in endless combat."
+    # A merchant who trades in ancient relics found in the ruins
+    - npc_id: relic_merchant
+      name: "Relic Scavenger"
+      glyph: "M"
+      color: [200, 180, 140]
+      abs_positions: [[2050, 1195], [2045, 1200], [2055, 1190]]
+      description: "A weathered scavenger who picks through the colosseum's bones for valuables."
+    # Arena beast - a corrupted creature that lurks in the hypogeum
+    - npc_id: arena_beast
+      name: "Hypogeum Horror"
+      glyph: "B"
+      color: [200, 100, 100]
+      abs_positions: [[2117, 1250], [2110, 1255], [2125, 1245]]
+      description: "A twisted creature that has made its lair in the tunnels beneath the arena floor."
+  structures:
+    - kind: colosseum_arena
+      layout: oval
+      wall_thickness: 3
+  tags:
+    difficulty_tier: 3
+    discovery_hint: "ancient arena"
+    lore_category: "fallen_empire"
+    map_glyph: "O"
+    map_color: [200, 140, 80]
+    show_on_map: true

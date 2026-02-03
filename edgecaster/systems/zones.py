@@ -107,6 +107,9 @@ def use_stairs_down(game: "Game") -> None:
         # Snap the Lorenz storm to the new floor
         game._reset_lorenz_on_zone_change(player)
 
+        # Signal camera to recenter on player
+        game.camera_needs_recenter = True
+
 
 def use_stairs_up(game: "Game") -> None:
     """Use upward stairs to ascend to a higher level (explicit transition)."""
@@ -138,6 +141,9 @@ def use_stairs_up(game: "Game") -> None:
 
         # Snap the Lorenz storm to the new floor
         game._reset_lorenz_on_zone_change(player)
+
+        # Signal camera to recenter on player
+        game.camera_needs_recenter = True
 
 
 def transition_edge(game: "Game", actor: "Actor", dx: int, dy: int) -> None:
@@ -185,6 +191,9 @@ def transition_edge(game: "Game", actor: "Actor", dx: int, dy: int) -> None:
     game._update_fov(dest_level)
     game._reset_lorenz_on_zone_change(actor)
 
+    # Signal camera to recenter on player
+    game.camera_needs_recenter = True
+
 
 def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
     """Instantly move the player to the given overworld zone (depth 0)."""
@@ -212,6 +221,9 @@ def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
     game._update_fov(dest_level)
     game._reset_lorenz_on_zone_change(actor)
     game.log.add(f"You fast-travel to zone {zx},{zy}.")
+
+    # Signal camera to recenter on player
+    game.camera_needs_recenter = True
 
     # Debug: spawn inventory on arrival
     game.debug_spawn_inventory_near_player(count=1)

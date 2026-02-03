@@ -563,6 +563,62 @@ class WorldMapScene(Scene):
                             self._last_site_log = now
                             self.game._debug(f"[world_map] Sites: {len(visible_sites)} visible, {sites_drawn} drawn, {sites_skipped_depth} skipped (depth), {sites_skipped_bounds} skipped (bounds)")
 
+                # Draw v2 POIs that have show_on_map tag
+                try:
+                    poi_registry = getattr(self.game, "poi_registry", None)
+                    if poi_registry:
+                        pois_drawn = 0
+                        for poi_spec in poi_registry:
+
+                            tags = getattr(poi_spec, "tags", {}) or {}
+                            if not tags.get("show_on_map", False):
+                                continue
+
+                            # Skip non-surface POIs
+                            if getattr(poi_spec, "depth", 0) != 0:
+                                continue
+
+                            # Get map display properties
+                            map_color_raw = tags.get("map_color", [200, 200, 200])
+                            if isinstance(map_color_raw, (list, tuple)) and len(map_color_raw) >= 3:
+                                poi_color = (int(map_color_raw[0]), int(map_color_raw[1]), int(map_color_raw[2]))
+                            else:
+                                poi_color = (200, 200, 200)
+
+                            # Get POI center from anchor_abs or footprint center
+                            anchor = getattr(poi_spec, "anchor_abs", None)
+                            if anchor:
+                                wx, wy = int(anchor[0]), int(anchor[1])
+                            else:
+                                fp = getattr(poi_spec, "footprint", None)
+                                if fp:
+                                    wx = (fp.x0 + fp.x1) // 2
+                                    wy = (fp.y0 + fp.y1) // 2
+                                else:
+                                    continue
+
+                            px, py = viewport.world_to_pixel(float(wx), float(wy))
+                            if not (0 <= px < map_w and 0 <= py < map_h):
+                                continue
+
+                            # Draw marker - larger for multi-zone POIs
+                            fp = getattr(poi_spec, "footprint", None)
+                            if fp:
+                                # Scale marker size based on footprint
+                                fp_w = fp.x1 - fp.x0
+                                fp_h = fp.y1 - fp.y0
+                                avg_size = (fp_w + fp_h) / 2.0
+                                # Base radius 4, larger for bigger POIs
+                                radius = max(4, min(12, int(4 + avg_size / 30)))
+                            else:
+                                radius = 4
+
+                            pygame.draw.circle(surf, (0, 0, 0), (ox + px, oy + py), radius + 1)
+                            pygame.draw.circle(surf, poi_color, (ox + px, oy + py), radius)
+                            pois_drawn += 1
+                except Exception:
+                    pass
+
             except Exception as e:
                 # Log marker drawing errors to game debug log
                 if hasattr(self.game, "_debug"):
