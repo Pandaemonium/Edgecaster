@@ -2598,6 +2598,9 @@ class Game:
         """Render-peek only: returns already-loaded zones, else None."""
         return zones_system.get_zone_for_render(self, coord)
 
+
+
+
     def all_actors_current(self) -> List[Actor]:
         """Alive actors on the current level."""
         return self._all_actors(self._level())
@@ -3347,8 +3350,60 @@ class Game:
             if k_layer > 0 and len(selected) >= k_layer:
                 break
 
-        if max_count > 0 and len(selected) > max_count:
-            selected = selected[:max_count]
+        # ------------------------------------------------------------
+        # YOGA INVARIANT: EVERYTHING ONSCREEN MUST RENDER.
+        #
+        # k_cell / k_layer / max_count are *attention budgets* and may
+        # cull OFFSCREEN (warm padding) candidates, but they must never
+        # hide entities that are actually inside the raw camera rect.
+        #
+        # Otherwise dense piles (e.g. item_depot) get arbitrarily clipped
+        # by k_cell because many items share the same native bucket cell.
+        # ------------------------------------------------------------
+        onscreen: list[tuple[object, float, float, tuple[int, int, int], tuple[int, int], float]] = []
+        onscreen_ids: set[object] = set()
+
+        def _obj_key(o: object) -> object:
+            # Prefer stable entity ids if present; fallback to object identity.
+            oid = getattr(o, "id", None)
+            return oid if oid is not None else id(o)
+
+        # NOTE: candidates are already LoD-filtered (delta vs dmin/dmax/fade_w),
+        # so we only enforce geometric inclusion here.
+        for obj, ex, ey, coord, local_pos, _sc in candidates:
+            if ax0 <= float(ex) < ax1 and ay0 <= float(ey) < ay1:
+                try:
+                    abs_size = float(self._size_for_render(obj))
+                except Exception:
+                    abs_size = 1.0
+                rec = (obj, float(ex), float(ey), coord, local_pos, abs_size)
+                key = _obj_key(obj)
+                if key in onscreen_ids:
+                    continue
+                onscreen_ids.add(key)
+                onscreen.append(rec)
+
+        # Merge: onscreen first, then the budget-selected offscreen/warm set.
+        merged: list[tuple[object, float, float, tuple[int, int, int], tuple[int, int], float]] = []
+        merged.extend(onscreen)
+
+        for rec in selected:
+            obj = rec[0]
+            if _obj_key(obj) in onscreen_ids:
+                continue
+            merged.append(rec)
+
+        # Apply max_count ONLY to the warm/offscreen remainder.
+        # Never truncate onscreen.
+        if max_count > 0 and len(merged) > max_count:
+            keep_n = max_count - len(onscreen)
+            if keep_n <= 0:
+                merged = onscreen
+            else:
+                merged = onscreen + merged[len(onscreen) : len(onscreen) + keep_n]
+
+        selected = merged
+
 
         # Hard guarantee: include player if we can find it.
         # (Not a "render special-case"; it's an observer invariant.)
@@ -3390,14 +3445,6 @@ class Game:
         return out
 
 
-
-
-
-
-
-
-
-
     
     def _ensure_world_site_entities(self, *, zone_w: int, zone_h: int) -> None:
         """
@@ -3408,6 +3455,73 @@ class Game:
         - Does NOT wait for async placement completion.
         - Not "build once": it incrementally adds newly-placed or newly-revealed sites.
         """
+
+        # ---------------------------------------------------------------------
+        # Leviathan (single world-scale test entity)
+        # Declarative, idempotent, no flags
+        # ---------------------------------------------------------------------
+
+        # Hard-wired "spec" (exactly like a site spec, just inline for now)
+        leviathan_spec = {
+            "id": "world:leviathan",
+            "hotspot_index": 0,  # east corruption patch
+        }
+
+        try:
+            # Authoritative data
+            hotspots = list(getattr(self, "corruption_hotspots", []) or [])
+            grid = getattr(self, "tile_julia_grid", None)
+
+            if hotspots and isinstance(grid, dict):
+                jx, jy, *_ = hotspots[leviathan_spec["hotspot_index"]]
+
+                # Julia → ABS tile conversion (linear grid inversion)
+                view_min_jx = float(grid["view_min_jx"])
+                view_min_jy = float(grid["view_min_jy"])
+                step_x = float(grid["step_x"])
+                step_y = float(grid["step_y"])
+                total_x = int(grid["total_x"])
+                total_y = int(grid["total_y"])
+
+                ax = int(round((float(jx) - view_min_jx) / step_x))
+                ay = int(round((float(jy) - view_min_jy) / step_y))
+                ax = max(0, min(total_x - 1, ax))
+                ay = max(0, min(total_y - 1, ay))
+
+                # ABS → zone + local
+                zx = ax // zone_w
+                zy = ay // zone_h
+                zz = 0
+                ox = ax % zone_w
+                oy = ay % zone_h
+
+                # Build entity from existing prototype
+                levi_proto = prototypes.resolve_proto("leviathan")
+
+                ent = spawn_factory.build_entity_from_spec(
+                    spec=levi_proto,
+                    eid=leviathan_spec["id"],
+                    pos=(ox, oy),
+                    overrides={
+                        "kind": "feature",  # world-scale renderable, like sites
+                        "tags": {
+                            "world_entity": True,
+                            "leviathan": True,
+                            "corruption_source": True,
+                        },
+                    },
+                )
+
+                # Idempotent add (WorldEntityIndex de-dupes by ID)
+                self.world_entity_index.add(
+                    ent,
+                    zone_coord=(zx, zy, zz),
+                    local_pos=(ox, oy),
+                )
+
+        except Exception:
+            pass
+
 
         # Initialize tracking
         if not hasattr(self, "_world_site_ids_built"):

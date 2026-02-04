@@ -251,7 +251,7 @@
   xp: 5000
   parent: demon
   description: "Upon earth there is not his like, who is made without fear. He beholdeth all high things: he is a king over all the children of pride."
-  base_size: 512.0
+  base_size: 256.0
   tags:
     leviathan: true
     boss: true
