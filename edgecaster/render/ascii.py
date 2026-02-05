@@ -730,6 +730,27 @@ class AsciiRenderer:
         else:
             a0, a1 = 1.0 - blend, blend
 
+
+        # -------------------------------------------------------------
+        # PERF / DEBUG TOGGLE: disable terrain LOD crossfade
+        #
+        # When enabled, render EXACTLY ONE LOD layer (no alpha blits).
+        # You can toggle this from anywhere by setting:
+        #   game.debug_disable_lod_crossfade = True
+        # or:
+        #   renderer.debug_disable_lod_crossfade = True
+        # -------------------------------------------------------------
+        if bool(getattr(game, "debug_disable_lod_crossfade", True) or getattr(self, "debug_disable_lod_crossfade", True)):
+            # Pick the "nearest" LOD so snapping feels sensible.
+            # blend is 0..1 where 0 is lod0, 1 is lod1.
+            if blend >= 0.5:
+                cell0, lod0 = cell1, lod1
+            # Force single-layer render
+            a0, a1 = 1.0, 0.0
+            cell1, lod1 = cell0, lod0
+            snap_base = float(cell0)
+
+
         # -----------------------------------------------------------------
         # Entity visibility / fading
         #
