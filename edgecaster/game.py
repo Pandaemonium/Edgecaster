@@ -213,6 +213,7 @@ from edgecaster import mapgen_sites
 from edgecaster.content import pois as poi_content
 from edgecaster.content.pois import get_poi_registry
 from edgecaster.systems.poi_registry import POIRegistry
+from edgecaster.systems import poi_worldgen
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
@@ -527,11 +528,21 @@ class Game:
         zone_w_init = int(getattr(getattr(self, "cfg", None), "world_width", 60) or 60)
         zone_h_init = int(getattr(getattr(self, "cfg", None), "world_height", 40) or 40)
         self.world_entity_index: WorldEntityIndex = WorldEntityIndex(zone_w=zone_w_init, zone_h=zone_h_init)
+        self._world_entity_index_wh = (zone_w_init, zone_h_init)  # Prevent recreation later
         self._world_entities_built: bool = False
 
         # POI registry for yoga-compliant POI management.
         # Supports multi-zone POIs, nesting, and ABS footprints.
         self.poi_registry: POIRegistry = get_poi_registry(zone_w=zone_w_init, zone_h=zone_h_init)
+
+        # Create world entities for all POI contents (NPCs, structures, walls).
+        # This makes POIs visible when zooming around in God Vision, same as berries.
+        try:
+            poi_worldgen.ensure_all_poi_world_entities(
+                self, zone_w=zone_w_init, zone_h=zone_h_init
+            )
+        except Exception:
+            pass
 
         # Difficulty field configuration (tunable, decoupled from biomes).
         # Adjust this in one place to change zone difficulty behavior.
@@ -2118,8 +2129,8 @@ class Game:
                             )
                             spawned += 1
                 elif struct.get("kind") == "colosseum_arena":
-                    # Build oval arena structure - can span multiple zones
-                    # Get the POI's ABS footprint to determine arena bounds
+                    # Build oval arena structure using wall ENTITIES (not terrain)
+                    # This allows walls to be visible in WorldEntityIndex when zooming around
                     if poi_spec is None:
                         continue
                     fp = poi_spec.footprint
@@ -2127,17 +2138,9 @@ class Game:
                     zone_w = self.cfg.world_width
                     zone_h = self.cfg.world_height
 
-                    # Debug logging for colosseum structure application
-                    try:
-                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
-                            f.write(f"[colosseum_arena] Applying to zone ({zx}, {zy}), footprint=({fp.x0}, {fp.y0})-({fp.x1}, {fp.y1})\n")
-                    except Exception:
-                        pass
-
                     # Calculate ellipse center and radii from footprint
                     arena_cx = (fp.x0 + fp.x1) / 2.0
                     arena_cy = (fp.y0 + fp.y1) / 2.0
-                    # Radii are half the footprint dimensions
                     arena_rx = (fp.x1 - fp.x0) / 2.0  # horizontal radius
                     arena_ry = (fp.y1 - fp.y0) / 2.0  # vertical radius
 
@@ -2145,9 +2148,8 @@ class Game:
                     wall_thickness = int(struct.get("wall_thickness", 3))
 
                     # Colors for arena
-                    wall_color = (140, 120, 100)    # Stone walls
+                    wall_color = [140, 120, 100]    # Stone walls (list for override)
                     floor_color = (180, 160, 120)   # Sand/dirt floor
-                    track_color = (160, 140, 100)   # Track area (slightly different)
 
                     # Zone bounds in ABS space
                     zone_abs_x0 = zx * zone_w
@@ -2155,15 +2157,28 @@ class Game:
 
                     world = level.world
 
+                    # Pre-compute entrance positions to skip wall spawning there
+                    entrance_width = 4
+                    entrance_positions: set = set()
+                    entrances = [
+                        (int(arena_cx), fp.y0 + wall_thickness // 2),  # North
+                        (int(arena_cx), fp.y1 - wall_thickness // 2 - 1),  # South
+                        (fp.x0 + wall_thickness // 2, int(arena_cy)),  # West
+                        (fp.x1 - wall_thickness // 2 - 1, int(arena_cy)),  # East
+                    ]
+                    for ent_abs_x, ent_abs_y in entrances:
+                        for offset in range(-entrance_width // 2, entrance_width // 2 + 1):
+                            for ex, ey in [(ent_abs_x + offset, ent_abs_y), (ent_abs_x, ent_abs_y + offset)]:
+                                entrance_positions.add((ex, ey))
+
+                    walls_spawned = 0
+
                     # Iterate through all tiles in this zone
                     for ty in range(zone_h):
                         for tx in range(zone_w):
-                            # Convert zone-local to ABS
                             abs_x = zone_abs_x0 + tx
                             abs_y = zone_abs_y0 + ty
 
-                            # Calculate normalized distance from ellipse center
-                            # For an ellipse: (x-cx)²/rx² + (y-cy)²/ry² = 1 is the boundary
                             dx = abs_x - arena_cx
                             dy = abs_y - arena_cy
                             if arena_rx <= 0 or arena_ry <= 0:
@@ -2172,7 +2187,7 @@ class Game:
                             # Normalized distance: <1 inside, =1 on boundary, >1 outside
                             dist_norm = (dx * dx) / (arena_rx * arena_rx) + (dy * dy) / (arena_ry * arena_ry)
 
-                            # Inner ellipse boundary (for track inner edge)
+                            # Inner ellipse boundary
                             inner_rx = arena_rx - wall_thickness
                             inner_ry = arena_ry - wall_thickness
                             if inner_rx > 0 and inner_ry > 0:
@@ -2186,38 +2201,46 @@ class Game:
 
                             if dist_norm <= 1.0:
                                 # Inside or on the ellipse boundary
-                                if inner_dist >= 1.0:
-                                    # On the wall (between outer and inner ellipse)
-                                    tile.walkable = False
-                                    tile.glyph = "█"
-                                    tile.color = wall_color
+                                if inner_dist >= 1.0 and (abs_x, abs_y) not in entrance_positions:
+                                    # Wall position - spawn wall entity
+                                    pos = (tx, ty)
+                                    # Use deterministic ID based on ABS position to avoid duplicates
+                                    wall_eid = f"colosseum_wall:{abs_x},{abs_y}"
+                                    if wall_eid not in level.entities and not self._entity_at(level, pos):
+                                        try:
+                                            ent = self._spawn_entity_from_template(
+                                                "wall",
+                                                pos,
+                                                overrides={
+                                                    "id": wall_eid,
+                                                    "glyph": "█",
+                                                    "color": wall_color,
+                                                    "name": "Arena Wall",
+                                                    "description": "Ancient stone walls of the colosseum.",
+                                                },
+                                            )
+                                            # Override the ID to our deterministic one
+                                            ent.id = wall_eid
+                                            level.entities[wall_eid] = ent
+                                            walls_spawned += 1
+                                        except Exception:
+                                            pass
+                                    # Terrain should be walkable (entity handles blocking)
+                                    tile.walkable = True
+                                    tile.glyph = "."
+                                    tile.color = floor_color
                                 else:
-                                    # Inside the arena floor
+                                    # Arena floor (including entrances)
                                     tile.walkable = True
                                     tile.glyph = "."
                                     tile.color = floor_color
 
-                    # Add entrance gaps in the walls (N, S, E, W)
-                    entrance_width = 4
-                    entrances = [
-                        (int(arena_cx), fp.y0 + wall_thickness // 2),  # North
-                        (int(arena_cx), fp.y1 - wall_thickness // 2 - 1),  # South
-                        (fp.x0 + wall_thickness // 2, int(arena_cy)),  # West
-                        (fp.x1 - wall_thickness // 2 - 1, int(arena_cy)),  # East
-                    ]
-                    for ent_abs_x, ent_abs_y in entrances:
-                        for offset in range(-entrance_width // 2, entrance_width // 2 + 1):
-                            # Horizontal entrances (N/S) vary x, vertical (E/W) vary y
-                            for ex, ey in [(ent_abs_x + offset, ent_abs_y), (ent_abs_x, ent_abs_y + offset)]:
-                                # Convert ABS to zone-local
-                                local_x = ex - zone_abs_x0
-                                local_y = ey - zone_abs_y0
-                                if 0 <= local_x < zone_w and 0 <= local_y < zone_h:
-                                    tile = world.get_tile(local_x, local_y)
-                                    if tile is not None:
-                                        tile.walkable = True
-                                        tile.glyph = "."
-                                        tile.color = floor_color
+                    # Debug logging
+                    try:
+                        with open("C:/Games/Edgecaster/debug.log", "a") as f:
+                            f.write(f"[colosseum_arena] Zone ({zx}, {zy}): spawned {walls_spawned} wall entities\n")
+                    except Exception:
+                        pass
 
             # Extra: drop some starting bismuth piles in the starting zone.
             if pid == "starting_zone":
@@ -2250,7 +2273,18 @@ class Game:
             elif legacy_poi:
                 npc_specs_to_process = getattr(legacy_poi, "npcs", []) or []
 
-            for spec in npc_specs_to_process:
+            for spec_index, spec in enumerate(npc_specs_to_process):
+                # Generate a stable spec key for this NPC to track across zones
+                spec_key = f"npc:{spec.npc_id}:{spec_index}"
+
+                # Check if this NPC was already spawned (prevents duplicates in multi-zone POIs)
+                if self.poi_registry.is_npc_spawned(pid, spec_key):
+                    continue
+
+                # Check if this NPC was killed (don't respawn dead NPCs)
+                if self.poi_registry.is_npc_dead(pid, spec_key):
+                    continue
+
                 npc_def = npcs.NPC_DEFS.get(spec.npc_id, {})
                 name = spec.name or npc_def.get("name", spec.npc_id.title())
                 glyph = spec.glyph or npc_def.get("glyph", "@")
@@ -2263,23 +2297,27 @@ class Game:
                 spawn_pos = None
 
                 # Try ABS positions first (v2 feature)
+                # Use FIRST position as canonical spawn - only spawn in that zone
                 if abs_positions:
                     zx, zy, _ = coord
                     zone_w = self.cfg.world_width
                     zone_h = self.cfg.world_height
-                    for abs_x, abs_y in abs_positions:
-                        # Convert ABS to zone-local
-                        local_x = abs_x - (zx * zone_w)
-                        local_y = abs_y - (zy * zone_h)
-                        # Check if this position is in the current zone
-                        if 0 <= local_x < zone_w and 0 <= local_y < zone_h:
-                            spot = nearest_walkable((local_x, local_y))
-                            if spot:
-                                spawn_pos = spot
-                                break
+                    # Use only the first abs_position as the canonical spawn point
+                    abs_x, abs_y = abs_positions[0]
+                    # Convert ABS to zone-local
+                    local_x = abs_x - (zx * zone_w)
+                    local_y = abs_y - (zy * zone_h)
+                    # Only spawn if canonical position is in THIS zone
+                    if 0 <= local_x < zone_w and 0 <= local_y < zone_h:
+                        spot = nearest_walkable((local_x, local_y))
+                        if spot:
+                            spawn_pos = spot
+                    else:
+                        # Canonical position is not in this zone - skip
+                        continue
 
                 # Fall back to offsets from entry (legacy behavior)
-                if spawn_pos is None:
+                if spawn_pos is None and not abs_positions:
                     for dx, dy in offsets:
                         candidate = (entry[0] + dx, entry[1] + dy)
                         spot = nearest_walkable(candidate)
@@ -2287,10 +2325,12 @@ class Game:
                             spawn_pos = spot
                             break
 
-                if spawn_pos is None:
+                if spawn_pos is None and not abs_positions:
                     spawn_pos = nearest_walkable(entry)
                 if spawn_pos is None:
                     continue
+
+                actor = None
                 if spec.npc_id == "caged_demon":
                     actor = enemy_factory.spawn_enemy("caged_demon", spawn_pos,abs_pos=self.abs_from_zone_local(self.zone_coord, spawn_pos))
                     actor.faction = "neutral"
@@ -2357,8 +2397,18 @@ class Game:
                     if npc_def.get("show_exact_hp", False):
                         actor.tags["show_exact_hp"] = True
                         actor.show_exact_hp = True
-                level.actors[actor.id] = actor
-                level.entities[actor.id] = actor
+
+                if actor:
+                    # Track POI association for content state
+                    actor.tags = getattr(actor, "tags", {}) or {}
+                    actor.tags["poi_id"] = pid
+                    actor.tags["poi_spec_key"] = spec_key
+
+                    level.actors[actor.id] = actor
+                    level.entities[actor.id] = actor
+
+                    # Mark as spawned in registry (prevents duplicates)
+                    self.poi_registry.mark_npc_spawned(pid, spec_key, actor.id)
 
     def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
         spawning_system.spawn_npcs(self, level, count)

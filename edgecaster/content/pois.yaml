@@ -140,3 +140,5 @@ ancient_colosseum:
     map_glyph: "O"
     map_color: [200, 140, 80]
     show_on_map: true
+    detail_lod_threshold: 6.0  # Allow walls to be visible when zoomed out in God Vision
+    wall_thickness: 3
