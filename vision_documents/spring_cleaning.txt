@@ -235,13 +235,10 @@ PHASE 7: Legacy code removal
   [TODO] Clean up coord_to_abs_rect conversion helpers (no longer needed)
 
 PHASE 8: Dynamic POI injection cleanup
-  [TODO] Refactor runtime POI injection (lab, inventor, failing_rune, destabilizer_ruin)
-    - Currently these modify poi_content.POIS dict at runtime
-    - Should instead add POISpec to registry with poi_registry.add()
-    - Use v2 format with explicit footprints
-  [TODO] Audit poi_locations dict usage
-    - Currently populated from legacy POI.coord
-    - Should derive from registry spatial queries
+  [DONE] Refactor runtime POI injection (lab, inventor, failing_rune, destabilizer_ruin)
+    - Registry-only reanchor via POISpec + ABSRect; no POIS dict mutation
+  [DONE] Audit poi_locations dict usage
+    - Now derived from registry anchor_abs via Game.refresh_poi_locations()
 
 -------------------------------------------------------------------------------
 V2 POI FORMAT REFERENCE
@@ -306,6 +303,46 @@ ONGOING ENGINE CLEANUPS
   - Same spawn pipeline, coordinate rules, rendering rules
   - What's special is the observer (camera, inhabited actor id), not the entity
   - Prepare for body-swap: observer follows, vessel remains in world
+
+-------------------------------------------------------------------------------
+AUDIT NOTES (2026-02-01) - ADDITIONAL REFACTOR CANDIDATES
+
+[DONE] Runtime POI mutations removed (registry-only, ABS truth)
+  - game.py: lab/inventor/failing_rune/destabilizer_ruin use reanchor_poi()
+  - systems/overmap.py: rune anchors added via POISpec in registry
+  - systems/legendaries.py: lairs added via registry (no POIS fallback)
+
+[DONE] POIS dict queries removed in core systems
+  - mapgen.py apply_pois() now registry-only
+  - systems/difficulty.py + systems/legendaries.py now registry-only
+  - game.py poi_locations now derived from registry (refresh_poi_locations)
+
+[YOGA] Unify world entity staging into a single attention-driven pass
+  - game.py _ensure_world_site_entities/_ensure_world_poi_entities
+  - systems/poi_worldgen.ensure_poi_world_entities
+  - systems/aggregate_resolution
+  - Goal: one staging pipeline, no render-path side effects.
+
+[DONE] WorldEntityIndex rebuild invalidation
+  - When zone dims change, ensure _world_site_ids_built/_world_poi_ids_built
+    and any cached "built" flags are reset consistently.
+  - Avoid silent loss of POI world entities after index rebuilds.
+
+[CLEANUP] Shrink broad try/except blocks around world-entity creation
+  - Replace with targeted error handling + debug logs to avoid silent failures.
+
+[YOGA] Coordinate-space hygiene for in_bounds() checks
+  - Audit any calls that use world.in_bounds on ABS values
+  - Fix remaining "latent bug" spots noted in dungeon.py comments.
+
+[CLEANUP] Explicit RNG seeding for worldgen sub-systems
+  - Some paths still use self.rng directly, others use seeded RNG.
+  - Document and standardize seed derivation for deterministic POI layouts.
+
+[YOGA] Rumor/discovery gating for POI world entities
+  - Make worldgen_on_rumor a first-class registry flag
+  - Ensure all "known but not discovered" POIs are handled consistently.
+
 
 ===============================================================================
 TESTING NOTES
@@ -593,3 +630,202 @@ GUIDING PRINCIPLES
 - Keep the geometry weird
 - Absolute space is truth; zones are caches
 - The camera is the observer; scale is real
+
+===============================================================================
+GAME.PY TRIM PLAN (NEW)
+
+Goal: keep Game as an orchestrator + state owner, push behavior into systems.
+No behavior change, just moving code so responsibilities are explicit.
+
+Candidate extractions (in priority order):
+
+1) Look / Inspect pipeline
+  [CLEANUP] Move describe_current_tile(), _describe_tile(), describe_tile_at(),
+            describe_abs_tile_at() into edgecaster/systems/inspection.py
+  [YOGA] Keep ABS vs zone-local handling in one place (inspection system),
+         so look logic does not fork between dungeon.py and game.py.
+  [CLEANUP] Keep Game as a thin delegate:
+            - Game.describe_* just calls inspection.describe_*
+
+2) World entity + attention staging
+  [CLEANUP] Consolidate _ensure_world_site_entities(),
+            _ensure_world_poi_entities(), _ensure_world_aggregate_entities(),
+            and sync_attention_instantiation() into edgecaster/systems/attention.py
+  [YOGA] Make the attention pass the single place where entities are staged,
+         to avoid render-path side effects and duplicated control flow.
+  [CLEANUP] Game.renderables_in_abs_rect should call attention.query_renderables().
+
+3) Active-zone window + cross-zone movement
+  [CLEANUP] Move _active_zone_coords(), _ensure_active_zones_loaded(),
+            _is_zone_active(), and _move_actor_to_abs() into edgecaster/systems/active_zones.py
+  [YOGA] Treat zone adjacency as a cache window only; no gameplay effects.
+  [CLEANUP] Game._advance_time delegates to active_zones.advance_time().
+
+4) ABS coordinate helpers
+  [YOGA] Move abs_from_zone_local(), zone_local_from_abs(), _floor_divmod(),
+         and _zone_dims() into edgecaster/systems/coords.py (or camera.py)
+  [CLEANUP] Remove ad-hoc ABS math from dungeon.py and game.py.
+  [CLEANUP] Add a tiny unit-test file for the conversion helpers.
+
+5) Pattern canonical bridge
+  [CLEANUP] Move _pattern_state_by_depth, _pattern_state(), _sync_level_pattern_view(),
+            _commit_pattern_state_from_level(), pattern_anchor_abs(), etc. into
+            edgecaster/systems/pattern_state.py
+  [YOGA] Keep the ABS pattern anchor as the single source of truth.
+
+6) Debug / test helpers
+  [CLEANUP] Move debug flags + debug_spawn_inventory_near_player() into a
+            edgecaster/systems/debug_tools.py module (optional import).
+  [CLEANUP] Keep debug logging helper in one place (avoid multiple paths to debug.log).
+
+7) LevelState helper accessors
+  [CLEANUP] Move all “get current level/player” glue into a tiny
+            edgecaster/systems/session.py (e.g., get_player(), current_level()).
+            This reduces repeated try/except blocks.
+
+Constraints / safety rails:
+  - Keep API style: system funcs accept (game, ...) as first arg.
+  - Avoid new circular imports: game.py imports systems; systems should not import game.py.
+  - Extract in small slices; commit each slice with zero behavior change.
+  - Update architecture.txt only after extraction is merged.
+
+Suggested order of execution:
+  A) inspection.py (low-risk, self-contained)
+  B) coords.py (used everywhere; quick tests)
+  C) active_zones.py (small surface)
+  D) attention.py (bigger, but cleans render path)
+  E) pattern_state.py (touches core rune logic)
+  F) debug_tools.py + session.py (optional polish)
+
+===============================================================================
+GAME.PY DECOMPOSITION PLAN (GPT-5.3 REVIEW, 2026-02-06)
+
+Current state (from code audit):
+- edgecaster/game.py is ~344 KB and contains ~209 methods.
+- The highest-risk density is concentrated in a few methods:
+  - sync_attention_instantiation (~949 LOC)
+  - _spawn_poi_contents (~708 LOC)
+  - renderables_in_abs_rect (~568 LOC)
+  - __init__ (~526 LOC)
+  - act_chakra (~376 LOC)
+  - describe_tile_at + describe_abs_tile_at (~310 LOC combined)
+  - _make_zone (~159 LOC)
+  - _ensure_world_site_entities + _ensure_world_poi_entities (~295 LOC combined)
+
+Yoga pressure points:
+- Attention staging still has multiple entry paths and mixed responsibilities.
+- POI realization still carries spawn rules + custom quest logic in one large function.
+- Rendering candidate assembly is still partially policy + partially transport.
+- Ability implementations are split between systems and a large set of Game methods.
+
+-------------------------------------------------------------------------------
+TRIM OBJECTIVE
+
+Make game.py a strict orchestrator with three responsibilities only:
+1) Own long-lived state.
+2) Delegate to systems with stable (game, ...) APIs.
+3) Bridge scene calls to systems.
+
+Everything else moves to systems modules.
+
+-------------------------------------------------------------------------------
+PHASED EXTRACTION PLAN
+
+PHASE 0 - NO-BEHAVIOR-CHANGE GUARDRAILS
+  [CLEANUP] Create tests/snapshots for current behavior before slicing:
+    - targeting/inspect behavior
+    - zone transition behavior
+    - active-zone loading behavior
+    - POI NPC spawn uniqueness
+  [CLEANUP] Add a simple "method budget" metric in CI (warn if game.py grows).
+
+PHASE 1 - ATTENTION PIPELINE SPLIT (BIGGEST WIN)
+  Target methods:
+    - sync_attention_instantiation
+    - _ensure_world_site_entities
+    - _ensure_world_poi_entities
+    - _ensure_world_aggregate_entities
+    - _realize_aggregate_details_in_zone
+    - renderables_in_abs_rect
+  New modules:
+    - systems/attention_runtime.py (staging lifecycle + invalidation)
+    - systems/attention_query.py (render/query candidate assembly)
+    - systems/attention_realize.py (detail realization/coarsening)
+  [YOGA] Guarantee one authoritative staging path per tick/frame.
+  [YOGA] Query path must be pure (no side effects).
+
+PHASE 2 - POI REALIZATION DECOMPOSITION
+  Target method:
+    - _spawn_poi_contents
+  New modules:
+    - systems/poi_realization.py (zone realization orchestration)
+    - systems/poi_spawn_rules.py (npc/structure/entity spawn policy)
+    - systems/poi_state_sync.py (registry state and idempotency checks)
+  [YOGA] Multi-zone POIs realize by ABS overlap, not by zone ownership.
+  [CLEANUP] Remove quest-specific branching from generic POI spawn loop.
+
+PHASE 3 - ABILITY HANDLERS EXTRACTION
+  Target methods:
+    - act_chakra, act_ignite, act_regrow, act_freeze, act_corruption_cone,
+      act_throw_flask, act_polygon, act_star, act_destabilize, etc.
+  New modules:
+    - systems/abilities_geometry.py
+    - systems/abilities_elemental.py
+    - systems/abilities_items.py
+    - systems/abilities_chakra.py
+  [CLEANUP] Keep Game methods as thin wrappers for save compatibility initially.
+  [YOGA] Ensure ability computations use ABS/canonical pattern state where required.
+
+PHASE 4 - SPATIAL RUNTIME CONSOLIDATION
+  Target methods:
+    - _move_actor_to_abs, _move_player_to_abs, _active_zone_coords,
+      _ensure_active_zones_loaded, _update_fov, _handle_move_or_attack
+  New modules:
+    - systems/spatial_runtime.py
+    - systems/fov_runtime.py
+  [YOGA] Adjacent-zone simulation should feel seamless; zones remain cache buckets.
+  [CLEANUP] Remove duplicated ABS/local conversions from movement paths.
+
+PHASE 5 - INSPECTION + LOOK COMPLETION
+  Target methods:
+    - describe_current_tile, describe_abs_tile_at, describe_tile_at, _describe_tile
+  New module:
+    - systems/inspection.py
+  [YOGA] "Look" should resolve from ABS truth + LOD policy and degrade gracefully.
+
+PHASE 6 - INIT + BOOTSTRAP THINNING
+  Target:
+    - __init__
+  New modules:
+    - systems/bootstrap_world.py
+    - systems/bootstrap_player.py
+    - systems/bootstrap_content.py
+  [CLEANUP] Keep constructor readable, split into explicit bootstrap steps.
+
+-------------------------------------------------------------------------------
+EXECUTION ORDER (LOW RISK -> HIGH IMPACT)
+
+1) Phase 5 (inspection)
+2) Phase 1 (attention split)
+3) Phase 2 (POI realization)
+4) Phase 3 (ability handlers)
+5) Phase 4 (spatial runtime/FOV)
+6) Phase 6 (constructor thinning)
+
+Reasoning:
+- Phases 5 and 1 remove large cognitive load with minimal save-format risk.
+- POI and ability extraction next reduce future feature coupling.
+- Spatial/FOV is behavior-sensitive, so do it after better module boundaries exist.
+
+-------------------------------------------------------------------------------
+ANTI-BLOAT RULES FOR ALL EXTRACTIONS
+
+  [CLEANUP] No fallback forks unless proven necessary in tests.
+  [CLEANUP] No scene-level business logic reintroduced after extraction.
+  [CLEANUP] Keep one place for each policy:
+    - spawn policy
+    - attention staging policy
+    - inspect/LOD policy
+    - ability execution policy
+  [YOGA] ABS is authoritative; zone-local is a projection/cache.
+  [YOGA] Render path is read-only; realization path is explicit and centralized.

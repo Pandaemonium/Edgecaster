@@ -14,7 +14,6 @@ from typing import Dict, Iterable, Optional, Tuple
 import math
 
 from edgecaster import corruption as corruption_system
-from edgecaster.content import pois as poi_content
 from edgecaster import prototypes
 from edgecaster.math_utils import clamp, smoothstep_range
 import yaml
@@ -195,14 +194,14 @@ def compute_zone_difficulty(
     # POI structure modifiers (labs, lairs, starting zone, etc.)
     poi_bonus = 0.0
     try:
-        for poi in poi_content.POIS.values():
-            if tuple(poi.coord) != coord:
-                continue
-            for struct in getattr(poi, "structures", []) or []:
-                kind = str(struct.get("kind") or "")
-                if not kind:
-                    continue
-                poi_bonus += float(config.poi_structure_bonuses.get(kind, 0.0))
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is not None:
+            for poi_spec in poi_reg.get_at_zone(zx, zy, depth):
+                for struct_spec in (poi_spec.structure_specs or []):
+                    kind = str(getattr(struct_spec, "kind", "") or "")
+                    if not kind:
+                        continue
+                    poi_bonus += float(config.poi_structure_bonuses.get(kind, 0.0))
     except Exception:
         pass
     if abs(poi_bonus) > 1e-9:

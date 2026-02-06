@@ -210,10 +210,10 @@ from edgecaster.systems.sites import load_site_types
 
 from edgecaster import mapgen
 from edgecaster import mapgen_sites
-from edgecaster.content import pois as poi_content
 from edgecaster.content.pois import get_poi_registry
 from edgecaster.systems.poi_registry import POIRegistry
 from edgecaster.systems import poi_worldgen
+from edgecaster.state.pois import ABSRect, POISpec
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
@@ -235,6 +235,7 @@ from edgecaster.systems import overmap as overmap_system
 from edgecaster.systems import difficulty as difficulty_system
 from . import lorenz
 import math
+import random
 
 
 Move = Tuple[int, int]
@@ -494,6 +495,9 @@ class Game:
         # debug flags
         self.debug_no_fog: bool = False
         self.debug_spawn_inventories: bool = False
+        # Active-zone radius for seamless adjacency (zones are caches, not walls).
+        # Radius=1 means a 3x3 window around the player is live.
+        self.active_zone_radius: int = 1
 
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
@@ -821,25 +825,25 @@ class Game:
         )
         self.log.add(f"A mysterious lab is rumored at overworld zone ({self.lab_zone[0]}, {self.lab_zone[1]}). Press < to view the world map.")
         # Inject the lab POI with the chosen coord so mapgen/POI system can build it.
-        lab_poi = poi_content.POIS.get("lab")
-        if lab_poi:
-            poi_content.POIS["lab"] = poi_content.POI(
-                id=lab_poi.id,
-                coord=(self.lab_zone[0], self.lab_zone[1], 0),
-                npcs=lab_poi.npcs,
-                structures=lab_poi.structures,
-            )
+        try:
+            self.reanchor_poi("lab", (self.lab_zone[0], self.lab_zone[1], 0))
+        except Exception:
+            pass
 
         # Choose nearby quest POIs (inventor tower + failing rune) for this run.
         # These are placed close to the starting zone so the early quest is reachable.
         start_zx, start_zy, _ = self.zone_coord
         max_screen = max(0, int(self.cfg.world_map_screens) - 1)
 
-        reserved_coords = {
-            tuple(poi.coord)
-            for poi in poi_content.POIS.values()
-            if tuple(poi.coord) != (0, 0, 0)
-        }
+        zone_w = int(getattr(self.cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(self.cfg, "world_height", 40) or 40)
+        reserved_coords: set[tuple[int, int, int]] = set()
+        try:
+            for poi_spec in self.poi_registry:
+                for zx, zy in poi_spec.get_zone_coords(zone_w, zone_h):
+                    reserved_coords.add((int(zx), int(zy), int(poi_spec.depth)))
+        except Exception:
+            reserved_coords = set()
         reserved_coords.add(tuple(self.zone_coord))
         reserved_coords.add((self.lab_zone[0], self.lab_zone[1], 0))
 
@@ -867,32 +871,12 @@ class Game:
         self.destabilizer_ruin_zone = pick_near(6, avoid=reserved_coords)
         reserved_coords.add(tuple(self.destabilizer_ruin_zone))
 
-        inventor_poi = poi_content.POIS.get("inventor_workshop")
-        if inventor_poi:
-            poi_content.POIS["inventor_workshop"] = poi_content.POI(
-                id=inventor_poi.id,
-                coord=tuple(self.inventor_zone),
-                npcs=inventor_poi.npcs,
-                structures=inventor_poi.structures,
-            )
-
-        failing_poi = poi_content.POIS.get("failing_rune")
-        if failing_poi:
-            poi_content.POIS["failing_rune"] = poi_content.POI(
-                id=failing_poi.id,
-                coord=tuple(self.failing_rune_zone),
-                npcs=failing_poi.npcs,
-                structures=failing_poi.structures,
-            )
-
-        ruin_poi = poi_content.POIS.get("destabilizer_ruin")
-        if ruin_poi:
-            poi_content.POIS["destabilizer_ruin"] = poi_content.POI(
-                id=ruin_poi.id,
-                coord=tuple(self.destabilizer_ruin_zone),
-                npcs=ruin_poi.npcs,
-                structures=ruin_poi.structures,
-            )
+        try:
+            self.reanchor_poi("inventor_workshop", tuple(self.inventor_zone))
+            self.reanchor_poi("failing_rune", tuple(self.failing_rune_zone))
+            self.reanchor_poi("destabilizer_ruin", tuple(self.destabilizer_ruin_zone))
+        except Exception:
+            pass
 
         # Keep the guide's quest location in sync with the inventor placement.
         try:
@@ -907,9 +891,7 @@ class Game:
         # Generate a batch of legendary lairs for this run (hidden until discovered/rumored).
         self._init_legendaries(count=50)
         # Known POI markers (zone coords) for world map rendering / hints (after lab injected)
-        self.poi_locations: Dict[str, Tuple[int, int, int]] = {
-            pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()
-        }
+        self.refresh_poi_locations()
 
 
     def _build_player_stats(self) -> Stats:
@@ -1422,7 +1404,57 @@ class Game:
 
     def _alloc_legendary_lair_poi_id(self) -> str:
         """Return a unique POI id for a newly-generated legendary lair."""
-        return legendaries_system.alloc_legendary_lair_poi_id()
+        return legendaries_system.alloc_legendary_lair_poi_id(self)
+
+    def refresh_poi_locations(self) -> None:
+        """Rebuild cached POI marker locations from the POI registry."""
+        poi_reg = getattr(self, "poi_registry", None)
+        if poi_reg is None:
+            self.poi_locations = {}
+            return
+        cfg = getattr(self, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+        locs: Dict[str, Tuple[int, int, int]] = {}
+        for poi in poi_reg:
+            ax, ay = poi.anchor_abs
+            zx = int(ax) // zone_w
+            zy = int(ay) // zone_h
+            locs[str(poi.id)] = (zx, zy, int(poi.depth))
+        self.poi_locations = locs
+
+    def reanchor_poi(self, poi_id: str, coord: Tuple[int, int, int]) -> bool:
+        """Move an existing POI to a new zone (registry-only, ABS truth)."""
+        poi_reg = getattr(self, "poi_registry", None)
+        if poi_reg is None:
+            return False
+        poi_spec = poi_reg.get(str(poi_id))
+        if poi_spec is None:
+            return False
+        zx, zy, depth = coord
+        cfg = getattr(self, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+        footprint = ABSRect.from_zone_coord(int(zx), int(zy), zone_w, zone_h)
+        anchor_abs = footprint.center
+        new_spec = POISpec(
+            id=poi_spec.id,
+            kind=poi_spec.kind,
+            name=poi_spec.name,
+            footprint=footprint,
+            depth=int(depth),
+            anchor_abs=anchor_abs,
+            parent_id=poi_spec.parent_id,
+            child_ids=list(poi_spec.child_ids),
+            npc_specs=list(poi_spec.npc_specs),
+            structure_specs=list(poi_spec.structure_specs),
+            entity_specs=list(poi_spec.entity_specs),
+            seed=int(getattr(poi_spec, "seed", 0) or 0),
+            tags=dict(poi_spec.tags or {}),
+        )
+        poi_reg.add(new_spec)
+        self.refresh_poi_locations()
+        return True
 
     def _init_legendaries(self, count: int = 50) -> None:
         """Generate legendary creatures and inject their lair POIs."""
@@ -1516,6 +1548,7 @@ class Game:
         is_lab_zone = False
         is_lair_zone = False
         lair_layout = "multi_room"
+        lair_seed: int | None = None
         for poi_spec in poi_specs:
             # Check v2 structure specs
             for struct_spec in poi_spec.structure_specs:
@@ -1525,6 +1558,10 @@ class Game:
                 if struct_spec.kind == "legendary_lair":
                     is_lair_zone = True
                     lair_layout = str(struct_spec.tags.get("layout") or lair_layout)
+                    try:
+                        lair_seed = int(struct_spec.tags.get("lair_seed", poi_spec.seed))
+                    except Exception:
+                        lair_seed = lair_seed
             if is_lab_zone:
                 break
             if is_lair_zone:
@@ -1536,7 +1573,13 @@ class Game:
             mapgen.generate_lab(world, self.rng)
             lab_state = LabState()
         elif depth == 0 and is_lair_zone:
-            mapgen_sites.generate_legendary_lair(world, self.rng, layout=lair_layout)
+            lair_rng = self.rng
+            if lair_seed is not None:
+                try:
+                    lair_rng = random.Random(int(lair_seed) & 0xFFFFFFFF)
+                except Exception:
+                    lair_rng = self.rng
+            mapgen_sites.generate_legendary_lair(world, lair_rng, layout=lair_layout)
             lab_state = None
         elif depth == 0:
             self._ensure_overmap_ready()
@@ -1833,22 +1876,18 @@ class Game:
             return None
 
         for pid in poi_ids:
-            # Try registry first (v2 format), fall back to legacy
+            # Registry is authoritative for POI definitions.
             poi_spec = self.poi_registry.get(pid)
-            legacy_poi = poi_content.POIS.get(pid)
-            if not poi_spec and not legacy_poi:
+            if not poi_spec:
                 continue
 
             # Handle structures - use v2 structure_specs or legacy structures
             structures_to_process: List[dict] = []
-            if poi_spec:
-                # Convert v2 structure_specs to dict format for compatibility
-                for ss in poi_spec.structure_specs:
-                    struct_dict = {"kind": ss.kind}
-                    struct_dict.update(ss.tags)
-                    structures_to_process.append(struct_dict)
-            elif legacy_poi:
-                structures_to_process = list(getattr(legacy_poi, "structures", []) or [])
+            # Convert v2 structure_specs to dict format for compatibility
+            for ss in poi_spec.structure_specs:
+                struct_dict = {"kind": ss.kind}
+                struct_dict.update(ss.tags)
+                structures_to_process.append(struct_dict)
 
             for struct in structures_to_process:
                 if struct.get("kind") == "item_depot" and depot_info:
@@ -2624,8 +2663,23 @@ class Game:
         scheduling.schedule(self, level, delay, action)
 
     def _advance_time(self, level: LevelState, delta: int) -> None:
-        """Advance time by delta ticks. Delegates to scheduling module."""
-        scheduling.advance_time(self, level, delta)
+        """Advance time by delta ticks across the active zone window."""
+        try:
+            delta = int(delta)
+        except Exception:
+            delta = int(delta or 0)
+        if delta <= 0:
+            return
+
+        # Ensure adjacent zones are loaded so movement and AI can cross boundaries.
+        active_levels = self._ensure_active_zones_loaded()
+        if not active_levels:
+            active_levels = [level]
+
+        current_level = self._level()
+        for lvl in active_levels:
+            apply_player_systems = (lvl is current_level)
+            scheduling.advance_time(self, lvl, delta, apply_player_systems=apply_player_systems)
 
     def _start_regen(self, level: LevelState, actor_id: str, amount: int, interval: int) -> None:
         """Start periodic regen for an actor. Delegates to scheduling module."""
@@ -4522,6 +4576,12 @@ class Game:
                 self.world_entity_index = WorldEntityIndex(zone_w=wh[0], zone_h=wh[1])
                 self._world_entity_index_wh = wh
                 self._world_site_ids_built.clear()
+                # If the index is rebuilt, POI/world proxies must be re-added too.
+                try:
+                    if hasattr(self, "_world_poi_ids_built"):
+                        self._world_poi_ids_built.clear()
+                except Exception:
+                    pass
             except Exception:
                 return
 
@@ -4841,29 +4901,126 @@ class Game:
         self._describe_tile(level, pos, observer_id=self.player_id, auto=False)
 
 
-    def describe_abs_tile_at(self, abs_pos: Tuple[int, int]) -> str:
+    def describe_abs_tile_at(self, abs_pos: Tuple[int, int], *, cam_lod: float | None = None) -> str:
         """
         Describe an ABS tile that may be outside the currently loaded zone.
 
         For now:
-        - If it's in the current zone, delegate to describe_tile_at(local).
-        - Otherwise, return a safe, honest "not loaded" description.
+        - If it's in a loaded zone, delegate to describe_tile_at(local).
+        - Otherwise, fall back to world-index entities or a distant-terrain line.
         """
         try:
             zone, local = self.zone_local_from_abs(abs_pos, depth=getattr(self, "zone_coord", (0, 0, 0))[2], clamp_to_world=True)
         except Exception:
             zone, local = None, None
 
-        if zone == getattr(self, "zone_coord", None) and local is not None:
-            return self.describe_tile_at((int(local[0]), int(local[1])))
+        if zone is not None and local is not None:
+            if zone == getattr(self, "zone_coord", None):
+                return self.describe_tile_at((int(local[0]), int(local[1])))
+
+            # If this zone is already loaded, describe the local tile there.
+            try:
+                lvl = self.get_zone_for_render(zone)
+            except Exception:
+                lvl = None
+            if lvl is not None:
+                return self.describe_tile_at((int(local[0]), int(local[1])), level=lvl, zone_coord=zone)
 
         zx, zy, _zz = zone if zone is not None else ("?", "?", "?")
         ax, ay = int(abs_pos[0]), int(abs_pos[1])
-        return f"You peer into the distance at ABS ({ax}, {ay}) in zone ({zx}, {zy}). The area is not currently realized."
+
+        # If we have macro entities (POIs, walls, etc.) in the world index,
+        # try to describe the best-matching one by LOD.
+        try:
+            if cam_lod is None:
+                cam_lod = 0.0
+            dmin = float(getattr(self, "entity_lod_delta_min", -5.0))
+            dmax = float(getattr(self, "entity_lod_delta_max", 3.0))
+            fade_w = float(getattr(self, "entity_lod_fade_width", 0.45))
+
+            def _lod_delta(abs_size: float) -> float | None:
+                ent_lod = math.log2(max(1e-12, abs_size))
+                delta = float(cam_lod) - ent_lod
+                if delta < dmin - fade_w or delta > dmax + fade_w:
+                    return None
+                return delta
+
+            def _intersects_tile(abs_x: float, abs_y: float, abs_size: float) -> bool:
+                half = 0.5 * float(abs_size)
+                ex0 = abs_x - half
+                ey0 = abs_y - half
+                ex1 = abs_x + half
+                ey1 = abs_y + half
+                return not (ex1 <= ax or ex0 >= ax + 1 or ey1 <= ay or ey0 >= ay + 1)
+
+            candidates: list[tuple[object, float]] = []
+            zz = int(getattr(self, "zone_coord", (0, 0, 0))[2])
+
+            world_index = getattr(self, "world_entity_index", None)
+            if world_index is not None:
+                for ref in world_index.query_abs_rect((ax, ay, ax + 1, ay + 1), z=zz, zone_span_cap=1):
+                    obj = ref.ent
+                    zx0, zy0, _z = ref.zone_coord
+                    ox, oy = ref.local_pos
+                    abs_x = float(zx0) * float(world_index.zone_w) + float(ox)
+                    abs_y = float(zy0) * float(world_index.zone_h) + float(oy)
+                    abs_size = self._size_for_render(obj)
+                    if not _intersects_tile(abs_x, abs_y, abs_size):
+                        continue
+                    delta = _lod_delta(abs_size)
+                    if delta is None:
+                        continue
+                    candidates.append((obj, float(delta)))
+
+            attn_store = getattr(self, "attn_store", None)
+            if attn_store is not None:
+                for obj, abs_x, abs_y in attn_store.query_abs_rect((ax, ay, ax + 1, ay + 1), zz=zz):
+                    abs_size = self._size_for_render(obj)
+                    if not _intersects_tile(float(abs_x), float(abs_y), abs_size):
+                        continue
+                    delta = _lod_delta(abs_size)
+                    if delta is None:
+                        continue
+                    candidates.append((obj, float(delta)))
+
+            if candidates:
+                # Prefer entities whose LOD best matches the camera.
+                tol = float(getattr(self, "look_lod_tolerance", 0.75))
+                min_delta = min(abs(d) for _, d in candidates)
+                filtered = [obj for obj, d in candidates if abs(d) <= min_delta + tol]
+
+                if filtered:
+                    try:
+                        from edgecaster.systems.actions import describe_entity_for_look
+                    except Exception:
+                        describe_entity_for_look = None  # type: ignore[assignment]
+                    ent = filtered[0]
+                    if describe_entity_for_look is not None:
+                        info = describe_entity_for_look(ent)
+                        glyph = info.get("glyph", "?")
+                        desc = info.get("description", "") or "You see nothing remarkable about it."
+                        lines = [str(glyph), "", str(desc)] if glyph else [str(desc)]
+                        hp_txt = info.get("hp_text")
+                        if hp_txt:
+                            lines.extend(["", str(hp_txt)])
+                        return "\n".join(lines)
+        except Exception:
+            pass
+
+        return f"You peer into the distance at ({ax}, {ay}) in zone ({zx}, {zy}). The terrain is too far to make out."
 
 
-    def describe_tile_at(self, pos: Tuple[int, int]) -> str:
-        level = self._level()
+    def describe_tile_at(
+        self,
+        pos: Tuple[int, int],
+        *,
+        level: Optional[LevelState] = None,
+        zone_coord: Optional[Tuple[int, int, int]] = None,
+    ) -> str:
+        if level is None:
+            level = self._level()
+        if zone_coord is None:
+            zone_coord = getattr(level, "coord", None) or getattr(self, "zone_coord", (0, 0, 0))
         tile = level.world.get_tile(*pos)
         if tile is None:
             return "You see nothing but void."
@@ -4909,8 +5066,8 @@ class Game:
             zone_w = int(getattr(cfg, "world_width", getattr(level.world, "width", 60) or 60))
             zone_h = int(getattr(cfg, "world_height", getattr(level.world, "height", 40) or 40))
 
-            # IMPORTANT: renderer uses game.zone_coord (not level.coord)
-            zx, zy, _zz = getattr(self, "zone_coord", (0, 0, 0))
+            # IMPORTANT: renderer uses the tile's zone_coord, not necessarily game.zone_coord.
+            zx, zy, _zz = zone_coord
             tx, ty = int(pos[0]), int(pos[1])
 
             abs_wx = float(int(zx) * zone_w + tx)
@@ -5478,6 +5635,15 @@ class Game:
             if id == self.player_id:
                 ax, ay = self._get_player_abs()
                 self._move_player_to_abs((ax + int(dx), ay + int(dy)))
+            else:
+                try:
+                    cur_abs = getattr(actor, "abs_pos", None)
+                    if cur_abs is None:
+                        cur_abs = self.abs_from_zone_local(level.coord, actor.pos)
+                    new_abs = (int(cur_abs[0]) + int(dx), int(cur_abs[1]) + int(dy))
+                    self._move_actor_to_abs(actor, new_abs, from_level=level)
+                except Exception:
+                    pass
             return
 
         # stair use is explicit, so only move/attack here
@@ -5540,6 +5706,8 @@ class Game:
 
         # Update local cached position (zone-relative)
         actor.pos = (nx, ny)
+        # Yoga: spatial bins are a cache, so any move invalidates them.
+        level.spatial_dirty = True
 
         # Canonical ABS update applies to *all* actors.
         # During migration, some actors may not yet have abs_pos; derive from
@@ -5579,6 +5747,53 @@ class Game:
 
     def _zone_dims(self) -> tuple[int, int]:
         return int(self.cfg.world_width), int(self.cfg.world_height)
+
+    def _active_zone_coords(
+        self,
+        *,
+        center: tuple[int, int, int] | None = None,
+        radius: int | None = None,
+    ) -> list[tuple[int, int, int]]:
+        """Return a list of zone coords within the active radius (Chebyshev)."""
+        if center is None:
+            center = self.zone_coord
+        if radius is None:
+            radius = int(getattr(self, "active_zone_radius", 1) or 1)
+        radius = max(0, int(radius))
+
+        zx, zy, zz = center
+        max_screen = max(0, int(self.cfg.world_map_screens) - 1)
+        coords: list[tuple[int, int, int]] = []
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                nx = max(0, min(max_screen, int(zx + dx)))
+                ny = max(0, min(max_screen, int(zy + dy)))
+                coords.append((nx, ny, int(zz)))
+        return coords
+
+    def _ensure_active_zones_loaded(self) -> list[LevelState]:
+        """Ensure all active zones around the player are loaded."""
+        levels: list[LevelState] = []
+        for coord in self._active_zone_coords():
+            try:
+                lvl = zones_system.get_zone(self, coord, up_pos=None)
+            except Exception:
+                continue
+            if lvl is not None:
+                levels.append(lvl)
+        return levels
+
+    def _is_zone_active(self, coord: tuple[int, int, int] | None) -> bool:
+        """Return True if a zone coord is within the active-radius window."""
+        if coord is None:
+            return False
+        zx, zy, zz = coord
+        cx, cy, cz = self.zone_coord
+        if int(zz) != int(cz):
+            return False
+        radius = int(getattr(self, "active_zone_radius", 1) or 1)
+        radius = max(0, radius)
+        return max(abs(int(zx) - int(cx)), abs(int(zy) - int(cy))) <= radius
 
     @staticmethod
     def _floor_divmod(a: int, b: int) -> tuple[int, int]:
@@ -5641,6 +5856,82 @@ class Game:
         p = self._player()
         setattr(p, "abs_pos", (int(abs_pos[0]), int(abs_pos[1])))
 
+    def _move_actor_to_abs(
+        self,
+        actor: Actor,
+        abs_pos: tuple[int, int],
+        *,
+        from_level: LevelState | None = None,
+    ) -> None:
+        """Move a non-player actor across zone boundaries using ABS coordinates."""
+        if getattr(actor, "id", None) == self.player_id:
+            self._move_player_to_abs(abs_pos)
+            return
+
+        if from_level is None:
+            try:
+                for lvl in self.levels.values():
+                    if actor.id in getattr(lvl, "actors", {}):
+                        from_level = lvl
+                        break
+            except Exception:
+                from_level = None
+        if from_level is None:
+            return
+
+        dest_coord, dest_local = self.zone_local_from_abs(
+            abs_pos,
+            depth=getattr(from_level, "coord", self.zone_coord)[2],
+            clamp_to_world=True,
+        )
+        dest_level = zones_system.get_zone(self, dest_coord, up_pos=None)
+        level_changed = getattr(from_level, "coord", None) != dest_coord
+
+        if level_changed:
+            try:
+                del from_level.actors[actor.id]
+            except Exception:
+                pass
+            try:
+                del from_level.entities[actor.id]
+            except Exception:
+                pass
+            try:
+                from_level.spatial_dirty = True
+            except Exception:
+                pass
+
+            actor.pos = dest_local
+            dest_level.actors[actor.id] = actor
+            try:
+                dest_level.entities[actor.id] = actor
+            except Exception:
+                pass
+            try:
+                dest_level.spatial_dirty = True
+            except Exception:
+                pass
+
+            # If this actor is AI-driven, schedule its next turn in the new level.
+            try:
+                tags = getattr(actor, "tags", None) or {}
+                if tags.get("ai"):
+                    self._schedule(
+                        dest_level,
+                        self.cfg.action_time_fast,
+                        lambda aid=actor.id, lvl=dest_level: self._monster_act(lvl, aid),
+                    )
+            except Exception:
+                pass
+        else:
+            actor.pos = dest_local
+            try:
+                dest_level.spatial_dirty = True
+            except Exception:
+                pass
+
+        setattr(actor, "abs_pos", (int(abs_pos[0]), int(abs_pos[1])))
+
     def _move_player_to_abs(self, abs_pos: tuple[int, int]) -> None:
         """
         Canonical movement primitive for the player:
@@ -5693,6 +5984,11 @@ class Game:
                 del old_level.entities[self.player_id]
             except Exception:
                 pass
+            # Yoga: old zone cache is stale after removing the player.
+            try:
+                old_level.spatial_dirty = True
+            except Exception:
+                pass
 
             self.zone_coord = dest_coord
             player.pos = dest_local
@@ -5701,6 +5997,11 @@ class Game:
 
             try:
                 dest_level.entities[self.player_id] = player
+            except Exception:
+                pass
+            # Yoga: dest zone cache must be rebuilt to include the player.
+            try:
+                dest_level.spatial_dirty = True
             except Exception:
                 pass
 
@@ -5714,6 +6015,11 @@ class Game:
         else:
             # Same chunk, just update local pos
             player.pos = dest_local
+            # Yoga: local move still invalidates the cached bins.
+            try:
+                dest_level.spatial_dirty = True
+            except Exception:
+                pass
 
         # Update canonical absolute
         self._set_player_abs(abs_pos)
@@ -5851,15 +6157,16 @@ class Game:
         if actor is None or not actor.alive:
             return
 
-        # If the player is not on this level (e.g. moved away), just
-        # reschedule a bit later and do nothing for now.
+        # If the player is not on this level, only act if this zone is in the
+        # active adjacency window (seamless boundary behavior).
         if self.player_id not in level.actors:
-            self._schedule(
-                level,
-                self.cfg.action_time_fast,
-                lambda aid=id, lvl=level: self._monster_act(lvl, aid),
-            )
-            return
+            if not self._is_zone_active(getattr(level, "coord", None)):
+                self._schedule(
+                    level,
+                    self.cfg.action_time_fast,
+                    lambda aid=id, lvl=level: self._monster_act(lvl, aid),
+                )
+                return
 
         # Status: Distracted (30% chance to lose turn)
         if self._has_status(actor, "distracted"):
@@ -5900,10 +6207,22 @@ class Game:
                 delay = self.cfg.action_time_fast
 
         # --- Schedule next turn -----------------------------------------
+        dest_level = level
+        if actor.id not in level.actors:
+            # Actor crossed a zone boundary; schedule on the new level.
+            try:
+                abs_pos = getattr(actor, "abs_pos", None)
+                if abs_pos is None:
+                    abs_pos = self.abs_from_zone_local(level.coord, actor.pos)
+                dest_coord, _ = self.zone_local_from_abs(abs_pos, depth=level.coord[2], clamp_to_world=True)
+                dest_level = zones_system.get_zone(self, dest_coord, up_pos=None)
+            except Exception:
+                dest_level = level
+
         self._schedule(
-            level,
+            dest_level,
             delay,
-            lambda aid=id, lvl=level: self._monster_act(lvl, aid),
+            lambda aid=id, lvl=dest_level: self._monster_act(lvl, aid),
         )
 
 

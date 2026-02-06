@@ -30,7 +30,13 @@ def schedule(game: "Game", level: "LevelState", delay: int, action: Callable[[],
     heapq.heappush(level.events, (level.current_tick + delay, level.order, action))
 
 
-def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
+def advance_time(
+    game: "Game",
+    level: "LevelState",
+    delta: int,
+    *,
+    apply_player_systems: bool = True,
+) -> None:
     """
     Advance time by `delta` ticks, executing any scheduled events.
 
@@ -62,6 +68,12 @@ def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
         action()
     level.current_tick = target
 
+    # Cooldowns tick down (always, for active zones)
+    cooldown_tick(game, level, delta)
+
+    if not apply_player_systems:
+        return
+
     # Decay activation TTL
     if level.activation_ttl > 0:
         level.activation_ttl = max(0, level.activation_ttl - delta)
@@ -77,9 +89,6 @@ def advance_time(game: "Game", level: "LevelState", delta: int) -> None:
 
     # Coherence drain based on vertices
     coherence_tick(game, level, delta)
-
-    # Cooldowns tick down
-    cooldown_tick(game, level, delta)
 
     # Chakra charge + resonance tick
     chakra_charge_tick(game, level, delta)

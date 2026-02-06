@@ -17,8 +17,8 @@ import random
 if TYPE_CHECKING:
     from edgecaster.game import Game, LevelState
 
-from edgecaster.content import pois as poi_content
 from edgecaster import prototypes
+from edgecaster.state.pois import ABSRect, POISpec, StructureSpec
 
 
 # ---------------------------------------------------------------------------
@@ -33,26 +33,65 @@ LEGENDARY_NAMES = [
 ]
 
 
+def _stable_hash(*parts: object) -> int:
+    """Return a deterministic hash for seed derivation."""
+    s = "|".join(str(p) for p in parts)
+    h = 2166136261
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return int(h)
+
+
+def _lair_seed(game: "Game", poi_id: str) -> int:
+    """Derive a deterministic seed for a lair from the game seed + poi_id."""
+    base = 0
+    try:
+        base = int(getattr(game, "fractal_seed", 0) or 0)
+    except Exception:
+        base = 0
+    if not base:
+        try:
+            base = int(getattr(getattr(game, "cfg", None), "seed", 0) or 0)
+        except Exception:
+            base = 0
+    return (base ^ _stable_hash("legendary_lair", poi_id)) & 0xFFFFFFFF
+
+
 # ---------------------------------------------------------------------------
 # POI ID Allocation
 # ---------------------------------------------------------------------------
 
-def alloc_legendary_lair_poi_id() -> str:
+def alloc_legendary_lair_poi_id(game: Optional["Game"] = None) -> str:
     """Return a unique POI id for a newly-generated legendary lair."""
+    existing: Set[str] = set()
+    try:
+        poi_reg = getattr(game, "poi_registry", None) if game is not None else None
+        if poi_reg is not None:
+            existing = {p.id for p in poi_reg}
+    except Exception:
+        existing = set()
     i = 0
     while True:
         pid = f"legendary_lair_{i:03d}"
-        if pid not in poi_content.POIS:
+        if pid not in existing:
             return pid
         i += 1
 
 
-def alloc_rune_anchor_poi_id() -> str:
+def alloc_rune_anchor_poi_id(game: Optional["Game"] = None) -> str:
     """Return a unique POI id for a rune anchor."""
+    existing: Set[str] = set()
+    try:
+        poi_reg = getattr(game, "poi_registry", None) if game is not None else None
+        if poi_reg is not None:
+            existing = {p.id for p in poi_reg}
+    except Exception:
+        existing = set()
     i = 0
     while True:
         pid = f"rune_anchor_{i:03d}"
-        if pid not in poi_content.POIS:
+        if pid not in existing:
             return pid
         i += 1
 
@@ -97,9 +136,17 @@ def init_legendaries(
         return legendary_registry
 
     # Avoid placing lairs on top of existing POIs
-    reserved_coords: Set[Tuple[int, int, int]] = {
-        tuple(poi.coord) for poi in poi_content.POIS.values()
-    }
+    reserved_coords: Set[Tuple[int, int, int]] = set()
+    try:
+        zone_w = int(getattr(getattr(game, "cfg", None), "world_width", 60) or 60)
+        zone_h = int(getattr(getattr(game, "cfg", None), "world_height", 40) or 40)
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is not None:
+            for poi in poi_reg:
+                for zx, zy in poi.get_zone_coords(zone_w, zone_h):
+                    reserved_coords.add((int(zx), int(zy), int(poi.depth)))
+    except Exception:
+        reserved_coords = set()
     reserved_coords.add(tuple(getattr(game, "zone_coord", (0, 0, 0))))
 
     used_names: Set[str] = set()
@@ -138,26 +185,50 @@ def init_legendaries(
         hp_mult = float(rng.uniform(3.0, 6.0))
 
         reserved_coords.add(coord)
-        poi_id = alloc_legendary_lair_poi_id()
+        poi_id = alloc_legendary_lair_poi_id(game)
         legendary_id = f"legendary_{created:03d}"
+        lair_seed = _lair_seed(game, poi_id)
 
+        # Register the lair in the yoga-compliant POI registry (ABS footprint).
         try:
-            poi_content.POIS[poi_id] = poi_content.POI(
-                id=poi_id,
-                coord=coord,
-                npcs=[],
-                structures=[
-                    {
-                        "kind": "legendary_lair",
+            poi_reg = getattr(game, "poi_registry", None)
+            if poi_reg is not None:
+                zone_w = int(getattr(getattr(game, "cfg", None), "world_width", 60) or 60)
+                zone_h = int(getattr(getattr(game, "cfg", None), "world_height", 40) or 40)
+                footprint = ABSRect.from_zone_coord(zx, zy, zone_w, zone_h)
+                anchor_abs = footprint.center
+                struct_spec = StructureSpec(
+                    kind="legendary_lair",
+                    relative_offset=(0, 0),
+                    tags={
                         "legendary_id": legendary_id,
                         "template_id": base_proto,
                         "name": full_name,
                         "hp_mult": hp_mult,
-                    }
-                ],
-            )
+                        "layout": "multi_room",
+                        "lair_seed": lair_seed,
+                    },
+                )
+                poi_spec = POISpec(
+                    id=poi_id,
+                    kind="legendary_lair",
+                    name=full_name,
+                    footprint=footprint,
+                    depth=0,
+                    anchor_abs=anchor_abs,
+                    npc_specs=[],
+                    structure_specs=[struct_spec],
+                    seed=lair_seed,
+                    tags={
+                        # Defer world-entity instantiation until rumor/discovery.
+                        "worldgen_on_rumor": True,
+                    },
+                )
+                poi_reg.add(poi_spec)
+                if hasattr(game, "refresh_poi_locations"):
+                    game.refresh_poi_locations()
         except Exception:
-            continue
+            pass
 
         legendary_registry[legendary_id] = {
             "poi_id": poi_id,
@@ -202,12 +273,45 @@ def add_poi_rumor(
 
     game.rumored_pois.add(poi_id)
 
+    # Keep cached POI markers in sync with registry changes.
+    if hasattr(game, "refresh_poi_locations"):
+        try:
+            game.refresh_poi_locations()
+        except Exception:
+            pass
+
+    # Instantiate world entities for rumor-gated POIs (e.g., lair walls).
+    try:
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is not None:
+            poi_spec = poi_reg.get(poi_id)
+            if poi_spec is not None:
+                from edgecaster.systems import poi_worldgen
+                cfg = getattr(game, "cfg", None)
+                zone_w = int(getattr(cfg, "world_width", 60) or 60)
+                zone_h = int(getattr(cfg, "world_height", 40) or 40)
+                poi_worldgen.ensure_poi_world_entities(game, poi_spec, zone_w=zone_w, zone_h=zone_h)
+    except Exception:
+        pass
+
     if not log:
         return
 
-    poi = poi_content.POIS.get(poi_id)
-    if poi:
-        zx, zy, _ = poi.coord
+    try:
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is not None:
+            poi_spec = poi_reg.get(poi_id)
+        else:
+            poi_spec = None
+    except Exception:
+        poi_spec = None
+
+    if poi_spec:
+        cfg = getattr(game, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+        ax, ay = poi_spec.anchor_abs
+        zx, zy = int(ax) // zone_w, int(ay) // zone_h
         game.log.add(f"You hear rumors of {poi_id.replace('_', ' ')} at ({zx}, {zy}).")
     else:
         game.log.add(f"You hear rumors of {poi_id.replace('_', ' ')}.")
@@ -232,6 +336,20 @@ def discover_pois_for_level(game: "Game", level: "LevelState") -> None:
     for pid in list(poi_ids):
         game.discovered_pois.add(str(pid))
         game.rumored_pois.discard(str(pid))
+
+        # Ensure rumor-gated POIs are instantiated once discovered.
+        try:
+            poi_reg = getattr(game, "poi_registry", None)
+            if poi_reg is not None:
+                poi_spec = poi_reg.get(str(pid))
+                if poi_spec is not None:
+                    from edgecaster.systems import poi_worldgen
+                    cfg = getattr(game, "cfg", None)
+                    zone_w = int(getattr(cfg, "world_width", 60) or 60)
+                    zone_h = int(getattr(cfg, "world_height", 40) or 40)
+                    poi_worldgen.ensure_poi_world_entities(game, poi_spec, zone_w=zone_w, zone_h=zone_h)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -268,25 +386,20 @@ def get_nearest_legendary_lairs(
     except Exception:
         ox, oy = 0, 0
 
-    # Build location cache if needed
-    locations = getattr(game, "poi_locations", None)
-    if not locations:
-        try:
-            locations = {pid: tuple(poi.coord) for pid, poi in poi_content.POIS.items()}
-        except Exception:
-            locations = {}
-
     scored: List[Tuple[int, str, Tuple[int, int, int]]] = []
-    for pid, coord in (locations or {}).items():
-        pid_s = str(pid)
-        if not pid_s.startswith("legendary_lair_"):
-            continue
-        try:
-            zx, zy, zz = int(coord[0]), int(coord[1]), int(coord[2])
-        except Exception:
-            continue
-        d2 = (zx - ox) * (zx - ox) + (zy - oy) * (zy - oy)
-        scored.append((d2, pid_s, (zx, zy, zz)))
+    poi_reg = getattr(game, "poi_registry", None)
+    if poi_reg is not None:
+        cfg = getattr(game, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+        for poi in poi_reg.get_by_kind("legendary_lair"):
+            ax, ay = poi.anchor_abs
+            zx, zy, zz = int(ax) // zone_w, int(ay) // zone_h, int(poi.depth)
+            d2 = (zx - ox) * (zx - ox) + (zy - oy) * (zy - oy)
+            scored.append((d2, poi.id, (zx, zy, zz)))
+    else:
+        # Registry is authoritative; no legacy fallback in yoga mode.
+        return []
 
     scored.sort(key=lambda t: (t[0], t[1]))
     return [(pid, coord) for _, pid, coord in scored[:n]]

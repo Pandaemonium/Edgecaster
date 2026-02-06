@@ -1,8 +1,6 @@
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, List
 import math
 import random
-from typing import Tuple, Optional, Dict, List
-from edgecaster.content import pois
 from edgecaster.corruption import CorruptionParams, julia_height_norm_corrupted
 
 # Import climate system for biome-aware generation
@@ -95,26 +93,19 @@ def generate_lab(world: World, rng) -> None:
 def apply_pois(
     world: World,
     coord: Tuple[int, int, int],
-    poi_registry: Optional["POIRegistry"] = None,  # type: ignore[name-defined]
+    poi_registry: "POIRegistry",  # type: ignore[name-defined]
 ) -> List[str]:
     """Return list of POI ids that apply to this coord.
 
-    If poi_registry is provided, uses spatial queries to find POIs that
-    overlap this zone (supporting multi-zone POIs). Otherwise falls back
-    to legacy exact coord matching.
+    Uses spatial queries to find POIs that overlap this zone
+    (supports multi-zone POIs). Legacy POIS dict is no longer used.
     """
     zx, zy, depth = coord
     hits = []
 
-    if poi_registry is not None:
-        # V2: Use registry spatial query (supports multi-zone POIs)
-        for poi_spec in poi_registry.get_at_zone(zx, zy, depth):
-            hits.append(poi_spec.id)
-    else:
-        # Legacy: Exact coord match
-        for pid, poi in pois.POIS.items():
-            if tuple(poi.coord) == tuple(coord):
-                hits.append(pid)
+    # V2: Use registry spatial query (supports multi-zone POIs)
+    for poi_spec in poi_registry.get_at_zone(zx, zy, depth):
+        hits.append(poi_spec.id)
 
     world.poi_ids = hits  # type: ignore[attr-defined]
     return hits

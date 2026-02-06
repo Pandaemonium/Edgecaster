@@ -9,6 +9,28 @@ from typing import Any, Dict, Tuple
 from edgecaster.systems import reputation as reputation_system
 
 
+def _get_player_actor(game: Any):
+    try:
+        return game._player()
+    except Exception:
+        return None
+
+
+def _abs_pos(game: Any, level: Any, actor: Any) -> tuple[int, int] | None:
+    """Return ABS position for an actor, falling back to zone/local if needed."""
+    try:
+        ap = getattr(actor, "abs_pos", None)
+        if ap is not None:
+            return (int(ap[0]), int(ap[1]))
+    except Exception:
+        pass
+    try:
+        coord = getattr(level, "coord", getattr(game, "zone_coord", (0, 0, 0)))
+        return game.abs_from_zone_local(coord, actor.pos)
+    except Exception:
+        return None
+
+
 def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     """
     Decide which Action this actor should take.
@@ -58,11 +80,9 @@ def _generic_walk_toward(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if not available:
         return ("wait", {})
 
-    player_id = getattr(game, "player_id", None)
-    if player_id is None or player_id not in level.actors:
+    player = _get_player_actor(game)
+    if player is None:
         return ("wait", {})
-
-    player = level.actors[player_id]
 
     # Reputation-driven hostility: don't chase/bump-attack the player unless hostile.
     try:
@@ -71,8 +91,12 @@ def _generic_walk_toward(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     except Exception:
         pass
 
-    px, py = player.pos
-    ax, ay = actor.pos
+    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+    a_abs = _abs_pos(game, level, actor)
+    if p_abs is None or a_abs is None:
+        return ("wait", {})
+    px, py = p_abs
+    ax, ay = a_abs
     dx = px - ax
     dy = py - ay
 
@@ -130,11 +154,9 @@ def _shackled_brute(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if not available:
         return ("wait", {})
 
-    player_id = getattr(game, "player_id", None)
-    if player_id is None or player_id not in level.actors:
+    player = _get_player_actor(game)
+    if player is None:
         return ("wait", {})
-
-    player = level.actors[player_id]
 
     # Reputation-driven hostility: don't chase/bump-attack the player unless hostile.
     try:
@@ -147,8 +169,12 @@ def _shackled_brute(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if move_action is None:
         return ("wait", {}) if "wait" in available else (available[0], {})
 
-    px, py = player.pos
-    ax, ay = actor.pos
+    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+    a_abs = _abs_pos(game, level, actor)
+    if p_abs is None or a_abs is None:
+        return ("wait", {})
+    px, py = p_abs
+    ax, ay = a_abs
     dx = px - ax
     dy = py - ay
 
@@ -185,11 +211,9 @@ def _gory_ascetic(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if not available:
         return ("wait", {})
 
-    player_id = getattr(game, "player_id", None)
-    if player_id is None or player_id not in level.actors:
+    player = _get_player_actor(game)
+    if player is None:
         return ("wait", {})
-
-    player = level.actors[player_id]
 
     # Reputation-driven hostility: don't chase/bump-attack the player unless hostile.
     try:
@@ -198,8 +222,12 @@ def _gory_ascetic(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     except Exception:
         pass
 
-    ax, ay = actor.pos
-    px, py = player.pos
+    a_abs = _abs_pos(game, level, actor)
+    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+    if a_abs is None or p_abs is None:
+        return ("wait", {})
+    ax, ay = a_abs
+    px, py = p_abs
     dist = abs(px - ax) + abs(py - ay)
 
     # Only flagellate when close.
@@ -237,12 +265,15 @@ def _lunatic(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     available = tuple(getattr(actor, "actions", ()))
     if not available:
         return ("wait", {})
-    player_id = getattr(game, "player_id", None)
-    if player_id is None or player_id not in level.actors:
+    player = _get_player_actor(game)
+    if player is None:
         return ("wait", {})
-    player = level.actors[player_id]
-    ax, ay = actor.pos
-    px, py = player.pos
+    a_abs = _abs_pos(game, level, actor)
+    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+    if a_abs is None or p_abs is None:
+        return ("wait", {})
+    ax, ay = a_abs
+    px, py = p_abs
     dist = abs(px - ax) + abs(py - ay)
     if dist <= 1:
         return _generic_walk_toward(game, level, actor)
@@ -304,8 +335,8 @@ def _imp_loudmouth(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if not available:
         return ("wait", {})
 
-    player_id = getattr(game, "player_id", None)
-    if player_id is None or player_id not in level.actors:
+    player = _get_player_actor(game)
+    if player is None:
         return ("wait", {})
 
     # Get RNG
@@ -331,11 +362,9 @@ def _war_drummer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if not available:
         return ("wait", {})
 
-    player_id = getattr(game, "player_id", None)
-    if player_id is None or player_id not in level.actors:
+    player = _get_player_actor(game)
+    if player is None:
         return ("wait", {})
-
-    player = level.actors[player_id]
 
     # If this actor shouldn't be hostile right now, don't act aggressive.
     try:
@@ -366,8 +395,12 @@ def _war_drummer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         except Exception:
             cd = 0
         if cd <= 0:
-            ax, ay = actor.pos
-            px, py = player.pos
+            a_abs = _abs_pos(game, level, actor)
+            p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+            if a_abs is None or p_abs is None:
+                return ("wait", {}) if "wait" in available else (available[0], {})
+            ax, ay = a_abs
+            px, py = p_abs
             dist = abs(px - ax) + abs(py - ay)
             if dist <= trigger_range:
                 # If there are other hostiles nearby, this is especially valuable.

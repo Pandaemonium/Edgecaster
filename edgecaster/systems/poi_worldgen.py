@@ -216,6 +216,49 @@ def _create_wall_world_entity(
     )
 
 
+def _create_lair_wall_world_entity(
+    poi_spec: POISpec,
+    abs_x: int,
+    abs_y: int,
+    zone_w: int,
+    zone_h: int,
+    *,
+    wall_color: Tuple[int, int, int] = (120, 105, 140),
+) -> POIWorldEntity:
+    """Create a world entity for a legendary lair wall segment."""
+    zx = abs_x // zone_w
+    zy = abs_y // zone_h
+    local_x = abs_x % zone_w
+    local_y = abs_y % zone_h
+
+    eid = poi_wall_world_id(poi_spec.id, abs_x, abs_y)
+
+    return POIWorldEntity(
+        id=eid,
+        poi_id=poi_spec.id,
+        content_type="wall",
+        name="Lair Wall",
+        glyph="#",
+        color=wall_color,
+        description="Ruin-scored stone walls.",
+        abs_pos=(abs_x, abs_y),
+        zone_coord=(zx, zy, poi_spec.depth),
+        pos=(local_x, local_y),
+        abs_size=2.5,  # Slightly smaller than colosseum walls
+        spec_data={
+            "wall": True,
+        },
+        tags={
+            "world_entity": True,
+            "poi_content": True,
+            "poi_id": poi_spec.id,
+            "content_type": "wall",
+            "blocks_movement": True,
+            "blocks_vision": True,
+        },
+    )
+
+
 # =============================================================================
 # POI World Entity Instantiation
 # =============================================================================
@@ -248,6 +291,14 @@ def ensure_poi_world_entities(
 
     if poi_spec.id in game._poi_worldgen_done:  # type: ignore
         return 0
+
+    # Defer world-entity generation until rumor/discovery for gated POIs.
+    tags = poi_spec.tags or {}
+    if tags.get("worldgen_on_rumor", False):
+        rumored = set(getattr(game, "rumored_pois", set()) or set())
+        discovered = set(getattr(game, "discovered_pois", set()) or set())
+        if poi_spec.id not in rumored and poi_spec.id not in discovered:
+            return 0
 
     # Ensure world_entity_index exists
     if getattr(game, "world_entity_index", None) is None:
@@ -289,6 +340,11 @@ def ensure_poi_world_entities(
         if struct_spec.kind == "colosseum_arena":
             # Generate wall positions for the arena
             wall_count = _create_colosseum_wall_entities(
+                game, poi_spec, struct_spec, zone_w, zone_h
+            )
+            created += wall_count
+        elif struct_spec.kind == "legendary_lair":
+            wall_count = _create_legendary_lair_world_entities(
                 game, poi_spec, struct_spec, zone_w, zone_h
             )
             created += wall_count
@@ -375,6 +431,75 @@ def _create_colosseum_wall_entities(
                         created += 1
                     except Exception:
                         pass
+
+    return created
+
+
+def _create_legendary_lair_world_entities(
+    game: "Game",
+    poi_spec: POISpec,
+    struct_spec: StructureSpec,
+    zone_w: int,
+    zone_h: int,
+) -> int:
+    """Create wall world entities for a legendary lair structure.
+
+    We generate the lair layout deterministically from the lair seed and
+    then extract only boundary walls (walls adjacent to floor) so the
+    ruin reads clearly in God Vision without flooding the index with
+    every wall tile.
+    """
+    from edgecaster.state.world import World
+    from edgecaster import mapgen_sites
+
+    layout = str(struct_spec.tags.get("layout") or "multi_room")
+    seed = struct_spec.tags.get("lair_seed", poi_spec.seed)
+    try:
+        seed = int(seed) & 0xFFFFFFFF
+    except Exception:
+        seed = int(poi_spec.seed) & 0xFFFFFFFF
+
+    rng = random.Random(seed)
+    world = World(width=zone_w, height=zone_h)
+    try:
+        mapgen_sites.generate_legendary_lair(world, rng, layout=layout)
+    except Exception:
+        return 0
+
+    def has_adjacent_floor(x: int, y: int) -> bool:
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if not world.in_bounds(nx, ny):
+                continue
+            tile = world.get_tile(nx, ny)
+            if tile and tile.walkable:
+                return True
+        return False
+
+    created = 0
+    fp = poi_spec.footprint
+    for y in range(world.height):
+        for x in range(world.width):
+            tile = world.get_tile(x, y)
+            if tile is None or tile.walkable:
+                continue
+            if not has_adjacent_floor(x, y):
+                continue
+
+            abs_x = fp.x0 + x
+            abs_y = fp.y0 + y
+            ent = _create_lair_wall_world_entity(
+                poi_spec, abs_x, abs_y, zone_w, zone_h
+            )
+            try:
+                game.world_entity_index.add(
+                    ent,
+                    zone_coord=ent.zone_coord,
+                    local_pos=ent.pos,
+                )
+                created += 1
+            except Exception:
+                pass
 
     return created
 

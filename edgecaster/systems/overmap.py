@@ -156,8 +156,6 @@ def init_rune_anchors(game: "Game") -> None:
     concentrated on the left side. Each anchor suppresses corruption in
     a local area.
     """
-    from edgecaster.content import pois as poi_content
-
     if getattr(game, "corruption_anchors", None) and len(game.corruption_anchors) > 0:
         return
     grid = getattr(game, "tile_julia_grid", None)
@@ -181,9 +179,11 @@ def init_rune_anchors(game: "Game") -> None:
 
     # Clear any previous dynamic anchors (e.g. if re-initialized in the same process).
     try:
-        for pid in list(poi_content.POIS.keys()):
-            if str(pid).startswith("rune_anchor_"):
-                del poi_content.POIS[pid]
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is not None:
+            for poi in list(poi_reg):
+                if str(getattr(poi, "id", "")).startswith("rune_anchor_"):
+                    poi_reg.remove(poi.id)
     except Exception:
         pass
 
@@ -193,8 +193,13 @@ def init_rune_anchors(game: "Game") -> None:
     # Use an isolated RNG so anchor placement doesn't perturb gameplay RNG.
     rng = random.Random(int(game.corruption_seed) + 424242)
 
+    occupied: set[tuple[int, int, int]] = set()
     try:
-        occupied: set[tuple[int, int, int]] = {tuple(poi.coord) for poi in poi_content.POIS.values()}
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is not None:
+            for poi in poi_reg:
+                for zx, zy in poi.get_zone_coords(zone_w, zone_h):
+                    occupied.add((int(zx), int(zy), int(poi.depth)))
     except Exception:
         occupied = set()
 
@@ -225,12 +230,25 @@ def init_rune_anchors(game: "Game") -> None:
 
         pid = f"rune_anchor_{len(anchors) - 1:03d}"
         try:
-            poi_content.POIS[pid] = poi_content.POI(
-                id=pid,
-                coord=coord,
-                npcs=[],
-                structures=[{"kind": "rune_anchor"}],
-            )
+            from edgecaster.state.pois import ABSRect, POISpec, StructureSpec
+            poi_reg = getattr(game, "poi_registry", None)
+            if poi_reg is not None:
+                footprint = ABSRect.from_zone_coord(zx, zy, zone_w, zone_h)
+                anchor_abs = footprint.center
+                struct_spec = StructureSpec(kind="rune_anchor", relative_offset=(0, 0), tags={})
+                poi_spec = POISpec(
+                    id=pid,
+                    kind="rune_anchor",
+                    name="Rune Anchor",
+                    footprint=footprint,
+                    depth=0,
+                    anchor_abs=anchor_abs,
+                    npc_specs=[],
+                    structure_specs=[struct_spec],
+                    seed=0,
+                    tags={},
+                )
+                poi_reg.add(poi_spec)
         except Exception:
             pass
 
@@ -238,6 +256,11 @@ def init_rune_anchors(game: "Game") -> None:
     if getattr(game, "overmap_params", None):
         try:
             game.overmap_params["corruption_anchors"] = list(game.corruption_anchors)
+        except Exception:
+            pass
+    if hasattr(game, "refresh_poi_locations"):
+        try:
+            game.refresh_poi_locations()
         except Exception:
             pass
 
@@ -574,12 +597,17 @@ def add_corruption_hotspot(game: "Game", jx: float, jy: float, strength: float, 
 
 def alloc_rune_anchor_poi_id(game: "Game") -> str:
     """Return a unique POI id for a newly-created rune anchor."""
-    from edgecaster.content import pois as poi_content
-
     i = 0
+    existing: set[str] = set()
+    try:
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is not None:
+            existing = {p.id for p in poi_reg}
+    except Exception:
+        existing = set()
     while True:
         pid = f"rune_anchor_{i:03d}"
-        if pid not in poi_content.POIS:
+        if pid not in existing:
             return pid
         i += 1
 
@@ -603,8 +631,6 @@ def add_corruption_anchor(
         coord: if provided, inject a POI at this zone coord so the anchor is discoverable on the world map.
         spawn_pos: optional tile position to spawn the visible anchor entity (if the zone already exists).
     """
-    from edgecaster.content import pois as poi_content
-
     sigma = max(1e-6, float(sigma))
     strength = max(0.0, min(1.0, float(strength)))
     if strength <= 0.0:
@@ -617,21 +643,36 @@ def add_corruption_anchor(
     if coord is not None:
         pid = alloc_rune_anchor_poi_id(game)
         try:
-            poi_content.POIS[pid] = poi_content.POI(
-                id=pid,
-                coord=tuple(coord),
-                npcs=[],
-                structures=[{"kind": "rune_anchor"}],
-            )
+            from edgecaster.state.pois import ABSRect, POISpec, StructureSpec
+            poi_reg = getattr(game, "poi_registry", None)
+            if poi_reg is not None:
+                zx, zy, zz = coord
+                zone_w = int(getattr(getattr(game, "cfg", None), "world_width", 60) or 60)
+                zone_h = int(getattr(getattr(game, "cfg", None), "world_height", 40) or 40)
+                footprint = ABSRect.from_zone_coord(int(zx), int(zy), zone_w, zone_h)
+                anchor_abs = footprint.center
+                struct_spec = StructureSpec(kind="rune_anchor", relative_offset=(0, 0), tags={})
+                poi_spec = POISpec(
+                    id=pid,
+                    kind="rune_anchor",
+                    name="Rune Anchor",
+                    footprint=footprint,
+                    depth=int(zz),
+                    anchor_abs=anchor_abs,
+                    npc_specs=[],
+                    structure_specs=[struct_spec],
+                    seed=0,
+                    tags={},
+                )
+                poi_reg.add(poi_spec)
         except Exception:
             pid = None
 
         # Keep the world-map marker list in sync with dynamic POIs.
         if pid is not None:
             try:
-                if getattr(game, "poi_locations", None) is None:
-                    game.poi_locations = {}
-                game.poi_locations[pid] = tuple(coord)
+                if hasattr(game, "refresh_poi_locations"):
+                    game.refresh_poi_locations()
             except Exception:
                 pass
 

@@ -72,6 +72,10 @@ class AsciiRenderer:
         self.pan_y = 0.0
         # Camera interaction timestamp (used to defer expensive sampling while actively panning/zooming)
         self._last_camera_input_ms = 0
+        # Follow mode: keep player anchored at a screen offset (0,0 == center).
+        # Right-drag updates this offset so the player stays at a chosen on-screen location.
+        self.camera_follow = True
+        self.camera_follow_offset_px = (0.0, 0.0)
 
         # Cache rendered glyph surfaces so we don"t call font.render() per cell per frame.
         # Key: (font_px, ch, r, g, b, alpha)
@@ -435,13 +439,27 @@ class AsciiRenderer:
         """
         self.pan_x += float(dx)
         self.pan_y += float(dy)
+        # If we're following the player, treat the pan as an offset update so
+        # the player remains at a fixed screen position.
+        if getattr(self, "camera_follow", False):
+            try:
+                ox, oy = self.camera_follow_offset_px
+            except Exception:
+                ox, oy = 0.0, 0.0
+            self.camera_follow_offset_px = (float(ox) + float(dx), float(oy) + float(dy))
 
         try:
             self._last_camera_input_ms = pygame.time.get_ticks()
         except Exception:
             self._last_camera_input_ms = 0
 
-    def center_camera_on_player(self, game: Game, *, snap_zoom: bool = True) -> None:
+    def center_camera_on_player(
+        self,
+        game: Game,
+        *,
+        snap_zoom: bool = True,
+        target_offset_px: tuple[float, float] | None = None,
+    ) -> None:
         """Center the camera on the player.
 
         IMPORTANT:
@@ -502,8 +520,16 @@ class AsciiRenderer:
         map_w = self.width - self.log_panel_width
         map_h = self.height - self.ability_bar_height - map_origin_y
 
-        cx = map_origin_x + map_w // 2
-        cy = map_origin_y + map_h // 2
+        offset_x = offset_y = 0.0
+        if target_offset_px is not None:
+            try:
+                offset_x = float(target_offset_px[0])
+                offset_y = float(target_offset_px[1])
+            except Exception:
+                offset_x = offset_y = 0.0
+
+        cx = map_origin_x + map_w // 2 + offset_x
+        cy = map_origin_y + map_h // 2 + offset_y
 
         world_scale = float(getattr(self, "tile_px", getattr(cam, "tile_px", self.base_tile)))
         world_scale = max(1.0, world_scale)
@@ -532,6 +558,8 @@ class AsciiRenderer:
         """Hard-reset pan/zoom to sane defaults and center on player."""
         self.pan_x = 0.0
         self.pan_y = 0.0
+        # Reset follow offset to center.
+        self.camera_follow_offset_px = (0.0, 0.0)
         # Camera interaction timestamp (used to defer expensive sampling while actively panning/zooming)
         self._last_camera_input_ms = 0
 

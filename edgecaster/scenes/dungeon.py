@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import math
 import pygame
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -288,6 +289,12 @@ class DungeonScene(Scene):
                         renderer.pan_x += dx
                     if hasattr(renderer, "pan_y"):
                         renderer.pan_y += dy
+                    if getattr(renderer, "camera_follow", False):
+                        try:
+                            ox, oy = renderer.camera_follow_offset_px
+                        except Exception:
+                            ox, oy = 0.0, 0.0
+                        renderer.camera_follow_offset_px = (float(ox) + dx, float(oy) + dy)
 
                 self._sync_attention_stage(game, renderer)
 
@@ -351,6 +358,17 @@ class DungeonScene(Scene):
 
         # Keep aim preview in sync with any param/hover changes.
         self._refresh_aim_prediction(game)
+
+        # Camera follow: keep player anchored each frame (respects manual pan offset).
+        if getattr(renderer, "camera_follow", False):
+            try:
+                renderer.center_camera_on_player(
+                    game,
+                    snap_zoom=False,
+                    target_offset_px=getattr(renderer, "camera_follow_offset_px", (0.0, 0.0)),
+                )
+            except Exception:
+                pass
 
     def render(self, renderer, manager: "SceneManager") -> None:  # type: ignore[name-defined]
         if self.game is None:
@@ -772,7 +790,11 @@ class DungeonScene(Scene):
             except Exception:
                 pass
             try:
-                renderer.center_camera_on_player(game, snap_zoom=False)  # Don't snap zoom, just recenter
+                renderer.center_camera_on_player(
+                    game,
+                    snap_zoom=False,
+                    target_offset_px=getattr(renderer, "camera_follow_offset_px", (0.0, 0.0)),
+                )  # Don't snap zoom, just recenter
                 try:
                     with open("C:/Games/Edgecaster/debug.log", "a") as f:
                         new_pan = (getattr(renderer, "pan_x", 0), getattr(renderer, "pan_y", 0))
@@ -1008,170 +1030,270 @@ class DungeonScene(Scene):
                 self.cancel_target_mode(game)
                 return
 
-        # If the ABS cursor is in the current zone, derive a local tile for in-zone entity inspection.
+        # Resolve ABS -> zone/local coordinates.
         tx_ty: tuple[int, int] | None = None
+        zone_coord: tuple[int, int, int] | None = None
         try:
-            zone, local = game.zone_local_from_abs(abs_tile, depth=getattr(game, "zone_coord", (0, 0, 0))[2], clamp_to_world=True)
-            if zone == getattr(game, "zone_coord", None) and local is not None:
+            zone_coord, local = game.zone_local_from_abs(
+                abs_tile,
+                depth=getattr(game, "zone_coord", (0, 0, 0))[2],
+                clamp_to_world=True,
+            )
+            if local is not None:
                 tx_ty = (int(local[0]), int(local[1]))
         except Exception:
+            zone_coord = None
             tx_ty = None
 
-        level = game._level() if hasattr(game, "_level") else None
+        # If the zone is loaded, we can inspect its concrete instances.
+        level_for_tile = None
+        if zone_coord is not None:
+            if zone_coord == getattr(game, "zone_coord", None):
+                try:
+                    level_for_tile = game._level()
+                except Exception:
+                    level_for_tile = None
+            else:
+                try:
+                    level_for_tile = game.get_zone_for_render(zone_coord)
+                except Exception:
+                    level_for_tile = None
+
+        # LOD context (used to pick which world-index entities to report).
+        cam_lod = 0.0
+        dmin = -5.0
+        dmax = 3.0
+        fade_w = 0.45
+        if renderer is not None:
+            try:
+                _abs_rect, cam_lod = renderer.get_camera_abs_rect_and_lod(game)
+            except Exception:
+                try:
+                    world_scale = float(getattr(renderer, "tile_px", float(getattr(renderer, "base_tile", 18)) * float(getattr(renderer, "zoom", 1.0))))
+                    world_scale = max(1e-6, world_scale)
+                    cam_lod = math.log2(float(getattr(renderer, "base_tile", 18)) / world_scale)
+                except Exception:
+                    cam_lod = 0.0
+            dmin = float(getattr(renderer, "entity_lod_delta_min", dmin))
+            dmax = float(getattr(renderer, "entity_lod_delta_max", dmax))
+            fade_w = float(getattr(renderer, "entity_lod_fade_width", fade_w))
+
+        ax = int(abs_tile[0])
+        ay = int(abs_tile[1])
+
+        def _lod_delta(abs_size: float) -> float | None:
+            ent_lod = math.log2(max(1e-12, float(abs_size)))
+            delta = float(cam_lod) - ent_lod
+            if delta < dmin - fade_w or delta > dmax + fade_w:
+                return None
+            return delta
+
+        def _intersects_tile(abs_x: float, abs_y: float, abs_size: float) -> bool:
+            half = 0.5 * float(abs_size)
+            ex0 = abs_x - half
+            ey0 = abs_y - half
+            ex1 = abs_x + half
+            ey1 = abs_y + half
+            return not (ex1 <= ax or ex0 >= ax + 1 or ey1 <= ay or ey0 >= ay + 1)
+
+        # Gather entity candidates across local zone + world index + attention store.
+        seen: dict[str | int, tuple[object, float]] = {}
+
+        def _add_candidate(ent: object, abs_x: float | None = None, abs_y: float | None = None) -> None:
+            key = getattr(ent, "id", None) or id(ent)
+            if abs_x is None or abs_y is None:
+                ap = getattr(ent, "abs_pos", None)
+                if ap:
+                    abs_x, abs_y = float(ap[0]), float(ap[1])
+                elif zone_coord is not None and getattr(ent, "pos", None) is not None:
+                    try:
+                        zx, zy, _zz = zone_coord
+                        ox, oy = getattr(ent, "pos", (0, 0))
+                        zw = int(getattr(game, "cfg", None).world_width) if getattr(game, "cfg", None) else 60
+                        zh = int(getattr(game, "cfg", None).world_height) if getattr(game, "cfg", None) else 40
+                        abs_x = float(int(zx) * zw + int(ox))
+                        abs_y = float(int(zy) * zh + int(oy))
+                    except Exception:
+                        abs_x = abs_y = None
+            if abs_x is None or abs_y is None:
+                return
+
+            abs_size = game._size_for_render(ent)
+            if not _intersects_tile(float(abs_x), float(abs_y), abs_size):
+                return
+            delta = _lod_delta(abs_size)
+            if delta is None:
+                return
+
+            prev = seen.get(key)
+            if prev is not None:
+                if abs(delta) >= abs(prev[1]):
+                    return
+            seen[key] = (ent, float(delta))
+
+        # 1) Concrete entities from loaded zone.
+        if level_for_tile is not None and tx_ty is not None:
+            tx, ty = tx_ty
+            for ent in list(level_for_tile.actors.values()) + list(level_for_tile.entities.values()):
+                if getattr(ent, "pos", None) != (tx, ty):
+                    continue
+                _add_candidate(ent)
+
+        # 2) World index entities (POIs, structures, macro).
+        try:
+            world_index = getattr(game, "world_entity_index", None)
+            if world_index is not None:
+                zz = int(getattr(game, "zone_coord", (0, 0, 0))[2])
+                for ref in world_index.query_abs_rect((ax, ay, ax + 1, ay + 1), z=zz, zone_span_cap=1):
+                    obj = ref.ent
+                    zx0, zy0, _z = ref.zone_coord
+                    ox, oy = ref.local_pos
+                    abs_x = float(zx0) * float(world_index.zone_w) + float(ox)
+                    abs_y = float(zy0) * float(world_index.zone_h) + float(oy)
+                    _add_candidate(obj, abs_x=abs_x, abs_y=abs_y)
+        except Exception:
+            pass
+
+        # 3) Attention-staged entities (derived, lightweight).
+        try:
+            attn_store = getattr(game, "attn_store", None)
+            if attn_store is not None:
+                zz = int(getattr(game, "zone_coord", (0, 0, 0))[2])
+                for obj, abs_x, abs_y in attn_store.query_abs_rect((ax, ay, ax + 1, ay + 1), zz=zz):
+                    _add_candidate(obj, abs_x=float(abs_x), abs_y=float(abs_y))
+        except Exception:
+            pass
+
+        # LOD-best filtering: keep entities closest to the camera LOD.
+        candidates = list(seen.values())
+        if candidates:
+            tol = float(getattr(game, "look_lod_tolerance", 0.75))
+            min_delta = min(abs(delta) for _, delta in candidates)
+            entities_here = [ent for ent, delta in candidates if abs(delta) <= min_delta + tol]
+        else:
+            entities_here = []
 
         title = "You look around..."
         body: str | None = None
 
-        if level is not None:
-            entities_here = []
+        if entities_here:
+            if len(entities_here) > 1:
+                # Prompt for which entity to inspect (terrain is not included here).
+                choices = []
+                infos = []
+                for ent in entities_here:
+                    info = describe_entity_for_look(ent)
+                    infos.append(info)
+                    choices.append(info.get("name", "Something") or "Something")
 
-            # Only scan for concrete entity instances when the target lies in the current loaded zone.
-            # Out-of-zone look should not attempt to match instance-local .pos.
-            if tx_ty is not None:
-                tx, ty = tx_ty
+                def _inspect_choice(idx: int, mgr) -> None:  # type: ignore[no-redef]
+                    if idx < 0 or idx >= len(entities_here):
+                        return
+                    ent = entities_here[idx]
+                    info = infos[idx]
+                    try:
+                        from .inventory_scene import LookScene
+                    except Exception:
+                        LookScene = None  # type: ignore[assignment]
 
-                # Prefer any renderable entities on this tile (actors, items, features, etc.).
-                try:
-                    renderables = game.renderables_current()
-                except Exception:
-                    renderables = []
-
-                # Gather unique entities at this tile (avoid actor duplicates mirrored in entities).
-                seen = {}
-                for e in renderables:
-                    if getattr(e, "pos", None) != (tx, ty):
-                        continue
-                    eid = getattr(e, "id", None)
-                    key = eid if eid is not None else id(e)
-                    if key in seen:
-                        continue
-                    seen[key] = e
-                entities_here = list(seen.values())
-
-
-            if entities_here:
-                if len(entities_here) > 1:
-                    # Prompt for which entity to inspect (terrain is not included here).
-                    choices = []
-                    infos = []
-                    for ent in entities_here:
-                        info = describe_entity_for_look(ent)
-                        infos.append(info)
-                        choices.append(info.get("name", "Something") or "Something")
-
-                    def _inspect_choice(idx: int, mgr) -> None:  # type: ignore[no-redef]
-                        if idx < 0 or idx >= len(entities_here):
-                            return
-                        ent = entities_here[idx]
-                        info = infos[idx]
-                        try:
-                            from .inventory_scene import LookScene
-                        except Exception:
-                            LookScene = None  # type: ignore[assignment]
-
-                        ent_id = getattr(ent, "id", None)
-                        if LookScene is not None and ent_id is not None:
-                            mgr.push_scene(
-                                LookScene(
-                                    game,
-                                    owner_id=str(ent_id),
-                                    title=info.get("name", "You inspect...") or "You inspect...",
-                                    source_px=self._entity_source_px_from_world(
-                                        getattr(mgr, "renderer", None),
-                                        getattr(ent, "abs_pos", None) or getattr(ent, "pos", None),
-                                    ),
-                                    source_glyph_px=int(getattr(getattr(mgr, "renderer", None), "glyph_px", getattr(getattr(mgr, "renderer", None), "tile", 1) or 1)),
-                                )
-                            )
-                            return
-
-                        # Fallback to a text popup.
-                        glyph = info.get("glyph", "?")
-                        desc = info.get("description", "") or "You see nothing remarkable about it."
-                        lines = [str(glyph), "", str(desc)] if glyph else [str(desc)]
-                        hp_txt = info.get("hp_text")
-                        if hp_txt:
-                            lines.extend(["", str(hp_txt)])
+                    ent_id = getattr(ent, "id", None)
+                    if LookScene is not None and ent_id is not None:
                         mgr.push_scene(
-                            UrgentMessageScene(
+                            LookScene(
                                 game,
-                                "\n".join(lines),
-                                title=info.get("name", title) or title,
-                                choices=["OK"],
+                                owner_id=str(ent_id),
+                                title=info.get("name", "You inspect...") or "You inspect...",
+                                source_px=self._entity_source_px_from_world(
+                                    getattr(mgr, "renderer", None),
+                                    getattr(ent, "abs_pos", None) or getattr(ent, "pos", None),
+                                ),
+                                source_glyph_px=int(getattr(getattr(mgr, "renderer", None), "glyph_px", getattr(getattr(mgr, "renderer", None), "tile", 1) or 1)),
                             )
                         )
+                        return
 
-                    manager.push_scene(
+                    # Fallback to a text popup.
+                    glyph = info.get("glyph", "?")
+                    desc = info.get("description", "") or "You see nothing remarkable about it."
+                    lines = [str(glyph), "", str(desc)] if glyph else [str(desc)]
+                    hp_txt = info.get("hp_text")
+                    if hp_txt:
+                        lines.extend(["", str(hp_txt)])
+                    mgr.push_scene(
                         UrgentMessageScene(
                             game,
-                            "Multiple things are here. Which do you inspect?",
-                            title="Inspect",
-                            choices=choices,
-                            on_choice=_inspect_choice,
+                            "\n".join(lines),
+                            title=info.get("name", title) or title,
+                            choices=["OK"],
                         )
                     )
-                    return
 
-                # Single entity: open a read-only inspect popup (InventoryScene in look mode)
-                primary = entities_here[0]
-                info = describe_entity_for_look(primary)
-
-                try:
-                    from .inventory_scene import LookScene
-                except Exception:
-                    LookScene = None  # type: ignore[assignment]
-
-                ent_id = getattr(primary, "id", None)
-                if LookScene is not None and ent_id is not None:
-                    rend = getattr(manager, "renderer", None)
-                    world_pos = getattr(primary, "abs_pos", None) or getattr(primary, "pos", None)
-                    manager.push_scene(
-                        LookScene(
-                            game,
-                            owner_id=str(ent_id),
-                            title=info.get("name", "You inspect...") or "You inspect...",
-                            source_px=self._entity_source_px_from_world(rend, world_pos),
-                            source_glyph_px=int(getattr(rend, "glyph_px", getattr(rend, "tile", 1) or 1)),
-                        )
+                manager.push_scene(
+                    UrgentMessageScene(
+                        game,
+                        "Multiple things are here. Which do you inspect?",
+                        title="Inspect",
+                        choices=choices,
+                        on_choice=_inspect_choice,
                     )
-                    return
+                )
+                return
+
+            # Single entity: open a read-only inspect popup (InventoryScene in look mode)
+            primary = entities_here[0]
+            info = describe_entity_for_look(primary)
+
+            try:
+                from .inventory_scene import LookScene
+            except Exception:
+                LookScene = None  # type: ignore[assignment]
+
+            ent_id = getattr(primary, "id", None)
+            if LookScene is not None and ent_id is not None:
+                rend = getattr(manager, "renderer", None)
+                world_pos = getattr(primary, "abs_pos", None) or getattr(primary, "pos", None)
+                manager.push_scene(
+                    LookScene(
+                        game,
+                        owner_id=str(ent_id),
+                        title=info.get("name", "You inspect...") or "You inspect...",
+                        source_px=self._entity_source_px_from_world(rend, world_pos),
+                        source_glyph_px=int(getattr(rend, "glyph_px", getattr(rend, "tile", 1) or 1)),
+                    )
+                )
+                return
 
 
-                # Fallback if LookScene can't be imported / entity has no id
-                title = info.get("name", title) or title
-                glyph = info.get("glyph", "?")
-                desc = info.get("description", "") or "You see nothing remarkable about it."
+            # Fallback if LookScene can't be imported / entity has no id
+            title = info.get("name", title) or title
+            glyph = info.get("glyph", "?")
+            desc = info.get("description", "") or "You see nothing remarkable about it."
 
-                lines: list[str] = []
-                if glyph:
-                    lines.append(str(glyph))
-                    lines.append("")
-                lines.append(str(desc))
-                hp_txt = info.get("hp_text")
-                if hp_txt:
-                    lines.append("")
-                    lines.append(str(hp_txt))
-                # Faction standings are already included in description, but add
-                # explicitly if passed separately (for fallback completeness)
-                faction_lines = info.get("faction_standings")
-                if faction_lines and "\nFaction Standings:" not in desc:
-                    lines.append("")
-                    lines.append("Faction Standings:")
-                    lines.extend(faction_lines)
-                body = "\n".join(lines)
-            else:
-                # No entities here: fall back to a tile description if available.
-                if tx_ty is not None and hasattr(game, "describe_tile_at"):
-                    body = game.describe_tile_at(tx_ty)
-                elif hasattr(game, "describe_abs_tile_at"):
-                    body = game.describe_abs_tile_at((int(abs_tile[0]), int(abs_tile[1])))
-                else:
-                    body = f"You look at a distant tile at ABS {abs_tile}."
-
-
+            lines: list[str] = []
+            if glyph:
+                lines.append(str(glyph))
+                lines.append("")
+            lines.append(str(desc))
+            hp_txt = info.get("hp_text")
+            if hp_txt:
+                lines.append("")
+                lines.append(str(hp_txt))
+            # Faction standings are already included in description, but add
+            # explicitly if passed separately (for fallback completeness)
+            faction_lines = info.get("faction_standings")
+            if faction_lines and "\nFaction Standings:" not in desc:
+                lines.append("")
+                lines.append("Faction Standings:")
+                lines.extend(faction_lines)
+            body = "\n".join(lines)
         else:
-            body = f"You look at the tile at {tx}, {ty}."
-
+            # No entities here: fall back to a tile description if available.
+            if tx_ty is not None and level_for_tile is not None and hasattr(game, "describe_tile_at"):
+                body = game.describe_tile_at(tx_ty, level=level_for_tile, zone_coord=zone_coord)
+            elif hasattr(game, "describe_abs_tile_at"):
+                body = game.describe_abs_tile_at((int(abs_tile[0]), int(abs_tile[1])), cam_lod=cam_lod)
+            else:
+                body = f"You look at a distant tile at ABS {abs_tile}."
         if not body:
             body = "You see nothing of interest."
 
