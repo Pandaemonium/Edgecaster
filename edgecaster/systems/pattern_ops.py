@@ -153,6 +153,7 @@ def try_place_terminus(game: "Game", target_abs: Tuple[int, int]) -> None:
         st["activation_points"] = []
         st["activation_ttl"] = 0
         st["pattern_motion"] = None
+        st["choking_vines_state"] = None
 
         # Keep level view consistent immediately.
         game._sync_level_pattern_view(lvl)
@@ -161,6 +162,7 @@ def try_place_terminus(game: "Game", target_abs: Tuple[int, int]) -> None:
         lvl.fern_active = False
         lvl.fern_growth_tips = []
         lvl.fern_accum = 0.0
+        lvl.choking_vines_state = None
         if hasattr(game, "_commit_pattern_state_from_level"):
             game._commit_pattern_state_from_level(lvl)
         
@@ -187,6 +189,7 @@ def reset_pattern(game: "Game") -> None:
     st["activation_points"] = []
     st["activation_ttl"] = 0
     st["pattern_motion"] = None
+    st["choking_vines_state"] = None
 
     game._sync_level_pattern_view(lvl)
 
@@ -194,6 +197,7 @@ def reset_pattern(game: "Game") -> None:
     lvl.fern_active = False
     lvl.fern_growth_tips = []
     lvl.fern_accum = 0.0
+    lvl.choking_vines_state = None
 
     player = game._player()
     player.stats.coherence = player.stats.max_coherence

@@ -1023,6 +1023,67 @@ def get_active_chakra_generator_graph(
     return positions, compact_edges, str(root_id), str(terminus_id)
 
 
+@dataclass(frozen=True)
+class ChakraGeneratorSeed:
+    """
+    Canonical chakra generator seed used by both runtime casting and UI preview.
+
+    Keeping these fields in a single object prevents preview/runtime drift and
+    gives downstream systems a stable place to attach per-vertex chakra metadata.
+    """
+
+    # Active chakra graph in schema space.
+    positions: Dict[str, Vec2]
+    compact_edges: List[Tuple[str, str]]
+    root_id: str
+    terminus_id: str
+
+    # Normalized custom-graph data (exact input to CustomGraphGenerator).
+    verts: List[Vec2]
+    edges: List[Tuple[int, int]]
+    node_order: List[str]
+    base_len: float
+
+
+def build_chakra_generator_seed(
+    body_schema: Dict[str, Any],
+    chakra_state: ChakraState,
+    *,
+    base_scale: float = 1.0,
+    require_root: bool = True,
+) -> ChakraGeneratorSeed:
+    """
+    Build the canonical chakra generator seed.
+
+    This is the single source of truth for:
+    - root/terminus selection
+    - active compact graph extraction
+    - normalized custom-graph conversion
+    """
+    positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph(
+        body_schema,
+        chakra_state,
+        base_scale=base_scale,
+        require_root=require_root,
+    )
+    verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
+        positions,
+        compact_edges,
+        root_id=root_id,
+        terminus_id=terminus_id,
+    )
+    return ChakraGeneratorSeed(
+        positions=positions,
+        compact_edges=compact_edges,
+        root_id=root_id,
+        terminus_id=terminus_id,
+        verts=verts,
+        edges=edges,
+        node_order=node_order,
+        base_len=base_len,
+    )
+
+
 def normalized_custom_graph_from_positions(
     positions: Dict[str, Vec2],
     compact_edges: List[Tuple[str, str]],

@@ -1433,6 +1433,7 @@ class DungeonScene(Scene):
         # canonical cursor state should be ABS so we can traverse vestigial zone boundaries.
         if t.kind in ("tile", "look", "position"):
             abs_tx, abs_ty = renderer.screen_to_abs_tile_int((mx, my))
+            abs_fx, abs_fy = renderer.screen_to_abs_tile((mx, my))
 
             # ABS cursor is canonical for ALL tile-ish targeting modes.
             self.ui_state.target_cursor_abs = (abs_tx, abs_ty)
@@ -1462,9 +1463,17 @@ class DungeonScene(Scene):
                         com = pattern_motion.center_of_mass(pattern)
                         com_world = (com[0] + anchor[0], com[1] + anchor[1])
 
-                        # Mouse target in world tile coords.
+                        # Mouse target in continuous world coords.
+                        #
+                        # Default behavior: free continuous aiming (no grid snap).
+                        # Hold Ctrl to force grid snapping for precision/repeatability.
                         ox, oy = renderer._zone_abs_offset(game)
-                        mouse_world = (abs_tx - ox, abs_ty - oy)
+                        mods = pygame.key.get_mods()
+                        snap_to_grid = bool(mods & pygame.KMOD_CTRL)
+                        if snap_to_grid:
+                            mouse_world = (float(abs_tx - ox), float(abs_ty - oy))
+                        else:
+                            mouse_world = (float(abs_fx - ox), float(abs_fy - oy))
 
                         dx = mouse_world[0] - com_world[0]
                         dy = mouse_world[1] - com_world[1]
@@ -1477,6 +1486,8 @@ class DungeonScene(Scene):
                             dx *= scale
                             dy *= scale
                         tgt = (com_world[0] + dx, com_world[1] + dy)
+                        if snap_to_grid:
+                            tgt = (float(round(tgt[0])), float(round(tgt[1])))
                         self.ui_state.push_target = tgt
                         self.ui_state.push_preview = pattern_motion.build_push_preview(
                             pattern, anchor, tgt, self.ui_state.push_rotation, max_range
@@ -1496,7 +1507,12 @@ class DungeonScene(Scene):
                         com_world = (com[0] + anchor[0], com[1] + anchor[1])
 
                         ox, oy = renderer._zone_abs_offset(game)
-                        mouse_world = (abs_tx - ox, abs_ty - oy)
+                        mods = pygame.key.get_mods()
+                        snap_to_grid = bool(mods & pygame.KMOD_CTRL)
+                        if snap_to_grid:
+                            mouse_world = (float(abs_tx - ox), float(abs_ty - oy))
+                        else:
+                            mouse_world = (float(abs_fx - ox), float(abs_fy - oy))
 
                         dx = mouse_world[0] - com_world[0]
                         dy = mouse_world[1] - com_world[1]
@@ -1509,6 +1525,8 @@ class DungeonScene(Scene):
                             dx *= scale
                             dy *= scale
                         tgt = (com_world[0] + dx, com_world[1] + dy)
+                        if snap_to_grid:
+                            tgt = (float(round(tgt[0])), float(round(tgt[1])))
                         self.ui_state.push_target = tgt
                         self.ui_state.push_preview = pattern_motion.build_push_preview(
                             pattern, anchor, tgt, self.ui_state.push_rotation, max_range

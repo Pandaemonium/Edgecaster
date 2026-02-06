@@ -1287,17 +1287,15 @@ class PatternPreviewWidget(Widget):
         body_schema = _get_body_schema(self.actor)
         chakra_state = self.state_override or _get_chakra_state(self.actor)
 
-        # Build the same active graph used by runtime chakra casting.
-        # We keep `require_root=False` in preview so users can still see shape
-        # while choosing a root, but root-aware behavior matches runtime once
-        # a root is selected.
-        from edgecaster.systems.chakras import get_active_chakra_generator_graph
-
         try:
-            positions, compact_edges, root_hint, _terminus_hint = get_active_chakra_generator_graph(
+            # Canonical seed builder used by runtime cast as well.
+            # Keeping preview on the same builder avoids drift bugs.
+            from edgecaster.systems.chakras import build_chakra_generator_seed
+
+            seed = build_chakra_generator_seed(
                 body_schema,
                 chakra_state,
-                base_scale=50.0,  # larger for panel readability
+                base_scale=1.0,
                 require_root=False,
             )
         except Exception:
@@ -1312,62 +1310,59 @@ class PatternPreviewWidget(Widget):
         surf = pygame.Surface((size, size), pygame.SRCALPHA)
         center = size // 2
 
-        # Choose a root + baseline so the preview scale matches generator math.
-        # This avoids misleading size shifts for deeper chakras.
-        xs = [p[0] for p in positions.values()]
-        ys = [p[1] for p in positions.values()]
+        # Render the exact normalized custom graph that runtime applies.
+        # This makes the right-side preview a true WYSIWYG of Chakra cast shape.
+        xs = [p[0] for p in seed.verts]
+        ys = [p[1] for p in seed.verts]
         if not xs or not ys:
             self._pattern_surface = surf
             return
 
-        root_id = root_hint
-        root_pos = positions[root_id]
-
-        # Pick terminus as the furthest ACTIVE node by Euclidean distance.
-        active_ids = [nid for nid in chakra_state.active if nid in positions]
-        if len(active_ids) > 1 and root_id in active_ids:
-            active_ids = [nid for nid in active_ids if nid != root_id]
-        if not active_ids:
-            active_ids = list(positions.keys())
-
-        def dist_sq_from_root(nid: str) -> float:
-            px, py = positions.get(nid, root_pos)
-            dx = px - root_pos[0]
-            dy = py - root_pos[1]
-            return dx * dx + dy * dy
-
-        furthest_id = max(active_ids, key=dist_sq_from_root)
-        furthest_pos = positions.get(furthest_id, root_pos)
-        base_len = math.hypot(furthest_pos[0] - root_pos[0], furthest_pos[1] - root_pos[1])
-        if base_len < 1e-6:
-            base_len = 1.0
-
-        # Scale so the baseline (root -> furthest) occupies ~60% of the panel.
-        scale = (size * 0.6) / base_len
-        cx, cy = root_pos
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        span_x = max(1e-6, max_x - min_x)
+        span_y = max(1e-6, max_y - min_y)
+        # Keep generous margins so long, thin graphs remain readable.
+        target_w = size * 0.72
+        target_h = size * 0.72
+        scale = min(target_w / span_x, target_h / span_y)
 
         # Map positions to surface coordinates
-        mapped = {}
-        for node_id, (x, y) in positions.items():
-            px = int(center + (x - cx) * scale)
-            py = int(center + (y - cy) * scale)
-            mapped[node_id] = (px, py)
+        graph_cx = 0.5 * (min_x + max_x)
+        graph_cy = 0.5 * (min_y + max_y)
+        mapped: List[Tuple[int, int]] = []
+        for (x, y) in seed.verts:
+            px = int(center + (x - graph_cx) * scale)
+            py = int(center + (y - graph_cy) * scale)
+            mapped.append((px, py))
 
-        # Draw edges (compact active graph)
+        # Draw edges (same edge index pairs used by runtime custom generator)
         edge_color = (100, 180, 220, 180)
-
-        for parent_id, child_id in compact_edges:
-            if parent_id in mapped and child_id in mapped:
-                pygame.draw.aaline(
-                    surf,
-                    edge_color[:3],
-                    mapped[parent_id],
-                    mapped[child_id],
-                )
+        for a_idx, b_idx in seed.edges:
+            if not (0 <= a_idx < len(mapped) and 0 <= b_idx < len(mapped)):
+                continue
+            pygame.draw.aaline(
+                surf,
+                edge_color[:3],
+                mapped[a_idx],
+                mapped[b_idx],
+            )
 
         # Draw vertices
-        vertex_color = (255, 220, 100)
-        for pos in mapped.values():
+        default_vertex_color = (255, 220, 100)
+        root_vertex_color = (170, 230, 255)
+        term_vertex_color = (255, 210, 140)
+        root_idx = 0
+        term_idx = len(mapped) - 1
+        for i, pos in enumerate(mapped):
+            if i == root_idx:
+                vertex_color = root_vertex_color
+            elif i == term_idx:
+                vertex_color = term_vertex_color
+            else:
+                vertex_color = default_vertex_color
             # Glow
             glow_surf = pygame.Surface((16, 16), pygame.SRCALPHA)
             pygame.draw.circle(glow_surf, (*vertex_color, 60), (8, 8), 8)

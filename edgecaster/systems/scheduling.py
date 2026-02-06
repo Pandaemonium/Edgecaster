@@ -16,7 +16,10 @@ All functions accept (game, level, ...) as parameters.
 from __future__ import annotations
 
 import heapq
+import math
 from typing import TYPE_CHECKING, Callable
+
+from edgecaster.systems import damage_policy as damage_policy_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -102,6 +105,8 @@ def advance_time(
     # Fern growth tick (Barnsley fern auto-growth)
     from edgecaster.systems import fern_growth
     fern_growth.tick(game, level, delta)
+    # Choking Vines tick (edge-grown tendril control effect)
+    choking_vines_tick(game, level, delta)
     # Sealing rune trials (match evaluation)
     try:
         from edgecaster.systems import seal_trials
@@ -194,6 +199,8 @@ def coherence_tick(game: "Game", level: "LevelState", delta: int) -> None:
         level.fern_active = False
         level.fern_growth_tips = []
         level.fern_accum = 0.0
+        # Clear vine simulation tied to the old rune geometry.
+        level.choking_vines_state = None
         game.log.add("Your pattern loses coherence and unravels.")
         stats.coherence = stats.max_coherence
 
@@ -373,15 +380,25 @@ def acidic_pattern_tick(game: "Game", level: "LevelState") -> None:
                 y += sy
         return points
 
-    # Map enemy positions to actors
+    # Map hostile positions to actors via centralized policy.
     enemy_positions: dict[tuple[int, int], "Actor"] = {}
     player_id = getattr(game, "player_id", None)
-    for actor in level.actors.values():
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=False,
+        include_friendly=False,
+        include_environment=False,
+    )
+    for _tid, actor in damage_policy_system.iter_damage_targets(
+        game,
+        level,
+        str(player_id),
+        policy,
+        include_actors=True,
+        include_entities=False,
+    ):
         if not getattr(actor, "alive", True):
-            continue
-        if actor.id == player_id:
-            continue
-        if getattr(actor, "faction", None) == "player":
             continue
         enemy_positions[actor.pos] = actor
 
@@ -446,6 +463,279 @@ def acidic_pattern_tick(game: "Game", level: "LevelState") -> None:
 
     # Prune orphaned vertices
     _prune_orphaned_vertices(pattern)
+
+
+def choking_vines_tick(game: "Game", level: "LevelState", delta: int) -> None:
+    """Advance Choking Vines simulation for `delta` ticks.
+
+    The state is stored on `level.choking_vines_state` with ABS-space segment/tip
+    coordinates so it remains coherent across zone-view sync.
+    """
+    if delta <= 0:
+        return
+    state = getattr(level, "choking_vines_state", None)
+    if not state:
+        return
+
+    try:
+        remaining = int(state.get("remaining", 0))
+    except Exception:
+        level.choking_vines_state = None
+        return
+
+    for _ in range(int(delta)):
+        if remaining <= 0:
+            break
+        _step_choking_vines(game, level, state)
+        remaining -= 1
+        state["remaining"] = remaining
+
+    # Keep activation overlay loosely in sync with active vine tips.
+    try:
+        zx, zy, _ = getattr(level, "coord", getattr(game, "zone_coord", (0, 0, 0)))
+        zw, zh = game._zone_dims()
+        ox = float(zx * zw)
+        oy = float(zy * zh)
+        tips = list(state.get("tips", []) or [])
+        level.activation_points = [
+            (float(t["x"]) - ox, float(t["y"]) - oy)
+            for t in tips
+            if "x" in t and "y" in t
+        ]
+        if level.activation_points:
+            level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 3)
+    except Exception:
+        pass
+
+    if remaining <= 0:
+        level.choking_vines_state = None
+
+    # Keep canonical per-depth pattern state synced with vine runtime state so
+    # crossing zones does not revert to stale tendril geometry.
+    try:
+        game._commit_pattern_state_from_level(level)
+    except Exception:
+        pass
+
+
+def _step_choking_vines(game: "Game", level: "LevelState", state: dict) -> None:
+    """Single-tick growth step for Choking Vines."""
+    caster_id = str(state.get("caster_id", getattr(game, "player_id", "")))
+    tick_idx = int(state.get("tick", 0))
+    state["tick"] = tick_idx + 1
+
+    try:
+        zx, zy, _ = getattr(level, "coord", getattr(game, "zone_coord", (0, 0, 0)))
+        zw, zh = game._zone_dims()
+    except Exception:
+        zx = zy = 0
+        zw = zh = 1
+    ox = float(zx * zw)
+    oy = float(zy * zh)
+
+    # Hostiles only (no self/friendly/environment hits for this control ability).
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=False,
+        include_friendly=False,
+        include_environment=False,
+    )
+    hostiles: list[tuple[str, "Actor", float, float]] = []
+    for tid, obj in damage_policy_system.iter_damage_targets(
+        game,
+        level,
+        caster_id,
+        policy,
+        include_actors=True,
+        include_entities=False,
+    ):
+        pos = getattr(obj, "pos", None)
+        if not pos:
+            continue
+        hostiles.append((str(tid), obj, float(pos[0]) + ox + 0.5, float(pos[1]) + oy + 0.5))
+
+    tips: list[dict] = list(state.get("tips", []) or [])
+    if not tips and not hostiles:
+        return
+
+    segments: list[tuple[float, float, float, float]] = list(state.get("segments", []) or [])
+    edge_midpoints_abs: list[tuple[float, float]] = list(state.get("edge_midpoints_abs", []) or [])
+    accum_damage: dict[str, float] = dict(state.get("accum_damage", {}) or {})
+
+    max_tips = int(state.get("max_tips", 10) or 10)
+    max_segments = int(state.get("max_segments", 360) or 360)
+    spawn_radius = float(state.get("spawn_radius", 2.6) or 2.6)
+    grow_step = float(state.get("grow_step", 0.30) or 0.30)
+    branch_chance = float(state.get("branch_chance", 0.12) or 0.12)
+    seek_radius = float(state.get("seek_radius", 7.0) or 7.0)
+    max_tip_range = float(state.get("max_tip_range", 6.5) or 6.5)
+    hit_radius = float(state.get("hit_radius", 1.15) or 1.15)
+    base_damage = float(state.get("base_damage", 1.6) or 1.6)
+    ensnare_mult = float(state.get("ensnare_slow_mult", 1.30) or 1.30)
+
+    # Periodically seed additional tips from edge centers near hostiles so the
+    # effect can re-acquire targets as combat moves.
+    if hostiles and edge_midpoints_abs and (tick_idx % 4 == 0) and len(tips) < max_tips:
+        tip_pts = [(float(t.get("x", 0.0)), float(t.get("y", 0.0))) for t in tips]
+        for _tid, _obj, hx, hy in hostiles:
+            if len(tips) >= max_tips:
+                break
+            # If a tip is already close to this hostile, skip reseeding.
+            close_tip = False
+            for tx, ty in tip_pts:
+                if (hx - tx) * (hx - tx) + (hy - ty) * (hy - ty) <= (spawn_radius * 0.7) ** 2:
+                    close_tip = True
+                    break
+            if close_tip:
+                continue
+            best = None
+            best_d2 = 1e18
+            for mx, my in edge_midpoints_abs:
+                dx = hx - mx
+                dy = hy - my
+                d2 = dx * dx + dy * dy
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = (mx, my)
+            if best is None or math.sqrt(best_d2) > spawn_radius:
+                continue
+            tips.append(
+                {
+                    "x": float(best[0]),
+                    "y": float(best[1]),
+                    "age": 0.0,
+                    "ox": float(best[0]),
+                    "oy": float(best[1]),
+                }
+            )
+            tip_pts.append((float(best[0]), float(best[1])))
+
+    new_tips: list[dict] = []
+    for tip in list(tips):
+        tx = float(tip.get("x", 0.0))
+        ty = float(tip.get("y", 0.0))
+        tip["age"] = float(tip.get("age", 0.0)) + 1.0
+
+        if not hostiles:
+            # No targets: tip idles (keeps existing geometry visible briefly).
+            continue
+
+        # Seek nearest hostile.
+        nearest = None
+        best_d2 = 1e18
+        for target in hostiles:
+            dx = target[2] - tx
+            dy = target[3] - ty
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                nearest = target
+        if nearest is None:
+            continue
+
+        _tid, _obj, hx, hy = nearest
+        if best_d2 > (seek_radius * seek_radius):
+            # No target near enough to justify additional spread this tick.
+            continue
+        dist = max(1e-6, math.sqrt(best_d2))
+        ux = (hx - tx) / dist
+        uy = (hy - ty) / dist
+        # Small lateral jitter keeps tendrils organic without exploding.
+        jitter = (float(getattr(game, "rng").random()) - 0.5) * 0.30
+        px = -uy
+        py = ux
+        nx = tx + ux * grow_step + px * jitter
+        ny = ty + uy * grow_step + py * jitter
+
+        # Local leash: each tip can only wander a short distance from where it
+        # originally emerged from the rune edge.
+        ox_tip = float(tip.get("ox", tx))
+        oy_tip = float(tip.get("oy", ty))
+        ldx = nx - ox_tip
+        ldy = ny - oy_tip
+        leash_d2 = ldx * ldx + ldy * ldy
+        if leash_d2 > (max_tip_range * max_tip_range):
+            leash_d = max(1e-6, math.sqrt(leash_d2))
+            scale = max_tip_range / leash_d
+            nx = ox_tip + ldx * scale
+            ny = oy_tip + ldy * scale
+
+        segments.append((tx, ty, nx, ny))
+        tip["x"] = nx
+        tip["y"] = ny
+
+        if len(segments) > max_segments:
+            segments = segments[-max_segments:]
+
+        # Branch from the end of an existing tendril.
+        if len(tips) + len(new_tips) < max_tips and float(getattr(game, "rng").random()) < branch_chance:
+            ang = math.atan2(uy, ux) + float(getattr(game, "rng").uniform(-0.9, 0.9))
+            bstep = grow_step * 0.65
+            bx = nx + math.cos(ang) * bstep
+            by = ny + math.sin(ang) * bstep
+            segments.append((nx, ny, bx, by))
+            new_tips.append(
+                {
+                    "x": bx,
+                    "y": by,
+                    "age": 0.0,
+                    # Child branches inherit the same leash origin.
+                    "ox": ox_tip,
+                    "oy": oy_tip,
+                }
+            )
+
+        # Contact logic: damage + ensnare to hostiles near the tip.
+        for target_id, target_actor, tax, tay in hostiles:
+            ddx = tax - nx
+            ddy = tay - ny
+            tdist = math.sqrt(ddx * ddx + ddy * ddy)
+            if tdist > hit_radius:
+                continue
+            dmg_f = base_damage * max(0.15, 1.0 - (tdist / max(hit_radius, 1e-6)))
+            prev = float(accum_damage.get(target_id, 0.0))
+            cur = prev + dmg_f
+            dmg_i = int(cur)
+            accum_damage[target_id] = cur - float(dmg_i)
+            if dmg_i <= 0:
+                continue
+
+            try:
+                target_actor.stats.hp -= int(dmg_i)
+                target_actor.stats.clamp()
+            except Exception:
+                continue
+
+            # Ensnare uses existing slow machinery for low-code-path overhead.
+            try:
+                tags = getattr(target_actor, "tags", None) or {}
+                cur_slow = float(tags.get("frozen_slow", 1.0))
+                if ensnare_mult > cur_slow:
+                    tags["frozen_slow"] = ensnare_mult
+                    tags["frozen_slow_timer"] = 0.0
+                target_actor.tags = tags
+            except Exception:
+                pass
+            try:
+                target_actor.statuses["ensnared"] = max(int(target_actor.statuses.get("ensnared", 0)), 2)
+            except Exception:
+                pass
+
+            if int(getattr(target_actor.stats, "hp", 0)) <= 0 and target_id in getattr(level, "actors", {}):
+                game._kill_actor(
+                    level,
+                    target_actor,
+                    killer_id=caster_id,
+                    killer_is_player=(caster_id == str(getattr(game, "player_id", ""))),
+                )
+
+    if new_tips:
+        tips.extend(new_tips[: max(0, max_tips - len(tips))])
+
+    state["tips"] = tips[:max_tips]
+    state["segments"] = segments[-max_segments:]
+    state["accum_damage"] = accum_damage
 
 
 def _edge_green_intensity(edge, edge_colors: dict) -> float:

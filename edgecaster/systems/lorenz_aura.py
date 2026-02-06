@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from edgecaster import lorenz
 from edgecaster.patterns import builder
+from edgecaster.systems import damage_policy as damage_policy_system
 
 
 # ---------------------------------------------------------------------------
@@ -222,12 +223,22 @@ def _apply_damage_to_hostiles(
     """
     base_damage = 1  # TODO: scale with stats later
 
-    for actor in list(level.actors.values()):
-        if not actor.alive:
-            continue
-        if actor.id == game.player_id:
-            continue
-        if actor.faction != "hostile":
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=False,
+        include_friendly=False,
+        include_environment=False,
+    )
+    for _tid, actor in damage_policy_system.iter_damage_targets(
+        game,
+        level,
+        game.player_id,
+        policy,
+        include_actors=True,
+        include_entities=False,
+    ):
+        if not getattr(actor, "alive", True):
             continue
 
         hits = tile_hits.get(actor.pos, 0)
@@ -311,4 +322,9 @@ def reset_on_zone_change(game: "Game", player: "Actor") -> None:
     lvl.pattern_anchor = None
     lvl.activation_points = []
     lvl.activation_ttl = 0
+    lvl.choking_vines_state = None
+    lvl.acidic_pattern = False
+    lvl.fern_active = False
+    lvl.fern_growth_tips = []
+    lvl.fern_accum = 0.0
     player.stats.coherence = player.stats.max_coherence

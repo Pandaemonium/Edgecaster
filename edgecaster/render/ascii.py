@@ -3151,6 +3151,55 @@ class AsciiRenderer:
         if inner > 0:
             pygame.draw.rect(self.surface, col, pygame.Rect(x + 2, y + 2, inner, inner), width=1)
 
+    def draw_seal_trial_status(self, game: Game) -> None:
+        """Draw a small status panel describing current seal-trial readiness."""
+        level = game._level()
+        trial = getattr(level, "seal_trial", None)
+        if trial is None:
+            return
+
+        try:
+            from edgecaster.systems import seal_trials
+
+            lines = seal_trials.build_trial_status_lines(game, level, trial)
+        except Exception:
+            lines = []
+
+        if not lines:
+            return
+
+        # Keep this panel on the map side (left of log) and below the top HUD strip.
+        max_w = max(220, self.width - self.log_panel_width - 24)
+        line_surfs = [self.small_font.render(line, True, self.fg) for line in lines]
+        text_w = max(s.get_width() for s in line_surfs)
+        text_h = sum(s.get_height() + 2 for s in line_surfs)
+
+        panel_w = min(max_w, text_w + 16)
+        panel_h = text_h + 12
+        panel_x = 8
+        panel_y = self.top_bar_height + 8
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        if getattr(trial, "sealed", False):
+            border = (80, 180, 120, 210)
+        elif getattr(trial, "ready_to_seal", False):
+            border = (220, 200, 120, 210)
+        else:
+            border = (120, 150, 220, 200)
+        panel.fill((12, 14, 24, 205))
+        pygame.draw.rect(panel, border, pygame.Rect(0, 0, panel_w, panel_h), 1)
+
+        y = 6
+        for i, surf in enumerate(line_surfs):
+            if i == 0:
+                header = self.small_font.render(lines[i], True, self.sel)
+                panel.blit(header, (8, y))
+            else:
+                panel.blit(surf, (8, y))
+            y += surf.get_height() + 2
+
+        self.surface.blit(panel, (panel_x, panel_y))
+
     def draw_action_preview_underlay(self, game: Game) -> None:
         """Draw a scene-provided action preview under entities (pure view)."""
         preview = self._ui_attr("action_preview", None)
@@ -3803,6 +3852,75 @@ class AsciiRenderer:
 
         self.surface.blit(overlay, (0, 0))
 
+    def draw_choking_vines_overlay(self, game: Game) -> None:
+        """
+        Visual overlay for Choking Vines.
+
+        Choking-vine simulation stores geometry in ABS tile coordinates:
+        - segments: (x0, y0, x1, y1)
+        - tips: {"x": float, "y": float}
+
+        We draw the tendrils directly from that ABS geometry so they remain stable
+        when crossing zone boundaries.
+        """
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+        state = getattr(level, "choking_vines_state", None)
+        if not state:
+            return
+
+        segments = list(state.get("segments", []) or [])
+        tips = list(state.get("tips", []) or [])
+        if not segments and not tips:
+            return
+
+        remaining = float(state.get("remaining", 0))
+        duration = float(state.get("duration", 1)) or 1.0
+        pulse = 0.72 + 0.28 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 175.0))
+        alpha_scale = max(0.0, min(1.0, (remaining / duration) * pulse))
+        if alpha_scale <= 1e-4:
+            return
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        base_col = (48, 210, 110, int(86 * alpha_scale))
+        core_col = (120, 255, 170, int(165 * alpha_scale))
+        tip_col = (180, 255, 210, int(230 * alpha_scale))
+        base_w = max(1, int(round(self.tile * 0.11)))
+        core_w = max(1, int(round(self.tile * 0.06)))
+        tip_r = max(2, int(round(self.tile * 0.14)))
+
+        # Draw tendril segments first.
+        for seg in segments:
+            try:
+                x0, y0, x1, y1 = seg
+            except Exception:
+                continue
+            p0 = (
+                int(float(x0) * self.tile + self.tile * 0.5 + self.origin_x),
+                int(float(y0) * self.tile + self.tile * 0.5 + self.origin_y),
+            )
+            p1 = (
+                int(float(x1) * self.tile + self.tile * 0.5 + self.origin_x),
+                int(float(y1) * self.tile + self.tile * 0.5 + self.origin_y),
+            )
+            pygame.draw.line(overlay, base_col, p0, p1, base_w)
+            pygame.draw.line(overlay, core_col, p0, p1, core_w)
+
+        # Highlight active growth tips.
+        for tip in tips:
+            try:
+                tx = float(tip.get("x", 0.0))
+                ty = float(tip.get("y", 0.0))
+            except Exception:
+                continue
+            px = int(tx * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int(ty * self.tile + self.tile * 0.5 + self.origin_y)
+            pygame.draw.circle(overlay, tip_col, (px, py), tip_r)
+
+        self.surface.blit(overlay, (0, 0))
+
     def draw_sparkle_overlay(self, game: Game) -> None:
         """
         Visual overlay for Sparkle:
@@ -4281,6 +4399,7 @@ class AsciiRenderer:
 
         self.draw_seal_trial_overlay(game)
         self.draw_pattern_overlay(game)
+        self.draw_choking_vines_overlay(game)
         self.draw_sparkle_overlay(game)
         self.draw_lightning_overlay(game)
         self.draw_action_preview_underlay(game)
@@ -4344,6 +4463,7 @@ class AsciiRenderer:
         self.draw_target_cursor(game)
         self.draw_seal_root_hint(game)
         self.draw_look_overlay(game)
+        self.draw_seal_trial_status(game)
 
         # HUD (status header, log panel, ability bar) is now routed
         # through a generic widget. For the moment this just forwards to the

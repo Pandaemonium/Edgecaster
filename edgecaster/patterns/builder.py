@@ -1,7 +1,7 @@
 """Fractal-style pattern builders similar to fractal_lab."""
 import math
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from edgecaster.state.patterns import Pattern, Segment, Vec2
 
@@ -123,7 +123,17 @@ class SubdivideGenerator(GeneratorBase):
                 points.append((x, y))
             c = seg.color
             for i in range(parts):
-                out.append(Segment(points[i], points[i + 1], c, seg.weight))
+                out.append(
+                    Segment(
+                        points[i],
+                        points[i + 1],
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    )
+                )
                 if len(out) >= max_segments:
                     return out
         return out
@@ -160,10 +170,42 @@ class KochGenerator(GeneratorBase):
             c = seg.color
             out.extend(
                 [
-                    Segment((ax, ay), p1, c, seg.weight),
-                    Segment(p1, peak, c, seg.weight),
-                    Segment(peak, p3, c, seg.weight),
-                    Segment(p3, (bx, by), c, seg.weight),
+                    Segment(
+                        (ax, ay),
+                        p1,
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    ),
+                    Segment(
+                        p1,
+                        peak,
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    ),
+                    Segment(
+                        peak,
+                        p3,
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    ),
+                    Segment(
+                        p3,
+                        (bx, by),
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    ),
                 ]
             )
             if len(out) >= max_segments:
@@ -219,12 +261,38 @@ class BranchGenerator(GeneratorBase):
             c = seg.color
             out.extend(
                 [
-                    Segment((ax, ay), (mx, my), c, seg.weight),
-                    Segment((mx, my), (bx, by), c, seg.weight),
+                    Segment(
+                        (ax, ay),
+                        (mx, my),
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    ),
+                    Segment(
+                        (mx, my),
+                        (bx, by),
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    ),
                 ]
             )
             for (bxp, byp) in branches:
-                out.append(Segment((mx, my), (bxp, byp), c, seg.weight))
+                out.append(
+                    Segment(
+                        (mx, my),
+                        (bxp, byp),
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    )
+                )
             if len(out) >= max_segments:
                 return out[:max_segments]
         return out
@@ -265,7 +333,17 @@ class ZigzagGenerator(GeneratorBase):
                 points.append((x, y))
             c = seg.color
             for i in range(self.parts):
-                out.append(Segment(points[i], points[i + 1], c, seg.weight))
+                out.append(
+                    Segment(
+                        points[i],
+                        points[i + 1],
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    )
+                )
                 if len(out) >= max_segments:
                     return out[:max_segments]
         return out
@@ -300,7 +378,17 @@ class JitterGenerator(GeneratorBase):
             mag = self.magnitude_factor * length
             na = self._jitter_point(ax, ay, mag)
             nb = self._jitter_point(bx, by, mag)
-            out.append(Segment(na, nb, seg.color, seg.weight))
+            out.append(
+                Segment(
+                    na,
+                    nb,
+                    seg.color,
+                    seg.weight,
+                    src_kind=getattr(seg, "src_kind", ""),
+                    src_node_a=getattr(seg, "src_node_a", ""),
+                    src_node_b=getattr(seg, "src_node_b", ""),
+                )
+            )
             if len(out) >= max_segments:
                 return out
         return out
@@ -324,7 +412,17 @@ class ExtendGenerator(GeneratorBase):
         for seg in segments:
             na = (seg.a[0] + dx, seg.a[1] + dy)
             nb = (seg.b[0] + dx, seg.b[1] + dy)
-            out.append(Segment(na, nb, seg.color, seg.weight))
+            out.append(
+                Segment(
+                    na,
+                    nb,
+                    seg.color,
+                    seg.weight,
+                    src_kind=getattr(seg, "src_kind", ""),
+                    src_node_a=getattr(seg, "src_node_a", ""),
+                    src_node_b=getattr(seg, "src_node_b", ""),
+                )
+            )
             if len(out) >= max_segments:
                 return out[:max_segments]
         return out
@@ -378,7 +476,17 @@ class CustomPolyGenerator(GeneratorBase):
             for i in range(len(self.points) - 1):
                 pa = map_point(self.points[i][0], self.points[i][1])
                 pb = map_point(self.points[i + 1][0], self.points[i + 1][1])
-                out.append(Segment(pa, pb, c, seg.weight))
+                out.append(
+                    Segment(
+                        pa,
+                        pb,
+                        c,
+                        seg.weight,
+                        src_kind=getattr(seg, "src_kind", ""),
+                        src_node_a=getattr(seg, "src_node_a", ""),
+                        src_node_b=getattr(seg, "src_node_b", ""),
+                    )
+                )
                 if len(out) >= max_segments:
                     return out[:max_segments]
         return out
@@ -394,12 +502,22 @@ class CustomGraphGenerator(GeneratorBase):
     vertices: List[Vec2]
     edges: List[Tuple[int, int]]
     amplitude: float = 1.0
+    # Optional label per vertex in `vertices`; used to preserve semantic
+    # provenance (e.g. chakra node ids) on generated segments.
+    vertex_labels: Optional[List[str]] = None
 
-    def __init__(self, vertices: List[Vec2], edges: List[Tuple[int, int]], amplitude: float = 1.0) -> None:
+    def __init__(
+        self,
+        vertices: List[Vec2],
+        edges: List[Tuple[int, int]],
+        amplitude: float = 1.0,
+        vertex_labels: Optional[List[str]] = None,
+    ) -> None:
         super().__init__(name="CustomPoly")
         self.vertices = vertices
         self.edges = edges
         self.amplitude = amplitude
+        self.vertex_labels = list(vertex_labels) if vertex_labels else None
 
     def apply_segments(self, segments: List[Segment], max_segments: int = 20000) -> List[Segment]:
         # Fallback to polyline behavior if edges are missing.
@@ -443,7 +561,24 @@ class CustomGraphGenerator(GeneratorBase):
             for ea, eb in self.edges:
                 if ea < 0 or eb < 0 or ea >= len(mapped) or eb >= len(mapped):
                     continue
-                out.append(Segment(mapped[ea], mapped[eb], c, seg.weight))
+                src_kind = getattr(seg, "src_kind", "")
+                src_node_a = getattr(seg, "src_node_a", "")
+                src_node_b = getattr(seg, "src_node_b", "")
+                if self.vertex_labels and ea < len(self.vertex_labels) and eb < len(self.vertex_labels):
+                    src_kind = "chakra"
+                    src_node_a = str(self.vertex_labels[ea] or "")
+                    src_node_b = str(self.vertex_labels[eb] or "")
+                out.append(
+                    Segment(
+                        mapped[ea],
+                        mapped[eb],
+                        c,
+                        seg.weight,
+                        src_kind=src_kind,
+                        src_node_a=src_node_a,
+                        src_node_b=src_node_b,
+                    )
+                )
                 if len(out) >= max_segments:
                     return out[:max_segments]
 

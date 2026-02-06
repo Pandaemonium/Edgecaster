@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from itertools import islice
-from typing import Dict, Tuple, List, Optional, Callable
+from typing import Any, Dict, Tuple, List, Optional, Callable
 from pathlib import Path
 from collections import deque
 
@@ -110,6 +110,7 @@ from edgecaster.systems import zones as zones_system
 from edgecaster.systems import overmap as overmap_system
 from edgecaster.systems import difficulty as difficulty_system
 from edgecaster.systems import ambient_spawns as ambient_spawns_system
+from edgecaster.systems import damage_policy as damage_policy_system
 from . import lorenz
 import math
 import random
@@ -234,6 +235,8 @@ class LevelState:
     fern_active: bool = False  # Is fern growth enabled?
     fern_growth_tips: List[int] = field(default_factory=list)  # Vertex indices that can spawn growth
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
+    # Choking Vines runtime state (ABS-space tendril segments + tips).
+    choking_vines_state: Optional[Dict[str, Any]] = None
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
     # Zone difficulty metadata (computed on zone creation).
     danger_value: float = 0.0
@@ -572,6 +575,7 @@ class Game:
             actions.append("freeze")
             actions.append("ignite")
             actions.append("regrow")
+            actions.append("choking_vines")
             actions.append("push_pattern")
             actions.append("corruption_cone")
             actions.append("place_rune_anchor")
@@ -588,6 +592,10 @@ class Game:
                 "meditate",
                 "push_pattern",
                 "chakra",
+                "energy_kick",
+                "palm_burst",
+                "mirror_strike",
+                "choking_vines",
             ]
 
         # For now, all other classes keep only move/wait (empty ability bar).
@@ -2710,6 +2718,7 @@ class Game:
                 "fern_active": False,
                 "fern_growth_tips": [],
                 "fern_accum": 0.0,
+                "choking_vines_state": None,
             }
             self._pattern_state_by_depth[d] = state
 
@@ -2762,6 +2771,7 @@ class Game:
         st["fern_active"] = bool(getattr(level, "fern_active", False))
         st["fern_growth_tips"] = list(getattr(level, "fern_growth_tips", []) or [])
         st["fern_accum"] = float(getattr(level, "fern_accum", 0.0) or 0.0)
+        st["choking_vines_state"] = getattr(level, "choking_vines_state", None)
 
     def _sync_level_pattern_view(self, level: "LevelState") -> None:
         """
@@ -2777,6 +2787,7 @@ class Game:
         level.fern_active = bool(st.get("fern_active", False))
         level.fern_growth_tips = list(st.get("fern_growth_tips", []) or [])
         level.fern_accum = float(st.get("fern_accum", 0.0) or 0.0)
+        level.choking_vines_state = st.get("choking_vines_state")
 
         # Activation preview
         level.activation_points = list(st.get("activation_points", []) or [])
@@ -2969,15 +2980,27 @@ class Game:
         # Apply damage to nearby enemies
         from edgecaster.patterns.activation import damage_from_vertices
 
+        # Hostile-only splash (no self/environment), centralized via policy.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
         hit_count = 0
-        # Convert to list to avoid "dictionary changed size during iteration"
-        for enemy in list(level.actors.values()):
-            if not enemy.alive or enemy.id == actor_id:
-                continue
-            if enemy.faction == "player":
+        for _tid, enemy in damage_policy_system.iter_damage_targets(
+            self,
+            level,
+            actor_id,
+            policy,
+            include_actors=True,
+            include_entities=False,
+        ):
+            if not getattr(enemy, "alive", True):
                 continue
 
-            # Calculate damage based on vertices near enemy
+            # Calculate damage based on vertices near enemy.
             dmg = damage_from_vertices(
                 active_verts,
                 enemy.pos,
@@ -2992,7 +3015,12 @@ class Game:
                 self.log.add(f"Arcane energy sears {enemy.name} for {dmg} damage!")
 
                 if enemy.stats.hp <= 0:
-                    self._kill_actor(level, enemy, killer_id=actor_id)
+                    self._kill_actor(
+                        level,
+                        enemy,
+                        killer_id=actor_id,
+                        killer_is_player=(actor_id == self.player_id),
+                    )
 
         # Log result
         if hit_count == 0:
@@ -3205,15 +3233,25 @@ class Game:
             state["direct_tiles"] = list(direct_tiles.keys())
             state["indirect_tiles"] = list(indirect_tiles.keys())
 
-            # Damage application
-            combined: dict[str, any] = {}
-            for aid, act in level.actors.items():
-                combined[aid] = act
-            for eid, ent in level.entities.items():
-                if eid not in combined:
-                    combined[eid] = ent
+            # Damage application:
+            # Ignite is intentionally reckless and can hit anything damageable,
+            # including the caster and HP-bearing environment entities.
+            policy = damage_policy_system.DamagePolicy(
+                include_self=True,
+                include_hostile=True,
+                include_neutral=True,
+                include_friendly=True,
+                include_environment=True,
+            )
 
-            for tid, obj in combined.items():
+            for tid, obj in damage_policy_system.iter_damage_targets(
+                self,
+                level,
+                actor_id,
+                policy,
+                include_actors=True,
+                include_entities=True,
+            ):
                 pos = getattr(obj, "pos", None)
                 if not pos:
                     continue
@@ -3234,13 +3272,26 @@ class Game:
                     try:
                         obj.stats.hp -= dmg_int
                         obj.stats.clamp()
-                        if obj.stats.hp <= 0 and tid != self.player_id:
-                            self._kill_actor(
-                                level,
-                                obj,
-                                killer_id=actor_id,
-                                killer_is_player=caster_is_player,
-                            )
+                        if int(getattr(obj.stats, "hp", 0)) <= 0:
+                            if tid in level.actors:
+                                if tid == self.player_id:
+                                    self.set_urgent(
+                                        "by way of ignition",
+                                        title="You unravel...",
+                                        choices=["Continue..."],
+                                    )
+                                    continue
+                                self._kill_actor(
+                                    level,
+                                    obj,
+                                    killer_id=actor_id,
+                                    killer_is_player=caster_is_player,
+                                )
+                            elif tid in level.entities:
+                                del level.entities[tid]
+                                if caster_is_player:
+                                    name = getattr(obj, "name", None) or "object"
+                                    self.log.add(f"The {name} burns away.")
                     except Exception:
                         pass
 
@@ -3452,6 +3503,26 @@ class Game:
         if actor_id == self.player_id:
             self.log.add("You unleash a freezing wave through the pattern.")
 
+        # Freeze currently affects all actors on touched tiles (including self),
+        # but not environment entities.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=True,
+            include_hostile=True,
+            include_neutral=True,
+            include_friendly=True,
+            include_environment=False,
+        )
+        freeze_targets = list(
+            damage_policy_system.iter_damage_targets(
+                self,
+                level,
+                actor_id,
+                policy,
+                include_actors=True,
+                include_entities=False,
+            )
+        )
+
         for (tx, ty), bsum in tile_blue.items():
             if bsum <= 0:
                 continue
@@ -3459,8 +3530,8 @@ class Game:
             slow_mult = 1.0 + bsum * float(slow_scale)
             if slow_mult > 4.0:
                 slow_mult = 4.0
-            for target in list(level.actors.values()):
-                if not target.alive:
+            for _tid, target in freeze_targets:
+                if not getattr(target, "alive", True):
                     continue
                 if tuple(getattr(target, "pos", (None, None))) != (tx, ty):
                     continue
@@ -3746,6 +3817,7 @@ class Game:
         st["activation_points"] = []
         st["activation_ttl"] = 0
         st["pattern_motion"] = None
+        st["choking_vines_state"] = None
 
         # Sync the current zone view to canonical state immediately.
         self._sync_level_pattern_view(level)
@@ -3756,6 +3828,7 @@ class Game:
         level.fern_active = False
         level.fern_growth_tips = []
         level.fern_accum = 0.0
+        level.choking_vines_state = None
 
         self._commit_pattern_state_from_level(level)
 
@@ -3797,6 +3870,7 @@ class Game:
         st["activation_points"] = []
         st["activation_ttl"] = 0
         st["pattern_motion"] = None
+        st["choking_vines_state"] = None
 
         self._sync_level_pattern_view(level)
 
@@ -3805,6 +3879,7 @@ class Game:
         level.fern_active = False
         level.fern_growth_tips = []
         level.fern_accum = 0.0
+        level.choking_vines_state = None
 
         self._commit_pattern_state_from_level(level)
 
@@ -3876,8 +3951,7 @@ class Game:
         try:
             from edgecaster.prototypes import resolve_body_schema
             from edgecaster.systems.chakras import (
-                get_active_chakra_generator_graph,
-                normalized_custom_graph_from_positions,
+                build_chakra_generator_seed,
             )
             body_schema = resolve_body_schema(actor)
         except Exception:
@@ -3889,17 +3963,11 @@ class Game:
             return
 
         try:
-            positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph(
+            seed = build_chakra_generator_seed(
                 body_schema,
                 chakra_state,
                 base_scale=1.0,
                 require_root=True,
-            )
-            verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
-                positions,
-                compact_edges,
-                root_id=root_id,
-                terminus_id=terminus_id,
             )
         except ValueError as e:
             self.log.add(str(e))
@@ -3910,10 +3978,14 @@ class Game:
 
         # Debug trace (kept concise; useful for future chakra->vertex targeting).
         try:
-            self._debug(f"[chakra_gen] root={root_id} terminus={terminus_id} base_len={base_len:.4f}")
-            self._debug(f"[chakra_gen] nodes={node_order}")
-            self._debug(f"[chakra_gen] verts={[(round(x,4), round(y,4)) for (x,y) in verts]}")
-            self._debug(f"[chakra_gen] edges={edges}")
+            self._debug(
+                f"[chakra_gen] root={seed.root_id} terminus={seed.terminus_id} base_len={seed.base_len:.4f}"
+            )
+            self._debug(f"[chakra_gen] nodes={seed.node_order}")
+            self._debug(
+                f"[chakra_gen] verts={[(round(x, 4), round(y, 4)) for (x, y) in seed.verts]}"
+            )
+            self._debug(f"[chakra_gen] edges={seed.edges}")
         except Exception:
             pass
 
@@ -3927,7 +3999,12 @@ class Game:
             amp *= mods.chakra_amp_mult
 
         # Create a CustomGraphGenerator with the chakra shape
-        gen = builder.CustomGraphGenerator(verts, edges, amplitude=amp)
+        gen = builder.CustomGraphGenerator(
+            seed.verts,
+            seed.edges,
+            amplitude=amp,
+            vertex_labels=seed.node_order,
+        )
 
         # Apply to current pattern (same flow as _apply_fractal_op)
         segs = level.pattern.to_segments()
@@ -3940,17 +4017,18 @@ class Game:
             self.log.add("Pattern capped at max vertices.")
 
         level.pattern = builder.Pattern.from_segments(segs)
+        level.choking_vines_state = None
         # Preserve chakra seed metadata for future ability targeting.
         try:
             import json
-            level.pattern.meta["chakra_seed_nodes"] = json.dumps(node_order)
-            level.pattern.meta["chakra_seed_verts"] = json.dumps(verts)
-            level.pattern.meta["chakra_seed_edges"] = json.dumps(edges)
-            level.pattern.meta["chakra_seed_root"] = str(root_id)
-            level.pattern.meta["chakra_seed_terminus"] = str(terminus_id)
+            level.pattern.meta["chakra_seed_nodes"] = json.dumps(seed.node_order)
+            level.pattern.meta["chakra_seed_verts"] = json.dumps(seed.verts)
+            level.pattern.meta["chakra_seed_edges"] = json.dumps(seed.edges)
+            level.pattern.meta["chakra_seed_root"] = str(seed.root_id)
+            level.pattern.meta["chakra_seed_terminus"] = str(seed.terminus_id)
         except Exception:
             pass
-        self.log.add(f"Chakra generator applied ({len(verts)} chakra vertices).")
+        self.log.add(f"Chakra generator applied ({len(seed.verts)} chakra vertices).")
 
         # Spend a bit of chakra charge when applying the generator.
         if mods is not None:
@@ -3962,6 +4040,662 @@ class Game:
                 )
             except Exception:
                 pass
+
+    def act_energy_kick(self, actor_id: str) -> None:
+        """Pulse damage around all foot-lineage chakra vertices in the current pattern.
+
+        Targeting rules (current implementation):
+        - Never damages the caster.
+        - Can damage any other actor or entity that has HP.
+        - Non-actor entities with HP are removed when reduced to <= 0.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
+            if actor_id == self.player_id:
+                self.log.add("No pattern to channel through your feet.")
+            return
+
+        # Mana gate for a strong short-range pulse.
+        mana_cost = 24
+        try:
+            if actor.stats.mana < mana_cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana for Energy Kick.")
+                return
+            actor.stats.mana -= mana_cost
+            actor.stats.clamp()
+        except Exception:
+            return
+
+        def _is_foot_lineage(node_id: str) -> bool:
+            n = str(node_id or "").lower()
+            # Match broad lower-body endpoints while staying schema-agnostic.
+            return (
+                "foot" in n
+                or "toe" in n
+                or "ankle" in n
+                or "heel" in n
+            )
+
+        # Build world-space kick points from vertex-level chakra provenance.
+        kick_points: List[Tuple[float, float]] = []
+        for v in pattern.vertices:
+            tags = getattr(v, "tags", {}) or {}
+            nodes: List[str] = []
+            single = str(tags.get("chakra_node", "")).strip()
+            if single:
+                nodes.append(single)
+            many = str(tags.get("chakra_nodes", "")).strip()
+            if many:
+                nodes.extend([s for s in many.split("|") if s])
+            if not nodes:
+                continue
+            if any(_is_foot_lineage(node_id) for node_id in nodes):
+                kick_points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
+
+        if not kick_points:
+            if actor_id == self.player_id:
+                self.log.add("No active foot chakras are encoded in this pattern.")
+            return
+
+        # Show a short pulse overlay at each kick source.
+        level.activation_points = list(kick_points)
+        level.activation_ttl = max(8, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
+
+        radius = 2.25
+        base_damage = 8  # per kick point at distance 0
+        r_eps = 1e-6
+
+        caster_is_player = actor_id == self.player_id
+        # Centralized policy: this move is intentionally "reckless" and can hit
+        # almost anything with HP except the caster (hostiles, friendlies, neutrals,
+        # and HP-bearing environment entities).
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=True,
+            include_friendly=True,
+            include_environment=True,
+        )
+
+        hit_any = False
+        for tid, obj in damage_policy_system.iter_damage_targets(
+            self,
+            level,
+            actor_id,
+            policy,
+            include_actors=True,
+            include_entities=True,
+        ):
+            pos = getattr(obj, "pos", None)
+            stats = getattr(obj, "stats", None)
+            if not pos or stats is None or not hasattr(stats, "hp"):
+                continue
+            tx = float(pos[0]) + 0.5
+            ty = float(pos[1]) + 0.5
+
+            total_dmg = 0
+            for kx, ky in kick_points:
+                dx = tx - kx
+                dy = ty - ky
+                dist = math.hypot(dx, dy)
+                if dist > radius:
+                    continue
+                falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
+                total_dmg += max(1, int(math.ceil(base_damage * falloff)))
+
+            if total_dmg <= 0:
+                continue
+
+            hit_any = True
+            try:
+                stats.hp -= total_dmg
+                if hasattr(stats, "clamp"):
+                    stats.clamp()
+            except Exception:
+                continue
+
+            if caster_is_player:
+                name = getattr(obj, "name", None) or "something"
+                self.log.add(f"Energy Kick shudders {name} for {total_dmg}.")
+
+            # Actors use canonical death handling.
+            if tid in level.actors:
+                if int(getattr(stats, "hp", 0)) <= 0:
+                    self._kill_actor(
+                        level,
+                        obj,
+                        killer_id=actor_id,
+                        killer_is_player=caster_is_player,
+                    )
+                continue
+
+            # Non-actor entities with HP are removed when broken.
+            if int(getattr(stats, "hp", 0)) <= 0 and tid in level.entities:
+                del level.entities[tid]
+                if caster_is_player:
+                    name = getattr(obj, "name", None) or "object"
+                    self.log.add(f"The {name} shatters.")
+
+        if caster_is_player and not hit_any:
+            self.log.add("Your kick ripples out, but hits nothing.")
+
+    def _chakra_nodes_for_vertex(self, v: Any) -> set[str]:
+        """Return chakra node ids associated with a pattern vertex.
+
+        Chakra provenance can arrive either as:
+        - tags["chakra_node"] = "node_id"
+        - tags["chakra_nodes"] = "a|b|c"
+        """
+        tags = getattr(v, "tags", {}) or {}
+        nodes: set[str] = set()
+
+        single = str(tags.get("chakra_node", "")).strip()
+        if single:
+            nodes.add(single)
+
+        many = str(tags.get("chakra_nodes", "")).strip()
+        if many:
+            for part in many.split("|"):
+                p = str(part).strip()
+                if p:
+                    nodes.add(p)
+
+        return nodes
+
+    def _chakra_world_points(
+        self,
+        pattern: Any,
+        anchor: Tuple[int, int],
+        *,
+        predicate: Callable[[str], bool],
+    ) -> list[tuple[float, float]]:
+        """Collect world-space points for vertices matching chakra-node predicate."""
+        points: list[tuple[float, float]] = []
+        for v in getattr(pattern, "vertices", []) or []:
+            nodes = self._chakra_nodes_for_vertex(v)
+            if not nodes:
+                continue
+            if not any(predicate(node_id) for node_id in nodes):
+                continue
+            points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
+        return points
+
+    def act_palm_burst(self, actor_id: str) -> None:
+        """Pulse damage from hand/palm/finger-lineage chakra vertices."""
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
+            if actor_id == self.player_id:
+                self.log.add("No pattern to channel through your hands.")
+            return
+
+        mana_cost = 18
+        try:
+            if actor.stats.mana < mana_cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana for Palm Burst.")
+                return
+            actor.stats.mana -= mana_cost
+            actor.stats.clamp()
+        except Exception:
+            return
+
+        def _is_palm_lineage(node_id: str) -> bool:
+            n = str(node_id or "").lower()
+            return (
+                "hand" in n
+                or "palm" in n
+                or "finger" in n
+                or "thumb" in n
+                or "index" in n
+                or "middle" in n
+                or "ring" in n
+                or "pinky" in n
+                or "knuckle" in n
+                or "wrist" in n
+            )
+
+        burst_points = self._chakra_world_points(
+            pattern,
+            anchor,
+            predicate=_is_palm_lineage,
+        )
+        if not burst_points:
+            if actor_id == self.player_id:
+                self.log.add("No active palm chakras are encoded in this pattern.")
+            return
+
+        level.activation_points = list(burst_points)
+        level.activation_ttl = max(8, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
+
+        radius = 1.9
+        base_damage = 7
+        r_eps = 1e-6
+        caster_is_player = actor_id == self.player_id
+
+        # Palm Burst is a directed combat move: hostile actors only.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+
+        hit_any = False
+        for tid, obj in damage_policy_system.iter_damage_targets(
+            self,
+            level,
+            actor_id,
+            policy,
+            include_actors=True,
+            include_entities=False,
+        ):
+            pos = getattr(obj, "pos", None)
+            stats = getattr(obj, "stats", None)
+            if not pos or stats is None or not hasattr(stats, "hp"):
+                continue
+            tx = float(pos[0]) + 0.5
+            ty = float(pos[1]) + 0.5
+
+            total_dmg = 0
+            for px, py in burst_points:
+                dx = tx - px
+                dy = ty - py
+                dist = math.hypot(dx, dy)
+                if dist > radius:
+                    continue
+                falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
+                total_dmg += max(1, int(math.ceil(base_damage * falloff)))
+
+            if total_dmg <= 0:
+                continue
+
+            hit_any = True
+            try:
+                stats.hp -= total_dmg
+                if hasattr(stats, "clamp"):
+                    stats.clamp()
+            except Exception:
+                continue
+
+            if caster_is_player:
+                name = getattr(obj, "name", None) or "something"
+                self.log.add(f"Palm Burst cracks {name} for {total_dmg}.")
+
+            if tid in level.actors and int(getattr(stats, "hp", 0)) <= 0:
+                self._kill_actor(
+                    level,
+                    obj,
+                    killer_id=actor_id,
+                    killer_is_player=caster_is_player,
+                )
+
+        if caster_is_player and not hit_any:
+            self.log.add("Your palms flare, but no foes are close enough.")
+
+    def act_mirror_strike(self, actor_id: str) -> None:
+        """Pulse damage from mirrored chakra pairs.
+
+        A mirrored pair is inferred from provenance ids:
+        - left:  "arm.hand.thumb"
+        - right: "arm_m.hand_m.thumb_m"
+        i.e., node ids differing by the `_m` suffix.
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
+            if actor_id == self.player_id:
+                self.log.add("No pattern to channel through mirrored pairs.")
+            return
+
+        mana_cost = 22
+        try:
+            if actor.stats.mana < mana_cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana for Mirror Strike.")
+                return
+            actor.stats.mana -= mana_cost
+            actor.stats.clamp()
+        except Exception:
+            return
+
+        # Build node -> world points map from vertex provenance.
+        node_points: dict[str, list[tuple[float, float]]] = {}
+        for v in getattr(pattern, "vertices", []) or []:
+            nodes = self._chakra_nodes_for_vertex(v)
+            if not nodes:
+                continue
+            wx = float(v.pos[0] + anchor[0])
+            wy = float(v.pos[1] + anchor[1])
+            for node_id in nodes:
+                node_points.setdefault(node_id, []).append((wx, wy))
+
+        if not node_points:
+            if actor_id == self.player_id:
+                self.log.add("No chakra provenance found for Mirror Strike.")
+            return
+
+        # Derive strike points from present mirrored pairs.
+        strike_points: list[tuple[float, float]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for node_id, left_pts in node_points.items():
+            if not left_pts:
+                continue
+            if node_id.endswith("_m"):
+                base = node_id[:-2]
+                mirror = node_id
+            else:
+                base = node_id
+                mirror = f"{node_id}_m"
+            right_pts = node_points.get(mirror, [])
+            if not right_pts:
+                continue
+
+            key = tuple(sorted((base, mirror)))
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+
+            # Use centroid of each side and strike at the midpoint between them.
+            lx = sum(p[0] for p in left_pts) / len(left_pts)
+            ly = sum(p[1] for p in left_pts) / len(left_pts)
+            rx = sum(p[0] for p in right_pts) / len(right_pts)
+            ry = sum(p[1] for p in right_pts) / len(right_pts)
+            strike_points.append(((lx + rx) * 0.5, (ly + ry) * 0.5))
+
+        if not strike_points:
+            if actor_id == self.player_id:
+                self.log.add("No mirrored chakra pairs are active in this pattern.")
+            return
+
+        level.activation_points = list(strike_points)
+        level.activation_ttl = max(10, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
+
+        radius = 2.2
+        base_damage = 9
+        r_eps = 1e-6
+        caster_is_player = actor_id == self.player_id
+
+        # Mirror Strike is precise: hostile actors only.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+
+        hit_any = False
+        for tid, obj in damage_policy_system.iter_damage_targets(
+            self,
+            level,
+            actor_id,
+            policy,
+            include_actors=True,
+            include_entities=False,
+        ):
+            pos = getattr(obj, "pos", None)
+            stats = getattr(obj, "stats", None)
+            if not pos or stats is None or not hasattr(stats, "hp"):
+                continue
+            tx = float(pos[0]) + 0.5
+            ty = float(pos[1]) + 0.5
+
+            total_dmg = 0
+            for sx, sy in strike_points:
+                dx = tx - sx
+                dy = ty - sy
+                dist = math.hypot(dx, dy)
+                if dist > radius:
+                    continue
+                falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
+                total_dmg += max(1, int(math.ceil(base_damage * falloff)))
+
+            if total_dmg <= 0:
+                continue
+
+            hit_any = True
+            try:
+                stats.hp -= total_dmg
+                if hasattr(stats, "clamp"):
+                    stats.clamp()
+            except Exception:
+                continue
+
+            if caster_is_player:
+                name = getattr(obj, "name", None) or "something"
+                self.log.add(f"Mirror Strike rends {name} for {total_dmg}.")
+
+            if tid in level.actors and int(getattr(stats, "hp", 0)) <= 0:
+                self._kill_actor(
+                    level,
+                    obj,
+                    killer_id=actor_id,
+                    killer_is_player=caster_is_player,
+                )
+
+        if caster_is_player and not hit_any:
+            self.log.add("Your mirrored strike finds no target.")
+
+    def act_choking_vines(self, actor_id: str) -> None:
+        """Seed a tendril field that grows from rune-edge centers near enemies.
+
+        Behavior model:
+        - Initial tendril tips spawn from centers of pattern edges that are near
+          hostile targets.
+        - Each tick, tips extend toward nearby hostiles.
+        - Existing tips can branch into new tips, producing a creeping vine net.
+        - Contact applies light damage plus a mild ensnare slow.
+
+        Runtime simulation is advanced by scheduling.choking_vines_tick().
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+
+        pattern = getattr(level, "pattern", None)
+        anchor = getattr(level, "pattern_anchor", None)
+        if pattern is None or anchor is None or not getattr(pattern, "edges", None):
+            if actor_id == self.player_id:
+                self.log.add("No rune edges available for Choking Vines.")
+            return
+
+        # Cost gate. This is intentionally expensive for a persistent control tool.
+        mana_cost = 28
+        try:
+            if actor.stats.mana < mana_cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana for Choking Vines.")
+                return
+            actor.stats.mana -= mana_cost
+            actor.stats.clamp()
+        except Exception:
+            return
+
+        # Project edge midpoints in ABS tile-space so the simulation stays stable
+        # even if the current zone view changes.
+        verts_world = project_vertices(pattern, anchor)
+        if not verts_world:
+            if actor_id == self.player_id:
+                self.log.add("No rune geometry to grow vines from.")
+            return
+
+        zx, zy, _ = getattr(level, "coord", self.zone_coord)
+        zw, zh = self._zone_dims()
+        abs_ox = float(zx * zw)
+        abs_oy = float(zy * zh)
+
+        edge_midpoints_abs: list[tuple[float, float]] = []
+        for e in getattr(pattern, "edges", []) or []:
+            try:
+                ax, ay = verts_world[int(e.a)]
+                bx, by = verts_world[int(e.b)]
+            except Exception:
+                continue
+            edge_midpoints_abs.append((
+                (float(ax) + float(bx)) * 0.5 + abs_ox,
+                (float(ay) + float(by)) * 0.5 + abs_oy,
+            ))
+
+        if not edge_midpoints_abs:
+            if actor_id == self.player_id:
+                self.log.add("No rune edges available for Choking Vines.")
+            return
+
+        # Hostile actor targets only.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+        hostile_abs: list[tuple[str, Actor, float, float]] = []
+        for tid, obj in damage_policy_system.iter_damage_targets(
+            self,
+            level,
+            actor_id,
+            policy,
+            include_actors=True,
+            include_entities=False,
+        ):
+            pos = getattr(obj, "pos", None)
+            if not pos:
+                continue
+            hostile_abs.append((
+                str(tid),
+                obj,
+                float(pos[0]) + abs_ox + 0.5,
+                float(pos[1]) + abs_oy + 0.5,
+            ))
+
+        if not hostile_abs:
+            if actor_id == self.player_id:
+                self.log.add("No nearby hostile minds for the vines to seek.")
+            return
+
+        # Choose initial tips: nearest edge center to each hostile, with dedupe.
+        # Keep initial tendril seeding close to the rune so the effect reads as
+        # a local control zone instead of a map-wide projectile.
+        seed_radius = 2.6
+        tip_keys: set[tuple[int, int]] = set()
+        tips: list[dict[str, float]] = []
+        for _tid, _obj, hx, hy in hostile_abs:
+            best = None
+            best_d2 = 1e18
+            for mx, my in edge_midpoints_abs:
+                dx = hx - mx
+                dy = hy - my
+                d2 = dx * dx + dy * dy
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = (mx, my)
+            if best is None:
+                continue
+            if math.sqrt(best_d2) > seed_radius:
+                continue
+            key = (int(round(best[0] * 10.0)), int(round(best[1] * 10.0)))
+            if key in tip_keys:
+                continue
+            tip_keys.add(key)
+            tips.append(
+                {
+                    "x": float(best[0]),
+                    "y": float(best[1]),
+                    "age": 0.0,
+                    # Per-tip local origin used by scheduler leash logic.
+                    "ox": float(best[0]),
+                    "oy": float(best[1]),
+                }
+            )
+
+        # Fallback: ensure at least one tip exists by choosing the globally nearest
+        # hostile/edge pair even if it exceeds seed_radius.
+        if not tips:
+            best = None
+            best_d2 = 1e18
+            for _tid, _obj, hx, hy in hostile_abs:
+                for mx, my in edge_midpoints_abs:
+                    dx = hx - mx
+                    dy = hy - my
+                    d2 = dx * dx + dy * dy
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best = (mx, my)
+            if best is not None:
+                tips.append(
+                    {
+                        "x": float(best[0]),
+                        "y": float(best[1]),
+                        "age": 0.0,
+                        "ox": float(best[0]),
+                        "oy": float(best[1]),
+                    }
+                )
+
+        if not tips:
+            if actor_id == self.player_id:
+                self.log.add("The vines fail to find purchase.")
+            return
+
+        # Slightly longer duration, but much lower spread parameters below.
+        duration_ticks = 120
+        state: dict[str, Any] = {
+            "caster_id": str(actor_id),
+            "duration": int(duration_ticks),
+            "remaining": int(duration_ticks),
+            "tick": 0,
+            "seed": int(self.rng.randint(0, 2**31 - 1)),
+            "edge_midpoints_abs": edge_midpoints_abs,
+            "tips": tips,
+            "segments": [],  # (x0, y0, x1, y1) in ABS tile coords
+            "accum_damage": {},  # target id -> fractional damage
+            "spawn_radius": float(seed_radius),
+            # Lower growth step makes per-turn movement subtle.
+            "grow_step": 0.30,
+            # Fewer branches to avoid explosive map coverage.
+            "branch_chance": 0.12,
+            "max_tips": 10,
+            "max_segments": 360,
+            # Ignore far-away hostiles; vines stay near the rune.
+            "seek_radius": 7.0,
+            # Hard leash from each tip's seed origin.
+            "max_tip_range": 6.5,
+            "hit_radius": 1.15,
+            "base_damage": 1.6,
+            "ensnare_slow_mult": 1.30,
+        }
+        level.choking_vines_state = state
+
+        # Optional compatibility overlay: localize current tip positions.
+        level.activation_points = [
+            (float(t["x"] - abs_ox), float(t["y"] - abs_oy))
+            for t in tips
+        ]
+        level.activation_ttl = max(level.activation_ttl, 8)
+
+        if actor_id == self.player_id:
+            self.log.add("Vines uncoil from your rune and seek warm blood.")
+
+        # Persist to canonical per-depth pattern state.
+        if hasattr(self, "_commit_pattern_state_from_level"):
+            self._commit_pattern_state_from_level(level)
 
     def act_corrosive_melt(self, actor_id: str) -> None:
         """Activate acidic mode on the current pattern.
@@ -4095,6 +4829,7 @@ class Game:
             segs = segs[: self.cfg.max_vertices]
             self.log.add("Pattern capped at max vertices.")
         lvl.pattern = builder.Pattern.from_segments(segs)
+        lvl.choking_vines_state = None
         self._commit_pattern_state_from_level(lvl)
 
 
@@ -4179,15 +4914,28 @@ class Game:
 
         total_vertices = len(active_vertices)
         hits = 0
-        for actor in list(level.actors.values()):
-            if not actor.alive:
-                continue
-            if actor.id == self.player_id or actor.faction == "player":
+        # Centralized policy: Activate R damages hostiles only, never self.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+        for tid, actor in damage_policy_system.iter_damage_targets(
+            self,
+            level,
+            self.player_id,
+            policy,
+            include_actors=True,
+            include_entities=False,
+        ):
+            if not getattr(actor, "alive", True):
                 continue
             tile = level.world.get_tile(*actor.pos)
             if tile is None or not tile.visible:
                 continue
-            # tile square center distance to circle, approximate coverage factor
+            # Tile square center distance to circle, approximate coverage factor.
             ax = actor.pos[0] + 0.5
             ay = actor.pos[1] + 0.5
             dx = ax - center[0]
@@ -4211,7 +4959,12 @@ class Game:
             self.log.add(f"Your rune sears {actor.name} for {dmg}.")
             if actor.stats.hp <= 0:
                 self.log.add(f"{actor.name} is annihilated.")
-                self._kill_actor(level, actor, killer_id=self.player_id, killer_is_player=True)
+                self._kill_actor(
+                    level,
+                    actor,
+                    killer_id=self.player_id,
+                    killer_is_player=True,
+                )
 
         if hits == 0:
             self.log.add("Your rune fizzles; no foes in its reach.")
@@ -4276,12 +5029,30 @@ class Game:
         if mods is not None:
             per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
         hits = 0
-        # damage enemies in tiles containing active vertices
+        # Centralized policy: Activate N damages hostiles only, never self.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+        # Damage hostiles in tiles containing active vertices.
         for ax, ay in active_vertices:
             tile_x = int(round(ax))
             tile_y = int(round(ay))
             target_actor = self._actor_at(level, (tile_x, tile_y))
-            if target_actor and target_actor.id != self.player_id and target_actor.faction != "player":
+            if (
+                target_actor
+                and damage_policy_system.can_damage_target(
+                    self,
+                    level,
+                    self.player_id,
+                    target_actor.id,
+                    target_actor,
+                    policy,
+                )
+            ):
                 target_actor.stats.hp -= per_vertex
                 hits += 1
                 self.log.add(f"Your focus bites {target_actor.name} for {per_vertex}.")

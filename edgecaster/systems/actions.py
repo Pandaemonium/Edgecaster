@@ -12,6 +12,7 @@ except Exception:  # pragma: no cover - keep fail-soft for minimal envs/tests
 
 from edgecaster import prototypes
 from edgecaster.systems import reputation as reputation_system
+from edgecaster.systems import damage_policy as damage_policy_system
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +812,36 @@ def _action_chakra(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_chakra(actor_id)
 
 
+@register_action("energy_kick", label="Energy Kick", speed="fast", show_in_bar=True, cooldown_ticks=18)
+def _action_energy_kick(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """
+    Pulse from foot-lineage chakra vertices and damage nearby entities.
+    """
+    if hasattr(game, "act_energy_kick"):
+        game.act_energy_kick(actor_id)
+
+
+@register_action("palm_burst", label="Palm Burst", speed="fast", show_in_bar=True, cooldown_ticks=14)
+def _action_palm_burst(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Pulse damage from hand/palm/finger-lineage chakra vertices."""
+    if hasattr(game, "act_palm_burst"):
+        game.act_palm_burst(actor_id)
+
+
+@register_action("mirror_strike", label="Mirror Strike", speed="fast", show_in_bar=True, cooldown_ticks=22)
+def _action_mirror_strike(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Strike from mirrored chakra pairs, damaging enemies near paired endpoints."""
+    if hasattr(game, "act_mirror_strike"):
+        game.act_mirror_strike(actor_id)
+
+
+@register_action("choking_vines", label="Choking Vines", speed="fast", show_in_bar=True, cooldown_ticks=36)
+def _action_choking_vines(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Grow ensnaring tendrils from rune edges near enemies."""
+    if hasattr(game, "act_choking_vines"):
+        game.act_choking_vines(actor_id)
+
+
 @register_action("polygon", label="Polygon", speed="fast", show_in_bar=True)
 def _action_polygon(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
@@ -1187,17 +1218,25 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
     damage_per_hit = 1
     caster_is_player = actor_id == getattr(game, "player_id", None)
 
-    # Apply damage to *any* entity with HP (actors, NPCs, objects), except the caster.
-    # We iterate over a snapshot to avoid mutation while killing actors.
-    combined: dict[str, Any] = dict(getattr(level, "actors", {}) or {})
-    for eid, ent in dict(getattr(level, "entities", {}) or {}).items():
-        if eid not in combined:
-            combined[eid] = ent
+    # Centralized targeting policy:
+    # Sparkle currently affects everything with HP except the caster.
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=True,
+        include_friendly=True,
+        include_environment=True,
+    )
 
     hit_any = False
-    for tid, obj in combined.items():
-        if tid == actor_id:
-            continue
+    for tid, obj in damage_policy_system.iter_damage_targets(
+        game,
+        level,
+        actor_id,
+        policy,
+        include_actors=True,
+        include_entities=True,
+    ):
         pos = getattr(obj, "pos", None)
         if not pos:
             continue
@@ -1227,7 +1266,7 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
             except Exception:
                 pass
 
-        # Only actors have removal + death logic.
+        # Actors run canonical death handling; HP-bearing non-actors are removed.
         if tid in getattr(level, "actors", {}):
             try:
                 if int(getattr(stats, "hp", 0)) <= 0:
@@ -1238,6 +1277,11 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
                             killer_id=actor_id,
                             killer_is_player=caster_is_player,
                         )
+            except Exception:
+                pass
+        elif int(getattr(stats, "hp", 0)) <= 0 and tid in getattr(level, "entities", {}):
+            try:
+                del level.entities[tid]
             except Exception:
                 pass
 
@@ -1374,12 +1418,26 @@ def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
     if not touched:
         return
 
-    # Pick all living actors whose tile is touched by the pattern.
+    # Centralized policy:
+    # Lightning can hit all actors except the caster (hostile/neutral/friendly).
+    # It currently does not hit environment entities.
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=True,
+        include_friendly=True,
+        include_environment=False,
+    )
     targets = []
-    for target in list(getattr(level, "actors", {}).values()):
+    for _tid, target in damage_policy_system.iter_damage_targets(
+        game,
+        level,
+        actor_id,
+        policy,
+        include_actors=True,
+        include_entities=False,
+    ):
         try:
-            if getattr(target, "id", None) == actor_id:
-                continue
             if not getattr(target, "alive", True):
                 continue
             tx, ty = getattr(target, "pos", (None, None))

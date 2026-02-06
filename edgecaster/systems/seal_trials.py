@@ -49,6 +49,28 @@ class SealTrialState:
     granted_actions: List[str] = field(default_factory=list)
     check_interval: int = 5
     last_debug_tick: int = -9999
+    # Cached score diagnostics (updated by update_trial).
+    last_mask_score: float = 0.0
+    last_edge_score: float = 0.0
+    last_outside_ratio: float = 0.0
+    last_anchor_ok: bool = False
+
+
+@dataclass
+class SealMatchMetrics:
+    """Detailed match metrics for UI/debug.
+
+    `score` is the acceptance score used by trials (currently max(mask, edge)).
+    """
+
+    score: float
+    mask_score: float
+    edge_score: float
+    outside_tiles: int
+    outside_ratio: float
+    player_tile_count: int
+    total_weight: float
+    anchor_ok: bool
 
 
 def attach_trial_to_level(game: "Game", level: "LevelState", trial_id: str) -> None:
@@ -280,8 +302,13 @@ def update_trial(game: "Game", level: "LevelState") -> None:
             log_debug = True
             trial.last_debug_tick = level.current_tick
 
-    score = compute_match_score(game, level, trial, debug=log_debug)
+    metrics = compute_match_metrics(game, level, trial, debug=log_debug)
+    score = metrics.score
     trial.last_score = score
+    trial.last_mask_score = metrics.mask_score
+    trial.last_edge_score = metrics.edge_score
+    trial.last_outside_ratio = metrics.outside_ratio
+    trial.last_anchor_ok = metrics.anchor_ok
 
     if score < trial.score_threshold:
         if trial.ready_to_seal:
@@ -327,8 +354,27 @@ def compute_match_score(
     debug: bool = False,
 ) -> float:
     """Score how well the player's pattern overlaps the missing region."""
+    return compute_match_metrics(game, level, trial, debug=debug).score
+
+
+def compute_match_metrics(
+    game: "Game",
+    level: "LevelState",
+    trial: SealTrialState,
+    debug: bool = False,
+) -> SealMatchMetrics:
+    """Return detailed overlap metrics used by trial scoring and UI."""
     if not level.pattern.vertices or level.pattern_anchor is None:
-        return 0.0
+        return SealMatchMetrics(
+            score=0.0,
+            mask_score=0.0,
+            edge_score=0.0,
+            outside_tiles=0,
+            outside_ratio=0.0,
+            player_tile_count=0,
+            total_weight=0.0,
+            anchor_ok=False,
+        )
 
     if debug and hasattr(game, "_debug"):
         # Helpful for diagnosing misalignment: the trial expects the pattern
@@ -343,13 +389,18 @@ def compute_match_score(
                 f"delta=({dx},{dy})"
             )
 
+    anchor_ok = bool(level.pattern_anchor == trial.root_tile)
+
     mask, total_weight = _build_missing_mask(level, trial)
     mask_score = 0.0
     outside = 0
+    player_tiles_count = 0
+    outside_ratio = 0.0
 
     if total_weight > 0.0:
         player_tiles = _edge_tiles_for_pattern(level.pattern, level.pattern_anchor, level.world)
         if player_tiles:
+            player_tiles_count = len(player_tiles)
             hit = 0.0
             for (tx, ty) in player_tiles:
                 w = mask[ty][tx]
@@ -357,7 +408,8 @@ def compute_match_score(
                 if w < 0.05:
                     outside += 1
             mask_score = hit / total_weight
-            penalty = outside / max(1, len(player_tiles))
+            outside_ratio = outside / max(1, len(player_tiles))
+            penalty = outside_ratio
             mask_score = max(0.0, min(1.0, mask_score - penalty * 0.15))
 
     # Secondary score: exact edge overlap in world-space (tolerant rounding).
@@ -370,12 +422,51 @@ def compute_match_score(
             "[seal_trials] "
             f"score={score:.3f} (mask={mask_score:.3f} edge={edge_score:.3f}) "
             f"thresh={trial.score_threshold:.3f} "
-            f"total={total_weight:.3f} outside={outside} "
+            f"total={total_weight:.3f} outside={outside}/{player_tiles_count} "
+            f"outside_ratio={outside_ratio:.3f} anchor_ok={anchor_ok} "
             f"missing_edges={len(trial.missing_edges)} "
             f"pattern_edges={len(trial.target_pattern.edges)} "
             f"root={trial.root_tile} term={trial.terminus_tile}"
         )
-    return score
+    return SealMatchMetrics(
+        score=score,
+        mask_score=mask_score,
+        edge_score=edge_score,
+        outside_tiles=outside,
+        outside_ratio=outside_ratio,
+        player_tile_count=player_tiles_count,
+        total_weight=total_weight,
+        anchor_ok=anchor_ok,
+    )
+
+
+def build_trial_status_lines(game: "Game", level: "LevelState", trial: SealTrialState) -> List[str]:
+    """Build concise, human-readable trial status lines for HUD rendering."""
+    lines: List[str] = []
+    lines.append(f"Seal Trial: {trial.name}")
+    lines.append(
+        f"Match {trial.last_score:.2f}/{trial.score_threshold:.2f} "
+        f"(mask {trial.last_mask_score:.2f}, edge {trial.last_edge_score:.2f})"
+    )
+    lines.append(
+        "Anchor: aligned to root"
+        if trial.last_anchor_ok
+        else "Anchor: move to marked root + snapped terminus"
+    )
+    if trial.last_outside_ratio > 0.0:
+        lines.append(f"Spill outside gap: {trial.last_outside_ratio * 100:.0f}%")
+    if trial.sealed:
+        lines.append("State: sealed")
+        return lines
+    if trial.ready_to_seal:
+        crystal_ready = _has_coherence_crystal(game, getattr(game, "player_id", ""))
+        if crystal_ready:
+            lines.append("Ready: bind with Coherence Crystal")
+        else:
+            lines.append("Ready: Coherence Crystal required")
+    else:
+        lines.append("State: align pattern to damaged segment")
+    return lines
 
 
 def seal_rune(game: "Game", actor_id: str) -> None:
@@ -434,6 +525,16 @@ def _consume_coherence_crystal(game: "Game", actor_id: str) -> bool:
             inv.pop(idx)
         game.refresh_actor_actions(actor_id)
         return True
+    return False
+
+
+def _has_coherence_crystal(game: "Game", actor_id: str) -> bool:
+    """True if actor currently carries at least one coherence crystal."""
+    inv = inventory_system.get_inventory(game, actor_id)
+    for item in inv:
+        tags = getattr(item, "tags", {}) or {}
+        if tags.get("item_type") == "coherence_crystal" and inventory_system.get_quantity(item) > 0:
+            return True
     return False
 
 
