@@ -1333,6 +1333,39 @@ class AbilityBarWidget:
             icon_drawer=getattr(ctx.renderer, "_draw_ability_icon_for_bar", None),
         )
 
+    def hover_action(self, pos: tuple[int, int], ctx) -> Optional[str]:
+        """Return the hovered action name for a point, without mutating UI state."""
+        if not (self.visible and self.enabled):
+            return None
+
+        game = ctx.game
+        if game is None:
+            return None
+
+        bar_state: AbilityBarState = getattr(game, "ability_bar_state", None)
+        if bar_state is None:
+            bar_state = AbilityBarState()
+            game.ability_bar_state = bar_state
+
+        x, y = pos
+
+        # Expanded group popup members take priority.
+        for slot_view in bar_state.visible_slots():
+            ability = slot_view.ability
+            member_rects = getattr(ability, "group_member_rects", None) or {}
+            for action, rect in member_rects.items():
+                if rect and rect.collidepoint((x, y)):
+                    return str(action)
+
+        # Regular slot area: return the active action for that slot.
+        for slot_view in bar_state.visible_slots():
+            ability = slot_view.ability
+            rect = getattr(ability, "rect", None)
+            if rect is not None and rect.collidepoint((x, y)):
+                return str(getattr(ability, "action", "") or "")
+
+        return None
+
     def click(self, pos: tuple[int, int], ctx) -> Optional[AbilityBarHit]:
         """Hit-test a click in logical-surface coordinates."""
         if not (self.visible and self.enabled):

@@ -250,7 +250,7 @@ def check_cooldown_gate(
     cd = get_cooldown(origin, action_name)
     if cd > 0:
         if is_player:
-            return "That ability is recharging."
+            return f"That ability is recharging ({cd})."
         return "cooldown"
     return None
 

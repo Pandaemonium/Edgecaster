@@ -22,6 +22,22 @@ class PreviewText:
 
 
 @dataclass(frozen=True)
+class PreviewCircle:
+    """A circular area indicator centered in world tile-space."""
+
+    # World tile position (can be float for sub-tile centers).
+    pos: Tuple[float, float]
+    # Radius in tile units.
+    radius: float
+    # RGBA base color (alpha is pulse-scaled by renderer).
+    color: Tuple[int, int, int, int] = (140, 220, 255, 130)
+    # Pulse style used by renderer (`sawtooth` or `sine`).
+    pulse: str = "sawtooth"
+    # Pulse period in milliseconds.
+    period_ms: int = 1500
+
+
+@dataclass(frozen=True)
 class ActionPreview:
     """Immutable preview data for an action.
 
@@ -41,6 +57,9 @@ class ActionPreview:
     indirect_tiles: Tuple[TilePos, ...] = ()
     direct_color: Optional[Tuple[int, int, int, int]] = None
     indirect_color: Optional[Tuple[int, int, int, int]] = None
+
+    # Optional circular indicators (e.g. radial hit zones around vertices).
+    circles: Tuple[PreviewCircle, ...] = ()
 
     # Optional per-entity/actor labels.
     texts: Tuple[PreviewText, ...] = ()
@@ -62,6 +81,9 @@ PREVIEWABLE_ACTIONS: set[str] = {
     "regrow",
     "ignite",
     "freeze",
+    # Chakra activator previews
+    "energy_kick",
+    "palm_burst",
 }
 
 
@@ -119,6 +141,16 @@ def build_action_preview(game: Any, action: str, actor_id: str | None = None) ->
         if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
             return None
         return _preview_freeze(game, pattern, anchor)
+
+    if action == "energy_kick":
+        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
+            return None
+        return _preview_energy_kick(game, pattern, anchor)
+
+    if action == "palm_burst":
+        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
+            return None
+        return _preview_palm_burst(game, pattern, anchor)
 
     return None
 
@@ -620,3 +652,100 @@ def _preview_freeze(game: Any, pattern: Pattern, anchor: TilePos) -> Optional[Ac
         direct_color=direct_color,
         texts=tuple(texts),
     )
+
+
+def _preview_energy_kick(_game: Any, pattern: Pattern, anchor: TilePos) -> Optional[ActionPreview]:
+    """Preview circles for Energy Kick's per-foot-vertex pulse zones."""
+
+    def _is_foot_lineage(node_id: str) -> bool:
+        n = str(node_id or "").lower()
+        # Keep matching logic aligned with Game.act_energy_kick.
+        return (
+            "foot" in n
+            or "toe" in n
+            or "ankle" in n
+            or "heel" in n
+        )
+
+    kick_points: List[Tuple[float, float]] = []
+    for v in getattr(pattern, "vertices", ()) or ():
+        tags = getattr(v, "tags", {}) or {}
+        nodes: List[str] = []
+        single = str(tags.get("chakra_node", "")).strip()
+        if single:
+            nodes.append(single)
+        many = str(tags.get("chakra_nodes", "")).strip()
+        if many:
+            nodes.extend([s for s in many.split("|") if s])
+        if not nodes:
+            continue
+        if any(_is_foot_lineage(node_id) for node_id in nodes):
+            kick_points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
+
+    if not kick_points:
+        return ActionPreview(action="energy_kick")
+
+    # Match the runtime kick radius from Game.act_energy_kick.
+    radius = 2.25
+    circles = tuple(
+        PreviewCircle(
+            pos=(px, py),
+            radius=radius,
+            color=(125, 220, 255, 150),
+            pulse="sawtooth",
+            period_ms=1500,
+        )
+        for px, py in kick_points
+    )
+    return ActionPreview(action="energy_kick", circles=circles)
+
+
+def _preview_palm_burst(_game: Any, pattern: Pattern, anchor: TilePos) -> Optional[ActionPreview]:
+    """Preview circles for Palm Burst's hand/palm/finger pulse zones."""
+
+    def _is_palm_lineage(node_id: str) -> bool:
+        n = str(node_id or "").lower()
+        return (
+            "hand" in n
+            or "palm" in n
+            or "finger" in n
+            or "thumb" in n
+            or "index" in n
+            or "middle" in n
+            or "ring" in n
+            or "pinky" in n
+            or "knuckle" in n
+            or "wrist" in n
+        )
+
+    burst_points: List[Tuple[float, float]] = []
+    for v in getattr(pattern, "vertices", ()) or ():
+        tags = getattr(v, "tags", {}) or {}
+        nodes: List[str] = []
+        single = str(tags.get("chakra_node", "")).strip()
+        if single:
+            nodes.append(single)
+        many = str(tags.get("chakra_nodes", "")).strip()
+        if many:
+            nodes.extend([s for s in many.split("|") if s])
+        if not nodes:
+            continue
+        if any(_is_palm_lineage(node_id) for node_id in nodes):
+            burst_points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
+
+    if not burst_points:
+        return ActionPreview(action="palm_burst")
+
+    # Match runtime radius from Game.act_palm_burst.
+    radius = 1.9
+    circles = tuple(
+        PreviewCircle(
+            pos=(px, py),
+            radius=radius,
+            color=(255, 228, 120, 155),
+            pulse="sine",
+            period_ms=1000,
+        )
+        for px, py in burst_points
+    )
+    return ActionPreview(action="palm_burst", circles=circles)

@@ -3241,6 +3241,62 @@ class AsciiRenderer:
                 pygame.draw.rect(overlay, indirect_col, pygame.Rect(px, py, tile_px, tile_px))
                 drew_any = True
 
+        # --- Circular highlights --------------------------------------------
+        # Used by chakra-driven previews (e.g. Energy Kick) to show radial
+        # effect zones around specific rune vertices.
+        circles = getattr(preview, "circles", None) or ()
+        if circles:
+            t_ms = pygame.time.get_ticks()
+
+            for c in circles:
+                try:
+                    wx, wy = c.pos
+                    rad_tiles = float(c.radius)
+                except Exception:
+                    continue
+                if rad_tiles <= 0:
+                    continue
+
+                try:
+                    base_rgba = tuple(int(v) for v in c.color[:4])
+                    if len(base_rgba) < 4:
+                        raise ValueError
+                except Exception:
+                    base_rgba = (140, 220, 255, 130)
+
+                # Per-circle pulse selection. This keeps ability previews visually distinct
+                # while sharing the same drawing path.
+                pulse = str(getattr(c, "pulse", "sawtooth") or "sawtooth").lower()
+                try:
+                    period_ms = max(1, int(getattr(c, "period_ms", 1500) or 1500))
+                except Exception:
+                    period_ms = 1500
+
+                phase = (t_ms % period_ms) / float(period_ms)  # 0..1
+                if pulse == "sine":
+                    # Smooth fade-in/fade-out.
+                    mult = 0.5 + 0.5 * math.sin(phase * math.tau)
+                else:
+                    # Default sawtooth: jump high then linearly taper.
+                    mult = 1.0 - phase
+
+                cx = int((wx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                cy = int((wy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                pr = max(1, int(round(rad_tiles * self.tile)))
+
+                alpha = max(0, min(255, int(base_rgba[3] * mult)))
+                if alpha <= 0:
+                    continue
+
+                fill_col = (base_rgba[0], base_rgba[1], base_rgba[2], alpha)
+                edge_alpha = max(40, min(255, int(alpha * 1.15)))
+                edge_col = (base_rgba[0], base_rgba[1], base_rgba[2], edge_alpha)
+
+                # Fill + crisp border keeps the area readable over mixed terrain.
+                pygame.draw.circle(overlay, fill_col, (cx, cy), pr, width=0)
+                pygame.draw.circle(overlay, edge_col, (cx, cy), pr, width=1)
+                drew_any = True
+
         # --- Ghost pattern overlay ------------------------------------------
         pat = getattr(preview, "pattern", None)
         anchor = getattr(preview, "pattern_anchor", None)

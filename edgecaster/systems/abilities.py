@@ -5,6 +5,7 @@ from typing import List, Tuple, Optional
 
 from edgecaster.game import Game
 from edgecaster.systems.actions import get_action
+from edgecaster.systems import action_runner
 from edgecaster.patterns.library import action_preview_geometry
 
 
@@ -33,6 +34,7 @@ def compute_abilities_signature(game: Game) -> Tuple[
     str,                                  # illuminator choice
     Tuple[Tuple[int, int], ...],          # custom pattern "shape"
     Tuple[str, ...],                      # host-visible actions
+    Tuple[Tuple[str, int], ...],          # action cooldown snapshot
 ]:
     """
     A small hashable signature for “what abilities should exist?”
@@ -60,6 +62,7 @@ def compute_abilities_signature(game: Game) -> Tuple[
     # Host-visible actions: any actions on the current host actor that
     # are marked show_in_bar=True in the action registry.
     host_actions: List[str] = []
+    cooldown_snapshot: List[Tuple[str, int]] = []
     try:
         level = game._level()
         host = level.actors.get(game.player_id)
@@ -74,10 +77,17 @@ def compute_abilities_signature(game: Game) -> Tuple[
                 continue
             if getattr(adef, "show_in_bar", False):
                 host_actions.append(name)
+                try:
+                    origin, _ = action_runner.find_action_origin(game, host, name)
+                    cd = int(action_runner.get_cooldown(origin, name))
+                except Exception:
+                    cd = 0
+                cooldown_snapshot.append((str(name), max(0, cd)))
 
     host_sig = tuple(sorted(set(host_actions)))
+    cooldown_sig = tuple(sorted(cooldown_snapshot))
 
-    return gen_list, illuminator_choice, custom_sig, host_sig
+    return gen_list, illuminator_choice, custom_sig, host_sig, cooldown_sig
 
 
 def build_abilities(game: Game) -> List[Ability]:
@@ -110,7 +120,15 @@ def build_abilities(game: Game) -> List[Ability]:
         if not getattr(adef, "show_in_bar", False):
             return
         preview = action_preview_geometry(adef.name, game)
-        abilities.append(Ability(name=adef.label, hotkey=hotkey, action=adef.name, preview_geom=preview))
+        label = str(adef.label)
+        try:
+            origin, _ = action_runner.find_action_origin(game, host, adef.name)
+            cd = int(action_runner.get_cooldown(origin, adef.name))
+        except Exception:
+            cd = 0
+        if cd > 0:
+            label = f"{label} ({cd})"
+        abilities.append(Ability(name=label, hotkey=hotkey, action=adef.name, preview_geom=preview))
         hotkey += 1
 
     # Preserve order: whatever is in host.actions is the bar order.

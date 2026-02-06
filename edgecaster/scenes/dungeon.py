@@ -346,10 +346,29 @@ class DungeonScene(Scene):
         # Process any transitions (death, map, inventory, etc.)
         self._process_transitions(game, renderer, manager)
 
-        # Clear any action preview when Alt is released.
+        # Keep hover previews responsive even when no mouse_move event is emitted.
+        try:
+            bar_widget = getattr(renderer, "ability_bar_widget", None)
+            if bar_widget is not None:
+                mx, my = renderer._to_surface(pygame.mouse.get_pos())
+                ctx = WidgetContext(surface=renderer.surface, game=game, scene=self, renderer=renderer)
+                hovered_action = bar_widget.hover_action((mx, my), ctx)
+                hover_preview_actions = {"energy_kick", "palm_burst"}
+                if hovered_action in hover_preview_actions:
+                    self.ui_state.action_preview = build_action_preview(game, str(hovered_action), game.player_id)
+                else:
+                    current_preview = getattr(self.ui_state, "action_preview", None)
+                    if getattr(current_preview, "action", None) in hover_preview_actions:
+                        self.ui_state.action_preview = None
+        except Exception:
+            pass
+
+        # Clear Alt-gated previews when Alt is released.
+        # Hover-driven previews are not Alt-gated and are cleared by hover logic.
         if self.ui_state.action_preview is not None:
             try:
-                if (pygame.key.get_mods() & pygame.KMOD_ALT) == 0:
+                preview_action = getattr(self.ui_state.action_preview, "action", None)
+                if preview_action not in {"energy_kick", "palm_burst"} and (pygame.key.get_mods() & pygame.KMOD_ALT) == 0:
                     self.ui_state.action_preview = None
             except Exception:
                 self.ui_state.action_preview = None
@@ -2042,10 +2061,30 @@ class DungeonScene(Scene):
 
         # Mouse hover: update tile/vertex cursor & aim preview.
         if kind == "mouse_move" and cmd.mouse_pos is not None:
+            mx, my = renderer._to_surface(cmd.mouse_pos)
+
+            # Ability-hover preview for radial chakra activators.
+            bar_widget = getattr(renderer, "ability_bar_widget", None)
+            if bar_widget is not None:
+                try:
+                    ctx = WidgetContext(surface=renderer.surface, game=game, scene=self, renderer=renderer)
+                    hovered_action = bar_widget.hover_action((mx, my), ctx)
+                except Exception:
+                    hovered_action = None
+
+                hover_preview_actions = {"energy_kick", "palm_burst"}
+                if hovered_action in hover_preview_actions:
+                    self.ui_state.action_preview = build_action_preview(game, str(hovered_action), game.player_id)
+                    return
+
+                current_preview = getattr(self.ui_state, "action_preview", None)
+                if getattr(current_preview, "action", None) in hover_preview_actions:
+                    self.ui_state.action_preview = None
+
             self._update_hover_from_mouse(
                 game,
                 renderer,
-                renderer._to_surface(cmd.mouse_pos),
+                (mx, my),
             )
             return
 
