@@ -157,6 +157,8 @@ def find_spawn_position(
     radius: int = 3,
     avoid_actors: bool = True,
     avoid_entities: bool = True,
+    avoid_near: Optional[Tuple[int, int]] = None,
+    avoid_distance: int = 0,
     max_attempts: int = 100,
 ) -> Optional[Tuple[int, int]]:
     """Find a valid spawn position in the level.
@@ -168,6 +170,8 @@ def find_spawn_position(
         radius: Search radius when 'near' is provided
         avoid_actors: Skip tiles with actors
         avoid_entities: Skip tiles with entities
+        avoid_near: Optional local position to keep clear of spawned entities
+        avoid_distance: Euclidean distance radius around `avoid_near` to avoid
         max_attempts: Maximum random attempts
 
     Returns:
@@ -192,6 +196,11 @@ def find_spawn_position(
             continue
         if avoid_entities and game._entity_at(level, (x, y)):
             continue
+        if avoid_near is not None and avoid_distance > 0:
+            dx = int(x) - int(avoid_near[0])
+            dy = int(y) - int(avoid_near[1])
+            if dx * dx + dy * dy < int(avoid_distance) * int(avoid_distance):
+                continue
 
         return (x, y)
 
@@ -419,6 +428,8 @@ def spawn_enemies(
     count: int,
     use_biome_spawning: bool = True,
     include_neutral_factions: bool = True,
+    avoid_near: Optional[Tuple[int, int]] = None,
+    avoid_distance: int = 0,
 ) -> int:
     """Spawn random enemies using the data-driven enemy factory.
 
@@ -430,6 +441,10 @@ def spawn_enemies(
         include_neutral_factions: If True, include neutral faction creatures
 
     Returns the number of enemies spawned.
+
+    Args:
+        avoid_near: Optional local position to avoid spawning too close to.
+        avoid_distance: Euclidean distance radius around `avoid_near`.
     """
     spawned = 0
     attempts = 0
@@ -442,7 +457,16 @@ def spawn_enemies(
 
     while spawned < count and attempts < 200:
         attempts += 1
-        pos = find_spawn_position(game, level, avoid_entities=False)
+        pos = find_spawn_position(
+            game,
+            level,
+            avoid_entities=False,
+            avoid_near=avoid_near,
+            avoid_distance=avoid_distance,
+        )
+        if pos is None and (avoid_near is not None and avoid_distance > 0):
+            # Fallback for very dense zones: relax the distance gate only.
+            pos = find_spawn_position(game, level, avoid_entities=False)
         if pos is None:
             continue
 

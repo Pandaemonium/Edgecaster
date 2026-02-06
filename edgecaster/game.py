@@ -109,6 +109,7 @@ from edgecaster.systems import poi_spawning as poi_spawning_system
 from edgecaster.systems import zones as zones_system
 from edgecaster.systems import overmap as overmap_system
 from edgecaster.systems import difficulty as difficulty_system
+from edgecaster.systems import ambient_spawns as ambient_spawns_system
 from . import lorenz
 import math
 import random
@@ -238,6 +239,8 @@ class LevelState:
     danger_value: float = 0.0
     danger_tier: int = 1
     danger_sources: Dict[str, float] = field(default_factory=dict)
+    # Accumulator for ambient hostile top-up timing (Option 2 roaming spawns).
+    ambient_spawn_accum: float = 0.0
 
 
 
@@ -1697,6 +1700,11 @@ class Game:
         for lvl in active_levels:
             apply_player_systems = (lvl is current_level)
             scheduling.advance_time(self, lvl, delta, apply_player_systems=apply_player_systems)
+
+        # Option 2: maintain ambient hostile populations across active zones.
+        # This keeps roaming areas populated over time without relying on
+        # one-time zone-entry spawns.
+        ambient_spawns_system.maintain_population(self, active_levels, delta)
 
     def _start_regen(self, level: LevelState, actor_id: str, amount: int, interval: int) -> None:
         """Start periodic regen for an actor. Delegates to scheduling module."""

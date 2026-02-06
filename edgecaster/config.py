@@ -31,3 +31,13 @@ class GameConfig:
     xp_per_imp: int = 10
     xp_base: int = 20          # XP needed for level 2
     xp_per_level: int = 10     # incremental growth per level (linear)
+
+    # Ambient hostile population maintenance (active-zone top-up).
+    # These knobs are intentionally conservative to avoid sudden spawn bursts.
+    ambient_spawn_enabled: bool = True
+    ambient_spawn_interval_ticks: int = 120
+    ambient_spawn_target_base: int = 2
+    ambient_spawn_target_per_tier: float = 0.5
+    ambient_spawn_target_max: int = 8
+    ambient_spawn_max_per_cycle: int = 1
+    ambient_spawn_player_safe_radius: int = 8
