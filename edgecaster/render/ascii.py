@@ -35,6 +35,7 @@ from edgecaster.game import Game
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns.library import action_preview_geometry
+from edgecaster.systems.tooltips import resolve_action_tooltip
 from edgecaster.ui.ability_bar import AbilityBarRenderer, AbilityBarWidget
 from edgecaster.visuals import VisualProfile, apply_visual_panel
 from edgecaster.ui.widgets import WidgetContext, HUDWidget
@@ -4379,6 +4380,64 @@ class AsciiRenderer:
         self.ability_bar_widget.layout(ctx)
         self.ability_bar_widget.draw(ctx)
 
+    def draw_action_tooltip(self, game: Game) -> None:
+        """Draw a lightweight tooltip for the currently hovered ability action."""
+        action_name = self._ui_attr("hovered_action", None)
+        if not action_name:
+            return
+
+        tooltip = resolve_action_tooltip(game, str(action_name), getattr(game, "player_id", None))
+        if tooltip is None:
+            return
+
+        title_font = self.font
+        body_font = self.small_font
+
+        max_w = min(520, max(260, self.width - self.log_panel_width - 24))
+        content_w = max_w - 16
+
+        rendered_lines: List[Tuple[str, pygame.Surface]] = []
+        rendered_lines.append((tooltip.title, title_font.render(tooltip.title, True, (240, 245, 255))))
+
+        for ln in self._wrap_text(tooltip.summary, body_font, content_w):
+            rendered_lines.append((ln, body_font.render(ln, True, (215, 225, 245))))
+
+        for line in tooltip.lines:
+            for wrapped in self._wrap_text(f"- {line}", body_font, content_w):
+                rendered_lines.append((wrapped, body_font.render(wrapped, True, (170, 230, 210))))
+
+        line_gap = 3
+        panel_h = 10
+        panel_w = 0
+        for txt, surf in rendered_lines:
+            panel_h += surf.get_height() + line_gap
+            panel_w = max(panel_w, surf.get_width())
+        panel_h += 8
+        panel_w = min(max_w, panel_w + 16)
+
+        # Anchor near mouse, but keep above ability bar and out of the log panel.
+        mx, my = self._to_surface(pygame.mouse.get_pos())
+        x = int(mx + 18)
+        y = int(self.height - self.ability_bar_height - panel_h - 8)
+
+        max_x = self.width - self.log_panel_width - panel_w - 6
+        if x > max_x:
+            x = max(6, max_x)
+        if x < 6:
+            x = 6
+
+        if y < self.top_bar_height + 6:
+            y = self.top_bar_height + 6
+
+        rect = pygame.Rect(x, y, panel_w, panel_h)
+        pygame.draw.rect(self.surface, (10, 14, 26, 230), rect, border_radius=6)
+        pygame.draw.rect(self.surface, (90, 118, 170), rect, 1, border_radius=6)
+
+        ty = rect.y + 7
+        for _txt, surf in rendered_lines:
+            self.surface.blit(surf, (rect.x + 8, ty))
+            ty += surf.get_height() + line_gap
+
 
     def _draw_ability_icon(self, rect: pygame.Rect, ability_or_action, game: Game) -> None:
         """Draw an ability icon from either an Ability or an action name."""
@@ -4534,6 +4593,7 @@ class AsciiRenderer:
         )
         self.hud_widget.layout(ctx)
         self.hud_widget.draw(ctx)
+        self.draw_action_tooltip(game)
 
         # HUD-adjacent overlays still live directly on the renderer for now.
         self.draw_ignite_overlay(game)

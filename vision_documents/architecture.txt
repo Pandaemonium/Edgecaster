@@ -154,6 +154,10 @@ Current concern map (authoritative):
     Freeze, Sparkle, Lightning, Lorenz contact damage, and acidic-pattern tick targeting.
   - Remaining direct single-target combat (`combat.attack`) is intentionally explicit and does
     not require policy iteration.
+- `edgecaster/systems/tooltips.py`
+  - Action tooltip resolver for ability hover help.
+  - Blends static action explanations with live runtime state (targeting, cooldown, charges).
+  - Keeps text/logic in systems; scenes only expose hovered action and renderer only draws.
 
 Still in `game.py` and planned for extraction:
 - `_make_zone()` once mapgen/POI coupling is reduced.
@@ -179,6 +183,7 @@ Key modules (non-exhaustive):
 - systems/ambient_spawns.py: active-zone population maintenance (Option 2 roaming spawn model)
 - systems/poi_spawning.py: zone-time POI realization policy (structures/NPCs/lair ruin content)
 - systems/damage_policy.py: reusable damage target filtering + relation gating
+- systems/tooltips.py: action help resolver for ability-bar hover tooltips
 - systems/trade.py: trade rules and transaction commit
 - systems/reputation.py: faction reputation and hostility hooks
 - systems/fern_growth.py: procedural fern pattern growth (coherence-fueled, pruning)

@@ -75,6 +75,7 @@ class DungeonUIState:
     push_target: tuple[float, float] | None = None
     push_rotation: float = 0.0
     push_preview: object | None = None
+    hovered_action: str | None = None  # current action hovered in ability bar
     seal_snap_active: bool = False
     seal_root_hint: tuple[int, int] | None = None
     # --- debug widget PoC state (safe, pure data) ---
@@ -353,6 +354,7 @@ class DungeonScene(Scene):
                 mx, my = renderer._to_surface(pygame.mouse.get_pos())
                 ctx = WidgetContext(surface=renderer.surface, game=game, scene=self, renderer=renderer)
                 hovered_action = bar_widget.hover_action((mx, my), ctx)
+                self.ui_state.hovered_action = str(hovered_action) if hovered_action else None
                 hover_preview_actions = {"energy_kick", "palm_burst"}
                 if hovered_action in hover_preview_actions:
                     self.ui_state.action_preview = build_action_preview(game, str(hovered_action), game.player_id)
@@ -360,8 +362,10 @@ class DungeonScene(Scene):
                     current_preview = getattr(self.ui_state, "action_preview", None)
                     if getattr(current_preview, "action", None) in hover_preview_actions:
                         self.ui_state.action_preview = None
+            else:
+                self.ui_state.hovered_action = None
         except Exception:
-            pass
+            self.ui_state.hovered_action = None
 
         # Clear Alt-gated previews when Alt is released.
         # Hover-driven previews are not Alt-gated and are cleared by hover logic.
@@ -2071,6 +2075,7 @@ class DungeonScene(Scene):
                     hovered_action = bar_widget.hover_action((mx, my), ctx)
                 except Exception:
                     hovered_action = None
+                self.ui_state.hovered_action = str(hovered_action) if hovered_action else None
 
                 hover_preview_actions = {"energy_kick", "palm_burst"}
                 if hovered_action in hover_preview_actions:
@@ -2080,6 +2085,8 @@ class DungeonScene(Scene):
                 current_preview = getattr(self.ui_state, "action_preview", None)
                 if getattr(current_preview, "action", None) in hover_preview_actions:
                     self.ui_state.action_preview = None
+            else:
+                self.ui_state.hovered_action = None
 
             self._update_hover_from_mouse(
                 game,
