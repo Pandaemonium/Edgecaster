@@ -956,6 +956,150 @@ def get_compact_active_graph(
 
     return active_set, list(compact_edges)
 
+
+def get_active_chakra_generator_graph(
+    body_schema: Dict[str, Any],
+    chakra_state: ChakraState,
+    *,
+    base_scale: float = 1.0,
+    require_root: bool = True,
+) -> Tuple[Dict[str, Vec2], List[Tuple[str, str]], str, str]:
+    """Build the active chakra graph used by generator/preview code.
+
+    Returns:
+        (positions, compact_edges, root_id, terminus_id)
+        - positions: node_id -> (x, y) for active nodes reachable from root
+        - compact_edges: active-only compressed edges
+        - root_id: selected active root
+        - terminus_id: active node furthest from root by Euclidean distance
+
+    Notes:
+    - There is no implicit "body root" fallback.
+    - If `require_root=True`, `pattern_root` must be set and active.
+    """
+    all_positions = get_all_chakra_positions_recursive(
+        body_schema,
+        chakra_state,
+        base_scale=base_scale,
+    )
+    full_edges = get_chakra_connections_recursive(body_schema, chakra_state)
+
+    root_id = getattr(chakra_state, "pattern_root", None)
+    if root_id not in chakra_state.active:
+        if require_root:
+            raise ValueError("Select an active chakra as the pattern root first.")
+        active_sorted = sorted(chakra_state.active)
+        if not active_sorted:
+            raise ValueError("Need at least 2 active chakras to form a generator.")
+        root_id = active_sorted[0]
+
+    active_nodes, compact_edges = get_compact_active_graph(
+        full_edges,
+        chakra_state.active,
+        root_id=root_id,
+    )
+    positions: Dict[str, Vec2] = {
+        node_id: pos_u
+        for node_id, (pos_u, _state, _scale, _base_pos) in all_positions.items()
+        if node_id in active_nodes
+    }
+
+    if root_id not in positions:
+        raise ValueError("Pattern root not found in chakra pattern.")
+
+    candidates = [nid for nid in active_nodes if nid != root_id and nid in positions]
+    if not candidates:
+        raise ValueError("Need at least 2 connected chakras to form a generator.")
+
+    rx, ry = positions[root_id]
+
+    def d2(nid: str) -> float:
+        x, y = positions[nid]
+        dx = x - rx
+        dy = y - ry
+        return dx * dx + dy * dy
+
+    terminus_id = max(candidates, key=d2)
+    return positions, compact_edges, str(root_id), str(terminus_id)
+
+
+def normalized_custom_graph_from_positions(
+    positions: Dict[str, Vec2],
+    compact_edges: List[Tuple[str, str]],
+    *,
+    root_id: str,
+    terminus_id: str,
+) -> Tuple[List[Vec2], List[Tuple[int, int]], List[str], float]:
+    """Convert active chakra graph to a normalized CustomGraphGenerator shape.
+
+    The output baseline is:
+    - root vertex at (0, 0)
+    - terminus vertex at (1, 0)
+
+    Returns:
+        (verts, edges, node_order, base_len)
+    """
+    if root_id not in positions or terminus_id not in positions:
+        raise ValueError("Root/terminus missing from active chakra positions.")
+
+    # Stable order: root first, terminus last, everything else deterministic.
+    middle = sorted([nid for nid in positions.keys() if nid not in {root_id, terminus_id}])
+    node_order = [root_id] + middle + [terminus_id]
+
+    # Build raw vertex list in chosen order.
+    raw_verts: List[Vec2] = [positions[nid] for nid in node_order]
+
+    root_idx = 0
+    term_idx = len(node_order) - 1
+    rx, ry = raw_verts[root_idx]
+    tx, ty = raw_verts[term_idx]
+    bx = tx - rx
+    by = ty - ry
+    base_len = math.hypot(bx, by)
+    if base_len <= 1e-9:
+        raise ValueError("Root and terminus overlap; cannot normalize generator.")
+
+    ang = math.atan2(by, bx)
+    cos_a = math.cos(-ang)
+    sin_a = math.sin(-ang)
+
+    verts: List[Vec2] = []
+    for vx, vy in raw_verts:
+        dx = vx - rx
+        dy = vy - ry
+        nx = dx * cos_a - dy * sin_a
+        ny = dx * sin_a + dy * cos_a
+        nx /= base_len
+        ny /= base_len
+        verts.append((nx, ny))
+
+    # Pin baseline endpoints exactly.
+    verts[root_idx] = (0.0, 0.0)
+    verts[term_idx] = (1.0, 0.0)
+
+    # Index mapping for edge remap.
+    idx_by_node = {nid: i for i, nid in enumerate(node_order)}
+    edge_keys: Set[Tuple[int, int]] = set()
+    out_edges: List[Tuple[int, int]] = []
+    for a_id, b_id in compact_edges:
+        if a_id not in idx_by_node or b_id not in idx_by_node:
+            continue
+        ia = idx_by_node[a_id]
+        ib = idx_by_node[b_id]
+        if ia == ib:
+            continue
+        k = (ia, ib) if ia <= ib else (ib, ia)
+        if k in edge_keys:
+            continue
+        edge_keys.add(k)
+        out_edges.append((ia, ib))
+
+    if not out_edges:
+        raise ValueError("Need at least 2 connected chakras to form a generator.")
+
+    return verts, out_edges, node_order, base_len
+
+
 def chakras_to_seed_pattern(
     body_schema: Dict[str, Any],
     chakra_state: ChakraState,

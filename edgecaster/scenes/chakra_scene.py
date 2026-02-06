@@ -1287,41 +1287,20 @@ class PatternPreviewWidget(Widget):
         body_schema = _get_body_schema(self.actor)
         chakra_state = self.state_override or _get_chakra_state(self.actor)
 
-        # Get positions for active chakras and build a *compact* graph that
-        # removes inactive connector nodes. This mirrors the Chakra generator
-        # so the preview matches the in-game result.
-        from edgecaster.systems.chakras import (
-            get_all_chakra_positions_recursive,
-            get_chakra_connections_recursive,
-            get_compact_active_graph,
-        )
+        # Build the same active graph used by runtime chakra casting.
+        # We keep `require_root=False` in preview so users can still see shape
+        # while choosing a root, but root-aware behavior matches runtime once
+        # a root is selected.
+        from edgecaster.systems.chakras import get_active_chakra_generator_graph
 
-        all_positions = get_all_chakra_positions_recursive(
-            body_schema,
-            chakra_state,
-            base_scale=50.0,  # Larger for preview
-        )
-
-        edges = get_chakra_connections_recursive(body_schema, chakra_state)
-
-        # If a pattern root is set, mirror generator behavior by keeping only
-        # active nodes reachable from that root.
-        root_hint = getattr(chakra_state, "pattern_root", None)
-        if root_hint not in chakra_state.active:
-            root_hint = None
-        active_nodes, compact_edges = get_compact_active_graph(
-            edges,
-            chakra_state.active,
-            root_id=root_hint,
-        )
-
-        positions = {
-            node_id: pos_u
-            for node_id, (pos_u, _state, _scale, _base_pos) in all_positions.items()
-            if node_id in active_nodes
-        }
-
-        if not positions:
+        try:
+            positions, compact_edges, root_hint, _terminus_hint = get_active_chakra_generator_graph(
+                body_schema,
+                chakra_state,
+                base_scale=50.0,  # larger for panel readability
+                require_root=False,
+            )
+        except Exception:
             self._pattern_surface = None
             return
 
@@ -1341,18 +1320,8 @@ class PatternPreviewWidget(Widget):
             self._pattern_surface = surf
             return
 
-        root_id = getattr(chakra_state, "pattern_root", None)
-        if root_id and root_id in positions:
-            root_pos = positions[root_id]
-        else:
-            # Avoid implicit body-root fallback; use any active chakra if available.
-            active_ids = [nid for nid in chakra_state.active if nid in positions]
-            if active_ids:
-                root_id = active_ids[0]
-                root_pos = positions[root_id]
-            else:
-                # Fallback: closest to origin (only if no active nodes).
-                root_id, root_pos = min(positions.items(), key=lambda kv: kv[1][0] ** 2 + kv[1][1] ** 2)
+        root_id = root_hint
+        root_pos = positions[root_id]
 
         # Pick terminus as the furthest ACTIVE node by Euclidean distance.
         active_ids = [nid for nid in chakra_state.active if nid in positions]

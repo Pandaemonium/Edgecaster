@@ -1,5 +1,5 @@
 EDGECASTER ARCHITECTURE GUIDE
-Updated: 2026-01-23
+Updated: 2026-02-06
 
 This document orients new contributors to the current structure.
 Goal: keep responsibilities clean and make new features easy to add.
@@ -122,6 +122,39 @@ refactor so there is only one shared implementation.
 game.py should stay relatively thin: it is the orchestrator and state holder.
 Most mechanics should live in edgecaster/systems/*.
 
+Current concern map (authoritative):
+- `edgecaster/game.py`
+  - Orchestration/lifecycle glue only (zone bootstrapping, top-level flow, cross-system coordination).
+  - Holds persistent game state and delegates to systems.
+- `edgecaster/systems/spawning.py`
+  - Template loading, entity/actor spawn helpers, biome-aware enemy selection,
+    debug inventory conjure pipeline.
+- `edgecaster/systems/inspection.py`
+  - Look/examine logic for tile/entity/terrain descriptions, including ABS-space lookups.
+- `edgecaster/systems/coords.py`
+  - Canonical ABS <-> (zone, local) transforms and coordinate helpers.
+- `edgecaster/systems/entity_ops.py`
+  - Actor/entity tile queries, blocking checks, status mutation helpers, door toggle behavior.
+- `edgecaster/systems/render_query.py`
+  - Render-candidate sizing heuristics, spatial bin rebuild, zone-window clamp helper.
+- `edgecaster/systems/attention.py`
+  - Attention-driven render candidate assembly (`renderables_in_abs_rect` core path).
+  - World proxy staging delegates for sites/POIs/aggregates.
+  - Zone-time aggregate detail realization bridge.
+- `edgecaster/systems/poi_spawning.py`
+  - Runtime POI realization for loaded levels (POI structures, POI NPC spawns, lair/ruin content).
+  - Keeps `Game._spawn_poi_contents` as a thin delegate.
+
+Still in `game.py` and planned for extraction:
+- `_make_zone()` once mapgen/POI coupling is reduced.
+
+Delegation note:
+- `Game.sync_attention_instantiation`, `Game.renderables_in_abs_rect`,
+  `Game._ensure_world_site_entities`, `Game._ensure_world_poi_entities`,
+  `Game._ensure_world_aggregate_entities`, and
+  `Game._realize_aggregate_details_in_zone` are thin delegates into
+  `edgecaster/systems/attention.py`.
+
 Key modules (non-exhaustive):
 - systems/actions.py: ActionDef registry (labels, cooldown, cost, etc.)
 - systems/action_runner.py: unified action execution (cooldowns, charges, confirmations, delay)
@@ -133,6 +166,7 @@ Key modules (non-exhaustive):
 - systems/previews.py: non-committing previews for UI
 - systems/overmap.py: Julia grid, world map cache/threading, corruption/anchors
 - systems/spawning.py: spawn helpers, biome-aware creature selection (tile.biome_id + biome_spawn tags)
+- systems/poi_spawning.py: zone-time POI realization policy (structures/NPCs/lair ruin content)
 - systems/trade.py: trade rules and transaction commit
 - systems/reputation.py: faction reputation and hostility hooks
 - systems/fern_growth.py: procedural fern pattern growth (coherence-fueled, pruning)

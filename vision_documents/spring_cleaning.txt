@@ -138,7 +138,15 @@ SLICE 5 - GAME.PY DECOMPOSITION
 
 Status:
 - Treat game.py as an orchestrator; new gameplay should go in edgecaster/systems/*.
-- Current size: ~3100 LOC (was ~6000+ pre-split).
+- Current size: ~6500 LOC in this branch (still needs further extraction).
+- 2026-02-06 extraction progress:
+  - `systems/inspection.py` extracted; `Game.describe_*` are thin delegates.
+  - `systems/coords.py` extracted; zone/ABS transforms are centralized.
+  - `systems/entity_ops.py` extracted; actor/entity query + status helpers moved.
+  - `systems/spawning.py` now owns `debug_spawn_inventory_near_player()`.
+  - `systems/render_query.py` extracted; size heuristics + spatial-bin rebuild + zone-window clamping moved.
+  - `systems/poi_spawning.py` extracted; `Game._spawn_poi_contents` now delegates.
+  - `systems/attention.py` extracted; render candidate assembly + world proxy staging delegates moved.
 
 Completed extractions (core):
 - edgecaster/systems/action_runner.py
@@ -166,6 +174,11 @@ Deliberate holdouts:
 Follow-ups:
 [CLEANUP] Consider moving _make_zone once POI/mapgen coupling is reduced.
 [CLEANUP] Keep subsystem APIs stable (game passed as first arg) and avoid circular imports.
+[DONE] Extract `_spawn_poi_contents()` into `systems/poi_spawning.py`.
+[DONE] Extract attention-query / render candidate assembly from `Game.renderables_in_abs_rect`.
+[DONE] Extract world proxy staging delegates (`_ensure_world_site_entities`, `_ensure_world_poi_entities`,
+      `_ensure_world_aggregate_entities`, `_realize_aggregate_details_in_zone`) into `systems/attention.py`.
+[CLEANUP] Extract `sync_attention_instantiation()` into attention systems so all attention lifecycle logic is out of game.py.
 
 ===============================================================================
 SLICE 6 — POI SYSTEM MIGRATION (YOGA-COMPLIANT)

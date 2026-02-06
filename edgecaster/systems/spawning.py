@@ -707,6 +707,165 @@ def scatter_test_berries(
     return placed
 
 
+def debug_spawn_inventory_near_player(
+    game: "Game",
+    radius: int = 3,
+    *,
+    count: int | None = None,
+) -> None:
+    """Debug helper: conjure a curated batch of meta-Inventories near player.
+
+    Spawns:
+      - one of each functional adjective inventory (visual effect probes)
+      - plus 3 non-functional inventories (flavor/junk bags)
+
+    Notes:
+      - `count` is intentionally accepted for backwards compatibility with
+        existing call sites; this helper currently uses the curated batch plan.
+      - This function remains in spawning because it is pure spawn orchestration
+        and keeps Game slimmer.
+    """
+    level = game._level()
+    if game.player_id not in level.actors:
+        return
+    player = level.actors[game.player_id]
+
+    # Functional adjectives -> effect names from visual_effects registry.
+    # "mirrored" resolves to mirror_x currently.
+    functional_map: dict[str, list[str]] = {
+        "clockwise": ["clockwise"],
+        "counter-clockwise": ["counter-clockwise"],
+        "ghostly": ["ghostly"],
+        "mirrored": ["mirror_x"],
+        "fiery": ["fiery"],
+        "bismuth": ["bismuth"],
+        "jittery": ["jittery"],
+        "colossal": ["colossal"],
+        "smoky": ["smoky"],
+        "malfunctioning": ["malfunctioning"],
+        "carbonated": ["carbonated"],
+        "toasty": ["toasty"],
+        "arctic": ["arctic"],
+        "syrupy": ["syrupy"],
+        "candlelit": ["candlelit"],
+        "octonionic": ["octonionic"],
+        "celestial": ["celestial"],
+        "extropic": ["extropic"],
+        "entropic": ["entropic"],
+        "underwhelming": ["underwhelming"],
+        "revolving": ["revolving"],
+        "orbital": ["orbital"],
+    }
+
+    # Flavor-only pool (no special effects).
+    nonfunctional_adjectives = [
+        "fetid", "dubious", "spectacular", "outrageous", "sensible",
+        "colossal", "lightly-aged", "unfortunate", "malicious",
+        "courageous", "flavorful", "salty", "magnanimous",
+        "pernicious", "persuasive", "cartoonish", "trapezoidal",
+        "bovine", "spectral", "capitalized", "automatic",
+        "recursive", "stout",
+        "lean", "microscopic", "semipermeable", "blessed",
+        "+1", "+2", "candlelit", "smoky", "smoked", "cozy",
+        "uninhabitable", "nuclear", "deathly", "ferocious",
+        "fractious", "queer", "rectilinear", "lavender-scented",
+        "hopefully not racist", "erotic", "far-fetched", "amazing",
+        "underwhelming", "carnivorous", "mysterious", "arctic",
+        "celestial", "toasty", "room temperature",
+        "unassuming", "subtle", "gaudy", "ornate", "gem-encrusted",
+        "golden", "wooden", "marbled", "spiked", "luminescent",
+        "electrified", "poisonous", "venomous", "mangled",
+        "malfunctioning", "twisted", "eldritch", "malted",
+        "syrupy", "tumultuous", "festooned", "inappropriate", "entropic",
+        "extropic", "overpopulated", "arbitrary",
+        "ecstatic", "carbon-based", "semifluid", "carbonated",
+        "vitamin-rich", "emotionally vulnerable", "disgruntled",
+        "vegan-friendly", "emphatic", "plain old",
+        "cream-filled", "inexcusable", "historically accurate",
+        "randomized", "lubricated", "grape-flavored", "excitable",
+        "tasteless", "vintage", "incandescent", "steam-powered",
+    ]
+
+    # Avoid duplicates where a word is in both pools.
+    functional_set = {k.lower() for k in functional_map.keys()}
+    nonfunctional_adjectives = [a for a in nonfunctional_adjectives if a.lower() not in functional_set]
+
+    nonfunc_pool = list(nonfunctional_adjectives)
+    game.rng.shuffle(nonfunc_pool)
+
+    def next_nonfunc_adj() -> str:
+        nonlocal nonfunc_pool
+        if not nonfunc_pool:
+            nonfunc_pool = list(nonfunctional_adjectives)
+            game.rng.shuffle(nonfunc_pool)
+        return nonfunc_pool.pop()
+
+    def find_spot_near(center: tuple[int, int], r: int, max_attempts: int = 200) -> tuple[int, int] | None:
+        cx, cy = center
+        for _ in range(max_attempts):
+            x = cx + game.rng.randint(-r, r)
+            y = cy + game.rng.randint(-r, r)
+            if not level.world.in_bounds(x, y):
+                continue
+            if not level.world.is_walkable(x, y):
+                continue
+            if game._actor_at(level, (x, y)):
+                continue
+            if game._entity_at(level, (x, y)):
+                continue
+            return (x, y)
+        return None
+
+    def spawn_inventory_at(pos: tuple[int, int], adjective: str, *, functional: bool) -> None:
+        tags: dict[str, object] = {}
+        if functional:
+            effects = list(functional_map.get(adjective, []))
+            if effects:
+                tags["visual_effects"] = effects
+
+        display_name = f"{adjective} Inventory"
+        color = (
+            game.rng.randint(80, 255),
+            game.rng.randint(80, 255),
+            game.rng.randint(80, 255),
+        )
+        overrides: dict[str, object] = {
+            "name": display_name,
+            "color": color,
+        }
+        if tags:
+            overrides["tags"] = tags
+
+        ent = game._spawn_entity_from_template(
+            "debug_inventory",
+            pos,
+            overrides=overrides,
+        )
+        ent.description = "Definitely NOT a bag, it's much more Platonic than that."
+        level.entities[ent.id] = ent
+        game.get_inventory(ent.id)  # ensure inventory slot allocated
+
+    desired: list[tuple[str, bool]] = []
+    for adj in functional_map.keys():
+        desired.append((adj, True))
+    for _ in range(3):
+        desired.append((next_nonfunc_adj(), False))
+
+    spawned = 0
+    center = player.pos
+    for adj, is_func in desired:
+        spot = find_spot_near(center, r=radius, max_attempts=250)
+        if spot is None:
+            continue
+        spawn_inventory_at(spot, adj, functional=is_func)
+        spawned += 1
+
+    if spawned > 0:
+        game.log.add(f"Inventory drop! ({spawned} conjured.)")
+    else:
+        game.log.add("This is no place for an inventory.")
+
+
 # ---------------------------------------------------------------------------
 # NPC Spawning
 # ---------------------------------------------------------------------------
