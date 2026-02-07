@@ -686,7 +686,7 @@ def _preview_energy_kick(_game: Any, pattern: Pattern, anchor: TilePos) -> Optio
         return ActionPreview(action="energy_kick")
 
     # Match the runtime kick radius from Game.act_energy_kick.
-    radius = 2.25
+    radius = 1.8
     circles = tuple(
         PreviewCircle(
             pos=(px, py),
@@ -737,7 +737,7 @@ def _preview_palm_burst(_game: Any, pattern: Pattern, anchor: TilePos) -> Option
         return ActionPreview(action="palm_burst")
 
     # Match runtime radius from Game.act_palm_burst.
-    radius = 1.9
+    radius = 1.6
     circles = tuple(
         PreviewCircle(
             pos=(px, py),

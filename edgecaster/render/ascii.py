@@ -3252,12 +3252,26 @@ class AsciiRenderer:
                 if alpha <= 0:
                     continue
 
-                fill_col = (base_rgba[0], base_rgba[1], base_rgba[2], alpha)
-                edge_alpha = max(40, min(255, int(alpha * 1.15)))
-                edge_col = (base_rgba[0], base_rgba[1], base_rgba[2], edge_alpha)
+                # Radial falloff: more opaque near the center and more transparent
+                # near the edge to visually match distance-based damage falloff.
+                rings = 6
+                for i in range(rings, 0, -1):
+                    t = i / float(rings)  # 1.0 outer -> ~0.16 inner
+                    rr = max(1, int(round(pr * t)))
+                    # Outer rings are faint, inner rings are strong.
+                    ring_alpha = int(alpha * (0.10 + 0.90 * (1.0 - t)))
+                    ring_col = (base_rgba[0], base_rgba[1], base_rgba[2], max(0, min(255, ring_alpha)))
+                    pygame.draw.circle(overlay, ring_col, (cx, cy), rr, width=0)
 
-                # Fill + crisp border keeps the area readable over mixed terrain.
-                pygame.draw.circle(overlay, fill_col, (cx, cy), pr, width=0)
+                # Bright core so the source vertex reads clearly.
+                core_r = max(1, int(round(pr * 0.24)))
+                core_alpha = max(0, min(255, int(alpha * 1.1)))
+                core_col = (base_rgba[0], base_rgba[1], base_rgba[2], core_alpha)
+                pygame.draw.circle(overlay, core_col, (cx, cy), core_r, width=0)
+
+                # Crisp border keeps area readable over mixed terrain.
+                edge_alpha = max(35, min(255, int(alpha * 0.85)))
+                edge_col = (base_rgba[0], base_rgba[1], base_rgba[2], edge_alpha)
                 pygame.draw.circle(overlay, edge_col, (cx, cy), pr, width=1)
                 drew_any = True
 

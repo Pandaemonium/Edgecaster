@@ -22,6 +22,16 @@ if TYPE_CHECKING:
     from edgecaster.state.actors import Actor
 
 
+def _telemetry(game: "Game", event: str, **payload) -> None:
+    """Best-effort telemetry bridge (combat should never fail due to logging)."""
+    try:
+        emit = getattr(game, "_telemetry_emit", None)
+        if callable(emit):
+            emit(event, **payload)
+    except Exception:
+        return
+
+
 def is_hostile(game: "Game", attacker: "Actor", target: "Actor") -> bool:
     """
     Reputation-driven hostility check used by movement + AI.
@@ -89,6 +99,7 @@ def apply_xp_drain(game: "Game", attacker: "Actor", defender: "Actor") -> bool:
         bonus = 0
 
     xp_dmg = max(1, base_attack + bonus)
+    xp_before = int(getattr(defender.stats, "xp", 0))
     try:
         defender.stats.xp = max(0, int(defender.stats.xp) - xp_dmg)
     except Exception:
@@ -98,12 +109,22 @@ def apply_xp_drain(game: "Game", attacker: "Actor", defender: "Actor") -> bool:
         game.log.add(f"{attacker.name} drains {xp_dmg} XP from you.")
     else:
         game.log.add(f"{attacker.name} drains {xp_dmg} XP from {defender.name}.")
+    _telemetry(
+        game,
+        "xp_drain_hit",
+        attacker_id=str(getattr(attacker, "id", "")),
+        defender_id=str(getattr(defender, "id", "")),
+        amount=int(xp_dmg),
+        xp_before=int(xp_before),
+        xp_after=int(getattr(defender.stats, "xp", 0)),
+    )
 
     return True
 
 
 def apply_damage(game: "Game", attacker: "Actor", defender: "Actor", dmg: int) -> None:
     """Apply damage to defender and log the hit."""
+    hp_before = int(getattr(defender.stats, "hp", 0))
     defender.stats.hp -= dmg
     defender.stats.clamp()
 
@@ -113,6 +134,16 @@ def apply_damage(game: "Game", attacker: "Actor", defender: "Actor", dmg: int) -
         game.log.add(f"{attacker.name} hits you for {dmg}.")
     else:
         game.log.add(f"{attacker.name} hits {defender.name} for {dmg}.")
+    _telemetry(
+        game,
+        "damage_hit",
+        attacker_id=str(getattr(attacker, "id", "")),
+        defender_id=str(getattr(defender, "id", "")),
+        amount=int(dmg),
+        hp_before=int(hp_before),
+        hp_after=int(getattr(defender.stats, "hp", 0)),
+        ability="basic_attack",
+    )
 
 
 def apply_lifesteal(game: "Game", attacker: "Actor", defender: "Actor", dmg: int) -> None:
@@ -133,10 +164,20 @@ def apply_lifesteal(game: "Game", attacker: "Actor", defender: "Actor", dmg: int
         if lifesteal_frac > 0.0:
             heal = int(math.ceil(float(dmg) * float(lifesteal_frac)))
             if heal > 0:
+                hp_before = int(getattr(attacker.stats, "hp", 0))
                 attacker.stats.hp = min(attacker.stats.max_hp, attacker.stats.hp + heal)
                 attacker.stats.clamp()
                 if defender.id == game.player_id:
                     game.log.add(f"{attacker.name} drinks blood and heals {heal}.")
+                _telemetry(
+                    game,
+                    "lifesteal_heal",
+                    attacker_id=str(getattr(attacker, "id", "")),
+                    defender_id=str(getattr(defender, "id", "")),
+                    heal=int(heal),
+                    hp_before=int(hp_before),
+                    hp_after=int(getattr(attacker.stats, "hp", 0)),
+                )
     except Exception:
         pass
 
@@ -188,6 +229,14 @@ def spawn_currency_drop(
                     overrides={"tags": {"amount": amt}},
                 )
                 level.entities[ent.id] = ent
+                _telemetry(
+                    game,
+                    "currency_drop_spawned",
+                    owner_id=str(getattr(defender, "id", "")),
+                    entity_id=str(getattr(ent, "id", "")),
+                    amount=int(amt),
+                    at_pos=tuple(getattr(defender, "pos", (0, 0))),
+                )
             except Exception:
                 pass
 
@@ -204,6 +253,13 @@ def attack(game: "Game", level: "LevelState", attacker: "Actor", defender: "Acto
 
     # Calculate and apply damage
     dmg = calculate_damage(attacker, defender)
+    _telemetry(
+        game,
+        "attack_resolved",
+        attacker_id=str(getattr(attacker, "id", "")),
+        defender_id=str(getattr(defender, "id", "")),
+        damage=int(dmg),
+    )
     apply_damage(game, attacker, defender, dmg)
 
     # Lifesteal on hit
@@ -271,6 +327,14 @@ def kill_actor(
 
     aid = actor.id
     proto_id = getattr(actor, "proto_id", None) or (getattr(actor, "tags", {}) or {}).get("template_id")
+    _telemetry(
+        game,
+        "actor_killed",
+        actor_id=str(aid),
+        proto_id=str(proto_id or ""),
+        killer_id=str(killer_id or ""),
+        killer_is_player=bool(killer_is_player),
+    )
 
     # Remove from actors dict
     if aid in level.actors:

@@ -10,6 +10,9 @@ class Character:
     illuminator: str  # "radius" or "neighbors"
     stats: Dict[str, int]  # con, agi, int, res
     point_pool: int = 0
+    # Runtime progression currency (earned at level-up, spent on stat growth).
+    # Keep on Character so it naturally persists with character state.
+    advancement_points: int = 0
     custom_pattern: list | None = None  # optional list of points defining a custom generator
     player_class: str | None = None
     seed: int | None = None
@@ -34,6 +37,7 @@ def default_character() -> Character:
         illuminator="radius",
         stats=stats,
         point_pool=4,
+        advancement_points=0,
         custom_pattern=None,
         player_class=None,
         seed=config.default_seed,

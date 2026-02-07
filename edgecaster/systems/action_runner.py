@@ -27,6 +27,16 @@ from edgecaster.systems import item_grants
 from edgecaster.systems import equipment as equipment_system
 
 
+def _telemetry(game: "Game", event: str, **payload: Any) -> None:
+    """Best-effort telemetry bridge for action execution."""
+    try:
+        emit = getattr(game, "_telemetry_emit", None)
+        if callable(emit):
+            emit(event, **payload)
+    except Exception:
+        return
+
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
@@ -310,12 +320,14 @@ def run_action(
         actor = None
 
     if actor is None or not getattr(actor, "alive", True):
+        _telemetry(game, "action_failed", actor_id=str(actor_id), action=action_name, reason="actor_not_found")
         return ActionResult(executed=False, delay=0, message="Actor not found")
 
     # Get action definition
     try:
         action_def = get_action(action_name)
     except KeyError:
+        _telemetry(game, "action_failed", actor_id=str(actor_id), action=action_name, reason="unknown_action")
         return ActionResult(executed=False, delay=0, message=f"Unknown action: {action_name}")
 
     base_delay = action_delay(game.cfg, action_def)
@@ -329,6 +341,14 @@ def run_action(
     if cd_msg:
         if is_player and cd_msg != "cooldown":
             game.log.add(cd_msg)
+        _telemetry(
+            game,
+            "action_failed",
+            actor_id=str(actor_id),
+            action=action_name,
+            reason="cooldown",
+            cooldown_ticks=int(get_cooldown(origin, action_name)),
+        )
         return ActionResult(executed=False, delay=0, message=cd_msg)
 
     # Charge handling
@@ -340,6 +360,7 @@ def run_action(
     if charge_msg:
         if is_player and charge_msg != "no charges":
             game.log.add(charge_msg)
+        _telemetry(game, "action_failed", actor_id=str(actor_id), action=action_name, reason="no_charges")
         return ActionResult(executed=False, delay=0, message=charge_msg)
 
     # Wand confirmation (player only, not AI)
@@ -388,6 +409,13 @@ def run_action(
                 choices=["Cancel", "Confirm"],
                 on_choice_effect=on_choice,
             )
+            _telemetry(
+                game,
+                "action_pending_confirm",
+                actor_id=str(actor_id),
+                action=action_name,
+                confirm_type="wand_charge",
+            )
             return ActionResult(executed=False, delay=0, pending_confirm=True)
 
     # Action-defined confirmation (player only, not AI)
@@ -432,6 +460,13 @@ def run_action(
                 choices=choices,
                 on_choice_effect=on_choice,
             )
+            _telemetry(
+                game,
+                "action_pending_confirm",
+                actor_id=str(actor_id),
+                action=action_name,
+                confirm_type="action_confirm",
+            )
             return ActionResult(executed=False, delay=0, pending_confirm=True)
 
     # Execute the action
@@ -447,6 +482,18 @@ def run_action(
 
     # Calculate final delay with modifiers
     final_delay = calculate_final_delay(actor, base_delay)
+    _telemetry(
+        game,
+        "action_executed",
+        actor_id=str(actor_id),
+        action=action_name,
+        is_player=bool(is_player),
+        delay_ticks=int(final_delay),
+        cooldown_applied=int(action_def.cooldown_ticks or 0),
+        used_item=bool(charge_item is not None),
+        charges_before=(int(charges_left) if charges_left is not None else None),
+        charges_after=(int(get_charges(charge_item)) if charge_item is not None and get_charges(charge_item) is not None else None),
+    )
 
     return ActionResult(executed=True, delay=final_delay)
 

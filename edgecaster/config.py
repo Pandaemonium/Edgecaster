@@ -29,7 +29,7 @@ class GameConfig:
     activate_neighbor_depth: int = 2  # depth for Activate N (seed + N-hop neighbors)
     # progression
     xp_per_imp: int = 10
-    xp_base: int = 20          # XP needed for level 2
+    xp_base: int = 10          # XP needed for level 2
     xp_per_level: int = 10     # incremental growth per level (linear)
 
     # Ambient hostile population maintenance (active-zone top-up).

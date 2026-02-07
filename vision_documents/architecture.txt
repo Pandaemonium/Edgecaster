@@ -358,6 +358,33 @@ Cleanup direction:
 - Keep "who can be affected" centralized in `DamagePolicy` so behavior stays consistent.
 
 ===============================================================================
+13) TELEMETRY + PROGRESSION
+
+Telemetry (always-on, separate from debug log):
+- `edgecaster/systems/telemetry.py` writes NDJSON events to:
+  - `C:\Games\Edgecaster\telemetry.ndjson`
+- `Game._telemetry_emit(...)` is the only orchestrator-facing emit API.
+- Current emission points:
+  - progression: XP gain, level-up, advancement-point spends
+  - action execution: success/failure/cooldown/confirm-pending (action_runner)
+  - combat: attack resolution, damage hits, XP drains, kills, currency drops
+
+Why this shape:
+- Keeps debug logging and gameplay telemetry separate.
+- Keeps call-sites lightweight and fail-soft (telemetry must never affect gameplay).
+- Makes later telemetry removal easy (delete call-sites + one module).
+
+Level-up advancement model:
+- Player gains exactly `+1 advancement point` per level.
+- Odd levels: point is auto-spent via weighted random stat roll.
+- Even levels: player chooses stat via urgent popup choices (`CON/RES/INT/AGI`).
+- Stat spend helper is centralized in `Game._spend_advancement_point(...)`.
+
+Notes:
+- Character creation `point_pool` remains separate from runtime `advancement_points`.
+- Runtime advancement points persist on `Character.advancement_points`.
+
+===============================================================================
 GUIDING PRINCIPLES
 
 - Prefer architecture over cleverness

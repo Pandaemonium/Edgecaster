@@ -422,6 +422,90 @@ def _get_biome_at_position(level: "LevelState", pos: Tuple[int, int]) -> Optiona
     return None
 
 
+def _nearest_tier_fallback_pool(
+    pool: List[str],
+    bounds: Dict[str, Tuple[int, int]],
+    zone_tier: int,
+) -> List[str]:
+    """Pick a best-effort fallback pool when strict tier filtering returns empty.
+
+    Why this exists:
+    - Falling back to only ``imp`` makes late-game zones feel undertuned.
+    - We instead choose enemies whose tier windows are closest to ``zone_tier``.
+    """
+    if not pool:
+        return ["imp"]
+
+    ranked = sorted(
+        pool,
+        key=lambda eid: abs((((bounds.get(eid, (1, 1))[0] + bounds.get(eid, (1, 1))[1]) * 0.5) - zone_tier)),
+    )
+    if not ranked:
+        return ["imp"]
+
+    # Keep a small variety band around the best match.
+    best_mid = (bounds.get(ranked[0], (1, 1))[0] + bounds.get(ranked[0], (1, 1))[1]) * 0.5
+    best_dist = abs(best_mid - zone_tier)
+    out: List[str] = []
+    for eid in ranked:
+        tmin, tmax = bounds.get(eid, (1, 1))
+        mid = (tmin + tmax) * 0.5
+        if abs(mid - zone_tier) <= best_dist + 1.0:
+            out.append(eid)
+        if len(out) >= 6:
+            break
+    return out or [ranked[0]]
+
+
+def _apply_enemy_zone_scaling(
+    level: "LevelState",
+    mob: "Actor",
+    *,
+    zone_tier: int,
+    enemy_bounds: Optional[Tuple[int, int]] = None,
+) -> None:
+    """Scale spawned enemy durability/damage by zone pressure.
+
+    Design goals for the balancing sweep:
+    - Keep tier-1/2 near current feel.
+    - Make tier 7+ meaningfully dangerous without touching every YAML row.
+    """
+    try:
+        stats = getattr(mob, "stats", None)
+        if stats is None:
+            return
+
+        tags = getattr(mob, "tags", None) or {}
+        # Midpoint of the enemy's intended tier window. If unknown, assume zone tier.
+        if enemy_bounds is None:
+            enemy_mid = float(zone_tier)
+        else:
+            enemy_mid = (float(enemy_bounds[0]) + float(enemy_bounds[1])) * 0.5
+
+        # Pressure is how far this spawn context exceeds the enemy's nominal tier.
+        zone_floor = max(0.0, float(zone_tier) - 1.0)
+        zone_pressure = max(0.0, float(zone_tier) - enemy_mid)
+
+        # HP grows a bit faster than damage so fights last longer at high tiers.
+        hp_mult = 1.0 + 0.09 * zone_floor + 0.08 * zone_pressure
+        atk_mult = 1.0 + 0.07 * zone_floor + 0.07 * zone_pressure
+        hp_mult = min(hp_mult, 2.60)
+        atk_mult = min(atk_mult, 2.20)
+
+        old_max_hp = int(getattr(stats, "max_hp", 1) or 1)
+        old_hp = int(getattr(stats, "hp", old_max_hp) or old_max_hp)
+        new_max_hp = max(1, int(round(old_max_hp * hp_mult)))
+        new_hp = max(1, int(round(old_hp * hp_mult)))
+        stats.max_hp = new_max_hp
+        stats.hp = min(new_hp, new_max_hp)
+
+        base_attack = int(tags.get("base_attack", 1) or 1)
+        tags["base_attack"] = max(1, int(round(base_attack * atk_mult)))
+        mob.tags = tags
+    except Exception:
+        return
+
+
 def spawn_enemies(
     game: "Game",
     level: "LevelState",
@@ -497,12 +581,12 @@ def spawn_enemies(
 
         # Filter by zone difficulty tier (10-tier system).
         zone_tier = getattr(level, "danger_tier", 1) or 1
-        filtered_pool, _bounds = difficulty_system.filter_enemy_pool(game, enemy_ids, zone_tier)
+        filtered_pool, bounds = difficulty_system.filter_enemy_pool(game, enemy_ids, zone_tier)
         if filtered_pool:
             enemy_ids = filtered_pool
         else:
-            # If nothing matches, fall back to a safe baseline.
-            enemy_ids = ["imp"]
+            # Prefer nearest-tier matches over a hard "imp only" fallback.
+            enemy_ids = _nearest_tier_fallback_pool(enemy_ids, bounds, zone_tier)
 
         tmpl_id = game.rng.choice(enemy_ids)
 
@@ -517,7 +601,14 @@ def spawn_enemies(
             if not mob.name.lower().startswith("bismuth "):
                 mob.name = "bismuth imp"
 
-        # Slaver packs: a slaver arrives chained to two brutes
+        _apply_enemy_zone_scaling(
+            level,
+            mob,
+            zone_tier=zone_tier,
+            enemy_bounds=bounds.get(tmpl_id),
+        )
+
+        # Slaver packs: a slaver arrives chained to two brutes.
         if tmpl_id == "slaver":
             _spawn_slaver_pack(game, level, mob, pos)
 
@@ -573,6 +664,13 @@ def _spawn_slaver_pack(
         brute.tags["slaver_master_id"] = slaver.id
         brute.tags["slaver_group_id"] = group_id
 
+        zone_tier = getattr(level, "danger_tier", 1) or 1
+        _apply_enemy_zone_scaling(
+            level,
+            brute,
+            zone_tier=zone_tier,
+            enemy_bounds=(3, 8),
+        )
         register_actor(game, level, brute, schedule_ai=True)
         brute_ids.append(brute.id)
 
@@ -1153,11 +1251,11 @@ def spawn_enemies_for_biome(
 
     # Filter by zone difficulty tier (10-tier system).
     zone_tier = getattr(level, "danger_tier", 1) or 1
-    filtered_pool, _bounds = difficulty_system.filter_enemy_pool(game, pool, zone_tier)
+    filtered_pool, bounds = difficulty_system.filter_enemy_pool(game, pool, zone_tier)
     if filtered_pool:
         pool = filtered_pool
     else:
-        pool = ["imp"]
+        pool = _nearest_tier_fallback_pool(pool, bounds, zone_tier)
 
     spawned = 0
     attempts = 0
@@ -1174,6 +1272,12 @@ def spawn_enemies_for_biome(
             # YOGA: Compute ABS position for canonical storage
             abs_pos = game.abs_from_zone_local(level.coord, pos)
             mob = enemy_factory.spawn_enemy(tmpl_id, pos, abs_pos=abs_pos)
+            _apply_enemy_zone_scaling(
+                level,
+                mob,
+                zone_tier=zone_tier,
+                enemy_bounds=bounds.get(tmpl_id),
+            )
             register_actor(game, level, mob, schedule_ai=True)
             spawned += 1
         except Exception:

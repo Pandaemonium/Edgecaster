@@ -112,6 +112,7 @@ from edgecaster.systems import difficulty as difficulty_system
 from edgecaster.systems import ambient_spawns as ambient_spawns_system
 from edgecaster.systems import damage_policy as damage_policy_system
 from edgecaster.systems import perf_profiler
+from edgecaster.systems import telemetry as telemetry_system
 from . import lorenz
 import math
 import random
@@ -273,6 +274,11 @@ class Game:
             top_n=int(getattr(self.cfg, "perf_profiler_top_n", 8)),
             min_avg_ms=float(getattr(self.cfg, "perf_profiler_min_avg_ms", 0.05)),
         )
+        self.telemetry_log_path = "C:\\Games\\Edgecaster\\telemetry.ndjson"
+        self._telemetry = telemetry_system.TelemetryLogger.from_path(
+            self.telemetry_log_path,
+            enabled=True,
+        )
         self.log = MessageLog()
         self.place_range = cfg.place_range
         # Enemy/NPC prototypes are loaded lazily via prototypes.resolve_proto().
@@ -298,6 +304,20 @@ class Game:
             self.character.reputation = {}
         # Currency: bismuth wallet
         self.bismuth: int = 0
+        # Progression points (1 per level).
+        # Even levels spend by player choice; odd levels auto-random.
+        if getattr(self.character, "advancement_points", None) is None:
+            self.character.advancement_points = 0
+        try:
+            self.character.advancement_points = int(self.character.advancement_points)
+        except Exception:
+            self.character.advancement_points = 0
+        self._telemetry_emit(
+            "session_start",
+            seed=(getattr(self.character, "seed", None) or getattr(self.cfg, "seed", None)),
+            class_name=getattr(self.character, "player_class", None),
+            species=getattr(self.character, "species", None),
+        )
 
         # What the HUD should call the thing-you-are:
         # initially your class, later overwritten by body-hops.
@@ -876,7 +896,7 @@ class Game:
 
     # --- level-up stat logic ---
 
-    def _auto_stat_roll(self) -> None:
+    def _auto_stat_roll(self) -> Optional[str]:
         """Roll a stat increase based on class weights."""
         weights = getattr(self.character, "stat_weights", None)
         if not weights:
@@ -896,8 +916,10 @@ class Game:
             if r <= acc:
                 chosen = k
                 break
-        self.character.stats[chosen] = self.character.stats.get(chosen, 0) + 1
-        self.log.add(f"Your {chosen.upper()} grows (+1).")
+        if self._spend_advancement_point(chosen, source="odd_random"):
+            self.log.add(f"Your {chosen.upper()} grows (+1).")
+            return chosen
+        return None
 
     def _choose_stat_upgrade(self) -> Optional[str]:
         """Even levels: choose a stat to upgrade. For now auto-picks highest weight."""
@@ -906,9 +928,34 @@ class Game:
         if not weights:
             weights = {k: 1.0 for k in options}
         chosen = max(options, key=lambda k: weights.get(k, 0))
-        self.character.stats[chosen] = self.character.stats.get(chosen, 0) + 1
-        self.log.add(f"You focus your training: {chosen.upper()} +1.")
         return chosen
+
+    def _spend_advancement_point(self, stat: str, *, source: str) -> bool:
+        """Spend one advancement point on a stat.
+
+        Returns True if a point was spent and the stat was increased.
+        """
+        stat = str(stat or "").lower()
+        if stat not in {"con", "res", "int", "agi"}:
+            return False
+        points = int(getattr(self.character, "advancement_points", 0) or 0)
+        if points <= 0:
+            return False
+        self.character.stats[stat] = self.character.stats.get(stat, 0) + 1
+        self.character.advancement_points = points - 1
+        lvl = 0
+        try:
+            lvl = int(getattr(self._player().stats, "level", 0))
+        except Exception:
+            lvl = 0
+        self._telemetry_emit(
+            "advancement_spent",
+            stat=stat,
+            source=source,
+            remaining_points=int(self.character.advancement_points),
+            level=lvl,
+        )
+        return True
 
     def _fizzle_roll(self, over: int, limit: int) -> bool:
         """Return True if activation should fizzle (probability increases with overage)."""
@@ -923,7 +970,14 @@ class Game:
             return
         player = self._player()
         stats = player.stats
+        before_level = int(stats.level)
         stats.xp += amount
+        self._telemetry_emit(
+            "xp_gain",
+            amount=int(amount),
+            xp_after=int(stats.xp),
+            level_before=before_level,
+        )
         while stats.xp_to_next > 0 and stats.xp >= stats.xp_to_next:
             stats.xp -= stats.xp_to_next
             stats.level += 1
@@ -946,22 +1000,45 @@ class Game:
         player.stats.max_mana += mana_gain
         player.stats.hp = player.stats.max_hp
         player.stats.mana = player.stats.max_mana
+        # One advancement point per level-up.
+        self.character.advancement_points = int(getattr(self.character, "advancement_points", 0) or 0) + 1
+        self._telemetry_emit(
+            "level_up",
+            new_level=int(player.stats.level),
+            hp_gain=int(hp_gain),
+            mana_gain=int(mana_gain),
+            advancement_points=int(self.character.advancement_points),
+        )
         # Stat upgrades: odd levels auto-roll by class weights; even levels choose.
         lvl = player.stats.level
         if lvl % 2 == 1:
             self._auto_stat_roll()
+            self.set_urgent(
+                f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)",
+                title="Level Up!",
+                choices=["Continue..."],
+            )
         else:
-            chosen = self._choose_stat_upgrade()
-            if chosen is None:
-                chosen = "res"  # fallback
-            self.character.stats[chosen] = self.character.stats.get(chosen, 0) + 1
+            options = ["CON", "RES", "INT", "AGI"]
+
+            def _apply_even_choice(idx: int, g: "Game") -> None:
+                opt = options[max(0, min(int(idx), len(options) - 1))]
+                stat = opt.lower()
+                if not g._spend_advancement_point(stat, source="even_choice"):
+                    fallback = g._choose_stat_upgrade() or "res"
+                    g._spend_advancement_point(fallback, source="even_choice_fallback")
+                    stat = fallback
+                g.log.add(f"You focus your training: {stat.upper()} +1.")
+                g._recalc_param_state_max()
+
+            self.set_urgent(
+                f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)\nChoose a stat to improve.",
+                title="Level Up!",
+                choices=options,
+                on_choice_effect=_apply_even_choice,
+            )
         # refresh params after stat change
         self._recalc_param_state_max()
-        self.set_urgent(
-            f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)",
-            title="Level Up!",
-            choices=["Continue..."],
-        )
 
         # Strange Attractors gain an extra Lorenz butterfly each level.
         if getattr(self.character, "player_class", None) == "Strange Attractor":
@@ -4268,8 +4345,9 @@ class Game:
         level.activation_points = list(kick_points)
         level.activation_ttl = max(8, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
 
-        radius = 2.25
-        base_damage = 8  # per kick point at distance 0
+        radius = 1.8
+        # Slight rebound after sweep; still below the old spike potential.
+        base_damage = 6  # per kick point at distance 0
         r_eps = 1e-6
 
         caster_is_player = actor_id == self.player_id
@@ -4439,8 +4517,9 @@ class Game:
         level.activation_points = list(burst_points)
         level.activation_ttl = max(8, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
 
-        radius = 1.9
-        base_damage = 7
+        radius = 1.6
+        # Slight rebound after sweep; still in the same band as Energy Kick.
+        base_damage = 6
         r_eps = 1e-6
         caster_is_player = actor_id == self.player_id
 
@@ -4587,8 +4666,9 @@ class Game:
         level.activation_points = list(strike_points)
         level.activation_ttl = max(10, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
 
-        radius = 2.2
-        base_damage = 9
+        radius = 1.85
+        # Mirror Strike remains a premium burst, but no longer far above peers.
+        base_damage = 6
         r_eps = 1e-6
         caster_is_player = actor_id == self.player_id
 
@@ -5074,6 +5154,9 @@ class Game:
         level.activation_ttl = self.cfg.pattern_overlay_ttl
 
         total_vertices = len(active_vertices)
+        # Soft-cap rune scaling so very large patterns don't explode damage.
+        # First 8 vertices are full strength, extras contribute at 25%.
+        effective_vertices = min(total_vertices, 8) + max(0, total_vertices - 8) * 0.25
         hits = 0
         # Centralized policy: Activate R damages hostiles only, never self.
         policy = damage_policy_system.DamagePolicy(
@@ -5112,7 +5195,7 @@ class Game:
                 coverage = max(0.0, min(1.0, 1 - (dist - (dmg_radius - half_diag)) / span))
             if coverage <= 0:
                 continue
-            dmg = int(per_vertex * total_vertices * coverage)
+            dmg = int(per_vertex * effective_vertices * coverage)
             if dmg <= 0:
                 continue
             hits += 1
@@ -5580,6 +5663,25 @@ class Game:
         self._level().awaiting_terminus = value
 
     # --- debug logging ---
+    def _telemetry_emit(self, event: str, **payload: Any) -> None:
+        """Emit one telemetry event to telemetry.ndjson (always-on, fail-soft)."""
+        tel = getattr(self, "_telemetry", None)
+        if tel is None:
+            return
+        safe_payload = dict(payload)
+        try:
+            # Some events (e.g. session_start) are emitted before the first level exists.
+            lvl = None
+            try:
+                lvl = self._level()
+            except Exception:
+                lvl = None
+            safe_payload.setdefault("tick", int(getattr(lvl, "current_tick", 0) if lvl is not None else 0))
+            safe_payload.setdefault("zone", tuple(getattr(self, "zone_coord", (0, 0, 0))))
+            tel.emit(event, **safe_payload)
+        except Exception:
+            return
+
     def _debug(self, msg: str) -> None:
         try:
             with open(self.debug_log_path, "a", encoding="utf-8") as f:
