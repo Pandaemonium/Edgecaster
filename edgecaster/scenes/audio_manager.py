@@ -360,6 +360,11 @@ class AudioManager:
         self.set_music(req)
 
 
+    def is_interrupting(self) -> bool:
+        """True while a one-shot interrupt track is active (stinger/fanfare)."""
+        return bool(getattr(self, "_interrupt_active", False))
+
+
     # ---------------------------- Update / event handling ----------------------------
 
     def update(self) -> None:
