@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
@@ -6,7 +6,6 @@ from typing import Dict, List, Tuple
 
 from edgecaster import prototypes
 from edgecaster import spawn_factory
-from edgecaster.content.pois import get_poi_registry
 from edgecaster.content import npcs
 from edgecaster.enemies import factory as enemy_factory
 from edgecaster.systems import aggregate_resolution as aggregate_system
@@ -424,459 +423,158 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             pass
 
     
-    # -----------------------------
-    # B) POI DETAILS (structures + NPC markers)
+    # Shared actor helpers used by detail resolvers.
     #
-    # Yoga invariant: POIs exist in ABS space independent of zone loading.
-    # Therefore: do NOT rely on a POI's world-index marker being on-screen to
-    # resolve its walls/NPCs. Query the POI registry directly by ABS overlap.
-    # -----------------------------
-    poi_reg = getattr(game, "poi_registry", None)
-    if poi_reg is None:
-        try:
-            poi_reg = get_poi_registry(zone_w=zone_w, zone_h=zone_h)
-        except Exception:
-            poi_reg = None
+    # We intentionally keep these outside any legacy kill-switch so modern
+    # attention paths (site-detail resolution) never depend on dead code.
+    def _build_staged_actor(
+        *,
+        eid: str,
+        npc_id: str,
+        name: str,
+        glyph: str,
+        color,
+        abs_pos: tuple[int, int],
+        local_pos: tuple[int, int],
+        owner_id: str,
+        ns,
+    ):
+        """Build a real staged actor used by attention detail passes."""
+        npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
 
-    if poi_reg is not None:
-        # Query POIs intersecting our warm rect. Prefer registry helper if present.
-        try:
-            poi_hits = poi_reg.get_in_abs_rect((wx0, wy0, wx1, wy1), z=zz)
-        except Exception:
+        # Special cases kept centralized for consistency with runtime NPC behavior.
+        if npc_id == "caged_demon":
             try:
-                poi_hits = poi_reg.get_in_abs_rect((wx0, wy0, wx1, wy1), depth=zz)
-            except Exception:
+                a = enemy_factory.spawn_enemy("caged_demon", local_pos, abs_pos=abs_pos)
+            except TypeError:
+                a = enemy_factory.spawn_enemy("caged_demon", local_pos)
                 try:
-                    poi_hits = poi_reg.get_in_abs_rect((wx0, wy0, wx1, wy1))
-                except Exception:
-                    poi_hits = []
-
-        in_scope_pois: set[str] = set()
-
-        # Track active staged children per POI (walls + NPC markers)
-        if not hasattr(game, "_attn_active_poi_children"):
-            game._attn_active_poi_children = {}  # poi_id -> set[eid]
-
-        for poi_spec in (poi_hits or []):
-            try:
-                poi_id = str(getattr(poi_spec, "id", "") or "")
-                if not poi_id:
-                    continue
-                in_scope_pois.add(poi_id)
-
-                poi_tags = getattr(poi_spec, "tags", None) or {}
-                # Only refine when zoomed in enough
-                thresh = float(poi_tags.get("detail_lod_threshold", -0.75))
-                if float(cam_lod) > thresh:
-                    continue
-
-                fp = getattr(poi_spec, "footprint", None)
-                # Some POIs may not have a footprint (legacy); skip cleanly
-                if fp is None:
-                    continue
-
-                active: set[str] = game._attn_active_poi_children.get(poi_id)
-                if not isinstance(active, set):
-                    active = set()
-                    game._attn_active_poi_children[poi_id] = active
-                desired: set[str] = set()
-
-                # -----------------------------
-                # B1) Colosseum / arena walls (structure markers)
-                # -----------------------------
-                poi_kind = str(getattr(poi_spec, "kind", "") or "")
-                if "colosseum" in poi_kind.lower() or "arena" in poi_kind.lower():
-                    arena_cx = (float(fp.x0) + float(fp.x1)) / 2.0
-                    arena_cy = (float(fp.y0) + float(fp.y1)) / 2.0
-                    arena_rx = max(1.0, (float(fp.x1) - float(fp.x0)) / 2.0)
-                    arena_ry = max(1.0, (float(fp.y1) - float(fp.y0)) / 2.0)
-
-                    wall_thickness = int(poi_tags.get("wall_thickness", 3))
-                    wall_thickness = max(1, int(wall_thickness))
-
-                    # Ring thickness in normalized ellipse-space
-                    tnorm = float(wall_thickness) / max(arena_rx, arena_ry)
-                    inner = max(0.0, 1.0 - 2.0 * tnorm)
-                    outer = 1.0 + 0.25 * tnorm
-
-                    # Clip to warm rect âˆ© footprint
-                    ix0 = max(int(math.floor(wx0)), int(fp.x0))
-                    iy0 = max(int(math.floor(wy0)), int(fp.y0))
-                    ix1 = min(int(math.ceil(wx1)), int(fp.x1))
-                    iy1 = min(int(math.ceil(wy1)), int(fp.y1))
-
-                    for ax in range(ix0, ix1):
-                        nx = ((float(ax) + 0.5) - arena_cx) / arena_rx
-                        nx2 = nx * nx
-                        if nx2 > outer:
-                            continue
-
-                        ny2_outer = outer - nx2
-                        ny2_inner = inner - nx2
-                        if ny2_outer <= 0.0:
-                            continue
-
-                        ny_outer = math.sqrt(max(0.0, ny2_outer))
-                        ny_inner = math.sqrt(max(0.0, ny2_inner)) if ny2_inner > 0.0 else 0.0
-
-                        y_outer = ny_outer * arena_ry
-                        y_inner = ny_inner * arena_ry
-
-                        top0 = int(math.floor(arena_cy + y_inner))
-                        top1 = int(math.ceil(arena_cy + y_outer))
-                        bot0 = int(math.floor(arena_cy - y_outer))
-                        bot1 = int(math.ceil(arena_cy - y_inner))
-
-                        top0 = max(top0, iy0)
-                        top1 = min(top1, iy1)
-                        bot0 = max(bot0, iy0)
-                        bot1 = min(bot1, iy1)
-
-                        for ay in range(top0, top1):
-                            eid = f"poi:{poi_id}:wall:{ax}:{ay}"
-                            desired.add(eid)
-                            if eid not in attn_store.entities:
-                                w = _YogaStagedEntity(
-                                    id=eid,
-                                    pos=(int(ax), int(ay)),
-                                    abs_pos=(int(ax), int(ay)),
-                                    kind="structure",
-                                    glyph="#",
-                                    color=(160, 160, 160),
-                                    name="Wall",
-                                    tags={"poi": True, "poi_id": poi_id, "structure": "wall"},
-                                )
-                                attn_store.stage(w, abs_x=ax, abs_y=ay, zz=zz, lineage_id=eid)
-
-                        for ay in range(bot0, bot1):
-                            eid = f"poi:{poi_id}:wall:{ax}:{ay}"
-                            desired.add(eid)
-                            if eid not in attn_store.entities:
-                                w = _YogaStagedEntity(
-                                    id=eid,
-                                    pos=(int(ax), int(ay)),
-                                    abs_pos=(int(ax), int(ay)),
-                                    kind="structure",
-                                    glyph="#",
-                                    color=(160, 160, 160),
-                                    name="Wall",
-                                    tags={"poi": True, "poi_id": poi_id, "structure": "wall"},
-                                )
-                                attn_store.stage(w, abs_x=ax, abs_y=ay, zz=zz, lineage_id=eid)
-
-                # -----------------------------
-                # B2) POI NPCs (REAL actors, staged like berry children)
-                # -----------------------------
-                def _build_poi_actor(
-                    *,
-                    eid: str,
-                    npc_id: str,
-                    name: str,
-                    glyph: str,
-                    color,
-                    abs_pos: tuple[int, int],
-                    local_pos: tuple[int, int],
-                    poi_id: str,
-                    ns,
-                ):
-                    """Build a real Actor instance for a POI child.
-
-                    Yoga rule: this is a *resolution* product (like berries), not a zone-stamp.
-                    """
-                    npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
-
-                    # Special cases (matching legacy POI spawning behavior)
-                    if npc_id == "caged_demon":
-                        try:
-                            a = enemy_factory.spawn_enemy("caged_demon", local_pos, abs_pos=abs_pos)
-                        except TypeError:
-                            a = enemy_factory.spawn_enemy("caged_demon", local_pos)
-                            try:
-                                a.abs_pos = abs_pos
-                            except Exception:
-                                pass
-                        a.id = eid
-                        a.pos = local_pos
-                        a.faction = "neutral"
-                        a.actions = ()
-                        a.ai = "idle"
-                        a.tags = getattr(a, "tags", {}) or {}
-                        a.tags.update({"poi": True, "poi_id": poi_id, "npc": True, "npc_id": npc_id})
-                        a.tags["show_exact_hp"] = True
-                        try:
-                            a.show_exact_hp = True
-                        except Exception:
-                            pass
-                        desc = getattr(ns, "description", None) or npc_def.get("description") or getattr(a, "description", None)
-                        if desc:
-                            a.description = desc
-                        try:
-                            a.regen_per_tick = (1, 10)
-                            game._start_regen(game.get_zone_for_render((abs_pos[0] // zone_w, abs_pos[1] // zone_h, zz)) or game._level(), a.id, amount=1, interval=10)
-                        except Exception:
-                            pass
-                        # Appearance overrides
-                        a.name = name
-                        try:
-                            a.glyph = glyph
-                            a.color = color  # type: ignore[assignment]
-                        except Exception:
-                            pass
-                        return a
-
-                    if npc_id == "merchant":
-                        try:
-                            a = enemy_factory.spawn_enemy("merchant", local_pos, abs_pos=abs_pos)
-                        except TypeError:
-                            a = enemy_factory.spawn_enemy("merchant", local_pos)
-                            try:
-                                a.abs_pos = abs_pos
-                            except Exception:
-                                pass
-                        a.id = eid
-                        a.pos = local_pos
-                        a.faction = "npc"
-                        a.actions = ()
-                        a.ai = "idle"
-                        a.tags = getattr(a, "tags", {}) or {}
-                        a.tags.update({"poi": True, "poi_id": poi_id, "npc": True, "npc_id": npc_id})
-                        a.tags["merchant_id"] = npc_def.get("merchant_id", "general_store")
-
-                        # Appearance overrides
-                        a.name = name
-                        try:
-                            a.glyph = glyph
-                            a.color = color  # type: ignore[assignment]
-                        except Exception:
-                            pass
-                        desc = getattr(ns, "description", None) or npc_def.get("description") or getattr(a, "description", None)
-                        if desc:
-                            a.description = desc
-
-                        # Ensure merchant system initialized when possible
-                        try:
-                            from edgecaster.systems import trade as trade_system
-                            lvl = game.get_zone_for_render((abs_pos[0] // zone_w, abs_pos[1] // zone_h, zz))
-                            if lvl is not None:
-                                trade_system.ensure_merchant_initialized(game, lvl, a)
-                        except Exception:
-                            pass
-                        return a
-
-                    # Default: Human NPC
-                    try:
-                        a = Human(
-                            id=eid,
-                            name=name,
-                            pos=local_pos,
-                            abs_pos=abs_pos,
-                            faction="npc",
-                            stats=Stats(hp=50, max_hp=50),
-                            tags={"poi": True, "poi_id": poi_id, "npc": True, "npc_id": npc_id},
-                            disposition=int(npc_def.get("base_disposition", 0) or 0),
-                            affiliations=tuple(npc_def.get("factions", [])),
-                            glyph=glyph,
-                            color=color,  # type: ignore[arg-type]
-                        )
-                    except TypeError:
-                        # In case Human signature differs in some branches
-                        a = Human(
-                            id=eid,
-                            name=name,
-                            pos=local_pos,
-                            faction="npc",
-                            stats=Stats(hp=50, max_hp=50),
-                            tags={"poi": True, "poi_id": poi_id, "npc": True, "npc_id": npc_id},
-                            disposition=int(npc_def.get("base_disposition", 0) or 0),
-                            affiliations=tuple(npc_def.get("factions", [])),
-                            glyph=glyph,
-                            color=color,  # type: ignore[arg-type]
-                        )
-                        try:
-                            a.abs_pos = abs_pos
-                        except Exception:
-                            pass
-
-                    desc = getattr(ns, "description", None) or npc_def.get("description")
-                    if desc:
-                        a.description = desc
-                    return a
-
-                def _mirror_actor_into_loaded_zone(eid: str, actor_obj, abs_pos: tuple[int, int]) -> None:
-                    """If the actor's zone is loaded, mirror it into level.actors/entities."""
-                    try:
-                        zc = (int(abs_pos[0]) // int(zone_w), int(abs_pos[1]) // int(zone_h), int(zz))
-                        lvl = game.get_zone_for_render(zc)
-                    except Exception:
-                        lvl = None
-                    if lvl is None:
-                        return
-                    try:
-                        if eid not in lvl.entities:
-                            lvl.entities[eid] = actor_obj
-                            lvl.spatial_dirty = True
-                        if eid not in lvl.actors:
-                            lvl.actors[eid] = actor_obj
-                            lvl.spatial_dirty = True
-                    except Exception:
-                        pass
-
-                try:
-                    npc_specs = getattr(poi_spec, "npc_specs", None) or []
-                except Exception:
-                    npc_specs = []
-
-                for ns_i, ns in enumerate(npc_specs):
-                    try:
-                        npc_id = str(getattr(ns, "npc_id", "") or "")
-                        if not npc_id:
-                            continue
-
-                        # Prefer explicit abs_positions (v2). If absent, fall back to legacy offsets.
-                        abs_positions = list(getattr(ns, "abs_positions", []) or [])
-                        if not abs_positions:
-                            offsets = list(getattr(ns, "offsets", []) or [])
-                            coord = getattr(poi_spec, "coord", None)
-                            if offsets and coord is not None:
-                                try:
-                                    zx = int(coord[0]); zy = int(coord[1])
-                                    base_x = zx * int(zone_w)
-                                    base_y = zy * int(zone_h)
-                                    abs_positions = [(base_x + int(ox), base_y + int(oy)) for (ox, oy) in offsets]
-                                except Exception:
-                                    abs_positions = []
-
-                        if not abs_positions:
-                            continue
-
-                        npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
-                        glyph = getattr(ns, "glyph", None) or npc_def.get("glyph", "@")
-                        color = getattr(ns, "color", None) or npc_def.get("color", (255, 255, 255))
-                        name = getattr(ns, "name", None) or npc_def.get("name", npc_id.title())
-
-                        for j, (ax, ay) in enumerate(abs_positions):
-                            ax = int(ax); ay = int(ay)
-
-                            # Only instantiate within warm rect
-                            if ax < wx0 or ax >= wx1 or ay < wy0 or ay >= wy1:
-                                continue
-
-                            eid = f"poi:{poi_id}:npc:{npc_id}:{j}"
-                            desired.add(eid)
-
-                            # If already staged, just ensure it's mirrored into a loaded zone (enables talk/look/etc)
-                            if eid in attn_store.entities:
-                                try:
-                                    obj = attn_store.entities[eid]
-                                    _mirror_actor_into_loaded_zone(eid, obj, (ax, ay))
-                                except Exception:
-                                    pass
-                                continue
-
-                            # Compute local pos for the actor's own zone
-                            lzx = ax // int(zone_w)
-                            lzy = ay // int(zone_h)
-                            lx = ax - (lzx * int(zone_w))
-                            ly = ay - (lzy * int(zone_h))
-
-                            # Build a real Actor and stage it (like berries)
-                            try:
-                                a = _build_poi_actor(
-                                    eid=eid,
-                                    npc_id=npc_id,
-                                    name=str(name),
-                                    glyph=str(glyph)[0] if glyph else "@",
-                                    color=tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
-                                    abs_pos=(ax, ay),
-                                    local_pos=(int(lx), int(ly)),
-                                    poi_id=poi_id,
-                                    ns=ns,
-                                )
-                            except Exception:
-                                continue
-
-                            try:
-                                attn_store.stage(a, abs_x=ax, abs_y=ay, zz=zz, lineage_id=eid)
-                            except Exception:
-                                continue
-
-                            _mirror_actor_into_loaded_zone(eid, a, (ax, ay))
-
-                    except Exception:
-                        continue
-
-                # Evict POI children that are no longer desired (for this poi_id)
-                try:
-                    # (When query is clamped elsewhere, POI query itself is still complete for this rect.)
-                    for eid in list(active):
-                        if eid not in desired:
-                            try:
-                                obj = attn_store.entities.get(eid)
-                                ap = getattr(obj, "abs_pos", None) if obj is not None else None
-                                if ap:
-                                    try:
-                                        zc = (int(ap[0]) // int(zone_w), int(ap[1]) // int(zone_h), int(zz))
-                                        lvl = game.get_zone_for_render(zc)
-                                    except Exception:
-                                        lvl = None
-                                    if lvl is not None:
-                                        try:
-                                            if eid in lvl.entities:
-                                                del lvl.entities[eid]
-                                                lvl.spatial_dirty = True
-                                        except Exception:
-                                            pass
-                                        try:
-                                            if eid in lvl.actors:
-                                                del lvl.actors[eid]
-                                                lvl.spatial_dirty = True
-                                        except Exception:
-                                            pass
-                                attn_store.despawn(eid)
-                            except Exception:
-                                pass
-                            active.discard(eid)
-
+                    a.abs_pos = abs_pos
                 except Exception:
                     pass
+            a.id = eid
+            a.pos = local_pos
+            a.faction = "neutral"
+            a.actions = ()
+            a.ai = "idle"
+            a.tags = getattr(a, "tags", {}) or {}
+            a.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
+            a.tags["show_exact_hp"] = True
+            try:
+                a.show_exact_hp = True
             except Exception:
-                continue
+                pass
+            desc = getattr(ns, "description", None) or npc_def.get("description") or getattr(a, "description", None)
+            if desc:
+                a.description = desc
+            try:
+                a.regen_per_tick = (1, 10)
+                game._start_regen(
+                    game.get_zone_for_render((abs_pos[0] // zone_w, abs_pos[1] // zone_h, zz)) or game._level(),
+                    a.id,
+                    amount=1,
+                    interval=10,
+                )
+            except Exception:
+                pass
+            a.name = name
+            try:
+                a.glyph = glyph
+                a.color = color  # type: ignore[assignment]
+            except Exception:
+                pass
+            return a
 
+        if npc_id == "merchant":
+            try:
+                a = enemy_factory.spawn_enemy("merchant", local_pos, abs_pos=abs_pos)
+            except TypeError:
+                a = enemy_factory.spawn_enemy("merchant", local_pos)
+                try:
+                    a.abs_pos = abs_pos
+                except Exception:
+                    pass
+            a.id = eid
+            a.pos = local_pos
+            a.faction = "npc"
+            a.actions = ()
+            a.ai = "idle"
+            a.tags = getattr(a, "tags", {}) or {}
+            a.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
+            a.tags["merchant_id"] = npc_def.get("merchant_id", "general_store")
+            a.name = name
+            try:
+                a.glyph = glyph
+                a.color = color  # type: ignore[assignment]
+            except Exception:
+                pass
+            desc = getattr(ns, "description", None) or npc_def.get("description") or getattr(a, "description", None)
+            if desc:
+                a.description = desc
+            try:
+                from edgecaster.systems import trade as trade_system
 
-        # Evict POI children for POIs no longer in scope (when camera moves away).
+                lvl = game.get_zone_for_render((abs_pos[0] // zone_w, abs_pos[1] // zone_h, zz))
+                if lvl is not None:
+                    trade_system.ensure_merchant_initialized(game, lvl, a)
+            except Exception:
+                pass
+            return a
+
+        # Default: Human NPC
         try:
-            for poi_id, active in list(game._attn_active_poi_children.items()):
-                if poi_id in in_scope_pois:
-                    continue
-                if isinstance(active, set):
-                    for eid in list(active):
-                        try:
-                            obj = attn_store.entities.get(eid)
-                            ap = getattr(obj, "abs_pos", None) if obj is not None else None
-                            if ap:
-                                try:
-                                    zc = (int(ap[0]) // int(zone_w), int(ap[1]) // int(zone_h), int(zz))
-                                    lvl = game.get_zone_for_render(zc)
-                                except Exception:
-                                    lvl = None
-                                if lvl is not None:
-                                    try:
-                                        if eid in lvl.entities:
-                                            del lvl.entities[eid]
-                                            lvl.spatial_dirty = True
-                                    except Exception:
-                                        pass
-                                    try:
-                                        if eid in lvl.actors:
-                                            del lvl.actors[eid]
-                                            lvl.spatial_dirty = True
-                                    except Exception:
-                                        pass
-                            attn_store.despawn(eid)
-                        except Exception:
-                            pass
+            a = Human(
+                id=eid,
+                name=name,
+                pos=local_pos,
+                abs_pos=abs_pos,
+                faction="npc",
+                stats=Stats(hp=50, max_hp=50),
+                tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
+                disposition=int(npc_def.get("base_disposition", 0) or 0),
+                affiliations=tuple(npc_def.get("factions", [])),
+                glyph=glyph,
+                color=color,  # type: ignore[arg-type]
+            )
+        except TypeError:
+            a = Human(
+                id=eid,
+                name=name,
+                pos=local_pos,
+                faction="npc",
+                stats=Stats(hp=50, max_hp=50),
+                tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
+                disposition=int(npc_def.get("base_disposition", 0) or 0),
+                affiliations=tuple(npc_def.get("factions", [])),
+                glyph=glyph,
+                color=color,  # type: ignore[arg-type]
+            )
+            try:
+                a.abs_pos = abs_pos
+            except Exception:
+                pass
 
-                del game._attn_active_poi_children[poi_id]
+        desc = getattr(ns, "description", None) or npc_def.get("description")
+        if desc:
+            a.description = desc
+        return a
+
+    def _mirror_actor_into_loaded_zone(eid: str, actor_obj, abs_pos: tuple[int, int]) -> None:
+        """If actor's zone is loaded, mirror into level.actors/entities."""
+        try:
+            zc = (int(abs_pos[0]) // int(zone_w), int(abs_pos[1]) // int(zone_h), int(zz))
+            lvl = game.get_zone_for_render(zc)
+        except Exception:
+            lvl = None
+        if lvl is None:
+            return
+        try:
+            if eid not in lvl.entities:
+                lvl.entities[eid] = actor_obj
+                lvl.spatial_dirty = True
+            if eid not in lvl.actors:
+                lvl.actors[eid] = actor_obj
+                lvl.spatial_dirty = True
         except Exception:
             pass
 
@@ -1007,13 +705,13 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                                 lx = ax - (lzx * int(zone_w))
                                 ly = ay - (lzy * int(zone_h))
 
-                                # Reuse the POI actor builder for now (keeps NPC defs consistent)
+                                # Reuse the shared staged-actor builder so site + POI rules stay consistent.
                                 npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
                                 glyph = npc_def.get("glyph", "@")
                                 color = npc_def.get("color", (255, 255, 255))
                                 name = npc_def.get("name", npc_id.title())
 
-                                a = _build_poi_actor(
+                                a = _build_staged_actor(
                                     eid=eid,
                                     npc_id=npc_id,
                                     name=str(name),
@@ -1021,7 +719,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                                     color=tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
                                     abs_pos=(ax, ay),
                                     local_pos=(int(lx), int(ly)),
-                                    poi_id=f"site:{site_id}",   # piggyback field; tags below disambiguate
+                                    owner_id=f"site:{site_id}",
                                     ns=None,
                                 )
                                 # Patch tags so downstream can tell it's a site-child, not a POI-child
@@ -1108,7 +806,7 @@ def renderables_in_abs_rect(
     """Return renderable objects intersecting an absolute-world tile rect.
 
     abs_rect = (x0, y0, x1, y1) in absolute world-tile coordinates.
-    Rect is half-open: [x0,x1) Ã— [y0,y1).
+    Rect is half-open: [x0,x1) Ãƒâ€” [y0,y1).
 
     Camera-centric query for god-vision / scry / macro-view.
 
@@ -1642,9 +1340,6 @@ def renderables_in_abs_rect(
                         # Fallback: use player.pos if abs conversion fails
                         p_zone_coord = getattr(game, "zone_coord", (0, 0, zz))
                         p_local_pos = getattr(p, "pos", (0, 0))
-                    # Debug: log when player fallback is triggered
-                    with open("C:/Games/Edgecaster/debug.log", "a") as f:
-                        f.write(f"[RenderSelect] PLAYER FALLBACK: abs=({pax},{pay}), zone={p_zone_coord}, local={p_local_pos}, not in {len(selected)} candidates\n")
                     selected.append((p, float(pax), float(pay), p_zone_coord, p_local_pos, 1.0))
     except Exception:
         pass
@@ -1691,7 +1386,7 @@ def _ensure_world_site_entities(game, *, zone_w: int, zone_h: int) -> None:
         if hotspots and isinstance(grid, dict):
             jx, jy, *_ = hotspots[leviathan_spec["hotspot_index"]]
 
-            # Julia â†’ ABS tile conversion (linear grid inversion)
+            # Julia Ã¢â€ â€™ ABS tile conversion (linear grid inversion)
             view_min_jx = float(grid["view_min_jx"])
             view_min_jy = float(grid["view_min_jy"])
             step_x = float(grid["step_x"])
@@ -1704,7 +1399,7 @@ def _ensure_world_site_entities(game, *, zone_w: int, zone_h: int) -> None:
             ax = max(0, min(total_x - 1, ax))
             ay = max(0, min(total_y - 1, ay))
 
-            # ABS â†’ zone + local
+            # ABS Ã¢â€ â€™ zone + local
             zx = ax // zone_w
             zy = ay // zone_h
             zz = 0
@@ -1782,7 +1477,7 @@ def _ensure_world_site_entities(game, *, zone_w: int, zone_h: int) -> None:
         settlement_proto = {
             "id": "settlement",
             "name": "Settlement",
-            "glyph": "Â§",
+            "glyph": "Ã‚Â§",
             "color": [240, 220, 160],
             "kind": "feature",
             "base_size": 64,
@@ -1881,7 +1576,7 @@ def _ensure_world_poi_entities(game, *, zone_w: int, zone_h: int) -> None:
         settlement_proto = {
             "id": "settlement",
             "name": "Settlement",
-            "glyph": "Â§",
+            "glyph": "Ã‚Â§",
             "color": [240, 220, 160],
             "kind": "feature",
             "base_size": 64,

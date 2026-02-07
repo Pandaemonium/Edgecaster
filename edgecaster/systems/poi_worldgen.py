@@ -292,9 +292,18 @@ def ensure_poi_world_entities(
     if poi_spec.id in game._poi_worldgen_done:  # type: ignore
         return 0
 
-    # Defer world-entity generation until rumor/discovery for gated POIs.
     tags = poi_spec.tags or {}
-    if tags.get("worldgen_on_rumor", False):
+    show_on_map = bool(tags.get("show_on_map", False))
+    worldgen_on_rumor = bool(tags.get("worldgen_on_rumor", False))
+
+    # Only build world proxies for POIs intended for world-scale visibility.
+    # Local POIs (e.g. starting_zone NPCs) should be realized by zone loading
+    # only, otherwise they duplicate with local spawned actors.
+    if not show_on_map and not worldgen_on_rumor:
+        return 0
+
+    # Defer rumor-gated POIs until they are known.
+    if worldgen_on_rumor:
         rumored = set(getattr(game, "rumored_pois", set()) or set())
         discovered = set(getattr(game, "discovered_pois", set()) or set())
         if poi_spec.id not in rumored and poi_spec.id not in discovered:

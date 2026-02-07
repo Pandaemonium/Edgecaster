@@ -126,6 +126,8 @@ Current concern map (authoritative):
 - `edgecaster/game.py`
   - Orchestration/lifecycle glue only (zone bootstrapping, top-level flow, cross-system coordination).
   - Holds persistent game state and delegates to systems.
+  - Maintains incremental zone prewarm queue (`_zone_prewarm_queue`) so neighbor chunk creation is
+    budgeted across ticks instead of forced in one frame.
 - `edgecaster/systems/spawning.py`
   - Template loading, entity/actor spawn helpers, biome-aware enemy selection,
     debug inventory conjure pipeline.
@@ -141,6 +143,10 @@ Current concern map (authoritative):
   - Attention-driven render candidate assembly (`renderables_in_abs_rect` core path).
   - World proxy staging delegates for sites/POIs/aggregates.
   - Zone-time aggregate detail realization bridge.
+- `edgecaster/systems/zones.py`
+  - Mechanical zone/chunk transitions only (no gameplay rituals).
+  - Explicit transitions (stairs/fast travel/edge wrap) now trigger a small prewarm slice around
+    the destination to reduce first-step hitching after transition.
 - `edgecaster/systems/poi_spawning.py`
   - Runtime POI realization for loaded levels (POI structures, POI NPC spawns, lair/ruin content).
   - Keeps `Game._spawn_poi_contents` as a thin delegate.

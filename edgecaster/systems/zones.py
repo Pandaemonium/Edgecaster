@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Tuple
 
+from edgecaster.systems import perf_profiler
+
 if TYPE_CHECKING:
     from edgecaster.game import Game
     from edgecaster.state.levels import LevelState
@@ -48,7 +50,10 @@ def get_zone(
     - Creating the LevelState if it doesn't exist yet.
     """
     if coord not in game.levels:
-        game.levels[coord] = game._make_zone(coord, up_pos=up_pos)
+        # Keep only the critical profiler slice:
+        # this is the dominant hitch source during cross-zone travel.
+        with perf_profiler.measure(game, "zones.get_zone.create"):
+            game.levels[coord] = game._make_zone(coord, up_pos=up_pos)
     return game.levels[coord]
 
 
@@ -109,6 +114,13 @@ def use_stairs_down(game: "Game") -> None:
 
         # Signal camera to recenter on player
         game.camera_needs_recenter = True
+        # Kick a small neighbor prewarm slice after explicit floor transition.
+        try:
+            game._zone_prewarm_dir_hint = None
+            game._seed_zone_prewarm_queue()
+            game._drain_zone_prewarm_queue(max(1, int(getattr(game, "zone_prewarm_budget_per_advance", 1) or 1)))
+        except Exception:
+            pass
 
 
 def use_stairs_up(game: "Game") -> None:
@@ -144,6 +156,13 @@ def use_stairs_up(game: "Game") -> None:
 
         # Signal camera to recenter on player
         game.camera_needs_recenter = True
+        # Kick a small neighbor prewarm slice after explicit floor transition.
+        try:
+            game._zone_prewarm_dir_hint = None
+            game._seed_zone_prewarm_queue()
+            game._drain_zone_prewarm_queue(max(1, int(getattr(game, "zone_prewarm_budget_per_advance", 1) or 1)))
+        except Exception:
+            pass
 
 
 def transition_edge(game: "Game", actor: "Actor", dx: int, dy: int) -> None:
@@ -193,6 +212,13 @@ def transition_edge(game: "Game", actor: "Actor", dx: int, dy: int) -> None:
 
     # Signal camera to recenter on player
     game.camera_needs_recenter = True
+    # Prime forward prewarm after boundary wrap.
+    try:
+        game._zone_prewarm_dir_hint = (int(dzx), int(dzy))
+        game._seed_zone_prewarm_queue()
+        game._drain_zone_prewarm_queue(max(1, int(getattr(game, "zone_prewarm_budget_per_advance", 1) or 1)))
+    except Exception:
+        pass
 
 
 def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
@@ -224,6 +250,13 @@ def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
 
     # Signal camera to recenter on player
     game.camera_needs_recenter = True
+    # Prime a small prewarm slice around the destination.
+    try:
+        game._zone_prewarm_dir_hint = None
+        game._seed_zone_prewarm_queue()
+        game._drain_zone_prewarm_queue(max(1, int(getattr(game, "zone_prewarm_budget_per_advance", 1) or 1)))
+    except Exception:
+        pass
 
     # Debug: spawn inventory on arrival
     game.debug_spawn_inventory_near_player(count=1)

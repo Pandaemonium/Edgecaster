@@ -111,6 +111,7 @@ from edgecaster.systems import overmap as overmap_system
 from edgecaster.systems import difficulty as difficulty_system
 from edgecaster.systems import ambient_spawns as ambient_spawns_system
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import perf_profiler
 from . import lorenz
 import math
 import random
@@ -266,6 +267,12 @@ class Game:
         self.cfg = cfg
         self.rng = rng
         self._init_debug_log()
+        self._perf_profiler = perf_profiler.PerfProfiler(
+            enabled=bool(getattr(self.cfg, "perf_profiler_enabled", True)),
+            flush_seconds=float(getattr(self.cfg, "perf_profiler_flush_seconds", 2.0)),
+            top_n=int(getattr(self.cfg, "perf_profiler_top_n", 8)),
+            min_avg_ms=float(getattr(self.cfg, "perf_profiler_min_avg_ms", 0.05)),
+        )
         self.log = MessageLog()
         self.place_range = cfg.place_range
         # Enemy/NPC prototypes are loaded lazily via prototypes.resolve_proto().
@@ -380,6 +387,13 @@ class Game:
         # Active-zone radius for seamless adjacency (zones are caches, not walls).
         # Radius=1 means a 3x3 window around the player is live.
         self.active_zone_radius: int = 1
+        # Zone prewarm queue: we avoid creating every neighbor zone in one frame.
+        # Instead we incrementally pre-create nearby zones over subsequent ticks.
+        self.zone_prewarm_budget_per_advance: int = 1
+        self._zone_prewarm_queue: List[Tuple[int, int, int]] = []
+        self._zone_prewarm_set: set[Tuple[int, int, int]] = set()
+        # Direction hint (dx, dy in zone-space) used to prioritize forward neighbors.
+        self._zone_prewarm_dir_hint: Optional[Tuple[int, int]] = None
 
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
@@ -1692,27 +1706,28 @@ class Game:
 
     def _advance_time(self, level: LevelState, delta: int) -> None:
         """Advance time by delta ticks across the active zone window."""
-        try:
-            delta = int(delta)
-        except Exception:
-            delta = int(delta or 0)
-        if delta <= 0:
-            return
+        with perf_profiler.measure(self, "game._advance_time"):
+            try:
+                delta = int(delta)
+            except Exception:
+                delta = int(delta or 0)
+            if delta <= 0:
+                return
 
-        # Ensure adjacent zones are loaded so movement and AI can cross boundaries.
-        active_levels = self._ensure_active_zones_loaded()
-        if not active_levels:
-            active_levels = [level]
+            # Ensure adjacent zones are loaded so movement and AI can cross boundaries.
+            active_levels = self._ensure_active_zones_loaded()
+            if not active_levels:
+                active_levels = [level]
 
-        current_level = self._level()
-        for lvl in active_levels:
-            apply_player_systems = (lvl is current_level)
-            scheduling.advance_time(self, lvl, delta, apply_player_systems=apply_player_systems)
+            current_level = self._level()
+            for lvl in active_levels:
+                apply_player_systems = (lvl is current_level)
+                scheduling.advance_time(self, lvl, delta, apply_player_systems=apply_player_systems)
 
-        # Option 2: maintain ambient hostile populations across active zones.
-        # This keeps roaming areas populated over time without relying on
-        # one-time zone-entry spawns.
-        ambient_spawns_system.maintain_population(self, active_levels, delta)
+            # Option 2: maintain ambient hostile populations across active zones.
+            # This keeps roaming areas populated over time without relying on
+            # one-time zone-entry spawns.
+            ambient_spawns_system.maintain_population(self, active_levels, delta)
 
     def _start_regen(self, level: LevelState, actor_id: str, amount: int, interval: int) -> None:
         """Start periodic regen for an actor. Delegates to scheduling module."""
@@ -2452,23 +2467,164 @@ class Game:
         zx, zy, zz = center
         max_screen = max(0, int(self.cfg.world_map_screens) - 1)
         coords: list[tuple[int, int, int]] = []
+        seen: set[tuple[int, int, int]] = set()
         for dx in range(-radius, radius + 1):
             for dy in range(-radius, radius + 1):
                 nx = max(0, min(max_screen, int(zx + dx)))
                 ny = max(0, min(max_screen, int(zy + dy)))
-                coords.append((nx, ny, int(zz)))
+                c = (nx, ny, int(zz))
+                if c in seen:
+                    continue
+                seen.add(c)
+                coords.append(c)
         return coords
 
-    def _ensure_active_zones_loaded(self) -> list[LevelState]:
-        """Ensure all active zones around the player are loaded."""
-        levels: list[LevelState] = []
-        for coord in self._active_zone_coords():
+    def _active_zone_coords_prioritized(
+        self,
+        *,
+        center: tuple[int, int, int] | None = None,
+        radius: int | None = None,
+        dir_hint: tuple[int, int] | None = None,
+    ) -> list[tuple[int, int, int]]:
+        """
+        Return active-zone coords ordered by likely movement relevance.
+
+        Ordering rules:
+        - current zone first
+        - then zones closest in Chebyshev distance
+        - if dir_hint is provided, zones "ahead" of movement are preferred
+        """
+        if center is None:
+            center = self.zone_coord
+        cx, cy, _cz = center
+        coords = self._active_zone_coords(center=center, radius=radius)
+
+        dxh = dyh = 0
+        if dir_hint is not None:
             try:
-                lvl = zones_system.get_zone(self, coord, up_pos=None)
+                dxh = int(dir_hint[0])
+                dyh = int(dir_hint[1])
             except Exception:
+                dxh = dyh = 0
+
+        def score(c: tuple[int, int, int]) -> tuple[int, int, int]:
+            zx, zy, _ = c
+            ddx = int(zx) - int(cx)
+            ddy = int(zy) - int(cy)
+            cheb = max(abs(ddx), abs(ddy))
+            # Higher dot means "more forward" in movement direction, so negate for sorting.
+            dot = ddx * dxh + ddy * dyh
+            man = abs(ddx) + abs(ddy)
+            return (cheb, -dot, man)
+
+        coords.sort(key=score)
+        return coords
+
+    def _queue_zone_prewarm(
+        self,
+        coord: tuple[int, int, int],
+    ) -> None:
+        """Add a zone to the incremental prewarm queue if it is not already loaded/queued."""
+        if coord in self.levels:
+            return
+        if coord in self._zone_prewarm_set:
+            return
+        self._zone_prewarm_queue.append(coord)
+        self._zone_prewarm_set.add(coord)
+
+    def _seed_zone_prewarm_queue(self) -> None:
+        """
+        Seed the prewarm queue from the current active radius.
+
+        This is cheap and idempotent; duplicates are filtered by _zone_prewarm_set.
+        """
+        self._prune_zone_prewarm_queue()
+        coords = self._active_zone_coords_prioritized(dir_hint=self._zone_prewarm_dir_hint)
+        for c in coords:
+            self._queue_zone_prewarm(c)
+
+    def _prune_zone_prewarm_queue(self) -> None:
+        """
+        Drop queued coords that are far from the current zone.
+
+        This avoids wasting budget on stale prewarm requests after fast travel
+        or large camera/player jumps.
+        """
+        cx, cy, cz = self.zone_coord
+        keep_radius = max(2, int(getattr(self, "active_zone_radius", 1) or 1) + 1)
+        if not self._zone_prewarm_queue:
+            return
+        kept: list[tuple[int, int, int]] = []
+        kept_set: set[tuple[int, int, int]] = set()
+        for c in self._zone_prewarm_queue:
+            zx, zy, zz = c
+            if int(zz) != int(cz):
                 continue
+            if max(abs(int(zx) - int(cx)), abs(int(zy) - int(cy))) > keep_radius:
+                continue
+            if c in kept_set:
+                continue
+            kept.append(c)
+            kept_set.add(c)
+        self._zone_prewarm_queue = kept
+        self._zone_prewarm_set = kept_set
+
+    def _drain_zone_prewarm_queue(self, budget: int) -> None:
+        """
+        Incrementally create queued zones.
+
+        This intentionally limits new zone creation per tick to reduce hitching.
+        """
+        left = max(0, int(budget))
+        while left > 0 and self._zone_prewarm_queue:
+            coord = self._zone_prewarm_queue.pop(0)
+            self._zone_prewarm_set.discard(coord)
+            if coord in self.levels:
+                left -= 1
+                continue
+            try:
+                zones_system.get_zone(self, coord, up_pos=None)
+            except Exception:
+                # If creation fails, drop it for now; a later seed pass can retry.
+                left -= 1
+                continue
+            left -= 1
+
+    def _loaded_active_levels(self) -> list[LevelState]:
+        """Return already-loaded active levels only (no creation)."""
+        out: list[LevelState] = []
+        for coord in self._active_zone_coords():
+            lvl = self.levels.get(coord)
             if lvl is not None:
-                levels.append(lvl)
+                out.append(lvl)
+        return out
+
+    def _ensure_active_zones_loaded(self) -> list[LevelState]:
+        """
+        Ensure the current zone is loaded and incrementally prewarm neighbors.
+
+        We do *not* synchronously force-create the entire active radius each tick,
+        because that causes large frame spikes when crossing chunk boundaries.
+        """
+        # Current zone is mandatory.
+        try:
+            if self.zone_coord not in self.levels:
+                zones_system.get_zone(self, self.zone_coord, up_pos=None)
+        except Exception:
+            pass
+
+        # Incremental neighbor prewarm.
+        self._seed_zone_prewarm_queue()
+        budget = int(getattr(self, "zone_prewarm_budget_per_advance", 1) or 1)
+        self._drain_zone_prewarm_queue(budget)
+
+        # Return currently-loaded active zones.
+        levels = self._loaded_active_levels()
+        if not levels:
+            try:
+                levels = [self._level()]
+            except Exception:
+                levels = []
         return levels
 
     def _is_zone_active(self, coord: tuple[int, int, int] | None) -> bool:
@@ -2609,16 +2765,10 @@ class Game:
         old_level = self._level()
         old_coord = self.zone_coord
         old_level_coord = getattr(old_level, "coord", None)
+        old_abs = self._get_player_abs()
 
         dest_coord, dest_local = self.zone_local_from_abs(abs_pos, depth=self.zone_coord[2], clamp_to_world=True)
         (dzx, dzy, dzz) = dest_coord
-
-        # Debug logging - always log when called (boundary crossing)
-        try:
-            with open("C:/Games/Edgecaster/debug.log", "a") as f:
-                f.write(f"[_move_player_to_abs] Called: abs_pos={abs_pos}, old_coord={old_coord}, old_level_coord={old_level_coord}, dest_coord={dest_coord}, dest_local={dest_local}\n")
-        except Exception:
-            pass
 
         # Ensure destination chunk exists (boring cache behavior)
         dest_level = zones_system.get_zone(self, dest_coord, up_pos=None)
@@ -2632,11 +2782,6 @@ class Game:
 
         # Move between levels if membership changes
         level_changed = getattr(old_level, "coord", None) != dest_coord
-        try:
-            with open("C:/Games/Edgecaster/debug.log", "a") as f:
-                f.write(f"[_move_player_to_abs] level_changed={level_changed}, old_level.coord={getattr(old_level, 'coord', None)}, dest_coord={dest_coord}\n")
-        except Exception:
-            pass
 
         if level_changed:
             # remove from old level
@@ -2672,11 +2817,6 @@ class Game:
 
             # Signal camera to recenter on player after zone change
             self.camera_needs_recenter = True
-            try:
-                with open("C:/Games/Edgecaster/debug.log", "a") as f:
-                    f.write(f"[_move_player_to_abs] Set camera_needs_recenter=True\n")
-            except Exception:
-                pass
         else:
             # Same chunk, just update local pos
             player.pos = dest_local
@@ -2688,6 +2828,27 @@ class Game:
 
         # Update canonical absolute
         self._set_player_abs(abs_pos)
+
+        # Track movement direction in zone-space for forward prewarm prioritization.
+        try:
+            ddx = int(abs_pos[0]) - int(old_abs[0])
+            ddy = int(abs_pos[1]) - int(old_abs[1])
+        except Exception:
+            ddx = ddy = 0
+        if ddx != 0 or ddy != 0:
+            zx0, zy0, _ = old_coord
+            zx1, zy1, _ = self.zone_coord
+            zdx = int(zx1) - int(zx0)
+            zdy = int(zy1) - int(zy0)
+            # Prefer explicit zone movement hint when available, else use tile direction.
+            hx = zdx if zdx != 0 else (1 if ddx > 0 else -1 if ddx < 0 else 0)
+            hy = zdy if zdy != 0 else (1 if ddy > 0 else -1 if ddy < 0 else 0)
+            self._zone_prewarm_dir_hint = (hx, hy)
+
+        # After movement, seed/drain a small prewarm slice so neighboring zones
+        # tend to be ready before the next boundary crossing.
+        self._seed_zone_prewarm_queue()
+        self._drain_zone_prewarm_queue(max(1, int(getattr(self, "zone_prewarm_budget_per_advance", 1) or 1)))
 
         # Keep continuity: update FOV and Lorenz storm
         try:

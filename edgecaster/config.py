@@ -41,3 +41,10 @@ class GameConfig:
     ambient_spawn_target_max: int = 8
     ambient_spawn_max_per_cycle: int = 1
     ambient_spawn_player_safe_radius: int = 8
+
+    # Lightweight performance profiler (logs timing windows to debug.log).
+    # Set to False to disable all profiler instrumentation overhead.
+    perf_profiler_enabled: bool = True
+    perf_profiler_flush_seconds: float = 2.0
+    perf_profiler_top_n: int = 8
+    perf_profiler_min_avg_ms: float = 0.05
