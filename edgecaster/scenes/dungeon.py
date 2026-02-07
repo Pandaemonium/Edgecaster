@@ -94,7 +94,7 @@ class DungeonScene(Scene):
 
     uses_live_loop = True
     # --- Music declaration ---
-    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth", "warp_whistle", "hornpipe", "real_boy","creche"]
+    music_playlist = ["harmonic", "majesty", "aire", "kemet", "john_bismuth", "warp_whistle", "hornpipe", "real_boy", "creche", "ice_cave"]
     music_loop = True
     music_fade_out_ms = 1200
     music_fade_in_ms = 1200
@@ -2155,8 +2155,9 @@ class DungeonScene(Scene):
                     else:
                         renderer._change_zoom(
                             cmd.wheel_y,
-                            renderer._to_surface(pygame.mouse.get_pos()),
+                            renderer.map_center_surface_px(),
                         )
+
                         self._sync_attention_stage(game, renderer)
 
             return

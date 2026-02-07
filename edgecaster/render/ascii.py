@@ -417,6 +417,16 @@ class AsciiRenderer:
         self.global_visual_profile = profile
 
 
+    def map_center_surface_px(self) -> tuple[int, int]:
+        """Return the camera/view center in SURFACE pixel coords (not display coords)."""
+        map_origin_x, map_origin_y = self._map_origin_base()
+        map_w = self.width - self.log_panel_width
+        map_h = self.height - self.ability_bar_height - map_origin_y
+        cx = int(map_origin_x + map_w // 2)
+        cy = int(map_origin_y + map_h // 2)
+        return (cx, cy)
+
+
 
     def _map_origin_base(self) -> Tuple[int, int]:
         # Base origin before pan.
@@ -534,7 +544,8 @@ class AsciiRenderer:
         cy = map_origin_y + map_h // 2 + offset_y
 
         world_scale = float(getattr(self, "tile_px", getattr(cam, "tile_px", self.base_tile)))
-        world_scale = max(1.0, world_scale)
+        world_scale = max(1e-6, world_scale)
+
 
         self.pan_x = float(cx - map_origin_x - float(px) * world_scale)
         self.pan_y = float(cy - map_origin_y - float(py) * world_scale)
@@ -687,14 +698,15 @@ class AsciiRenderer:
         if cam is not None and hasattr(cam, "map_origin_px") and hasattr(cam, "tile_px"):
             try:
                 self.origin_x, self.origin_y = cam.map_origin_px((float(map_origin_x), float(map_origin_y)))
-                # Keep renderer pan mirrors in sync for any legacy callers.
                 try:
                     self.pan_x = float(getattr(cam, "pan_x", self.pan_x))
                     self.pan_y = float(getattr(cam, "pan_y", self.pan_y))
                     self.zoom = float(getattr(cam, "zoom", self.zoom))
                 except Exception:
                     pass
-                world_scale = float(max(1, int(getattr(cam, "tile_px", int(self.base_tile)))))
+
+                # IMPORTANT: do NOT int()/max(1) clamp here; keep transforms consistent at extreme zoom.
+                world_scale = float(getattr(cam, "tile_px", float(self.base_tile)))
             except Exception:
                 self.origin_x = map_origin_x + self.pan_x
                 self.origin_y = map_origin_y + self.pan_y
@@ -705,6 +717,7 @@ class AsciiRenderer:
             world_scale = float(getattr(self, "tile_px", float(self.base_tile) * float(getattr(self, "zoom", 1.0))))
 
         world_scale = max(1e-6, float(world_scale))
+
 
 
         # ---------------------------------------------------------------------
@@ -4659,6 +4672,22 @@ class AsciiRenderer:
         # True world scale for ALL placement math (terrain + entities + targeting).
         new_scale = float(self.base_tile) * float(self.zoom)
         new_scale = max(1e-6, new_scale)
+
+        # --- FIX: keep follow offset stable in WORLD space when zoom changes ---
+        # camera_follow_offset_px is stored in pixels. If we don't rescale it when zoom
+        # changes, the camera "drifts" toward the player because the same pixel offset
+        # means a different world distance at a new zoom.
+        if getattr(self, "camera_follow", False):
+            try:
+                ox, oy = self.camera_follow_offset_px
+                # Preserve the *world* offset: offset_world = offset_px / scale
+                # => new_offset_px = offset_world * new_scale = old_offset_px * (new_scale/cur_scale)
+                ratio = float(new_scale) / float(cur_scale)
+                self.camera_follow_offset_px = (float(ox) * ratio, float(oy) * ratio)
+            except Exception:
+                pass
+        # --- end FIX ---
+
         self.tile_px = float(new_scale)
 
         # CRITICAL: self.tile must remain WORLD scale (not clamped glyph size).
