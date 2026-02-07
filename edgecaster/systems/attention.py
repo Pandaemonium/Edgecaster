@@ -1418,6 +1418,8 @@ def _ensure_world_site_entities(game, *, zone_w: int, zone_h: int) -> None:
                     "tags": {
                         "world_entity": True,
                         "leviathan": True,
+                        # Used by spatial_music "dominates frame" heuristic
+                        "abs_size": float(max(zone_w, zone_h) * 0.80),
                         "corruption_source": True,
                     },
                 },

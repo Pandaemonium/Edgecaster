@@ -272,6 +272,8 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
     if not quest_proto_id:
         return DialogueTree(
             id=f"npc:{npc_id}",
+            music_key="sergeant",
+
             start_id="start",
             nodes={
                 "start": DialogueNode(
@@ -296,7 +298,7 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
             body=base_body + "\n\nYou already found the inventor. Good luck out there.",
             choices=[DialogueChoice(text="Continue...", next_id=None)],
         )
-        return DialogueTree(id=f"npc:{npc_id}", start_id="start", nodes=nodes)
+        return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant",nodes=nodes)
 
     if active:
         stage = int(getattr(quest, "stage", 0) or 0)
@@ -325,23 +327,24 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
         if stage >= 2 and failing_loc_t is not None:
             hint = f"\n\nThe failing rune is at ({failing_loc_t[0]}, {failing_loc_t[1]})."
             nodes["start"] = DialogueNode(
-                id="start",
+                id="start",                
                 title=title,
                 body=base_body + "\n\nYou have the crystal. Time to bind the seal." + hint,
                 choices=[DialogueChoice(text="Mark it for me.", next_id=None, effect=reveal_failing_rune)],
             )
-            return DialogueTree(id=f"npc:{npc_id}", start_id="start", nodes=nodes)
+            return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant",nodes=nodes)
 
         hint = ""
         if quest_loc_t is not None:
             hint = f"\n\nTheir workshop is marked near ({quest_loc_t[0]}, {quest_loc_t[1]})."
         nodes["start"] = DialogueNode(
             id="start",
+            
             title=title,
             body=base_body + "\n\nYou're already on this trail." + hint,
             choices=[DialogueChoice(text="Thanks.", next_id=None)],
         )
-        return DialogueTree(id=f"npc:{npc_id}", start_id="start", nodes=nodes)
+        return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant", nodes=nodes)
 
     # Not active: offer a second screen before accepting.
     details = (
@@ -376,7 +379,7 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
             DialogueChoice(text="Not now.", next_id=None),
         ],
     )
-    return DialogueTree(id=f"npc:{npc_id}", start_id="start", nodes=nodes)
+    return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant", nodes=nodes)
 
 
 def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTree:
