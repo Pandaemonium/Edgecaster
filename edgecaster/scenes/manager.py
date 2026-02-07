@@ -20,6 +20,9 @@ from .world_map_scene import WorldMapScene
 from edgecaster.ui.status_header import StatusHeaderWidget
 from edgecaster.ui.widgets import WidgetContext
 from edgecaster.scenes.audio_manager import AudioManager, MusicRequest
+from edgecaster.scenes.spatial_music import SpatialMusicDirector
+
+
 
 
 class SceneManager:
@@ -88,7 +91,6 @@ class SceneManager:
             "warp_whistle": "assets/music/warp_whistle.ogg",
             "hornpipe": "assets/music/hornpipe.ogg",
             "real_boy": "assets/music/real_boy.ogg",
-            "baal_cycle": "assets/music/baal_cycle.ogg",
             "creche": "assets/music/creche.ogg",
 
             # Event stingers
@@ -101,9 +103,17 @@ class SceneManager:
             "beggarly_vagrant": "assets/music/beggarly_vagrant.wav",
             "polka": "assets/music/polka.wav",
             "shop": "assets/music/shop.wav",
+            "sergeant": "assets/music/sergeant.ogg",
+            # Location music
+            "morituri": "assets/music/morituri.ogg",
+            "baal_cycle": "assets/music/baal_cycle.ogg",
+
 
 
         })
+        # Context-aware music (spatial triggers, etc.)
+        self._context_music_override: MusicRequest | None = None
+        self.spatial_music = SpatialMusicDirector()
 
 
         # Start on the main menu
@@ -194,73 +204,90 @@ class SceneManager:
 
     def sync_music_to_scene_stack(self) -> None:
         """
-        Call this whenever scene stack changes (push/pop/set/open_window_scene).
+        Call this whenever scene stack changes (push/pop/set/open_window_scene),
+        or when a high-level music override changes (context music, etc.).
         """
         # Keep audio flags in sync with options (cheap, safe)
         self.audio.set_music_enabled(bool(self.options.get("Music", True)))
 
-        # Window override wins if present
-        override = self._window_music_override()
-        if override is not None:
-            self.audio.set_music(override)
-            return
-        # --- Pending transition override (prevents 1-tick music flicker) ---
-        game = getattr(self, "current_game", None)
-        pending_key = getattr(game, "pending_music_override_key", None) if game is not None else None
-        pending_playlist = getattr(game, "pending_music_override_playlist", None) if game is not None else None
-
-        if pending_key or pending_playlist:
-            self.audio.set_music(
-                MusicRequest(
-                    key=str(pending_key) if pending_key else None,
-                    playlist=list(pending_playlist) if pending_playlist else None,
-                    loop=True,
-                    hard_cut=False,
-                    fade_out_ms=150,
-                    fade_in_ms=150,
-                )
-            )
-            return
-
-        # Otherwise base music comes from topmost *non-window* scene that declares it.
-        base_scene = None
-        for sc in reversed(self.scene_stack):
-            if getattr(sc, "window_rect", None) is None:
-                base_scene = sc
-                break
-
-
-        if base_scene is None:
-            # No scenes at all -> stop music.
+        # If no scenes at all -> stop music.
+        if not self.scene_stack:
             self.audio.set_music(None)
             return
 
-
-        req = self._scene_music_request(base_scene)
+        req = self.desired_music_request()
         if req is not None:
             self.audio.set_music(req)
         # else: no explicit request -> leave current music alone (sticky)
 
 
+
     def current_music_request(self) -> MusicRequest | None:
         """
-        Return the music request that SHOULD be playing given the current scene stack.
+        Return the music request that SHOULD be playing given the current scene stack,
+        including context-aware overrides (spatial music, etc.).
+
         Used for event stingers: after the stinger ends, resume this.
+        """
+        return self.desired_music_request()
+
+    def desired_music_request(self) -> MusicRequest | None:
+        """
+        Return the music request that should be playing *right now*, given:
+
+        1) Window music override (if any)
+        2) Pending transition override (prevents 1-tick flicker)
+        3) Context override (spatial music, etc.)
+        4) Base scene music request
         """
         override = self._window_music_override()
         if override is not None:
             return override
 
+        # Pending transition override
+        game = getattr(self, "current_game", None)
+        pending_key = getattr(game, "pending_music_override_key", None) if game is not None else None
+        pending_playlist = getattr(game, "pending_music_override_playlist", None) if game is not None else None
+        if pending_key or pending_playlist:
+            return MusicRequest(
+                key=str(pending_key) if pending_key else None,
+                playlist=list(pending_playlist) if pending_playlist else None,
+                loop=True,
+                hard_cut=False,
+                fade_out_ms=150,
+                fade_in_ms=150,
+            )
+
+        # Context override (e.g. Leviathan in-frame loop)
+        if self._context_music_override is not None:
+            return self._context_music_override
+
+        # Base scene
         base_scene = None
         for sc in reversed(self.scene_stack):
             if getattr(sc, "window_rect", None) is None:
                 base_scene = sc
                 break
-
         if base_scene is None:
             return None
-
         return self._scene_music_request(base_scene)
+
+    def set_context_music_override(self, req: MusicRequest | None) -> None:
+        """Set/clear a context-driven music override (spatial triggers, etc.)."""
+        prev = self._context_music_override
+        self._context_music_override = req
+        if prev == req:
+            return
+
+        # If we're currently interrupting (stinger), don't stomp it.
+        try:
+            if getattr(self.audio, "is_interrupting", None) and self.audio.is_interrupting():
+                return
+        except Exception:
+            pass
+
+        self.sync_music_to_scene_stack()
+
 
 
 
@@ -485,6 +512,13 @@ class SceneManager:
 
             # Update
             scene.update(dt, self)
+
+            # Context-aware / spatial music triggers
+            try:
+                self.spatial_music.update(self, renderer)
+            except Exception:
+                pass
+
             self.audio.update()
 
             # Render
