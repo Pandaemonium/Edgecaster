@@ -813,6 +813,48 @@ def _action_chakra(game: Any, actor_id: str, **kwargs: Any) -> None:
 
 
 @register_action(
+    "slash",
+    label="Slash",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(kind="tile", mode="aim"),
+)
+def _action_slash(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Blade melee: short-range single-target strike."""
+    target_pos = kwargs.get("target_tile")
+    if hasattr(game, "act_blade_attack"):
+        game.act_blade_attack(actor_id, "slash", target_pos=target_pos)
+
+
+@register_action(
+    "thrust",
+    label="Thrust",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(kind="tile", mode="aim"),
+)
+def _action_thrust(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Blade melee: longer line attack that favors the first target hit."""
+    target_pos = kwargs.get("target_tile")
+    if hasattr(game, "act_blade_attack"):
+        game.act_blade_attack(actor_id, "thrust", target_pos=target_pos)
+
+
+@register_action(
+    "cleave",
+    label="Cleave",
+    speed="fast",
+    show_in_bar=True,
+    targeting=TargetingSpec(kind="tile", mode="aim"),
+)
+def _action_cleave(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Blade melee: front-arc sweep that can hit multiple hostiles."""
+    target_pos = kwargs.get("target_tile")
+    if hasattr(game, "act_blade_attack"):
+        game.act_blade_attack(actor_id, "cleave", target_pos=target_pos)
+
+
+@register_action(
     "wind_rush",
     label="Wind Rush",
     speed=5,  # fixed travel/action time in ticks

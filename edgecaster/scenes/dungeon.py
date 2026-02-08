@@ -672,6 +672,8 @@ class DungeonScene(Scene):
                 game.inventory_requested = False
             if hasattr(game, "chakra_requested"):
                 game.chakra_requested = False
+            if hasattr(game, "blade_editor_requested"):
+                game.blade_editor_requested = False
             renderer.start_dungeon(game)
             self._started = True
 
@@ -785,6 +787,18 @@ class DungeonScene(Scene):
 
             state = getattr(game, "fractal_editor_state", None) or FractalEditorState()
             manager.push_scene(FractalEditorScene(state=state, window_rect=None))
+            return
+
+        # 5b) Blade editor requested -> open blade editor scene
+        if getattr(game, "blade_editor_requested", False):
+            game.blade_editor_requested = False
+            from .blade_editor_scene import BladeEditorScene
+            try:
+                with open("C:/Games/Edgecaster/debug.log", "a", encoding="utf-8") as f:
+                    f.write("[dungeon] transition -> BladeEditorScene push\n")
+            except Exception:
+                pass
+            manager.push_scene(BladeEditorScene(game))
             return
 
         # 6) Pause requested -> push pause menu overlay
@@ -2406,6 +2420,26 @@ class DungeonScene(Scene):
             if not in_aim_mode:
                 setattr(game, "chakra_requested", True)
                 renderer.quit_requested = True
+            return
+
+        if kind == "open_blade_editor":
+            if in_aim_mode:
+                return
+            pclass = str(
+                getattr(getattr(game, "character", None), "player_class", "")
+                or getattr(getattr(game, "character", None), "char_class", "")
+                or ""
+            )
+            if pclass != "Blade":
+                game.log.add("Only Blade adepts can edit an intrinsic blade right now.")
+                return
+            try:
+                with open("C:/Games/Edgecaster/debug.log", "a", encoding="utf-8") as f:
+                    f.write("[dungeon] open_blade_editor command accepted\n")
+            except Exception:
+                pass
+            setattr(game, "blade_editor_requested", True)
+            renderer.quit_requested = True
             return
 
         if kind == "open_quest_journal":

@@ -1,0 +1,70 @@
+# Fractal Blade V1 Plan
+
+## Scope (this pass)
+- Add a new playable class: `Blade`.
+- Add a dedicated runtime module for blade state and melee verb resolution.
+- Add three melee verbs as actions: `Slash`, `Thrust`, `Cleave`.
+- Replace bump attack for Blade-class hosts with blade `Slash`.
+- Keep implementation architecture-first and low-risk; no blade editor UI yet.
+
+## Confirmed design constraints
+- Melee is immediate and replaces basic bump attack (for Blade-class hosts in V1).
+- No stamina/mana subsystem specific to melee.
+- Facing can be free-angle, but in V1 verbs use target tile + geometric tests.
+- By default, melee avoids walls/environment and non-hostiles.
+- No durability/wear.
+- Generator slots limited by effective INT (`max(1, INT)`).
+- Duplicate generators are allowed.
+- Blade class starts with an empty intrinsic blade.
+
+## System architecture
+
+### 1) `edgecaster/systems/blade_runtime.py`
+Responsibilities:
+- Own blade state container (`BladeState`).
+- Own slot constraints from INT.
+- Own target selection and hit geometry per verb.
+- Own damage numbers for `slash/thrust/cleave` (single source of truth).
+- Provide one execution API callable from both actions and bump movement:
+  - `act_blade_attack(game, actor_id, verb, target_pos=None, from_bump=False) -> bool`
+
+V1 policies:
+- Damage policy: hostile actors only.
+- Verb behavior:
+  - `slash`: nearest/selected hostile in short range.
+  - `thrust`: line attack with longer reach; first hostile near line.
+  - `cleave`: front hemisphere sweep; can hit multiple hostiles.
+
+### 2) Action registration (`edgecaster/systems/actions.py`)
+- Register `slash`, `thrust`, `cleave`.
+- All three are ability-bar actions (`show_in_bar=True`).
+- All three use optional targeting path through existing target mode:
+  - `TargetingSpec(kind="tile", mode="aim")`.
+- Action funcs call `game.act_blade_attack(...)`.
+
+### 3) Game orchestration (`edgecaster/game.py`)
+- Add `self.blade_states` runtime store.
+- Add thin wrappers:
+  - `ensure_actor_blade_state`
+  - `act_blade_attack`
+- In player class-kit assembly, add a new `Blade` class with:
+  - `place`, `subdivide`, `extend`, `activate_seed`, `reset`, `meditate`, `push_pattern`, `slash`, `thrust`, `cleave`
+- On spawn, initialize empty intrinsic blade state for Blade class.
+- In `_handle_move_or_attack`, route hostile bump from Blade-class player to `Slash` runtime.
+
+### 4) Character creation (`edgecaster/scenes/character_creation_scene.py`)
+- Add `Blade` to class picker.
+- Add class description copy.
+
+## Out of scope (next slices)
+- Blade editor scene (generator composition, save/load presets).
+- Itemized blade transfer flow (`koch_knife` generator extraction/infusion).
+- Non-player blade AI.
+- Blade telemetry and balancing instrumentation.
+- Per-generator special melee effects and penetration/dodge/armor interactions.
+
+## Immediate follow-up slices
+1. Blade editor + knifesmith gate (non-Blade classes).
+2. Item -> blade generator transfer APIs.
+3. Verb-specific advanced evaluators (penetration, proc effects).
+4. Enemy melee migration onto same runtime.

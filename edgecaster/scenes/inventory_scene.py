@@ -5030,6 +5030,27 @@ class InventoryScene(PopupMenuScene):
         tags = getattr(ent, "tags", {}) or {}
         is_container = bool(tags.get("container"))
         is_berry = self._is_berry_from_tags(tags)
+        item_type = str(tags.get("item_type", "") or "").strip().lower()
+        item_name = str(getattr(ent, "name", "") or "").strip().lower()
+
+        # V1 blade editor scope:
+        # - Blade class only
+        # - knife/blade-like items can open the intrinsic blade editor from inventory
+        #   (item-bound blade profiles come in a later pass).
+        player_class = str(
+            getattr(getattr(self.game, "character", None), "player_class", "")
+            or getattr(getattr(self.game, "character", None), "char_class", "")
+            or ""
+        )
+        can_edit_blade = (
+            player_class == "Blade"
+            and (
+                "knife" in item_type
+                or "blade" in item_type
+                or "knife" in item_name
+                or "blade" in item_name
+            )
+        )
         choices: list[str] = []
         owner_id = self._owner_id()
         container_targets = self._find_container_targets(exclude_id=getattr(ent, "id", None))
@@ -5050,6 +5071,8 @@ class InventoryScene(PopupMenuScene):
         if not equipped_slot_id:
             if self._body_slot_targets():
                 choices.append("Equip...")
+        if can_edit_blade:
+            choices.append("Edit Blade")
         if is_container and bool(getattr(self, "allow_open_containers", True)):
             choices.append("Open")
         if not choices:
@@ -5293,6 +5316,11 @@ class InventoryScene(PopupMenuScene):
                         back_confirms=False,
                     )
                 )
+                return
+
+            if choice == "Edit Blade":
+                from .blade_editor_scene import BladeEditorScene
+                mgr.push_scene(BladeEditorScene(self.game))
                 return
 
             if choice == "Open" and cur_is_container and bool(getattr(self, "allow_open_containers", True)):
@@ -6604,4 +6632,3 @@ class LookScene(InventoryScene):
             animate_affine=False,
             mode="look",
         )
-

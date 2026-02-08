@@ -113,6 +113,8 @@ from edgecaster.systems import ambient_spawns as ambient_spawns_system
 from edgecaster.systems import damage_policy as damage_policy_system
 from edgecaster.systems import combat_actions as combat_actions_system
 from edgecaster.systems import pattern_runtime as pattern_runtime_system
+from edgecaster.systems import blade_runtime as blade_runtime_system
+from edgecaster.systems import chakra_effects as chakra_effects_system
 from edgecaster.systems import perf_profiler
 from edgecaster.systems import telemetry as telemetry_system
 from . import lorenz
@@ -399,6 +401,7 @@ class Game:
         # flags
         self.map_requested = False
         self.fractal_editor_requested = False
+        self.blade_editor_requested = False
         self.fractal_editor_state = None
         self.camera_needs_recenter = False  # Set by zone transitions to signal camera update
 
@@ -475,6 +478,8 @@ class Game:
         # Inventories: mapping from owner id to a list of carried Entities.
         # Initially empty; per-owner lists are created lazily via get_inventory().
         self.inventories: Dict[str, List[Entity]] = {}
+        # Per-actor fractal blade runtime state.
+        self.blade_states: Dict[str, blade_runtime_system.BladeState] = {}
         # Simple SFX cache for lightweight sounds
         self._sfx_cache: Dict[str, object] = {}
 
@@ -634,6 +639,21 @@ class Game:
                 "mirror_strike",
                 "choking_vines",
             ]
+        elif player_class == "Blade":
+            # Blade kit: melee verbs + core rune manipulation.
+            # Starts with an intrinsic *empty* blade; slots scale with INT.
+            actions += [
+                "slash",
+                "thrust",
+                "cleave",
+                "place",
+                "subdivide",
+                "extend",
+                "activate_seed",
+                "reset",
+                "meditate",
+                "push_pattern",
+            ]
 
         # For now, all other classes keep only move/wait (empty ability bar).
         player.actions = tuple(actions)
@@ -657,6 +677,12 @@ class Game:
         lvl = self._level()
         lvl.actors[player.id] = player
         lvl.entities[player.id] = player
+        # Blade class starts with an intrinsic empty blade profile.
+        if player_class == "Blade":
+            try:
+                blade_runtime_system.ensure_actor_blade_state(self, player.id)
+            except Exception:
+                pass
 
         # Canonical absolute position (Phase 1.5 yoga)
         # This makes abs-space the source of truth for player movement/render queries later.
@@ -2433,6 +2459,17 @@ class Game:
         target = self._actor_at(level, (nx, ny))
         if target and target.id != id:
             if self.is_hostile(actor, target) or self.is_hostile(target, actor):
+                # Blade-class hosts replace bump-attack with blade slash.
+                if blade_runtime_system.actor_uses_blade_melee(self, id):
+                    handled = blade_runtime_system.act_blade_attack(
+                        self,
+                        id,
+                        "slash",
+                        target_pos=(nx, ny),
+                        from_bump=True,
+                    )
+                    if handled:
+                        return
                 self._attack(level, actor, target)
                 return
             # Friendly/neutral actors block movement.
@@ -3413,11 +3450,69 @@ class Game:
     def _chakra_modifiers(self, actor_id: str):
         return pattern_runtime_system.chakra_modifiers(self, actor_id)
 
+    def chakra_effects(self, actor_id: Optional[str] = None) -> chakra_effects_system.ChakraEffectSnapshot:
+        """Return aggregated passive effects from the actor's active chakras.
+
+        This is the canonical query point for chakra-conditioned passives.
+        New systems should use this helper instead of inspecting chakra node ids
+        directly, so condition logic stays centralized in chakra_effects.py.
+        """
+        aid = str(actor_id or getattr(self, "player_id", ""))
+        actor: Optional[Actor] = None
+        try:
+            actor = self._level().actors.get(aid)
+        except Exception:
+            actor = None
+        if actor is None:
+            # Fallback: actor may not be in the current zone cache bucket.
+            for lvl in getattr(self, "levels", {}).values():
+                actor = lvl.actors.get(aid)
+                if actor is not None:
+                    break
+        if actor is None:
+            return chakra_effects_system.ChakraEffectSnapshot()
+
+        state = getattr(actor, "chakra_state", None)
+        active = set(getattr(state, "active", set()) or set())
+        return chakra_effects_system.evaluate_effects(active)
+
+    def chakra_effect_value(
+        self,
+        key: str,
+        *,
+        actor_id: Optional[str] = None,
+        default: float = 0.0,
+    ) -> float:
+        return self.chakra_effects(actor_id).value(key, default)
+
     def _consume_chakra_charge(self, actor_id: str, amount: float) -> None:
         return pattern_runtime_system.consume_chakra_charge(self, actor_id, amount)
 
     def act_chakra(self, actor_id: str) -> None:
         return pattern_runtime_system.act_chakra(self, actor_id)
+
+    # --- Blade runtime delegates (systems/blade_runtime.py) ---
+    def ensure_actor_blade_state(self, actor_id: str):
+        return blade_runtime_system.ensure_actor_blade_state(self, actor_id)
+
+    def set_actor_blade_generators(self, actor_id: str, generators: List[str]):
+        return blade_runtime_system.set_actor_blade_generators(self, actor_id, generators)
+
+    def act_blade_attack(
+        self,
+        actor_id: str,
+        verb: str,
+        *,
+        target_pos: Optional[Tuple[int, int]] = None,
+        from_bump: bool = False,
+    ) -> bool:
+        return blade_runtime_system.act_blade_attack(
+            self,
+            actor_id,
+            verb,
+            target_pos=target_pos,
+            from_bump=from_bump,
+        )
 
     # --- Combat action delegates (systems/combat_actions.py) ---
     def _wind_rush_start_vertex_candidates(
@@ -3479,13 +3574,21 @@ class Game:
         self,
         pattern: builder.Pattern,
         anchor: Tuple[int, int],
-        include_predicate: Callable[[str], bool],
+        include_predicate: Optional[Callable[[str], bool]] = None,
+        *,
+        predicate: Optional[Callable[[str], bool]] = None,
     ) -> List[Tuple[float, float]]:
+        # Compatibility wrapper:
+        # combat_actions uses keyword `predicate=...` while older call sites passed
+        # the callable positionally as `include_predicate`. Accept either form.
+        pred = predicate or include_predicate
+        if pred is None:
+            return []
         return combat_actions_system._chakra_world_points(
             self,
             pattern,
             anchor,
-            include_predicate,
+            predicate=pred,
         )
     def act_palm_burst(self, actor_id: str) -> None:
         return combat_actions_system.act_palm_burst(self, actor_id)
@@ -3650,8 +3753,9 @@ class Game:
         if self.player_id not in level.actors:
             return
 
-        # Apply view bonus from equipment
+        # Apply view bonus from equipment + chakra passives.
         view_bonus = self.effective_character_stats().get("view", 0)
+        view_bonus += int(round(self.chakra_effect_value("fov_radius_bonus", actor_id=self.player_id)))
         radius = int(radius + view_bonus)
         if radius < 1:
             radius = 1

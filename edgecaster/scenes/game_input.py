@@ -76,6 +76,7 @@ DEFAULT_BINDINGS: Dict[str, List[int]] = {
     "open_quest_journal": [encode_keybinding(pygame.K_j)],
     "open_factions": [encode_keybinding(pygame.K_f, pygame.KMOD_SHIFT)],
     "open_chakra_menu": [encode_keybinding(pygame.K_c, pygame.KMOD_SHIFT)],  # Shift+C for chakra management
+    "open_blade_editor": [encode_keybinding(pygame.K_b)],
     "open_abilities": [],  # reserved for ctrl+A below
     "yawp": [encode_keybinding(pygame.K_y)],
     "wait": [encode_keybinding(pygame.K_KP5)],
@@ -291,6 +292,7 @@ class GameInput:
             "open_quest_journal",
             "open_factions",
             "open_chakra_menu",
+            "open_blade_editor",
             "yawp",
             "wait",
             "stairs_down",

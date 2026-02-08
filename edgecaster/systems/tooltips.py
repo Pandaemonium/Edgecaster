@@ -69,7 +69,7 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
     "wind_rush": (
         "Targeting: choose a rune vertex.",
         "You must be standing on the rune to begin the dash.",
-        "Travel time is fixed to 5 ticks and has a long cooldown.",
+        "Travel time is fixed to 5 heartbeats and has a long cooldown.",
         "Hits hostile actors standing on the dash line.",
     ),
     "lightning": (
@@ -105,7 +105,7 @@ def _cooldown_and_charges(
 
     base_cd = int(getattr(action_def, "cooldown_ticks", 0) or 0)
     if base_cd > 0:
-        lines.append(f"Base cooldown: {base_cd} ticks.")
+        lines.append(f"Base cooldown: {base_cd} heartbeats.")
 
     if actor_id is None:
         return tuple(lines)
@@ -127,7 +127,7 @@ def _cooldown_and_charges(
         cd = 0
 
     if cd > 0:
-        lines.append(f"Recharging: {cd} ticks remaining.")
+        lines.append(f"Recharging: {cd} heartbeats remaining.")
 
     # If this action is item-granted and charged, surface remaining charges.
     try:
