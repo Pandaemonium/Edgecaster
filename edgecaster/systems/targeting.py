@@ -48,7 +48,7 @@ def predict_aim_preview(
 
     YOGA: All coordinates here are in ABS space. Actor positions use abs_pos.
     """
-    if action not in ("activate_all", "activate_seed", "throw_flask"):
+    if action not in ("activate_all", "activate_seed", "throw_flask", "wind_rush"):
         return None
 
     # YOGA: Use ABS anchor for pattern projection
@@ -70,6 +70,31 @@ def predict_aim_preview(
     fail_text: Optional[str] = None
     fail_pct: Optional[float] = None
     per_actor_damage: Dict[str, int] = {}
+
+    if action == "wind_rush":
+        fail = None
+        path_indices: List[int] = []
+        try:
+            preview_fn = getattr(game, "wind_rush_preview", None)
+            if callable(preview_fn):
+                data, fail = preview_fn(hover_idx, actor_id=getattr(game, "player_id", None))
+                if data is not None:
+                    path_indices = list(data.get("path_indices", []) or [])
+        except Exception:
+            path_indices = []
+            fail = "Wind Rush preview unavailable."
+
+        return AimPrediction(
+            action=action,
+            hover_vertex=hover_idx,
+            center=verts[hover_idx],
+            radius=None,
+            dmg_map=dmg_map,
+            fail_text=fail,
+            target_vertices=path_indices,
+            per_actor_damage=per_actor_damage,
+            fail_pct=None,
+        )
 
     if action == "activate_all":
         try:

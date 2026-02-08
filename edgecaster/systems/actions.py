@@ -812,6 +812,26 @@ def _action_chakra(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_chakra(actor_id)
 
 
+@register_action(
+    "wind_rush",
+    label="Wind Rush",
+    speed=5,  # fixed travel/action time in ticks
+    show_in_bar=True,
+    cooldown_ticks=42,
+    targeting=TargetingSpec(
+        kind="vertex",
+        mode="aim",
+    ),
+)
+def _action_wind_rush(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Dash to a selected rune vertex and strike enemies along the path."""
+    target_vertex = kwargs.get("hover_vertex")
+    if target_vertex is None:
+        target_vertex = kwargs.get("target_vertex")
+    if hasattr(game, "act_wind_rush"):
+        game.act_wind_rush(actor_id, target_vertex=target_vertex)
+
+
 @register_action("energy_kick", label="Energy Kick", speed="fast", show_in_bar=True, cooldown_ticks=18)
 def _action_energy_kick(game: Any, actor_id: str, **kwargs: Any) -> None:
     """

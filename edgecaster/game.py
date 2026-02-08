@@ -626,6 +626,7 @@ class Game:
                 "meditate",
                 "push_pattern",
                 "chakra",
+                "wind_rush",
                 "energy_kick",
                 "palm_burst",
                 "mirror_strike",
@@ -4278,6 +4279,398 @@ class Game:
                 )
             except Exception:
                 pass
+
+    def _wind_rush_start_vertex_candidates(
+        self,
+        actor_tile: Tuple[int, int],
+        world_vertices: List[Tuple[float, float]],
+        pattern: builder.Pattern,
+    ) -> set[int]:
+        """Return graph vertices that the actor can start Wind Rush from.
+
+        A start is valid when the actor is:
+        - standing on a projected vertex tile, or
+        - standing on any projected edge tile (then either endpoint may start).
+        """
+        ax, ay = int(actor_tile[0]), int(actor_tile[1])
+        candidates: set[int] = set()
+
+        # Exact vertex contact.
+        for idx, (vx, vy) in enumerate(world_vertices):
+            if int(round(vx)) == ax and int(round(vy)) == ay:
+                candidates.add(idx)
+
+        # Edge contact. We still scan edges even if a vertex match exists, because
+        # standing exactly on an edge endpoint should preserve both graph options.
+        actor_pos = (ax, ay)
+        for e in getattr(pattern, "edges", []) or []:
+            try:
+                a_idx = int(getattr(e, "a"))
+                b_idx = int(getattr(e, "b"))
+            except Exception:
+                continue
+            if (
+                a_idx < 0
+                or b_idx < 0
+                or a_idx >= len(world_vertices)
+                or b_idx >= len(world_vertices)
+            ):
+                continue
+            av = world_vertices[a_idx]
+            bv = world_vertices[b_idx]
+            line = _line_points(
+                int(round(av[0])),
+                int(round(av[1])),
+                int(round(bv[0])),
+                int(round(bv[1])),
+            )
+            if actor_pos in line:
+                candidates.add(a_idx)
+                candidates.add(b_idx)
+
+        return candidates
+
+    def _wind_rush_vertex_path(
+        self,
+        pattern: builder.Pattern,
+        start_candidates: set[int],
+        target_idx: int,
+        num_vertices: int,
+    ) -> Optional[List[int]]:
+        """Shortest vertex-index path on the rune graph from starts to target."""
+        if not start_candidates:
+            return None
+        if target_idx in start_candidates:
+            return [target_idx]
+
+        adj: Dict[int, List[int]] = {}
+        for e in getattr(pattern, "edges", []) or []:
+            try:
+                a = int(getattr(e, "a"))
+                b = int(getattr(e, "b"))
+            except Exception:
+                continue
+            if a < 0 or b < 0 or a >= num_vertices or b >= num_vertices:
+                continue
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+
+        q: deque[int] = deque()
+        prev: Dict[int, Optional[int]] = {}
+        for s in start_candidates:
+            if s < 0 or s >= num_vertices:
+                continue
+            q.append(s)
+            prev[s] = None
+
+        found = False
+        while q:
+            cur = q.popleft()
+            if cur == target_idx:
+                found = True
+                break
+            for nxt in adj.get(cur, []):
+                if nxt in prev:
+                    continue
+                prev[nxt] = cur
+                q.append(nxt)
+
+        if not found or target_idx not in prev:
+            return None
+
+        path: List[int] = []
+        node: Optional[int] = target_idx
+        while node is not None:
+            path.append(node)
+            node = prev.get(node)
+        path.reverse()
+        return path
+
+    def _wind_rush_local_path_points(
+        self,
+        actor_tile: Tuple[int, int],
+        path_indices: List[int],
+        world_vertices: List[Tuple[float, float]],
+    ) -> List[Tuple[int, int]]:
+        """Build local tile path points by walking graph segments in order."""
+        points: List[Tuple[int, int]] = [(int(actor_tile[0]), int(actor_tile[1]))]
+        if not path_indices:
+            return points
+
+        first = world_vertices[path_indices[0]]
+        first_tile = (int(round(first[0])), int(round(first[1])))
+        if first_tile != points[-1]:
+            for p in _line_points(points[-1][0], points[-1][1], first_tile[0], first_tile[1]):
+                if p != points[-1]:
+                    points.append(p)
+
+        for i in range(len(path_indices) - 1):
+            a = world_vertices[path_indices[i]]
+            b = world_vertices[path_indices[i + 1]]
+            a_tile = (int(round(a[0])), int(round(a[1])))
+            b_tile = (int(round(b[0])), int(round(b[1])))
+            for p in _line_points(a_tile[0], a_tile[1], b_tile[0], b_tile[1]):
+                if p != points[-1]:
+                    points.append(p)
+
+        return points
+
+    def wind_rush_preview(
+        self,
+        target_vertex: Optional[int],
+        *,
+        actor_id: Optional[str] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Preview graph-walk data for Wind Rush (used by targeting + execution)."""
+        level = self._level()
+        if actor_id is None:
+            actor_id = self.player_id
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return None, "No actor to rush."
+
+        origin = self._activation_origin(level)
+        if origin is None or not getattr(level.pattern, "vertices", None):
+            return None, "No rune pattern to rush through."
+
+        from edgecaster.patterns.activation import project_vertices
+
+        world_vertices = project_vertices(level.pattern, origin)
+        if not world_vertices:
+            return None, "No rune vertices to rush to."
+        if target_vertex is None:
+            return None, "Choose a vertex to Wind Rush to."
+
+        try:
+            v_idx = int(target_vertex)
+        except Exception:
+            return None, "Invalid Wind Rush target."
+        if v_idx < 0 or v_idx >= len(world_vertices):
+            return None, "Invalid Wind Rush target."
+
+        target_local = (
+            int(round(world_vertices[v_idx][0])),
+            int(round(world_vertices[v_idx][1])),
+        )
+        if not level.world.in_bounds(*target_local):
+            return None, "That vertex is beyond your reach."
+        if not level.world.is_walkable(*target_local):
+            return None, "You cannot rush into solid terrain."
+
+        start_candidates = self._wind_rush_start_vertex_candidates(
+            actor.pos,
+            world_vertices,
+            level.pattern,
+        )
+        if not start_candidates:
+            return None, "Stand on the rune to Wind Rush."
+
+        path_indices = self._wind_rush_vertex_path(
+            level.pattern,
+            start_candidates,
+            v_idx,
+            len(world_vertices),
+        )
+        if not path_indices:
+            return None, "No connected rune path to that vertex."
+
+        path_local = self._wind_rush_local_path_points(
+            actor.pos,
+            path_indices,
+            world_vertices,
+        )
+        return {
+            "target_vertex": v_idx,
+            "target_local": target_local,
+            "path_indices": path_indices,
+            "path_local": path_local,
+        }, None
+
+    def act_wind_rush(self, actor_id: str, target_vertex: Optional[int]) -> None:
+        """Dash along rune edges to a selected vertex and strike hostiles on path.
+
+        Design notes:
+        - Target is a *vertex index* from the current projected pattern.
+        - Caster must stand on the rune (vertex or edge) to initiate.
+        - Movement is applied in ABS-space so crossing zone boundaries stays seamless.
+        - Action timing is fixed by the action registry (`speed=5` in actions.py).
+        """
+        level = self._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+        preview, fail_text = self.wind_rush_preview(target_vertex, actor_id=actor_id)
+        if preview is None:
+            if actor_id == self.player_id and fail_text:
+                self.log.add(fail_text)
+            return
+
+        # Mana gate kept moderate; cooldown is the primary limiter.
+        mana_cost = 20
+        try:
+            if actor.stats.mana < mana_cost:
+                if actor_id == self.player_id:
+                    self.log.add("Not enough mana for Wind Rush.")
+                return
+            actor.stats.mana -= mana_cost
+            actor.stats.clamp()
+        except Exception:
+            return
+
+        target_local = preview["target_local"]
+        path_local = preview["path_local"]
+
+        actor_abs = getattr(actor, "abs_pos", None)
+        if actor_abs is None:
+            actor_abs = self.abs_from_zone_local(level.coord, actor.pos)
+        target_abs = self.abs_from_zone_local(level.coord, target_local)
+
+        # Convert local graph-walk path to ABS-space so damage remains consistent near edges.
+        path_abs = [
+            self.abs_from_zone_local(level.coord, (int(p[0]), int(p[1])))
+            for p in path_local
+        ]
+        path_centers: List[Tuple[float, float]] = [
+            (float(x) + 0.5, float(y) + 0.5) for (x, y) in path_abs
+        ]
+        path_segments: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+        for i in range(len(path_centers) - 1):
+            path_segments.append((path_centers[i], path_centers[i + 1]))
+
+        # Coarse bounds for cheap early-out before exact distance tests.
+        if path_centers:
+            min_px = min(p[0] for p in path_centers)
+            max_px = max(p[0] for p in path_centers)
+            min_py = min(p[1] for p in path_centers)
+            max_py = max(p[1] for p in path_centers)
+        else:
+            min_px = max_px = min_py = max_py = 0.0
+
+        def _point_segment_dist(
+            px: float,
+            py: float,
+            ax: float,
+            ay: float,
+            bx: float,
+            by: float,
+        ) -> float:
+            """Distance from point P to segment AB in tile-space."""
+            vx = bx - ax
+            vy = by - ay
+            wx = px - ax
+            wy = py - ay
+            vv = vx * vx + vy * vy
+            if vv <= 1e-9:
+                return math.hypot(px - ax, py - ay)
+            t = (wx * vx + wy * vy) / vv
+            if t < 0.0:
+                t = 0.0
+            elif t > 1.0:
+                t = 1.0
+            qx = ax + t * vx
+            qy = ay + t * vy
+            return math.hypot(px - qx, py - qy)
+
+        def _distance_to_path(px: float, py: float) -> float:
+            """Minimum distance from a point to the rush polyline."""
+            if not path_centers:
+                return 1e9
+            # Fast reject outside expanded path bbox.
+            if px < (min_px - 1.0) or px > (max_px + 1.0) or py < (min_py - 1.0) or py > (max_py + 1.0):
+                return 1e9
+            if not path_segments:
+                cx, cy = path_centers[0]
+                return math.hypot(px - cx, py - cy)
+            best = 1e9
+            for (a, b) in path_segments:
+                d = _point_segment_dist(px, py, a[0], a[1], b[0], b[1])
+                if d < best:
+                    best = d
+            return best
+
+        # Brief overlay hint for the dash line (projected in current zone view).
+        # Activation overlay currently consumes local coords.
+        try:
+            level.activation_points = [(float(x), float(y)) for (x, y) in path_local]
+            level.activation_ttl = max(6, int(getattr(self.cfg, "pattern_overlay_ttl", 12) // 2))
+        except Exception:
+            pass
+
+        # Damage hostiles on path. Intentionally excludes self/friendlies/environment.
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+        base_damage = 8
+        hit_radius_tiles = 1.0
+        caster_is_player = actor_id == self.player_id
+        hit_count = 0
+        seen_ids: set[str] = set()
+        # Use loaded active levels only; this keeps runtime predictable.
+        for lvl in self._loaded_active_levels():
+            for tid, obj in damage_policy_system.iter_damage_targets(
+                self,
+                lvl,
+                actor_id,
+                policy,
+                include_actors=True,
+                include_entities=False,
+            ):
+                if tid in seen_ids:
+                    continue
+                seen_ids.add(tid)
+
+                pos_abs = getattr(obj, "abs_pos", None)
+                if pos_abs is None:
+                    pos_abs = self.abs_from_zone_local(lvl.coord, obj.pos)
+                tx = int(pos_abs[0])
+                ty = int(pos_abs[1])
+                # Distance measured from tile-center to the rush polyline.
+                d = _distance_to_path(float(tx) + 0.5, float(ty) + 0.5)
+                if d > hit_radius_tiles:
+                    continue
+                scale = max(0.0, 1.0 - (d / hit_radius_tiles))
+                dmg = int(math.ceil(base_damage * scale))
+                if dmg <= 0:
+                    continue
+
+                try:
+                    obj.stats.hp -= dmg
+                    if hasattr(obj.stats, "clamp"):
+                        obj.stats.clamp()
+                except Exception:
+                    continue
+
+                hit_count += 1
+                if caster_is_player:
+                    self.log.add(f"Wind Rush cuts {getattr(obj, 'name', 'something')} for {dmg}.")
+
+                if int(getattr(obj.stats, "hp", 0)) <= 0 and tid in lvl.actors:
+                    self._kill_actor(
+                        lvl,
+                        obj,
+                        killer_id=actor_id,
+                        killer_is_player=caster_is_player,
+                    )
+
+        # Move actor after applying path damage.
+        if actor_id == self.player_id:
+            self._move_player_to_abs((int(target_abs[0]), int(target_abs[1])))
+        else:
+            self._move_actor_to_abs(
+                actor,
+                (int(target_abs[0]), int(target_abs[1])),
+                from_level=level,
+            )
+
+        if caster_is_player:
+            if hit_count > 0:
+                self.log.add(f"You surge along the rune path ({hit_count} hit).")
+            else:
+                self.log.add("You surge along the rune path.")
 
     def act_energy_kick(self, actor_id: str) -> None:
         """Pulse damage around all foot-lineage chakra vertices in the current pattern.

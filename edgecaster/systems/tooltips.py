@@ -27,6 +27,7 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "zigzag": "Apply a zigzag iteration to the current rune.",
     "custom": "Apply your current custom saved generator pattern.",
     "chakra": "Rebuild the rune from active chakras in your body schema.",
+    "wind_rush": "Dash to a selected rune vertex and strike along the path.",
     "activate_all": "Activate vertices in a radius around the selected vertex.",
     "activate_seed": "Activate selected vertex and neighboring graph hops.",
     "energy_kick": "Pulse from foot-lineage vertices and damage nearby targets.",
@@ -64,6 +65,12 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
     "choking_vines": (
         "Vines originate from edge midpoints near enemies.",
         "Existing vines can extend and branch over time.",
+    ),
+    "wind_rush": (
+        "Targeting: choose a rune vertex.",
+        "You must be standing on the rune to begin the dash.",
+        "Travel time is fixed to 5 ticks and has a long cooldown.",
+        "Hits hostile actors standing on the dash line.",
     ),
     "lightning": (
         "Excludes the caster from damage.",
@@ -165,4 +172,3 @@ def resolve_action_tooltip(game: Any, action_name: str, actor_id: str | None = N
         summary=summary,
         lines=tuple(lines),
     )
-

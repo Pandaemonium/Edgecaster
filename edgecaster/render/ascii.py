@@ -3394,7 +3394,7 @@ class AsciiRenderer:
         pred = self._ui_attr("aim_prediction", None)
         ox, oy = self._zone_abs_offset(game)
         aim_action = getattr(pred, "action", None) or self._ui_attr("aim_action", None)
-        if aim_action not in ("activate_all", "activate_seed", "throw_flask"):
+        if aim_action not in ("activate_all", "activate_seed", "throw_flask", "wind_rush"):
             return
         origin = game.pattern_anchor
         if origin is None or not game.pattern.vertices:
@@ -3425,8 +3425,8 @@ class AsciiRenderer:
                     center = (tx + 0.5, ty + 0.5)
             else:
                 center = verts[hover_vertex]
-                cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
             r2 = radius * radius
             target_vertices = getattr(pred, "target_vertices", None)
@@ -3438,12 +3438,13 @@ class AsciiRenderer:
                 vx, vy = verts[idx]
                 px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
                 py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
-                pygame.draw.circle(self.surface, (200, 240, 255), (px, py), max(3, self.tile // 5))
-        else:  # activate_seed
+                pygame.draw.circle(self.surface, (200, 240, 255), (px, py), int(max(3, self.tile // 5)))
+        elif aim_action == "activate_seed":
             center = verts[hover_vertex]
+            vx, vy = center
             px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
             py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
-            pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
+            pygame.draw.circle(self.surface, (255, 230, 120), (px, py), int(max(5, self.tile // 3)))
             target_vertices = getattr(pred, "target_vertices", None) or []
             seen = set()
             ordered_targets = []
@@ -3459,11 +3460,84 @@ class AsciiRenderer:
                 px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
                 py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
                 color = (200, 220, 255) if idx != hover_vertex else (255, 230, 120)
-                pygame.draw.circle(self.surface, color, (px, py), max(3, self.tile // 5))
+                pygame.draw.circle(self.surface, color, (px, py), int(max(3, self.tile // 5)))
                 tx = int(round(vx))
                 ty = int(round(vy))
                 rect = pygame.Rect(tx * self.tile + self.origin_x, ty * self.tile + self.origin_y, self.tile, self.tile)
                 pygame.draw.rect(self.surface, color, rect, 1)
+        else:  # wind_rush
+            # Highlight selected destination vertex.
+            center = verts[hover_vertex]
+            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            pygame.draw.circle(self.surface, (255, 240, 130), (cx, cy), int(max(6, self.tile // 3)), width=2)
+            pygame.draw.circle(self.surface, (255, 240, 130), (cx, cy), int(max(3, self.tile // 6)))
+
+            # Draw each graph edge in the predicted rush path.
+            # Wind Rush applies damage with falloff out to ~1 tile from the path;
+            # render a soft gradient halo so the hit zone is legible.
+            path_vertices = list(getattr(pred, "target_vertices", None) or [])
+            if len(path_vertices) >= 2:
+                path_segments_px: list[tuple[tuple[int, int], tuple[int, int]]] = []
+
+                # If the caster is mid-edge, include the initial partial segment
+                # from caster tile center to the first path vertex.
+                try:
+                    caster = game._level().actors.get(game.player_id)
+                except Exception:
+                    caster = None
+                if caster is not None:
+                    first_idx = path_vertices[0]
+                    if first_idx is not None and 0 <= first_idx < len(verts):
+                        av = verts[first_idx]
+                        ax = int((av[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                        ay = int((av[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                        sx = int((caster.pos[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                        sy = int((caster.pos[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                        if (sx, sy) != (ax, ay):
+                            path_segments_px.append(((sx, sy), (ax, ay)))
+
+                for i in range(len(path_vertices) - 1):
+                    a_idx = path_vertices[i]
+                    b_idx = path_vertices[i + 1]
+                    if (
+                        a_idx is None
+                        or b_idx is None
+                        or a_idx < 0
+                        or b_idx < 0
+                        or a_idx >= len(verts)
+                        or b_idx >= len(verts)
+                    ):
+                        continue
+                    av = verts[a_idx]
+                    bv = verts[b_idx]
+                    ax = int((av[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                    ay = int((av[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    bx = int((bv[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                    by = int((bv[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    path_segments_px.append(((ax, ay), (bx, by)))
+
+                if path_segments_px:
+                    layer = pygame.Surface(self.surface.get_size(), pygame.SRCALPHA)
+                    core_w = int(max(2, self.tile // 8))
+                    # Match game logic: no Wind Rush damage beyond one tile.
+                    aura_radius_px = int(max(core_w + 2, round(self.tile)))
+                    for (a, b) in path_segments_px:
+                        # Outer-to-inner bands approximate distance falloff.
+                        for frac, alpha_band in ((1.00, 26), (0.66, 44), (0.33, 68)):
+                            width = int(max(core_w + 1, core_w + 2 * aura_radius_px * frac))
+                            pygame.draw.line(layer, (90, 245, 255, int(alpha_band)), a, b, width)
+                        pygame.draw.line(self.surface, (95, 245, 255), a, b, core_w)
+                    self.surface.blit(layer, (0, 0))
+
+                # Highlight path vertices to communicate traversal order.
+                for idx in path_vertices:
+                    if idx is None or idx < 0 or idx >= len(verts):
+                        continue
+                    vx, vy = verts[idx]
+                    px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                    py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    pygame.draw.circle(self.surface, (170, 255, 255), (px, py), int(max(3, self.tile // 7)))
 
         # render previews with 2s triangle-wave fade
         t = pygame.time.get_ticks()
