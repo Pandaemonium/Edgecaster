@@ -603,7 +603,27 @@ def get_chakra_connections_recursive(
     if not nodes:
         return []
 
+    root_id = _get_root_node_id(body_schema)
+    root_full = f"{prefix}{root_id}" if (root_id and (prefix or root_id)) else root_id
+
+    # Keep insertion order stable while deduping.
     edges: List[Tuple[str, str]] = []
+    edge_keys: Set[Tuple[str, str]] = set()
+
+    def add_edge(a: str, b: str) -> None:
+        if not a or not b or a == b:
+            return
+        key = (a, b)
+        if key in edge_keys:
+            return
+        edge_keys.add(key)
+        edges.append(key)
+
+    # Track which local nodes have an explicit parent edge in this schema.
+    # Some sub-schemas (notably face) contain nodes that are not listed in
+    # any `children` array. Without this fallback, valid chakras such as
+    # `...face.eye` become unreachable and are dropped from generator seeds.
+    has_parent_local: Set[str] = set()
     guard = set(recursion_guard or ())
 
     for node_id, node in nodes.items():
@@ -618,7 +638,8 @@ def get_chakra_connections_recursive(
             for child_id in children:
                 if child_id:
                     child_full_id = f"{prefix}{child_id}" if prefix else str(child_id)
-                    edges.append((full_id, child_full_id))
+                    add_edge(full_id, child_full_id)
+                    has_parent_local.add(str(child_id))
 
         # If this is an unlocked branch root, connect to sub-schema root and recurse
         proto_id = node.get("proto", node_id)
@@ -632,19 +653,30 @@ def get_chakra_connections_recursive(
                     sub_root = sub_schema.get("root")
                     if sub_root:
                         sub_root_full = f"{full_id}.{sub_root}"
-                        edges.append((full_id, sub_root_full))
-                    edges.extend(
-                        get_chakra_connections_recursive(
-                            sub_schema,
-                            chakra_state,
-                            prefix=f"{full_id}.",
-                            depth=depth + 1,
-                            max_depth=max_depth,
-                            recursion_guard=guard | {str(proto_id)},
-                        )
-                    )
+                        add_edge(full_id, sub_root_full)
+                    for sub_a, sub_b in get_chakra_connections_recursive(
+                        sub_schema,
+                        chakra_state,
+                        prefix=f"{full_id}.",
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        recursion_guard=guard | {str(proto_id)},
+                    ):
+                        add_edge(sub_a, sub_b)
             except Exception:
                 pass
+
+    # Fallback wiring: connect any local node with no declared parent to the
+    # local schema root. This preserves 1:1 chakra<->schema-node behavior even
+    # when authoring data omits some child links.
+    if root_id and root_full:
+        for local_id in nodes.keys():
+            sid = str(local_id)
+            if sid == root_id:
+                continue
+            if sid in has_parent_local:
+                continue
+            add_edge(root_full, f"{prefix}{sid}" if prefix else sid)
 
     return edges
 
@@ -695,6 +727,17 @@ def get_all_chakra_positions_recursive(
 
     result: Dict[str, Tuple[Vec2, str]] = {}
     guard = set(recursion_guard or ())
+    visited_local: Set[str] = set()
+
+    # Track which local nodes are explicitly listed as children. Any local node
+    # not in this set (and not the schema root) is treated as an implicit child
+    # of the local root, so it still participates in positioning/generation.
+    has_parent_local: Set[str] = set()
+    for _nid, _node in nodes.items():
+        if not isinstance(_node, dict):
+            continue
+        for _cid in _get_node_children(_node):
+            has_parent_local.add(str(_cid))
 
     def get_node_state(full_id: str) -> str:
         """Determine chakra state for a node."""
@@ -709,6 +752,9 @@ def get_all_chakra_positions_recursive(
         """Recursively walk the tree, computing positions."""
         if node_id not in nodes:
             return
+        if node_id in visited_local:
+            return
+        visited_local.add(node_id)
 
         node = nodes[node_id]
         layout = _get_node_layout(node)
@@ -778,6 +824,22 @@ def get_all_chakra_positions_recursive(
     # Start walk from root (or from parent_pos if nested)
     if root_id and root_id in nodes:
         walk(root_id, parent_pos, base_scale * parent_scale)
+        root_full = f"{prefix}{root_id}" if prefix else root_id
+        root_pos_entry = result.get(root_full)
+        if root_pos_entry is not None:
+            root_pos_u = root_pos_entry[0]
+            root_scale = root_pos_entry[2]
+            # Include orphan local nodes that have no explicit parent in
+            # children-links by attaching them to the local root.
+            for orphan_id in sorted(nodes.keys()):
+                sid = str(orphan_id)
+                if sid == root_id:
+                    continue
+                if sid in has_parent_local:
+                    continue
+                if sid in visited_local:
+                    continue
+                walk(sid, root_pos_u, root_scale)
     else:
         # No root, walk all nodes
         for node_id in nodes:

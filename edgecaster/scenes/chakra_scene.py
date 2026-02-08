@@ -49,6 +49,7 @@ from edgecaster.systems.chakras import (
     toggle_chakra_active,
     check_resonance_bonuses,
     get_all_chakra_positions_recursive,
+    get_chakra_connections_recursive,
     collect_all_chakra_nodes,
     get_resonance_modifiers,
     CHARGE_MAX_BASE,
@@ -479,53 +480,24 @@ class ChakraSilhouetteWidget(Widget):
         depth: int = 0,
         recursion_guard: Optional[Set[str]] = None,
     ) -> None:
-        """Recursively build parent-child connections for energy flow lines."""
-        guard = set(recursion_guard or ())
+        """Build parent-child connections for energy flow lines.
 
-        nodes = _get_nodes_from_schema(body_schema)
-        if not nodes:
-            return
-
-        for node_id, node in nodes.items():
-            if not isinstance(node, dict):
-                continue
-
-            full_id = f"{prefix}{node_id}" if prefix else node_id
-
-            # Add connections to children within this schema
-            children = node.get("children", [])
-            if isinstance(children, list):
-                for child_id in children:
-                    if child_id:
-                        child_full_id = f"{prefix}{child_id}" if prefix else str(child_id)
-                        if child_full_id in self._chakra_points:
-                            self._connections.append((full_id, child_full_id))
-
-            # If this is an unlocked branch root, connect to sub-schema root
-            # and recurse into sub-schema
-            proto_id = node.get("proto", node_id)
-            if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
-                if str(proto_id) in guard:
-                    continue
-                try:
-                    sub_schema = resolve_body_schema(proto_id)
-                    if sub_schema and isinstance(sub_schema, dict):
-                        sub_root = sub_schema.get("root")
-                        if sub_root:
-                            sub_root_full = f"{full_id}.{sub_root}"
-                            if sub_root_full in self._chakra_points:
-                                # Connect branch root to sub-schema root
-                                self._connections.append((full_id, sub_root_full))
-                        # Recurse into sub-schema
-                        self._build_connections(
-                            sub_schema, chakra_state,
-                            prefix=f"{full_id}.",
-                            depth=depth + 1
-                            ,
-                            recursion_guard=guard | {str(proto_id)},
-                        )
-                except Exception:
-                    pass
+        Delegate to the canonical chakra graph builder so silhouette wiring
+        matches runtime/preview generator wiring exactly.
+        """
+        try:
+            all_edges = get_chakra_connections_recursive(
+                body_schema,
+                chakra_state,
+                prefix=prefix,
+                depth=depth,
+                recursion_guard=recursion_guard,
+            )
+        except Exception:
+            all_edges = []
+        for a_id, b_id in all_edges:
+            if a_id in self._chakra_points and b_id in self._chakra_points:
+                self._connections.append((a_id, b_id))
 
     def _compute_pixel_positions(self) -> None:
         """Convert unit positions to pixel positions based on current camera."""
@@ -1296,7 +1268,8 @@ class PatternPreviewWidget(Widget):
                 body_schema,
                 chakra_state,
                 base_scale=1.0,
-                require_root=False,
+                # Match runtime cast behavior exactly so preview is WYSIWYG.
+                require_root=True,
             )
         except Exception:
             self._pattern_surface = None
