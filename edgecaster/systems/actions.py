@@ -2000,3 +2000,393 @@ def _action_ground_slam(game: Any, actor_id: str, **kwargs: Any) -> None:
     # Log the telegraph.
     caster_name = getattr(actor, "name", "Something")
     game.log.add(f"{caster_name} raises a massive fist!")
+
+
+# ---------------------------------------------------------------------------
+# Deferred action helper
+# ---------------------------------------------------------------------------
+
+def _setup_deferred_aoe(
+    game: Any,
+    actor_id: str,
+    *,
+    action_name: str,
+    label: str,
+    tiles: list[tuple[int, int]],
+    damage: int,
+    prep_ticks: int,
+    color: tuple[int, int, int],
+    log_prep: str,
+    log_resolve: str,
+) -> None:
+    """Shared boilerplate for any deferred AoE action.
+
+    Creates a DeferredAction, schedules resolution, and logs the telegraph.
+    The caller is responsible for computing *tiles* (LOCAL coordinates).
+    """
+    from edgecaster.systems.deferred import DeferredAction
+    from edgecaster.systems import scheduling
+
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+
+    deferred_id = f"{actor_id}_{action_name}_{level.current_tick}"
+
+    def resolve() -> None:
+        caster = level.actors.get(actor_id)
+        if caster is None or not getattr(caster, "alive", True):
+            level.deferred_actions = [
+                da for da in getattr(level, "deferred_actions", [])
+                if da.id != deferred_id
+            ]
+            return
+
+        level.deferred_actions = [
+            da for da in getattr(level, "deferred_actions", [])
+            if da.id != deferred_id
+        ]
+
+        tile_set = set(tiles)
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+        caster_is_player = actor_id == getattr(game, "player_id", "")
+        for tid, target in damage_policy_system.iter_damage_targets(
+            game, level, actor_id, policy,
+            include_actors=True, include_entities=False,
+        ):
+            t_pos = getattr(target, "pos", None)
+            if t_pos is None:
+                continue
+            if (int(t_pos[0]), int(t_pos[1])) not in tile_set:
+                continue
+            if not getattr(target, "alive", True):
+                continue
+            try:
+                target.stats.hp -= damage
+                if hasattr(target.stats, "clamp"):
+                    target.stats.clamp()
+            except Exception:
+                continue
+            if tid == getattr(game, "player_id", None):
+                game.log.add(f"The {label.lower()} hits you for {damage}!")
+            else:
+                game.log.add(
+                    f"The {label.lower()} hits {getattr(target, 'name', 'something')} for {damage}!"
+                )
+            if int(getattr(target.stats, "hp", 0)) <= 0:
+                try:
+                    game._kill_actor(
+                        level, target,
+                        killer_id=actor_id,
+                        killer_is_player=caster_is_player,
+                    )
+                except Exception:
+                    pass
+
+        game.log.add(log_resolve)
+
+    da = DeferredAction(
+        id=deferred_id,
+        caster_id=actor_id,
+        action_name=action_name,
+        label=label,
+        tiles=tiles,
+        resolve_tick=level.current_tick + prep_ticks,
+        created_tick=level.current_tick,
+        resolve_fn=resolve,
+        color=color,
+    )
+    if not hasattr(level, "deferred_actions"):
+        level.deferred_actions = []
+    level.deferred_actions.append(da)
+
+    scheduling.schedule(game, level, prep_ticks, resolve)
+    game.log.add(log_prep.format(name=getattr(actor, "name", "Something")))
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Bear Maul
+# ---------------------------------------------------------------------------
+
+@register_action("bear_maul", label="Bear Maul", speed="slow", cooldown_ticks=30)
+def _action_bear_maul(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred swipe targeting the player's position. Radius 1 diamond."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("maul_radius", 1))
+    prep = int(tags.get("maul_prep_ticks", 10))
+    dmg = int(tags.get("maul_damage", 6))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="bear_maul", label="Bear Maul", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(200, 150, 60),
+        log_prep="{name} rears up on its hind legs!",
+        log_resolve="Claws rake the ground!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Haymaker
+# ---------------------------------------------------------------------------
+
+@register_action("haymaker", label="Haymaker", speed="slow", cooldown_ticks=25)
+def _action_haymaker(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred heavy punch. Small AoE (radius 1) on the player."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("haymaker_radius", 1))
+    prep = int(tags.get("haymaker_prep_ticks", 8))
+    dmg = int(tags.get("haymaker_damage", 5))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="haymaker", label="Haymaker", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(255, 160, 60),
+        log_prep="{name} winds up a massive punch!",
+        log_resolve="The fist crashes down!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Thorn Burst
+# ---------------------------------------------------------------------------
+
+@register_action("thorn_burst", label="Thorn Burst", speed="slow", cooldown_ticks=35)
+def _action_thorn_burst(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred AoE centered on the CASTER. Thorns erupt around the guardian."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("thorn_radius", 2))
+    prep = int(tags.get("thorn_prep_ticks", 12))
+    dmg = int(tags.get("thorn_damage", 6))
+    cx, cy = actor.pos  # centered on self, not the player
+
+    tiles = [
+        (cx + dx, cy + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius
+        and (dx != 0 or dy != 0)  # exclude own tile
+        and level.world.in_bounds(cx + dx, cy + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="thorn_burst", label="Thorn Burst", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(80, 180, 60),
+        log_prep="{name} slams the earth and thorns begin to rise!",
+        log_resolve="Thorns erupt from the ground!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Chain Smash (Shackled Brute)
+# ---------------------------------------------------------------------------
+
+@register_action("chain_smash", label="Chain Smash", speed="slow", cooldown_ticks=35)
+def _action_chain_smash(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred wide chain swing. Radius 2 diamond on the player."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("chain_smash_radius", 2))
+    prep = int(tags.get("chain_smash_prep_ticks", 12))
+    dmg = int(tags.get("chain_smash_damage", 12))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="chain_smash", label="Chain Smash", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(160, 140, 120),
+        log_prep="{name} swings its chains overhead!",
+        log_resolve="Chains crash into the ground!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Blood Drain (Blood Sipper)
+# ---------------------------------------------------------------------------
+
+@register_action("blood_drain", label="Blood Drain", speed="slow", cooldown_ticks=30)
+def _action_blood_drain(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred vampiric burst on the player's position. Radius 1."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("drain_radius", 1))
+    prep = int(tags.get("drain_prep_ticks", 10))
+    dmg = int(tags.get("drain_damage", 7))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="blood_drain", label="Blood Drain", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(180, 30, 50),
+        log_prep="{name} opens its maw and begins to inhale!",
+        log_resolve="A wave of draining energy pulses outward!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Devouring Lunge (Maw Beast)
+# ---------------------------------------------------------------------------
+
+@register_action("devouring_lunge", label="Devouring Lunge", speed="slow", cooldown_ticks=25)
+def _action_devouring_lunge(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred lunging bite on the player's position. Radius 1."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("lunge_radius", 1))
+    prep = int(tags.get("lunge_prep_ticks", 8))
+    dmg = int(tags.get("lunge_damage", 8))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="devouring_lunge", label="Devouring Lunge", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(160, 50, 70),
+        log_prep="{name} coils back, jaws gaping!",
+        log_resolve="Teeth snap shut on the ground!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Lash (Slaver)
+# ---------------------------------------------------------------------------
+
+@register_action("lash", label="Lash", speed="slow", cooldown_ticks=20)
+def _action_lash(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred whip strike on the player's position. Radius 1."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("lash_radius", 1))
+    prep = int(tags.get("lash_prep_ticks", 8))
+    dmg = int(tags.get("lash_damage", 5))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="lash", label="Lash", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(200, 160, 100),
+        log_prep="{name} draws back its whip!",
+        log_resolve="The whip cracks!",
+    )

@@ -63,11 +63,23 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return _war_drummer(game, level, actor)
 
     if behavior_id == "shackled_brute":
-        return _shackled_brute(game, level, actor)
+        return _deferred_attacker(game, level, actor, "chain_smash", "chain_smash_range", 4)
     if behavior_id == "gory_ascetic":
         return _gory_ascetic(game, level, actor)
     if behavior_id == "ground_slammer":
         return _ground_slammer(game, level, actor)
+    if behavior_id == "bear_mauler":
+        return _deferred_attacker(game, level, actor, "bear_maul", "maul_range", 3)
+    if behavior_id == "thug_brawler":
+        return _deferred_attacker(game, level, actor, "haymaker", "haymaker_range", 3)
+    if behavior_id == "thorn_defender":
+        return _deferred_attacker(game, level, actor, "thorn_burst", "thorn_range", 3)
+    if behavior_id == "blood_drainer":
+        return _deferred_attacker(game, level, actor, "blood_drain", "drain_range", 3)
+    if behavior_id == "maw_devourer":
+        return _deferred_attacker(game, level, actor, "devouring_lunge", "lunge_range", 3)
+    if behavior_id == "slaver_lasher":
+        return _deferred_attacker(game, level, actor, "lash", "lash_range", 3)
 
     # Default: generic "walk toward player and bump" brain.
     return _generic_walk_toward(game, level, actor)
@@ -469,12 +481,64 @@ def _ground_slammer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
             return ("ground_slam", {})
 
     # Otherwise walk toward player using brute_move (slow) or regular move.
-    move_action = "brute_move" if "brute_move" in available else ("move" if "move" in available else None)
+    return _walk_toward(game, level, actor, available, px - ax, py - ay)
+
+
+def _deferred_attacker(
+    game: Any, level: Any, actor: Any,
+    attack_action: str, range_tag: str, default_range: int,
+) -> Tuple[str, Dict]:
+    """Generic AI for enemies with a single deferred (slow) attack.
+
+    Uses *attack_action* when off cooldown and within *range_tag* distance
+    of the player, otherwise walks toward the player.
+    """
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    player = _get_player_actor(game)
+    if player is None:
+        return ("wait", {})
+
+    try:
+        if not reputation_system.is_hostile(game, actor, player):
+            return ("wait", {}) if "wait" in available else (available[0], {})
+    except Exception:
+        pass
+
+    a_abs = _abs_pos(game, level, actor)
+    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+    if a_abs is None or p_abs is None:
+        return ("wait", {})
+    ax, ay = a_abs
+    px, py = p_abs
+    dist = abs(px - ax) + abs(py - ay)
+
+    tags = getattr(actor, "tags", None) or {}
+    attack_range = int(tags.get(range_tag, default_range))
+
+    if attack_action in available and dist <= attack_range:
+        try:
+            cd = int(getattr(actor, "cooldowns", {}).get(attack_action, 0))
+        except Exception:
+            cd = 0
+        if cd <= 0:
+            return (attack_action, {})
+
+    # Fall back to movement.
+    return _walk_toward(game, level, actor, available, px - ax, py - ay)
+
+
+def _walk_toward(
+    game: Any, level: Any, actor: Any,
+    available: tuple, dx: int, dy: int,
+) -> Tuple[str, Dict]:
+    """Move one step toward a target delta. Shared by deferred-attack AIs."""
+    move_action = "move" if "move" in available else ("brute_move" if "brute_move" in available else None)
     if move_action is None:
         return ("wait", {}) if "wait" in available else (available[0], {})
 
-    dx = px - ax
-    dy = py - ay
     if abs(dx) + abs(dy) == 1:
         return (move_action, {"dx": dx, "dy": dy})
 

@@ -125,19 +125,23 @@
   name: Corrupted Thug
   glyph: T
   color: [255, 180, 80]
-  actions: [move, wait]
+  actions: [move, wait, haymaker]
   base_hp: 6
   base_mana: 0
   base_attack: 2
   base_defense: 1
   speed: 0.9
   faction: hostile
-  ai: skirmisher
+  ai: thug_brawler
   xp: 6
   parent: humanoid
   description: You might have thought the corruption would impair his thuggishness.
   tags:
     corrupted_thug: true
+    haymaker_radius: 1
+    haymaker_prep_ticks: 8
+    haymaker_damage: 5
+    haymaker_range: 3
 
 - id: goblin
   name: Goblin
@@ -281,14 +285,14 @@
   name: Slaver
   glyph: "S"
   color: [220, 180, 120]
-  actions: [move, wait]
+  actions: [move, wait, lash]
   base_hp: 25
   base_mana: 0
   base_attack: 6
   base_defense: 1
   speed: 1.0
   faction: hostile
-  ai: skirmisher
+  ai: slaver_lasher
   xp: 14
   tier_min: 3
   tier_max: 8
@@ -296,12 +300,16 @@
   description: In a very real sense, then, the slave controls the slave driver, the communicant the priest, the student the teacher.
   tags:
     slaver: true
+    lash_radius: 1
+    lash_prep_ticks: 8
+    lash_damage: 5
+    lash_range: 3
 
 - id: shackled_brute
   name: Shackled Brute
   glyph: "B"
   color: [180, 160, 140]
-  actions: [brute_move, wait]
+  actions: [brute_move, wait, chain_smash]
   base_hp: 40
   base_mana: 0
   base_attack: 10
@@ -317,6 +325,10 @@
   tags:
     shackled_brute: true
     no_random_spawn: true
+    chain_smash_radius: 2
+    chain_smash_prep_ticks: 12
+    chain_smash_damage: 12
+    chain_smash_range: 4
 
 - id: devilish_dandy
   name: Devilish Dandy
@@ -427,14 +439,14 @@
   name: Blood Sipper
   glyph: "b"
   color: [200, 50, 70]
-  actions: [move, wait]
+  actions: [move, wait, blood_drain]
   base_hp: 22
   base_mana: 0
   base_attack: 10
   base_defense: 1
   speed: 1.2
   faction: hostile
-  ai: skirmisher
+  ai: blood_drainer
   xp: 14
   tier_min: 6
   tier_max: 8
@@ -443,6 +455,10 @@
   tags:
     blood_sipper: true
     lifesteal_frac: 0.5
+    drain_radius: 1
+    drain_prep_ticks: 10
+    drain_damage: 7
+    drain_range: 3
 
 # ---------------------------------------------------------------------------
 # Biome-Specific Enemies (for site spawning)
@@ -500,14 +516,14 @@
   name: Thorn Guardian
   glyph: G
   color: [80, 120, 60]
-  actions: [move, wait]
+  actions: [move, wait, thorn_burst]
   base_hp: 18
   base_mana: 0
   base_attack: 4
   base_defense: 3
   speed: 0.7
   faction: natures_chosen
-  ai: territorial
+  ai: thorn_defender
   xp: 18
   tier_min: 7
   tier_max: 9
@@ -517,6 +533,10 @@
     thorn_guardian: true
     biome_spawn: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST]
     no_random_spawn: true
+    thorn_radius: 2
+    thorn_prep_ticks: 12
+    thorn_damage: 6
+    thorn_range: 3
 
 - id: bark_golem
   name: Bark Golem
@@ -630,20 +650,24 @@
   name: Bear
   glyph: B
   color: [120, 100, 80]
-  actions: [move, wait]
+  actions: [move, wait, bear_maul]
   base_hp: 12
   base_mana: 0
   base_attack: 4
   base_defense: 1
   speed: 0.9
   faction: hostile
-  ai: skirmisher
+  ai: bear_mauler
   xp: 12
   parent: beast
   description: The true name of the bear must never be uttered.
   tags:
     bear: true
     biome_spawn: [TAIGA, TEMPERATE_FOREST]
+    maul_radius: 1
+    maul_prep_ticks: 10
+    maul_damage: 6
+    maul_range: 3
 
 # --- Tropical (Shaman Shrines) ---
 
@@ -1222,14 +1246,14 @@
   name: Maw Beast
   glyph: M
   color: [160, 60, 80]
-  actions: [move, wait]
+  actions: [move, wait, devouring_lunge]
   base_hp: 20
   base_mana: 0
   base_attack: 6
   base_defense: 2
   speed: 1.1
   faction: demon_cult_flesh
-  ai: skirmisher
+  ai: maw_devourer
   xp: 20
   tier_min: 8
   tier_max: 10
@@ -1240,6 +1264,10 @@
     lifesteal_frac: 0.3
     biome_spawn: [CORRUPTED_FOREST]
     no_random_spawn: true
+    lunge_radius: 1
+    lunge_prep_ticks: 8
+    lunge_damage: 8
+    lunge_range: 3
 
 # ===========================================================================
 # PATTERNKEEPERS - Tattooed nomads friendly to the player
