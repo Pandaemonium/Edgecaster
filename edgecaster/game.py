@@ -115,6 +115,7 @@ from edgecaster.systems import combat_actions as combat_actions_system
 from edgecaster.systems import pattern_runtime as pattern_runtime_system
 from edgecaster.systems import blade_runtime as blade_runtime_system
 from edgecaster.systems import chakra_effects as chakra_effects_system
+from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import perf_profiler
 from edgecaster.systems import telemetry as telemetry_system
 from . import lorenz
@@ -3514,8 +3515,9 @@ class Game:
         if actor is None:
             return chakra_effects_system.ChakraEffectSnapshot()
 
-        state = getattr(actor, "chakra_state", None)
-        active = set(getattr(state, "active", set()) or set())
+        # Active set includes explicit activations plus item-driven temporary
+        # auto-activations, so passives can react to equipped chakra gear.
+        active = chakra_items_system.effective_active_nodes(self, actor)
         return chakra_effects_system.evaluate_effects(active)
 
     def chakra_effect_value(

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.state.actors import Actor
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import chakra_items as chakra_items_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -1108,20 +1109,8 @@ def act_energy_kick(self, actor_id: str) -> None:
         )
 
     # Build world-space kick points from vertex-level chakra provenance.
-    kick_points: List[Tuple[float, float]] = []
-    for v in pattern.vertices:
-        tags = getattr(v, "tags", {}) or {}
-        nodes: List[str] = []
-        single = str(tags.get("chakra_node", "")).strip()
-        if single:
-            nodes.append(single)
-        many = str(tags.get("chakra_nodes", "")).strip()
-        if many:
-            nodes.extend([s for s in many.split("|") if s])
-        if not nodes:
-            continue
-        if any(_is_foot_lineage(node_id) for node_id in nodes):
-            kick_points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
+    kick_sources = _chakra_world_sources(self, pattern, anchor, predicate=_is_foot_lineage)
+    kick_points = [p for (p, _nodes) in kick_sources]
 
     if not kick_points:
         if actor_id == self.player_id:
@@ -1166,14 +1155,22 @@ def act_energy_kick(self, actor_id: str) -> None:
         ty = float(pos[1]) + 0.5
 
         total_dmg = 0
-        for kx, ky in kick_points:
+        for (kx, ky), source_nodes in kick_sources:
             dx = tx - kx
             dy = ty - ky
             dist = math.hypot(dx, dy)
             if dist > radius:
                 continue
             falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
-            total_dmg += max(1, int(math.ceil(base_damage * falloff)))
+            base = max(1, int(math.ceil(base_damage * falloff)))
+            total_dmg += chakra_items_system.apply_damage_modifiers(
+                self,
+                actor_id,
+                "energy_kick",
+                base,
+                source_nodes=source_nodes,
+                illuminated_nodes=source_nodes,
+            )
 
         if total_dmg <= 0:
             continue
@@ -1242,15 +1239,27 @@ def _chakra_world_points(
     predicate: Callable[[str], bool],
 ) -> list[tuple[float, float]]:
     """Collect world-space points for vertices matching chakra-node predicate."""
-    points: list[tuple[float, float]] = []
+    return [p for (p, _nodes) in _chakra_world_sources(self, pattern, anchor, predicate=predicate)]
+
+
+def _chakra_world_sources(
+    self,
+    pattern: Any,
+    anchor: Tuple[int, int],
+    *,
+    predicate: Callable[[str], bool],
+) -> list[tuple[tuple[float, float], set[str]]]:
+    """Collect world-space points with matching source-node provenance."""
+    out: list[tuple[tuple[float, float], set[str]]] = []
     for v in getattr(pattern, "vertices", []) or []:
         nodes = self._chakra_nodes_for_vertex(v)
         if not nodes:
             continue
-        if not any(predicate(node_id) for node_id in nodes):
+        matched = {node_id for node_id in nodes if predicate(node_id)}
+        if not matched:
             continue
-        points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
-    return points
+        out.append(((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])), matched))
+    return out
 
 def act_palm_burst(self, actor_id: str) -> None:
     """Pulse damage from hand/palm/finger-lineage chakra vertices."""
@@ -1291,11 +1300,8 @@ def act_palm_burst(self, actor_id: str) -> None:
             or "wrist" in n
         )
 
-    burst_points = self._chakra_world_points(
-        pattern,
-        anchor,
-        predicate=_is_palm_lineage,
-    )
+    burst_sources = _chakra_world_sources(self, pattern, anchor, predicate=_is_palm_lineage)
+    burst_points = [p for (p, _nodes) in burst_sources]
     if not burst_points:
         if actor_id == self.player_id:
             self.log.add("No active palm chakras are encoded in this pattern.")
@@ -1336,14 +1342,22 @@ def act_palm_burst(self, actor_id: str) -> None:
         ty = float(pos[1]) + 0.5
 
         total_dmg = 0
-        for px, py in burst_points:
+        for (px, py), source_nodes in burst_sources:
             dx = tx - px
             dy = ty - py
             dist = math.hypot(dx, dy)
             if dist > radius:
                 continue
             falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
-            total_dmg += max(1, int(math.ceil(base_damage * falloff)))
+            base = max(1, int(math.ceil(base_damage * falloff)))
+            total_dmg += chakra_items_system.apply_damage_modifiers(
+                self,
+                actor_id,
+                "palm_burst",
+                base,
+                source_nodes=source_nodes,
+                illuminated_nodes=source_nodes,
+            )
 
         if total_dmg <= 0:
             continue
@@ -1418,7 +1432,7 @@ def act_mirror_strike(self, actor_id: str) -> None:
         return
 
     # Derive strike points from present mirrored pairs.
-    strike_points: list[tuple[float, float]] = []
+    strike_entries: list[tuple[tuple[float, float], set[str]]] = []
     seen_pairs: set[tuple[str, str]] = set()
     for node_id, left_pts in node_points.items():
         if not left_pts:
@@ -1443,7 +1457,9 @@ def act_mirror_strike(self, actor_id: str) -> None:
         ly = sum(p[1] for p in left_pts) / len(left_pts)
         rx = sum(p[0] for p in right_pts) / len(right_pts)
         ry = sum(p[1] for p in right_pts) / len(right_pts)
-        strike_points.append(((lx + rx) * 0.5, (ly + ry) * 0.5))
+        strike_entries.append((((lx + rx) * 0.5, (ly + ry) * 0.5), {base, mirror}))
+
+    strike_points = [p for (p, _nodes) in strike_entries]
 
     if not strike_points:
         if actor_id == self.player_id:
@@ -1485,14 +1501,22 @@ def act_mirror_strike(self, actor_id: str) -> None:
         ty = float(pos[1]) + 0.5
 
         total_dmg = 0
-        for sx, sy in strike_points:
+        for (sx, sy), source_nodes in strike_entries:
             dx = tx - sx
             dy = ty - sy
             dist = math.hypot(dx, dy)
             if dist > radius:
                 continue
             falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
-            total_dmg += max(1, int(math.ceil(base_damage * falloff)))
+            base = max(1, int(math.ceil(base_damage * falloff)))
+            total_dmg += chakra_items_system.apply_damage_modifiers(
+                self,
+                actor_id,
+                "mirror_strike",
+                base,
+                source_nodes=source_nodes,
+                illuminated_nodes=source_nodes,
+            )
 
         if total_dmg <= 0:
             continue

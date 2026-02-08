@@ -444,6 +444,263 @@
     charges_max: 5
     not_stackable: true
 
+# --- Chakra-linked equipment (temporary unlocks + hit modifiers) ----------
+# These items are intentionally data-driven through tags consumed by:
+# - systems/chakra_items.py
+# - systems/equip_rules.py
+
+- id: heel_charm
+  name: Heel Charm
+  glyph: ')'
+  color:
+  - 130
+  - 255
+  - 190
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A charm that hums at your heel and drives stronger kick impacts.
+  tags:
+    item_type: heel_charm
+    value_bismuth: 34
+    allowed_slot_kinds:
+    - foot
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    chakra_hit_mods:
+    - actions:
+      - energy_kick
+      match: source
+      use_equipped_slot: true
+      descendants: true
+      op: add
+      value: 2.0
+
+- id: rootwrap_boot
+  name: Rootwrap Boot
+  glyph: ']'
+  color:
+  - 110
+  - 220
+  - 140
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A woven boot that stabilizes lower-body chakra flow.
+  tags:
+    item_type: rootwrap_boot
+    value_bismuth: 28
+    allowed_slot_kinds:
+    - foot
+    - calf
+    - knee
+    - thigh
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    equip_mods:
+      agi: 1
+
+- id: sun_palm_wrap
+  name: Sun Palm Wrap
+  glyph: '='
+  color:
+  - 255
+  - 220
+  - 120
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: Bright cloth that lets palm strikes bloom hotter.
+  tags:
+    item_type: sun_palm_wrap
+    value_bismuth: 36
+    allowed_slot_kinds:
+    - hand
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    chakra_hit_mods:
+    - actions:
+      - palm_burst
+      match: source
+      use_equipped_slot: true
+      descendants: true
+      op: mul
+      value: 1.25
+
+- id: mirror_knuckle_wire
+  name: Mirror Knuckle Wire
+  glyph: '{'
+  color:
+  - 200
+  - 220
+  - 255
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: Thin conductive wire for mirrored hand strikes.
+  tags:
+    item_type: mirror_knuckle_wire
+    value_bismuth: 32
+    allowed_slot_kinds:
+    - hand
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    chakra_hit_mods:
+    - actions:
+      - mirror_strike
+      match: source
+      use_equipped_slot: true
+      descendants: true
+      op: add
+      value: 2.0
+
+- id: wrist_compass
+  name: Wrist Compass
+  glyph: 'o'
+  color:
+  - 170
+  - 220
+  - 255
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A spinning dial that tunes neighbor activations.
+  tags:
+    item_type: wrist_compass
+    value_bismuth: 30
+    allowed_slot_kinds:
+    - wrist
+    - forearm
+    - hand
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    chakra_hit_mods:
+    - actions:
+      - activate_seed
+      match: illuminated
+      use_equipped_slot: true
+      descendants: true
+      op: add
+      value: 1.0
+
+- id: ring_of_echoes
+  name: Ring of Echoes
+  glyph: 'o'
+  color:
+  - 220
+  - 200
+  - 255
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A resonant ring that amplifies broad activations.
+  tags:
+    item_type: ring_of_echoes
+    value_bismuth: 38
+    allowed_slot_kinds:
+    - thumb
+    - index
+    - middle
+    - ring
+    - pinky
+    chakra_hit_mods:
+    - actions:
+      - activate_all
+      match: illuminated
+      use_equipped_slot: true
+      descendants: true
+      op: add
+      value: 1.0
+
+- id: eye_sigil
+  name: Eye Sigil
+  glyph: '*'
+  color:
+  - 140
+  - 220
+  - 255
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A bright sigil that opens and steadies your ocular flow.
+  tags:
+    item_type: eye_sigil
+    value_bismuth: 44
+    allowed_slot_kinds:
+    - eye
+    - face
+    - skull
+    chakra_unlock_nodes:
+    - head.skull.face.eye
+    - head.skull.face.eye_m
+    chakra_auto_activate_nodes:
+    - head.skull.face.eye
+    - head.skull.face.eye_m
+    equip_mods:
+      view: 1
+    chakra_hit_mods:
+    - actions:
+      - activate_all
+      - activate_seed
+      match: illuminated
+      nodes:
+      - head.skull.face.eye
+      - head.skull.face.eye_m
+      descendants: true
+      op: add
+      value: 1.0
+
+- id: seer_pin
+  name: Seer Pin
+  glyph: '!'
+  color:
+  - 180
+  - 240
+  - 255
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A tiny pin that temporarily unlocks sight-line chakras.
+  tags:
+    item_type: seer_pin
+    value_bismuth: 20
+    allowed_slot_kinds:
+    - head
+    - neck
+    chakra_unlock_nodes:
+    - head.skull.face.eye
+    - head.skull.face.eye_m
+
+- id: silent_gait_strap
+  name: Silent Gait Strap
+  glyph: '_'
+  color:
+  - 160
+  - 200
+  - 160
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A narrow strap for lower-leg slots. Mostly utility, not offense.
+  tags:
+    item_type: silent_gait_strap
+    value_bismuth: 18
+    allowed_slot_kinds:
+    - foot
+    - calf
+    - knee
+    equip_mods:
+      agi: 1
+
 - id: wall
   name: Wall
   glyph: "#"

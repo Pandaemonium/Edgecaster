@@ -28,7 +28,7 @@ import math
 import pygame
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from .base import (
     PanelScene,
@@ -55,6 +55,7 @@ from edgecaster.systems.chakras import (
     CHARGE_MAX_BASE,
     is_branch_root,
 )
+from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.prototypes import resolve_body_schema
 
 if TYPE_CHECKING:
@@ -309,6 +310,7 @@ class ChakraSilhouetteWidget(Widget):
         self,
         *,
         actor: Any = None,
+        state_provider: Optional[Callable[[], ChakraState]] = None,
         on_chakra_click: Optional[callable] = None,
         on_chakra_hover: Optional[callable] = None,
         on_chakra_drag_start: Optional[callable] = None,
@@ -318,6 +320,7 @@ class ChakraSilhouetteWidget(Widget):
     ) -> None:
         super().__init__()
         self.actor = actor
+        self._state_provider = state_provider
         self.on_chakra_click = on_chakra_click
         self.on_chakra_hover = on_chakra_hover
         self.on_chakra_drag_start = on_chakra_drag_start
@@ -1012,6 +1015,13 @@ class ChakraSilhouetteWidget(Widget):
         """Return state override when present, otherwise actor state."""
         if self.state_override is not None:
             return self.state_override
+        if self._state_provider is not None:
+            try:
+                state = self._state_provider()
+                if isinstance(state, ChakraState):
+                    return state
+            except Exception:
+                pass
         if self.actor is None:
             return ChakraState()
         return _get_chakra_state(self.actor)
@@ -1166,9 +1176,15 @@ class PatternPreviewWidget(Widget):
     Updates whenever chakras are toggled, with a smooth morph animation.
     """
 
-    def __init__(self, *, actor: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        actor: Any = None,
+        state_provider: Optional[Callable[[], ChakraState]] = None,
+    ) -> None:
         super().__init__()
         self.actor = actor
+        self._state_provider = state_provider
         self._pattern_surface: Optional[pygame.Surface] = None
         self._dirty: bool = True
         self._anim_time_ms: int = 0
@@ -1257,7 +1273,15 @@ class PatternPreviewWidget(Widget):
             return
 
         body_schema = _get_body_schema(self.actor)
-        chakra_state = self.state_override or _get_chakra_state(self.actor)
+        if self.state_override is not None:
+            chakra_state = self.state_override
+        elif self._state_provider is not None:
+            try:
+                chakra_state = self._state_provider()
+            except Exception:
+                chakra_state = _get_chakra_state(self.actor)
+        else:
+            chakra_state = _get_chakra_state(self.actor)
 
         try:
             # Canonical seed builder used by runtime cast as well.
@@ -1650,6 +1674,7 @@ class ChakraSelectionScene(PanelScene):
         # Create widgets
         self._silhouette = ChakraSilhouetteWidget(
             actor=self._actor,
+            state_provider=self._get_ui_state,
             on_chakra_click=self._on_chakra_click,
             on_chakra_hover=self._on_chakra_hover,
             on_chakra_drag_start=self._on_chakra_drag_start,
@@ -1658,7 +1683,7 @@ class ChakraSelectionScene(PanelScene):
             on_drag_select=self._on_drag_select,
         )
 
-        self._preview = PatternPreviewWidget(actor=self._actor)
+        self._preview = PatternPreviewWidget(actor=self._actor, state_provider=self._get_ui_state)
         self._list_widget = ChakraListWidget(
             items=[],
             get_state=self._get_ui_state,
@@ -1764,7 +1789,7 @@ class ChakraSelectionScene(PanelScene):
         if not self._actor:
             self._list_widget.set_items([])
             return
-        chakra_state = self._get_actor_state()
+        chakra_state = self._get_ui_state()
         body_schema = _get_body_schema(self._actor)
 
         entries: List[ChakraListEntry] = []
@@ -2085,6 +2110,15 @@ class ChakraSelectionScene(PanelScene):
             return self._working_state
         if self._actor is None:
             return ChakraState()
+        # Live Chakra UI should reflect temporary equipped-item effects.
+        # We keep persistent edits on actor.chakra_state, but display uses this
+        # effective overlay so unlock/auto-activate item behavior is visible.
+        try:
+            eff = chakra_items_system.effective_chakra_state(self.game, self._actor)
+            if isinstance(eff, ChakraState):
+                return eff
+        except Exception:
+            pass
         return _get_chakra_state(self._actor)
 
     def _get_actor_state(self) -> ChakraState:

@@ -211,6 +211,7 @@ Key modules (non-exhaustive):
 - systems/scheduling.py: event queue and time advance helpers
 - systems/combat.py: attack resolution + on-death hooks
 - systems/inventory.py + systems/equipment.py: inventory, equip/unequip, stat mods
+- systems/equip_rules.py: item->slot compatibility policy (allowed/blocked slots, prefixes, kinds)
 - systems/pattern_ops.py: pattern placement, activation, and pattern-related effects
 - systems/targeting.py: aim prediction data (used by renderer only to draw)
 - systems/previews.py: non-committing previews for UI
@@ -236,6 +237,24 @@ Key modules (non-exhaustive):
 - systems/lighting.py: light emission from entities (illumination, visibility)
 - systems/chakras.py: body-based chakra system for fractal pattern generation
 - systems/chakra_effects.py: centralized chakra passive-rule evaluation
+- systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers)
+
+Chakra item content tags (entities.yaml):
+- Temporary unlocks:
+  - `chakra_unlock_equipped_slot: true`
+  - `chakra_unlock_nodes: [head.skull.face.eye, ...]`
+- Temporary auto-activation while equipped:
+  - `chakra_auto_activate_equipped_slot: true`
+  - `chakra_auto_activate_nodes: [...]`
+- Per-hit damage modifiers:
+  - `chakra_hit_mods: [{actions, match, use_equipped_slot, descendants, op, value, ...}]`
+  - `match=source|illuminated|either` selects provenance scope.
+  - `op=add|mul|max` defines stacking behavior.
+- Slot constraints:
+  - `allowed_slot_kinds`, `blocked_slot_kinds`
+  - `allowed_slot_prefixes`, `blocked_slot_prefixes`
+  - `allowed_slots`, `blocked_slots`
+  - Slot path delimiters `:` and `/` are both supported at runtime.
 
 ===============================================================================
 6) VISIBILITY + LIGHTING
@@ -364,6 +383,8 @@ UI:
 Chakra pipeline responsibilities (key scripts):
 - edgecaster/systems/chakras.py: core chakra data model (unlock/activate), body schema traversal,
   world-position projection, and seed pattern generation + metadata.
+- edgecaster/systems/chakra_items.py: runtime effective chakra overlays from equipped items
+  (temporary unlocks, auto-activation, and hit-modifier tag parsing).
 - edgecaster/scenes/chakra_scene.py: player-facing UI for selecting/activating chakras, choosing
   the pattern root, and previewing the generated shape (does not apply gameplay effects).
 - edgecaster/game.py (act_chakra): applies the chakra generator to the live rune, aligning the

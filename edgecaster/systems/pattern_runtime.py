@@ -14,6 +14,7 @@ from typing import Any, Optional, Tuple
 
 from edgecaster.patterns import builder
 from edgecaster.patterns.activation import project_vertices
+from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import damage_policy as damage_policy_system
 
 
@@ -179,10 +180,15 @@ def act_chakra(self, actor_id: str) -> None:
         self.log.add("No pattern to modify. Place a terminus first.")
         return
 
-    chakra_state = getattr(actor, "chakra_state", None)
-    if chakra_state is None:
+    stored_chakra_state = getattr(actor, "chakra_state", None)
+    if stored_chakra_state is None:
         self.log.add("No chakra state found.")
         return
+
+    # Runtime chakra view includes temporary equipped-item unlocks/auto-activations.
+    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
+    if chakra_state is None:
+        chakra_state = stored_chakra_state
 
     try:
         from edgecaster.prototypes import resolve_body_schema
@@ -350,6 +356,22 @@ def activation_origin(self, level: Any) -> Optional[Tuple[int, int]]:
     return level.pattern_anchor
 
 
+def _chakra_nodes_for_vertex(v: Any) -> set[str]:
+    """Return chakra provenance node ids attached to a pattern vertex."""
+    tags = getattr(v, "tags", {}) or {}
+    nodes: set[str] = set()
+    single = str(tags.get("chakra_node", "")).strip()
+    if single:
+        nodes.add(single)
+    many = str(tags.get("chakra_nodes", "")).strip()
+    if many:
+        for part in many.split("|"):
+            p = str(part).strip()
+            if p:
+                nodes.add(p)
+    return nodes
+
+
 def activate_pattern_all(self, level: Any, target_vertex: Optional[int]) -> None:
     """Activate vertices within radius of selected target vertex (Activate R)."""
     if not level.pattern.vertices:
@@ -379,13 +401,15 @@ def activate_pattern_all(self, level: Any, target_vertex: Optional[int]) -> None
         per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
 
     # pick vertices in radius
-    active_vertices = []
+    active_vertices: list[tuple[float, float]] = []
+    active_indices: list[int] = []
     r2 = dmg_radius * dmg_radius
-    for v in world_vertices:
+    for idx, v in enumerate(world_vertices):
         dx = v[0] - center[0]
         dy = v[1] - center[1]
         if dx * dx + dy * dy <= r2:
             active_vertices.append(v)
+            active_indices.append(idx)
     str_limit = self._strength_limit()
     if len(active_vertices) > str_limit and self._fizzle_roll(len(active_vertices) - str_limit, str_limit):
         self.log.add("You strain to channel that many vertices at once and lose focus.")
@@ -406,6 +430,15 @@ def activate_pattern_all(self, level: Any, target_vertex: Optional[int]) -> None
 
     level.activation_points = active_vertices
     level.activation_ttl = self.cfg.pattern_overlay_ttl
+
+    # Union of chakra nodes for all illuminated vertices; generic activators
+    # can use this to receive equipped item bonuses.
+    illuminated_nodes: set[str] = set()
+    for idx in active_indices:
+        try:
+            illuminated_nodes.update(_chakra_nodes_for_vertex(level.pattern.vertices[idx]))
+        except Exception:
+            continue
 
     total_vertices = len(active_vertices)
     # Soft-cap rune scaling so very large patterns don't explode damage.
@@ -449,7 +482,14 @@ def activate_pattern_all(self, level: Any, target_vertex: Optional[int]) -> None
             coverage = max(0.0, min(1.0, 1 - (dist - (dmg_radius - half_diag)) / span))
         if coverage <= 0:
             continue
-        dmg = int(per_vertex * effective_vertices * coverage)
+        base_dmg = int(per_vertex * effective_vertices * coverage)
+        dmg = chakra_items_system.apply_damage_modifiers(
+            self,
+            self.player_id,
+            "activate_all",
+            base_dmg,
+            illuminated_nodes=illuminated_nodes,
+        )
         if dmg <= 0:
             continue
         hits += 1
@@ -508,7 +548,10 @@ def activate_pattern_seed_neighbors(self, level: Any, target_vertex: Optional[in
     if mods is not None:
         depth = int(depth) + int(mods.neighbor_depth_bonus)
     active_indices = set(self.neighbor_set_depth(seed_idx, depth))
-    active_vertices = [world_vertices[i] for i in active_indices if 0 <= i < len(world_vertices)]
+    active_entries: list[tuple[int, tuple[float, float]]] = [
+        (i, world_vertices[i]) for i in active_indices if 0 <= i < len(world_vertices)
+    ]
+    active_vertices = [v for _i, v in active_entries]
     level.activation_points = active_vertices
     level.activation_ttl = self.cfg.pattern_overlay_ttl
 
@@ -539,7 +582,7 @@ def activate_pattern_seed_neighbors(self, level: Any, target_vertex: Optional[in
         include_environment=False,
     )
     # Damage hostiles in tiles containing active vertices.
-    for ax, ay in active_vertices:
+    for idx, (ax, ay) in active_entries:
         tile_x = int(round(ax))
         tile_y = int(round(ay))
         target_actor = self._actor_at(level, (tile_x, tile_y))
@@ -554,9 +597,20 @@ def activate_pattern_seed_neighbors(self, level: Any, target_vertex: Optional[in
                 policy,
             )
         ):
-            target_actor.stats.hp -= per_vertex
+            source_nodes = _chakra_nodes_for_vertex(level.pattern.vertices[idx])
+            dmg = chakra_items_system.apply_damage_modifiers(
+                self,
+                self.player_id,
+                "activate_seed",
+                int(per_vertex),
+                source_nodes=source_nodes,
+                illuminated_nodes=source_nodes,
+            )
+            if dmg <= 0:
+                continue
+            target_actor.stats.hp -= dmg
             hits += 1
-            self.log.add(f"Your focus bites {target_actor.name} for {per_vertex}.")
+            self.log.add(f"Your focus bites {target_actor.name} for {dmg}.")
             if target_actor.stats.hp <= 0:
                 self.log.add(f"{target_actor.name} crumbles.")
                 self._kill_actor(level, target_actor, killer_id=self.player_id, killer_is_player=True)
