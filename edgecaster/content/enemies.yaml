@@ -379,6 +379,30 @@
     drum_duration: 40
     drum_tick_reduction: 1
 
+- id: stone_golem
+  name: Stone Golem
+  glyph: "G"
+  color: [160, 140, 120]
+  actions: [brute_move, wait, ground_slam]
+  base_hp: 50
+  base_mana: 0
+  base_attack: 6
+  base_defense: 4
+  speed: 0.5
+  faction: hostile
+  ai: ground_slammer
+  xp: 25
+  tier_min: 4
+  tier_max: 9
+  parent: demon
+  description: Whatever you do, don't take it for granite.
+  tags:
+    stone_golem: true
+    slam_radius: 2
+    slam_prep_ticks: 15
+    slam_damage: 8
+    slam_range: 4
+
 - id: disgraced_noble
   name: Disgraced Noble
   glyph: "n"

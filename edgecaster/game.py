@@ -250,6 +250,8 @@ class LevelState:
     danger_value: float = 0.0
     danger_tier: int = 1
     danger_sources: Dict[str, float] = field(default_factory=dict)
+    # Active deferred (telegraphed) actions pending resolution.
+    deferred_actions: List[Any] = field(default_factory=list)
     # Accumulator for ambient hostile top-up timing (Option 2 roaming spawns).
     ambient_spawn_accum: float = 0.0
 

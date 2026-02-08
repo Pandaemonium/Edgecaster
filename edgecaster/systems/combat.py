@@ -344,6 +344,13 @@ def kill_actor(
     if aid in level.entities:
         del level.entities[aid]
 
+    # Cancel any pending deferred (telegraphed) actions by this actor.
+    try:
+        from edgecaster.systems.deferred import cancel_for_actor
+        cancel_for_actor(level, aid)
+    except Exception:
+        pass
+
     # Slaver death frees chained brutes (they become neutral).
     _free_chained_brutes(game, level, aid, proto_id)
 

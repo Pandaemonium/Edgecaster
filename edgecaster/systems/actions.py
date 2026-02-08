@@ -1864,3 +1864,139 @@ def _action_look(game: Any, actor_id: str, **kwargs: Any) -> None:
     confirm stub (_confirm_look).
     """
     return
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Ground Slam
+# ---------------------------------------------------------------------------
+
+@register_action("ground_slam", label="Ground Slam", speed="slow", cooldown_ticks=40)
+def _action_ground_slam(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred AoE slam targeting the player's current position.
+
+    Phase 1 (prep): telegraph tiles around where the player is standing NOW.
+    Phase 2 (resolve): everything still in the zone takes high damage.
+    The player has ``prep_ticks`` to move out of the danger zone.
+    """
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+
+    # Determine target: snapshot the player's LOCAL position at prep time.
+    try:
+        player = game._player()
+    except Exception:
+        return
+    target_x, target_y = player.pos
+
+    # Parameters (data-driven via actor tags for easy tuning).
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("slam_radius", 2))
+    prep_ticks = int(tags.get("slam_prep_ticks", 15))
+    damage = int(tags.get("slam_damage", 8))
+
+    # Compute diamond-shaped AoE tiles (Manhattan distance <= radius).
+    tiles: list[tuple[int, int]] = []
+    for dx in range(-radius, radius + 1):
+        for dy in range(-radius, radius + 1):
+            if abs(dx) + abs(dy) <= radius:
+                tx, ty = target_x + dx, target_y + dy
+                if level.world.in_bounds(tx, ty):
+                    tiles.append((tx, ty))
+
+    from edgecaster.systems.deferred import DeferredAction
+    from edgecaster.systems import scheduling
+
+    deferred_id = f"{actor_id}_ground_slam_{level.current_tick}"
+
+    def resolve() -> None:
+        # Guard: caster still alive?
+        caster = level.actors.get(actor_id)
+        if caster is None or not getattr(caster, "alive", True):
+            level.deferred_actions = [
+                da for da in getattr(level, "deferred_actions", [])
+                if da.id != deferred_id
+            ]
+            return
+
+        # Remove telegraph record.
+        level.deferred_actions = [
+            da for da in getattr(level, "deferred_actions", [])
+            if da.id != deferred_id
+        ]
+
+        # Damage everything hostile to the caster in the tile set.
+        tile_set = set(tiles)
+        policy = damage_policy_system.DamagePolicy(
+            include_self=False,
+            include_hostile=True,
+            include_neutral=False,
+            include_friendly=False,
+            include_environment=False,
+        )
+        caster_is_player = actor_id == getattr(game, "player_id", "")
+        for tid, target in damage_policy_system.iter_damage_targets(
+            game, level, actor_id, policy,
+            include_actors=True, include_entities=False,
+        ):
+            t_pos = getattr(target, "pos", None)
+            if t_pos is None:
+                continue
+            if (int(t_pos[0]), int(t_pos[1])) not in tile_set:
+                continue
+            if not getattr(target, "alive", True):
+                continue
+
+            try:
+                target.stats.hp -= damage
+                if hasattr(target.stats, "clamp"):
+                    target.stats.clamp()
+            except Exception:
+                continue
+
+            if tid == getattr(game, "player_id", None):
+                game.log.add(f"The ground slam hits you for {damage}!")
+            else:
+                game.log.add(
+                    f"The ground slam hits {getattr(target, 'name', 'something')} for {damage}!"
+                )
+
+            if int(getattr(target.stats, "hp", 0)) <= 0:
+                try:
+                    game._kill_actor(
+                        level,
+                        target,
+                        killer_id=actor_id,
+                        killer_is_player=caster_is_player,
+                    )
+                except Exception:
+                    pass
+
+        game.log.add("The ground shakes violently!")
+
+    # Create deferred action record and register on the level.
+    da = DeferredAction(
+        id=deferred_id,
+        caster_id=actor_id,
+        action_name="ground_slam",
+        label="Ground Slam",
+        tiles=tiles,
+        resolve_tick=level.current_tick + prep_ticks,
+        created_tick=level.current_tick,
+        resolve_fn=resolve,
+        color=(255, 100, 40),
+    )
+    if not hasattr(level, "deferred_actions"):
+        level.deferred_actions = []
+    level.deferred_actions.append(da)
+
+    # Schedule resolution on the level's event heap.
+    scheduling.schedule(game, level, prep_ticks, resolve)
+
+    # Log the telegraph.
+    caster_name = getattr(actor, "name", "Something")
+    game.log.add(f"{caster_name} raises a massive fist!")

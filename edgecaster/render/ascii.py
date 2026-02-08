@@ -3605,6 +3605,51 @@ class AsciiRenderer:
             self.surface.blit(surf, (cx - txt.get_width() // 2, cy - offset - txt.get_height() - 4))
 
 
+    def draw_deferred_overlay(self, game: Game) -> None:
+        """Visual telegraph for pending deferred (slow) actions.
+
+        Draws a pulsing coloured overlay on each tile in the danger zone.
+        Pulse speed increases as resolution approaches.
+        """
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+        deferred_actions = getattr(level, "deferred_actions", None)
+        if not deferred_actions:
+            return
+        ox, oy = self._zone_abs_offset(game)
+        tval = pygame.time.get_ticks() / 1000.0
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        for da in deferred_actions:
+            # Time-remaining fraction (1.0 = just started, 0.0 = about to fire).
+            total = max(1, da.resolve_tick - da.created_tick)
+            remaining = max(0, da.resolve_tick - level.current_tick)
+            frac = remaining / total
+
+            # Pulse frequency ramps up as resolution approaches.
+            freq = 2.0 + 6.0 * (1.0 - frac)
+            pulse = 0.5 + 0.5 * math.sin(tval * freq * 2.0 * math.pi)
+
+            # Base alpha ramps up as resolution nears.
+            base_alpha = int(80 + 80 * (1.0 - frac))
+            alpha = int(base_alpha * (0.5 + 0.5 * pulse))
+
+            r, g, b = da.color
+            tile_color = (r, g, b, alpha)
+            border_color = (r, g, b, int(alpha * 0.6))
+
+            for tx, ty in da.tiles:
+                px = int((tx + ox) * self.tile + self.origin_x)
+                py = int((ty + oy) * self.tile + self.origin_y)
+                rect = pygame.Rect(px, py, self.tile, self.tile)
+                pygame.draw.rect(overlay, tile_color, rect)
+                pygame.draw.rect(overlay, border_color, rect, width=1)
+
+        self.surface.blit(overlay, (0, 0))
+
+
     def draw_activation_overlay(self, game: Game) -> None:
         """Post-activation visuals only (no text).
 
@@ -4651,6 +4696,7 @@ class AsciiRenderer:
         self.draw_action_preview_underlay(game)
         self.draw_push_preview(game)
         self.draw_place_overlay(game)
+        self.draw_deferred_overlay(game)
         self.draw_activation_overlay(game)
         self.draw_aim_overlay(game)
         # Unified entity rendering: items + actors together.

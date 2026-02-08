@@ -73,6 +73,9 @@ def advance_time(
 
     # Cooldowns tick down (always, for active zones)
     cooldown_tick(game, level, delta)
+    # Cleanup deferred (telegraphed) actions whose caster has died.
+    from edgecaster.systems import deferred as _deferred_mod
+    _deferred_mod.tick_deferred_actions(level)
     # Visible blade projectiles (e.g. Throwing Knife) advance every heartbeat.
     throwing_knife_tick(game, level, delta)
 

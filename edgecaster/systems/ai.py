@@ -66,8 +66,10 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return _shackled_brute(game, level, actor)
     if behavior_id == "gory_ascetic":
         return _gory_ascetic(game, level, actor)
+    if behavior_id == "ground_slammer":
+        return _ground_slammer(game, level, actor)
 
-    # Default: generic “walk toward player and bump” brain.
+    # Default: generic "walk toward player and bump" brain.
     return _generic_walk_toward(game, level, actor)
 
 
@@ -422,3 +424,76 @@ def _war_drummer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
                     return ("war_drum", {})
 
     return _generic_walk_toward(game, level, actor)
+
+
+def _ground_slammer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """Ground slammer: slow, powerful AoE.
+
+    Uses ground_slam when off cooldown and within range; otherwise walks
+    toward the player using brute_move.
+    """
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    player = _get_player_actor(game)
+    if player is None:
+        return ("wait", {})
+
+    # Reputation-driven hostility check.
+    try:
+        if not reputation_system.is_hostile(game, actor, player):
+            return ("wait", {}) if "wait" in available else (available[0], {})
+    except Exception:
+        pass
+
+    a_abs = _abs_pos(game, level, actor)
+    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+    if a_abs is None or p_abs is None:
+        return ("wait", {})
+    ax, ay = a_abs
+    px, py = p_abs
+    dist = abs(px - ax) + abs(py - ay)
+
+    # Read slam range from tags (default slightly > radius so slam can catch player).
+    tags = getattr(actor, "tags", None) or {}
+    slam_range = int(tags.get("slam_range", 4))
+
+    # Use ground_slam if off cooldown and within range.
+    if "ground_slam" in available and dist <= slam_range:
+        try:
+            cd = int(getattr(actor, "cooldowns", {}).get("ground_slam", 0))
+        except Exception:
+            cd = 0
+        if cd <= 0:
+            return ("ground_slam", {})
+
+    # Otherwise walk toward player using brute_move (slow) or regular move.
+    move_action = "brute_move" if "brute_move" in available else ("move" if "move" in available else None)
+    if move_action is None:
+        return ("wait", {}) if "wait" in available else (available[0], {})
+
+    dx = px - ax
+    dy = py - ay
+    if abs(dx) + abs(dy) == 1:
+        return (move_action, {"dx": dx, "dy": dy})
+
+    rng = getattr(game, "rng", None)
+    if rng is None:
+        import random as rng  # type: ignore
+
+    candidates = []
+    if dx > 0:
+        candidates.append((1, 0))
+    if dx < 0:
+        candidates.append((-1, 0))
+    if dy > 0:
+        candidates.append((0, 1))
+    if dy < 0:
+        candidates.append((0, -1))
+
+    if not candidates:
+        return ("wait", {}) if "wait" in available else (available[0], {})
+
+    step = rng.choice(candidates)  # type: ignore[attr-defined]
+    return (move_action, {"dx": step[0], "dy": step[1]})
