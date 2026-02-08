@@ -80,6 +80,22 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return _deferred_attacker(game, level, actor, "devouring_lunge", "lunge_range", 3)
     if behavior_id == "slaver_lasher":
         return _deferred_attacker(game, level, actor, "lash", "lash_range", 3)
+    if behavior_id == "mana_viper_striker":
+        return _deferred_attacker(game, level, actor, "lash", "lash_range", 3)
+    if behavior_id == "dandy_haymaker":
+        return _deferred_attacker(game, level, actor, "haymaker", "haymaker_range", 3)
+    if behavior_id == "venom_stalker":
+        return _deferred_attacker(game, level, actor, "venom_snap", "venom_range", 3)
+    if behavior_id == "cinder_pouncer":
+        return _deferred_attacker(game, level, actor, "ember_pounce", "pounce_range", 4)
+    if behavior_id == "bone_lancer":
+        return _deferred_attacker(game, level, actor, "bone_lance", "lance_range", 4)
+    if behavior_id == "fire_breather":
+        return _deferred_attacker(game, level, actor, "fire_breath", "fire_breath_range", 5)
+    if behavior_id == "circus_member":
+        return _circus_member(game, level, actor)
+    if behavior_id == "furious_ringmaster":
+        return _furious_ringmaster(game, level, actor)
 
     # Default: generic "walk toward player and bump" brain.
     return _generic_walk_toward(game, level, actor)
@@ -528,6 +544,99 @@ def _deferred_attacker(
 
     # Fall back to movement.
     return _walk_toward(game, level, actor, available, px - ax, py - ay)
+
+
+def _circus_member(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """Circus companion AI: stay near ringmaster, otherwise fight normally.
+
+    The hard leash is enforced in movement dispatch (`Game._handle_move_or_attack`);
+    this behavior adds intent-level cohesion so the troupe moves together.
+    """
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    tags = getattr(actor, "tags", None) or {}
+    master_id = tags.get("circus_ringmaster_id")
+    leash = int(tags.get("circus_leash_range", 15) or 15)
+
+    master = level.actors.get(str(master_id)) if master_id else None
+    if master is not None and getattr(master, "alive", True):
+        a_abs = _abs_pos(game, level, actor)
+        m_abs = _abs_pos(game, level, master)
+        if a_abs is not None and m_abs is not None:
+            ax, ay = a_abs
+            mx, my = m_abs
+            dist = max(abs(mx - ax), abs(my - ay))
+            # If too far, prioritize regrouping over attacking.
+            if dist > leash:
+                return _walk_toward(game, level, actor, available, mx - ax, my - ay)
+
+    # If in cohesion, use any configured deferred attack.
+    deferred_order = [
+        ("ground_slam", "slam_range", 4),
+        ("chain_smash", "chain_smash_range", 4),
+        ("haymaker", "haymaker_range", 3),
+        ("lash", "lash_range", 3),
+        ("ember_pounce", "pounce_range", 4),
+        ("venom_snap", "venom_range", 3),
+        ("bone_lance", "lance_range", 4),
+        ("bear_maul", "maul_range", 3),
+        ("fire_breath", "fire_breath_range", 5),
+    ]
+    for action_name, range_tag, default_range in deferred_order:
+        if action_name in available:
+            return _deferred_attacker(
+                game,
+                level,
+                actor,
+                action_name,
+                range_tag,
+                default_range,
+            )
+
+    # Otherwise behave like a standard hostile.
+    return _generic_walk_toward(game, level, actor)
+
+
+def _furious_ringmaster(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """Ringmaster AI: keep the circus pack together and crack the whip."""
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    tags = getattr(actor, "tags", None) or {}
+    leash = int(tags.get("circus_leash_range", 15) or 15)
+    member_ids = list(tags.get("circus_member_ids", []) or [])
+
+    r_abs = _abs_pos(game, level, actor)
+    if r_abs is not None and member_ids:
+        rx, ry = r_abs
+        farthest_dx = 0
+        farthest_dy = 0
+        farthest_dist = 0
+        for mid in member_ids:
+            mate = level.actors.get(str(mid))
+            if mate is None or not getattr(mate, "alive", True):
+                continue
+            m_abs = _abs_pos(game, level, mate)
+            if m_abs is None:
+                continue
+            mx, my = m_abs
+            d = max(abs(mx - rx), abs(my - ry))
+            if d > farthest_dist:
+                farthest_dist = d
+                farthest_dx = mx - rx
+                farthest_dy = my - ry
+        # If someone drifted too far, step toward them to re-center the troupe.
+        if farthest_dist > leash:
+            return _walk_toward(game, level, actor, available, farthest_dx, farthest_dy)
+
+    # Prefer whip attack when in range and off cooldown.
+    if "lash" in available:
+        return _deferred_attacker(game, level, actor, "lash", "lash_range", 3)
+    # Fall back to generic hostile movement.
+    return _generic_walk_toward(game, level, actor)
 
 
 def _walk_toward(

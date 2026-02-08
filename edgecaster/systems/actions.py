@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import time
 from typing import Any, Callable, Dict, Literal, Protocol
 
@@ -2018,6 +2019,8 @@ def _setup_deferred_aoe(
     color: tuple[int, int, int],
     log_prep: str,
     log_resolve: str,
+    damage_policy: damage_policy_system.DamagePolicy | None = None,
+    include_entities: bool = False,
 ) -> None:
     """Shared boilerplate for any deferred AoE action.
 
@@ -2052,7 +2055,7 @@ def _setup_deferred_aoe(
         ]
 
         tile_set = set(tiles)
-        policy = damage_policy_system.DamagePolicy(
+        policy = damage_policy or damage_policy_system.DamagePolicy(
             include_self=False,
             include_hostile=True,
             include_neutral=False,
@@ -2062,7 +2065,7 @@ def _setup_deferred_aoe(
         caster_is_player = actor_id == getattr(game, "player_id", "")
         for tid, target in damage_policy_system.iter_damage_targets(
             game, level, actor_id, policy,
-            include_actors=True, include_entities=False,
+            include_actors=True, include_entities=include_entities,
         ):
             t_pos = getattr(target, "pos", None)
             if t_pos is None:
@@ -2085,11 +2088,14 @@ def _setup_deferred_aoe(
                 )
             if int(getattr(target.stats, "hp", 0)) <= 0:
                 try:
-                    game._kill_actor(
-                        level, target,
-                        killer_id=actor_id,
-                        killer_is_player=caster_is_player,
-                    )
+                    if tid in getattr(level, "actors", {}):
+                        game._kill_actor(
+                            level, target,
+                            killer_id=actor_id,
+                            killer_is_player=caster_is_player,
+                        )
+                    elif tid in getattr(level, "entities", {}):
+                        del level.entities[tid]
                 except Exception:
                     pass
 
@@ -2112,6 +2118,46 @@ def _setup_deferred_aoe(
 
     scheduling.schedule(game, level, prep_ticks, resolve)
     game.log.add(log_prep.format(name=getattr(actor, "name", "Something")))
+
+
+def _cone_tiles_toward_target(
+    level: Any,
+    origin: tuple[int, int],
+    target: tuple[int, int],
+    *,
+    max_range: int,
+    half_angle_deg: float,
+) -> list[tuple[int, int]]:
+    """Return local tiles in a forward cone from origin toward target."""
+    ox, oy = int(origin[0]), int(origin[1])
+    tx, ty = int(target[0]), int(target[1])
+    dx = float(tx - ox)
+    dy = float(ty - oy)
+    mag = math.hypot(dx, dy)
+    if mag <= 1e-6:
+        # If target overlaps origin, bias "up" for deterministic telegraph.
+        dx, dy, mag = 0.0, -1.0, 1.0
+    dir_x = dx / mag
+    dir_y = dy / mag
+    cos_half = math.cos(math.radians(float(half_angle_deg)))
+
+    out: list[tuple[int, int]] = []
+    r = int(max(1, max_range))
+    for y in range(oy - r, oy + r + 1):
+        for x in range(ox - r, ox + r + 1):
+            if x == ox and y == oy:
+                continue
+            if not level.world.in_bounds(x, y):
+                continue
+            vx = float(x - ox)
+            vy = float(y - oy)
+            dist = math.hypot(vx, vy)
+            if dist > float(r) or dist <= 1e-6:
+                continue
+            dot = (vx * dir_x + vy * dir_y) / dist
+            if dot >= cos_half:
+                out.append((x, y))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2389,4 +2435,180 @@ def _action_lash(game: Any, actor_id: str, **kwargs: Any) -> None:
         damage=dmg, prep_ticks=prep, color=(200, 160, 100),
         log_prep="{name} draws back its whip!",
         log_resolve="The whip cracks!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Venom Snap (Venomous Snake)
+# ---------------------------------------------------------------------------
+
+@register_action("venom_snap", label="Venom Snap", speed="slow", cooldown_ticks=18)
+def _action_venom_snap(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred bite strike on the player's position. Radius 1."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("venom_radius", 1))
+    prep = int(tags.get("venom_prep_ticks", 6))
+    dmg = int(tags.get("venom_damage", 4))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="venom_snap", label="Venom Snap", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(90, 210, 90),
+        log_prep="{name} coils and hisses!",
+        log_resolve="Fangs strike with venomous speed!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Ember Pounce (Cinder Hound)
+# ---------------------------------------------------------------------------
+
+@register_action("ember_pounce", label="Ember Pounce", speed="slow", cooldown_ticks=22)
+def _action_ember_pounce(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred pounce strike on the player's position. Radius 1."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("pounce_radius", 1))
+    prep = int(tags.get("pounce_prep_ticks", 7))
+    dmg = int(tags.get("pounce_damage", 6))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="ember_pounce", label="Ember Pounce", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(255, 120, 40),
+        log_prep="{name} crouches low, embers sparking!",
+        log_resolve="A blazing pounce tears through the air!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Bone Lance (Bone Weaver)
+# ---------------------------------------------------------------------------
+
+@register_action("bone_lance", label="Bone Lance", speed="slow", cooldown_ticks=24)
+def _action_bone_lance(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Deferred piercing strike on the player's position. Radius 1."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    radius = int(tags.get("lance_radius", 1))
+    prep = int(tags.get("lance_prep_ticks", 9))
+    dmg = int(tags.get("lance_damage", 7))
+    tx, ty = player.pos
+
+    tiles = [
+        (tx + dx, ty + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius and level.world.in_bounds(tx + dx, ty + dy)
+    ]
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="bone_lance", label="Bone Lance", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(220, 220, 220),
+        log_prep="{name} raises a shard of white bone!",
+        log_resolve="A lance of bone erupts forward!",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deferred action: Fire Breath (Fire Breather)
+# ---------------------------------------------------------------------------
+
+@register_action("fire_breath", label="Fire Breath", speed="slow", cooldown_ticks=30)
+def _action_fire_breath(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Telegraphed cone attack that scorches everything in front of the caster."""
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", True):
+        return
+    try:
+        player = game._player()
+    except Exception:
+        return
+
+    tags = getattr(actor, "tags", None) or {}
+    prep = int(tags.get("fire_breath_prep_ticks", 10))
+    dmg = int(tags.get("fire_breath_damage", 7))
+    cone_range = int(tags.get("fire_breath_range", 5))
+    half_angle = float(tags.get("fire_breath_half_angle_deg", 30.0))
+
+    # Snapshot the player's current position and build a forward cone telegraph.
+    tiles = _cone_tiles_toward_target(
+        level,
+        origin=(int(actor.pos[0]), int(actor.pos[1])),
+        target=(int(player.pos[0]), int(player.pos[1])),
+        max_range=cone_range,
+        half_angle_deg=half_angle,
+    )
+    if not tiles:
+        return
+
+    # Fire breath is indiscriminate: it damages all damageable actors/entities
+    # in the cone, excluding the caster.
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=True,
+        include_friendly=True,
+        include_environment=True,
+    )
+    _setup_deferred_aoe(
+        game, actor_id,
+        action_name="fire_breath", label="Fire Breath", tiles=tiles,
+        damage=dmg, prep_ticks=prep, color=(255, 110, 40),
+        log_prep="{name} inhales and its throat glows orange!",
+        log_resolve="A cone of flame roars outward!",
+        damage_policy=policy,
+        include_entities=True,
     )

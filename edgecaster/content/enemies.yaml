@@ -202,14 +202,14 @@
   name: Mana Viper
   glyph: V
   color: [140, 200, 255]
-  actions: [move, wait]
+  actions: [move, wait, lash]
   base_hp: 20
   base_mana: 6
   base_attack: 4
   base_defense: 1
   speed: 1.2
   faction: hostile
-  ai: skirmisher
+  ai: mana_viper_striker
   xp: 12
   tier_min: 3
   tier_max: 7
@@ -217,6 +217,10 @@
   description: He'll vipe the mana right outta ya!
   tags:
     mana_viper: true
+    lash_radius: 1
+    lash_prep_ticks: 7
+    lash_damage: 6
+    lash_range: 3
 
 - id: caged_demon
   name: Caged Demon
@@ -330,18 +334,164 @@
     chain_smash_damage: 12
     chain_smash_range: 4
 
+- id: furious_ringmaster
+  name: Furious Ringmaster
+  glyph: "R"
+  color: [230, 40, 40]
+  actions: [move, wait, lash]
+  base_hp: 24
+  base_mana: 0
+  base_attack: 5
+  base_defense: 2
+  speed: 1.0
+  faction: hostile
+  ai: furious_ringmaster
+  xp: 20
+  tier_min: 6
+  tier_max: 9
+  parent: humanoid
+  description: Master of ceremonies, now consumed by fury.
+  tags:
+    circus_ringmaster: true
+    circus_leash_range: 15
+    lash_radius: 1
+    lash_prep_ticks: 8
+    lash_damage: 6
+    lash_range: 4
+
+- id: angry_elephant
+  name: Angry Elephant
+  glyph: "E"
+  color: [160, 160, 160]
+  actions: [brute_move, wait, ground_slam]
+  base_hp: 38
+  base_mana: 0
+  base_attack: 8
+  base_defense: 3
+  speed: 0.7
+  faction: hostile
+  ai: circus_member
+  xp: 24
+  tier_min: 6
+  tier_max: 10
+  parent: beast
+  description: A huge beast in painted war colors, stampeding in rage.
+  tags:
+    circus_member: true
+    no_random_spawn: true
+    slam_radius: 2
+    slam_prep_ticks: 14
+    slam_damage: 8
+    slam_range: 4
+
+- id: angry_clown
+  name: Angry Clown
+  glyph: "C"
+  color: [255, 70, 120]
+  actions: [move, wait, haymaker]
+  base_hp: 14
+  base_mana: 0
+  base_attack: 4
+  base_defense: 1
+  speed: 1.1
+  faction: hostile
+  ai: circus_member
+  xp: 12
+  tier_min: 5
+  tier_max: 8
+  parent: humanoid
+  description: Smiles painted on, rage genuine.
+  tags:
+    circus_member: true
+    no_random_spawn: true
+    haymaker_radius: 1
+    haymaker_prep_ticks: 8
+    haymaker_damage: 6
+    haymaker_range: 3
+
+- id: angry_acrobat
+  name: Angry Acrobat
+  glyph: "A"
+  color: [120, 200, 255]
+  actions: [move, wait]
+  base_hp: 11
+  base_mana: 0
+  base_attack: 4
+  base_defense: 1
+  speed: 1.6
+  faction: hostile
+  ai: circus_member
+  xp: 11
+  tier_min: 5
+  tier_max: 8
+  parent: humanoid
+  description: Tumbling from target to target with terrifying precision.
+  tags:
+    circus_member: true
+    no_random_spawn: true
+
+- id: angry_human_cannonball
+  name: Angry Human Cannonball
+  glyph: "O"
+  color: [255, 180, 80]
+  actions: [move, wait, ember_pounce]
+  base_hp: 18
+  base_mana: 0
+  base_attack: 6
+  base_defense: 1
+  speed: 1.2
+  faction: hostile
+  ai: circus_member
+  xp: 17
+  tier_min: 6
+  tier_max: 9
+  parent: humanoid
+  description: Launched by fury, landing like a wrecking ball.
+  tags:
+    circus_member: true
+    no_random_spawn: true
+    pounce_radius: 1
+    pounce_prep_ticks: 7
+    pounce_damage: 7
+    pounce_range: 4
+
+- id: angry_bearded_lady
+  name: Angry Bearded Lady
+  glyph: "L"
+  color: [200, 160, 220]
+  actions: [move, wait, lash]
+  base_hp: 20
+  base_mana: 0
+  base_attack: 5
+  base_defense: 2
+  speed: 1.0
+  faction: hostile
+  ai: circus_member
+  xp: 15
+  tier_min: 6
+  tier_max: 9
+  parent: humanoid
+  description: Whips through the air with theatrical menace.
+  tags:
+    circus_member: true
+    no_random_spawn: true
+    lash_radius: 1
+    lash_prep_ticks: 8
+    lash_damage: 5
+    lash_range: 3
+
 - id: devilish_dandy
   name: Devilish Dandy
   glyph: "d"
   color: [255, 80, 170]
-  actions: [move, wait]
+  actions: [move, wait, haymaker]
   base_hp: 30
   base_mana: 0
   base_attack: 7
   base_defense: 1
   speed: 1.1
   faction: hostile
-  ai: skirmisher
+  ai: dandy_haymaker
   xp: 13
   tier_min: 4
   tier_max: 8
@@ -350,6 +500,10 @@
   drop_items: ["sage_cap"]
   tags:
     devilish_dandy: true
+    haymaker_radius: 1
+    haymaker_prep_ticks: 8
+    haymaker_damage: 7
+    haymaker_range: 3
 
 - id: gory_ascetic
   name: Gory Ascetic
@@ -695,14 +849,14 @@
   name: Venomous Snake
   glyph: S
   color: [80, 160, 80]
-  actions: [move, wait]
+  actions: [move, wait, venom_snap]
   base_hp: 3
   base_mana: 0
   base_attack: 2
   base_defense: 0
   speed: 1.1
   faction: hostile
-  ai: skirmisher
+  ai: venom_stalker
   xp: 5
   parent: beast
   description: This one really gets you in the amygdala.
@@ -710,6 +864,10 @@
     venomous_snake: true
     biome_spawn: [TROPICAL_FOREST, TROPICAL_RAINFOREST, SAVANNA]
     poison: true
+    venom_radius: 1
+    venom_prep_ticks: 6
+    venom_damage: 4
+    venom_range: 3
 
 # --- Corruption Outposts ---
 
@@ -1029,18 +1187,43 @@
     ember_priest: true
     biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
 
+- id: fire_breather
+  name: Fire Breather
+  glyph: F
+  color: [255, 140, 60]
+  actions: [move, wait, fire_breath]
+  base_hp: 16
+  base_mana: 0
+  base_attack: 4
+  base_defense: 1
+  speed: 1.0
+  faction: demon_cult_flame
+  ai: fire_breather
+  xp: 16
+  tier_min: 6
+  tier_max: 8
+  parent: humanoid
+  description: Trained to weaponize breath and spite in equal measure.
+  tags:
+    fire_breather: true
+    biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
+    fire_breath_prep_ticks: 10
+    fire_breath_damage: 7
+    fire_breath_range: 5
+    fire_breath_half_angle_deg: 30
+
 - id: cinder_hound
   name: Cinder Hound
   glyph: h
   color: [200, 80, 40]
-  actions: [move, wait]
+  actions: [move, wait, ember_pounce]
   base_hp: 12
   base_mana: 0
   base_attack: 4
   base_defense: 1
   speed: 1.4
   faction: demon_cult_flame
-  ai: skirmisher
+  ai: cinder_pouncer
   xp: 13
   tier_min: 6
   tier_max: 8
@@ -1050,6 +1233,10 @@
     cinder_hound: true
     biome_spawn: [SCORCHED, SUBTROPICAL_DESERT]
     pack_animal: true
+    pounce_radius: 1
+    pounce_prep_ticks: 7
+    pounce_damage: 6
+    pounce_range: 4
 
 - id: pyroclast
   name: Pyroclast
@@ -1225,14 +1412,14 @@
   name: Bone Weaver
   glyph: B
   color: [240, 230, 220]
-  actions: [move, wait]
+  actions: [move, wait, bone_lance]
   base_hp: 16
   base_mana: 6
   base_attack: 4
   base_defense: 3
   speed: 0.9
   faction: demon_cult_flesh
-  ai: skirmisher
+  ai: bone_lancer
   xp: 16
   tier_min: 7
   tier_max: 9
@@ -1241,6 +1428,10 @@
   tags:
     bone_weaver: true
     biome_spawn: [CORRUPTED_FOREST, MARSH]
+    lance_radius: 1
+    lance_prep_ticks: 9
+    lance_damage: 7
+    lance_range: 4
 
 - id: maw_beast
   name: Maw Beast

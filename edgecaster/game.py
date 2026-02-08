@@ -2526,6 +2526,43 @@ class Game:
                         if id == self.player_id:
                             self.log.add("The chain tugs you back.")
                         return
+
+            # Angry circus pack leash: members remain near ringmaster and
+            # ringmaster avoids straying too far from troupe members.
+            if tags.get("circus_group_id"):
+                leash = int(tags.get("circus_leash_range", 15) or 15)
+                ringmaster_id = tags.get("circus_ringmaster_id")
+                # Member rule: cannot increase distance past leash from ringmaster.
+                if ringmaster_id:
+                    ringmaster = level.actors.get(str(ringmaster_id))
+                    if ringmaster is None or not getattr(ringmaster, "alive", False):
+                        # Group leader gone: drop leash tags and continue.
+                        tags.pop("circus_ringmaster_id", None)
+                        tags.pop("circus_group_id", None)
+                        tags.pop("circus_leash_range", None)
+                        actor.tags = tags
+                    else:
+                        rx, ry = ringmaster.pos
+                        cur_d = max(abs(x - rx), abs(y - ry))
+                        new_d = max(abs(nx - rx), abs(ny - ry))
+                        if new_d > leash and new_d > cur_d:
+                            if id == self.player_id:
+                                self.log.add("The ringmaster's whistle calls the troupe back.")
+                            return
+                else:
+                    # Ringmaster rule: keep troupe members within leash.
+                    member_ids = list(tags.get("circus_member_ids", []) or [])
+                    for mid in member_ids:
+                        mate = level.actors.get(str(mid))
+                        if mate is None or not getattr(mate, "alive", False):
+                            continue
+                        mx, my = mate.pos
+                        cur_d = max(abs(x - mx), abs(y - my))
+                        new_d = max(abs(nx - mx), abs(ny - my))
+                        if new_d > leash and new_d > cur_d:
+                            if id == self.player_id:
+                                self.log.add("You can't abandon your circus troupe.")
+                            return
         except Exception:
             pass
 
