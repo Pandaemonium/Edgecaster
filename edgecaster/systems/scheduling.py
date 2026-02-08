@@ -73,6 +73,8 @@ def advance_time(
 
     # Cooldowns tick down (always, for active zones)
     cooldown_tick(game, level, delta)
+    # Visible blade projectiles (e.g. Throwing Knife) advance every heartbeat.
+    throwing_knife_tick(game, level, delta)
 
     if not apply_player_systems:
         return
@@ -516,6 +518,18 @@ def choking_vines_tick(game: "Game", level: "LevelState", delta: int) -> None:
         game._commit_pattern_state_from_level(level)
     except Exception:
         pass
+
+
+def throwing_knife_tick(game: "Game", level: "LevelState", delta: int) -> None:
+    """Advance active thrown-knife projectiles for this level."""
+    if delta <= 0:
+        return
+    try:
+        from edgecaster.systems import blade_runtime as blade_runtime_system
+        blade_runtime_system.advance_thrown_knives(game, level, delta)
+    except Exception:
+        # Projectile FX must never hard-fail the heartbeat scheduler.
+        return
 
 
 def _step_choking_vines(game: "Game", level: "LevelState", state: dict) -> None:

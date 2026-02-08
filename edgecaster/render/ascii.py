@@ -4042,6 +4042,72 @@ class AsciiRenderer:
 
         self.surface.blit(overlay, (0, 0))
 
+    def draw_throwing_knife_overlay(self, game: Game) -> None:
+        """Draw active thrown-knife projectiles as spinning rune-like blades."""
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+        knives = list(getattr(level, "thrown_knives_state", []) or [])
+        if not knives:
+            return
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # Keep knife geometry crisp and readable at all zoom levels:
+        # use anti-aliased 1px lines instead of tile-scaled thick strokes.
+        # This avoids dense edge overlap when zoomed in.
+        tip_r = 1 if self.tile >= 20 else 2
+
+        for knife in knives:
+            try:
+                cx = float(knife.get("x", 0.0))
+                cy = float(knife.get("y", 0.0))
+                spin = float(knife.get("spin", 0.0))
+                heading = float(knife.get("heading", 0.0))
+                scale = float(knife.get("shape_scale_tiles", 0.75))
+                verts = list(knife.get("shape_verts", []) or [])
+                segs = list(knife.get("shape_segs", []) or [])
+                travelled = float(knife.get("distance", 0.0))
+                max_dist = max(1e-6, float(knife.get("max_distance", 9.0)))
+            except Exception:
+                continue
+
+            if not verts:
+                continue
+
+            # Fade as the knife approaches its range cap, with a subtle pulse.
+            life = max(0.0, min(1.0, 1.0 - (travelled / max_dist)))
+            pulse = 0.78 + 0.22 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 120.0))
+            alpha = int(max(30, min(255, 230.0 * life * pulse)))
+            halo_col = (120, 240, 255, int(max(18, alpha * 0.42)))
+            core_col = (185, 250, 255, alpha)
+
+            ang = heading + spin
+            c = math.cos(ang)
+            s = math.sin(ang)
+            screen_pts: list[tuple[int, int]] = []
+            for vx, vy in verts:
+                lx = float(vx) * scale
+                ly = float(vy) * scale
+                wx = cx + (lx * c - ly * s)
+                wy = cy + (lx * s + ly * c)
+                px, py = self.abs_tile_to_screen_px(wx, wy)
+                screen_pts.append((int(round(px)), int(round(py))))
+
+            for a_idx, b_idx in segs:
+                if a_idx < 0 or b_idx < 0 or a_idx >= len(screen_pts) or b_idx >= len(screen_pts):
+                    continue
+                p0 = screen_pts[a_idx]
+                p1 = screen_pts[b_idx]
+                # Very subtle glow under-pass, then crisp core.
+                pygame.draw.aaline(overlay, halo_col, p0, p1)
+                pygame.draw.aaline(overlay, core_col, p0, p1)
+
+            # Bright center to make the projectile readable at distance.
+            cpx, cpy = self.abs_tile_to_screen_px(cx, cy)
+            pygame.draw.circle(overlay, core_col, (int(round(cpx)), int(round(cpy))), tip_r)
+
+        self.surface.blit(overlay, (0, 0))
+
     def draw_sparkle_overlay(self, game: Game) -> None:
         """
         Visual overlay for Sparkle:
@@ -4579,6 +4645,7 @@ class AsciiRenderer:
         self.draw_seal_trial_overlay(game)
         self.draw_pattern_overlay(game)
         self.draw_choking_vines_overlay(game)
+        self.draw_throwing_knife_overlay(game)
         self.draw_sparkle_overlay(game)
         self.draw_lightning_overlay(game)
         self.draw_action_preview_underlay(game)

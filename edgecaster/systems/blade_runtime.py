@@ -16,6 +16,7 @@ import math
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Sequence, Tuple
 
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.patterns import builder
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -88,6 +89,28 @@ def blade_slots(game: "Game", actor_id: str) -> int:
     except Exception:
         int_stat = 0
     return max(1, int(int_stat))
+
+
+def _effective_stat(game: "Game", actor_id: str, stat_key: str) -> int:
+    """Best-effort stat lookup for action scaling.
+
+    V1 primarily needs this for Blade-class player scaling (AGI spread, RES cooldown).
+    For non-player actors we fall back to any explicit tag value.
+    """
+    try:
+        if actor_id == getattr(game, "player_id", None) and hasattr(game, "effective_character_stats"):
+            estats = game.effective_character_stats() or {}
+            return int(estats.get(stat_key, 0) or 0)
+    except Exception:
+        pass
+    try:
+        actor = getattr(game._level(), "actors", {}).get(actor_id)
+        if actor is not None:
+            tags = getattr(actor, "tags", {}) or {}
+            return int(tags.get(stat_key, 0) or 0)
+    except Exception:
+        pass
+    return 0
 
 
 def ensure_actor_blade_state(game: "Game", actor_id: str) -> BladeState:
@@ -453,3 +476,299 @@ def act_blade_attack(
     if hits <= 0 and actor_id == getattr(game, "player_id", None):
         game.log.add("Your cleave finds no target.")
     return True
+
+
+def act_throwing_knife(
+    game: "Game",
+    actor_id: str,
+    *,
+    target_pos: Optional[Tuple[int, int]] = None,
+) -> bool:
+    """Spawn one visible spinning knife projectile that advances per-heartbeat.
+
+    The projectile:
+    - travels at ~3 tiles / 10 heartbeats,
+    - has a max range of ~9 tiles,
+    - uses blade-generators to draw a rune-like knife silhouette,
+    - damages hostile actors that the flight segment intersects.
+    """
+    level = game._level()
+    actor = level.actors.get(actor_id)
+    if actor is None or not getattr(actor, "alive", False):
+        return False
+
+    state = ensure_actor_blade_state(game, actor_id)
+    snap = blade_stat_snapshot(game, actor_id)
+    actor_abs = _actor_abs(game, level, actor)
+    target_abs = _target_abs_from_local(game, target_pos)
+    if target_abs is None:
+        candidates = list(_iter_hostile_actor_targets(game, actor_id))
+        # Fallback: pick nearest hostile to actor if no explicit aim tile supplied.
+        nearest = None
+        best = 1e9
+        for cand in candidates:
+            _, _, tx, ty = cand
+            d = _distance(actor_abs, (tx, ty))
+            if d < best:
+                best = d
+                nearest = (tx, ty)
+        target_abs = nearest
+
+    if target_abs is None:
+        if actor_id == getattr(game, "player_id", None):
+            game.log.add("No hostile target for throwing knife.")
+        return True
+
+    start_x = float(actor_abs[0]) + 0.5
+    start_y = float(actor_abs[1]) + 0.5
+    target_x = float(target_abs[0]) + 0.5
+    target_y = float(target_abs[1]) + 0.5
+    dx = target_x - start_x
+    dy = target_y - start_y
+    mag = math.hypot(dx, dy)
+    if mag <= 1e-6:
+        dx, dy = 1.0, 0.0
+        mag = 1.0
+    ux = dx / mag
+    uy = dy / mag
+    heading = math.atan2(uy, ux)
+
+    agi = _effective_stat(game, actor_id, "agi")
+    res = _effective_stat(game, actor_id, "res")
+    gen_count = len(list(getattr(state, "generators", []) or []))
+
+    # Tunables for visible projectile behavior.
+    speed_tiles_per_heartbeat = 0.30  # ~3 tiles / 10 heartbeats
+    max_range = 9.0
+    hit_radius = 0.55  # in tile units from path segment centerline
+    base_damage = max(4, int(round(float(snap.slash_damage) * 0.85)))
+    shape_verts, shape_segs = _build_blade_shape_preview(
+        game,
+        list(getattr(state, "generators", []) or []),
+        max_segments=1200,
+    )
+    shape_scale_tiles = max(0.45, min(1.2, 0.55 + 0.05 * float(gen_count)))
+    spin_rate = float(math.radians(34.0 + 5.0 * float(agi)))
+
+    knife = {
+        "caster_id": str(actor_id),
+        "x": float(start_x),
+        "y": float(start_y),
+        "vx": float(ux * speed_tiles_per_heartbeat),
+        "vy": float(uy * speed_tiles_per_heartbeat),
+        "heading": float(heading),
+        "spin": 0.0,
+        "spin_rate": float(spin_rate),
+        "shape_verts": list(shape_verts),
+        "shape_segs": list(shape_segs),
+        "shape_scale_tiles": float(shape_scale_tiles),
+        "distance": 0.0,
+        "max_distance": float(max_range),
+        "damage": int(base_damage),
+        "hit_radius": float(hit_radius),
+        "hit_ids": [],
+    }
+
+    active = getattr(level, "thrown_knives_state", None)
+    if not isinstance(active, list):
+        active = []
+    active.append(knife)
+    level.thrown_knives_state = active
+
+    # Dynamic cooldown (RES lowers cooldown). We set it here so static registry
+    # cooldown can remain 0 and not overwrite the scaled value.
+    cooldown = max(10, int(round(34 * (1.0 - min(0.55, 0.04 * float(res))))))
+    try:
+        actor.cooldowns["throwing_knife"] = cooldown
+    except Exception:
+        pass
+
+    if actor_id == getattr(game, "player_id", None):
+        game.log.add("You hurl a spinning blade of runes.")
+
+    return True
+
+
+def _build_blade_shape_preview(
+    game: "Game",
+    generators: Sequence[str],
+    *,
+    max_segments: int = 1200,
+) -> Tuple[List[Tuple[float, float]], List[Tuple[int, int]]]:
+    """Build a geometric blade shape using the same generator pipeline as runes."""
+    segs = builder.line_pattern((0.0, 0.0), (1.0, 0.0)).to_segments()
+    for kind in list(generators or []):
+        name = str(kind or "").strip()
+        if not name:
+            continue
+        gen = None
+        if name == "subdivide":
+            parts = 3
+            try:
+                parts = int(getattr(game, "_param_value", lambda *_: 3)("subdivide", "parts"))
+            except Exception:
+                parts = 3
+            gen = builder.SubdivideGenerator(parts=parts)
+        elif name == "koch":
+            height = 0.25
+            flip = False
+            try:
+                height = float(getattr(game, "_param_value", lambda *_: 0.25)("koch", "height"))
+                flip = bool(getattr(game, "_param_value", lambda *_: False)("koch", "flip"))
+            except Exception:
+                pass
+            gen = builder.KochGenerator(height_factor=height, flip=flip)
+        elif name == "branch":
+            angle = 30
+            count = 2
+            try:
+                angle = int(getattr(game, "_param_value", lambda *_: 30)("branch", "angle"))
+                count = int(getattr(game, "_param_value", lambda *_: 2)("branch", "count"))
+            except Exception:
+                pass
+            gen = builder.BranchGenerator(angle_deg=angle, length_factor=0.45, branch_count=count)
+        elif name == "extend":
+            gen = builder.ExtendGenerator()
+        elif name == "zigzag":
+            parts = 6
+            amp = 0.2
+            try:
+                parts = int(getattr(game, "_param_value", lambda *_: 6)("zigzag", "parts"))
+                amp = float(getattr(game, "_param_value", lambda *_: 0.2)("zigzag", "amp"))
+            except Exception:
+                pass
+            gen = builder.ZigzagGenerator(parts=parts, amplitude_factor=amp)
+        elif name == "custom" or name.startswith("custom_"):
+            idx = 0
+            if name != "custom":
+                try:
+                    idx = int(name.split("_", 1)[1])
+                except Exception:
+                    idx = 0
+            custom_patterns = list(getattr(game, "custom_patterns", []) or [])
+            if 0 <= idx < len(custom_patterns):
+                pattern = custom_patterns[idx]
+                verts = None
+                edges = []
+                if isinstance(pattern, dict):
+                    verts = pattern.get("vertices")
+                    edges = list(pattern.get("edges", []) or [])
+                else:
+                    verts = pattern
+                if verts and len(verts) >= 2:
+                    amp = 1.0
+                    try:
+                        amp = float(getattr(game, "_param_value", lambda *_: 1.0)("custom", "amplitude"))
+                    except Exception:
+                        amp = 1.0
+                    gen = (
+                        builder.CustomGraphGenerator(verts, edges, amplitude=amp)
+                        if edges
+                        else builder.CustomPolyGenerator(verts, amplitude=amp)
+                    )
+        if gen is None:
+            continue
+        segs = gen.apply_segments(segs, max_segments=max_segments)
+        segs = builder.cleanup_duplicates(segs)
+        if len(segs) > max_segments:
+            segs = segs[:max_segments]
+            break
+
+    pattern = builder.Pattern.from_segments(segs)
+    verts: List[Tuple[float, float]] = []
+    for v in list(pattern.vertices or []):
+        try:
+            if hasattr(v, "pos"):
+                px, py = v.pos  # type: ignore[attr-defined]
+            else:
+                px, py = v  # type: ignore[misc]
+            verts.append((float(px), float(py)))
+        except Exception:
+            continue
+    seg_pairs: List[Tuple[int, int]] = []
+    for e in list(pattern.edges or []):
+        try:
+            seg_pairs.append((int(e.a), int(e.b)))
+        except Exception:
+            continue
+
+    if not verts:
+        return [(-0.45, 0.0), (0.45, 0.0)], [(0, 1)]
+
+    # Center geometry and normalize to a stable unit-ish envelope so runtime scale
+    # can be controlled in tile units.
+    cx = sum(v[0] for v in verts) / float(len(verts))
+    cy = sum(v[1] for v in verts) / float(len(verts))
+    centered = [(float(x - cx), float(y - cy)) for (x, y) in verts]
+    max_abs = max(max(abs(x), abs(y)) for (x, y) in centered)
+    if max_abs <= 1e-6:
+        return [(-0.45, 0.0), (0.45, 0.0)], [(0, 1)]
+    scale = 0.95 / max_abs
+    normalized = [(x * scale, y * scale) for (x, y) in centered]
+    return normalized, seg_pairs
+
+
+def advance_thrown_knives(game: "Game", level: Any, delta: int) -> None:
+    """Advance visible thrown-knife projectiles and apply contact damage."""
+    state = getattr(level, "thrown_knives_state", None)
+    if not isinstance(state, list) or not state:
+        return
+    if delta <= 0:
+        return
+
+    knives = list(state)
+    for _ in range(int(delta)):
+        if not knives:
+            break
+        next_knives: List[dict] = []
+        for knife in knives:
+            try:
+                alive = _step_thrown_knife(game, level, knife)
+            except Exception:
+                alive = False
+            if alive:
+                next_knives.append(knife)
+        knives = next_knives
+    level.thrown_knives_state = knives
+
+
+def _step_thrown_knife(game: "Game", level: Any, knife: dict) -> bool:
+    """Move one knife by one heartbeat and apply damage against hostiles."""
+    x0 = float(knife.get("x", 0.0))
+    y0 = float(knife.get("y", 0.0))
+    vx = float(knife.get("vx", 0.0))
+    vy = float(knife.get("vy", 0.0))
+    x1 = x0 + vx
+    y1 = y0 + vy
+
+    knife["x"] = float(x1)
+    knife["y"] = float(y1)
+    knife["spin"] = float(knife.get("spin", 0.0)) + float(knife.get("spin_rate", 0.0))
+
+    step_dist = math.hypot(vx, vy)
+    total_dist = float(knife.get("distance", 0.0)) + float(step_dist)
+    knife["distance"] = float(total_dist)
+
+    caster_id = str(knife.get("caster_id", ""))
+    hit_radius = float(knife.get("hit_radius", 0.55))
+    damage = int(knife.get("damage", 1))
+    hit_ids = set(str(v) for v in list(knife.get("hit_ids", []) or []))
+
+    for tlvl, target, tx, ty in _iter_hostile_actor_targets(game, caster_id):
+        tid = str(getattr(target, "id", ""))
+        if not tid or tid in hit_ids:
+            continue
+        # Treat actors as tile-center points for collision with the flight segment.
+        cx = float(tx) + 0.5
+        cy = float(ty) + 0.5
+        dist = _point_segment_dist(cx, cy, x0, y0, x1, y1)
+        if dist > hit_radius:
+            continue
+        scale = max(0.45, 1.0 - (dist / max(hit_radius, 1e-6)) * 0.55)
+        dmg = max(1, int(round(float(damage) * scale)))
+        if _apply_actor_damage(game, tlvl, caster_id, target, dmg, verb="throw"):
+            hit_ids.add(tid)
+
+    knife["hit_ids"] = list(hit_ids)
+    max_dist = float(knife.get("max_distance", 9.0))
+    return bool(total_dist < max_dist)

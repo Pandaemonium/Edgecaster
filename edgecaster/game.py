@@ -243,6 +243,8 @@ class LevelState:
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
     # Choking Vines runtime state (ABS-space tendril segments + tips).
     choking_vines_state: Optional[Dict[str, Any]] = None
+    # Visible thrown-knife projectiles (ABS-space center positions + rune-shape payload).
+    thrown_knives_state: List[Dict[str, Any]] = field(default_factory=list)
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
     # Zone difficulty metadata (computed on zone creation).
     danger_value: float = 0.0
@@ -646,6 +648,7 @@ class Game:
                 "slash",
                 "thrust",
                 "cleave",
+                "throwing_knife",
                 "place",
                 "subdivide",
                 "extend",
@@ -3512,6 +3515,18 @@ class Game:
             verb,
             target_pos=target_pos,
             from_bump=from_bump,
+        )
+
+    def act_throwing_knife(
+        self,
+        actor_id: str,
+        *,
+        target_pos: Optional[Tuple[int, int]] = None,
+    ) -> bool:
+        return blade_runtime_system.act_throwing_knife(
+            self,
+            actor_id,
+            target_pos=target_pos,
         )
 
     # --- Combat action delegates (systems/combat_actions.py) ---

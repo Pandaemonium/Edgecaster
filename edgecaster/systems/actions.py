@@ -855,6 +855,22 @@ def _action_cleave(game: Any, actor_id: str, **kwargs: Any) -> None:
 
 
 @register_action(
+    "throwing_knife",
+    label="Throwing Knife",
+    speed="fast",
+    show_in_bar=True,
+    # Cooldown is set dynamically in blade_runtime (RES scaling), so leave static as 0.
+    cooldown_ticks=0,
+    targeting=TargetingSpec(kind="tile", mode="aim"),
+)
+def _action_throwing_knife(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Blade ranged strike: throw one visible spinning runeblade copy."""
+    target_pos = kwargs.get("target_tile")
+    if hasattr(game, "act_throwing_knife"):
+        game.act_throwing_knife(actor_id, target_pos=target_pos)
+
+
+@register_action(
     "wind_rush",
     label="Wind Rush",
     speed=5,  # fixed travel/action time in ticks
