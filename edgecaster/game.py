@@ -1701,11 +1701,6 @@ class Game:
                 ax, ay, _ = academy
                 self.log.add(f"You hear of an Academy at ({ax},{ay}).")
 
-        # Realize aggregate details into this loaded zone (simulation allowed).
-        # This replaces the old global berry scattering test.
-        if coord[2] == 0:  # depth == 0
-            if not getattr(world, "is_lair", False):
-                self._realize_aggregate_details_in_zone(lvl, coord)
 
         # Ensure this zone views the canonical pattern state
         self._sync_level_pattern_view(lvl)
@@ -1827,9 +1822,14 @@ class Game:
                 return
 
             # Ensure adjacent zones are loaded so movement and AI can cross boundaries.
-            active_levels = self._ensure_active_zones_loaded()
-            if not active_levels:
+            if self.cfg.allow_zone_prewarm_during_tick:
+                active_levels = self._ensure_active_zones_loaded()
+                if not active_levels:
+                    active_levels = [level]
+            else:
+                # Zones are caches, not ontology — never create them on the tick hot path
                 active_levels = [level]
+
 
             current_level = self._level()
             for lvl in active_levels:
@@ -1980,8 +1980,10 @@ class Game:
 
     def sync_attention_instantiation(self, abs_rect: tuple[float, float, float, float], *, cam_lod: float) -> None:
         """Delegate attention lifecycle staging to systems.attention."""
+        
         attention_system.sync_attention_instantiation(self, abs_rect, cam_lod=cam_lod)
 
+        
 
 
 
@@ -2944,6 +2946,9 @@ class Game:
         level_changed = getattr(old_level, "coord", None) != dest_coord
 
         if level_changed:
+
+
+
             # remove from old level
             try:
                 del old_level.actors[self.player_id]
@@ -2974,6 +2979,8 @@ class Game:
                 dest_level.spatial_dirty = True
             except Exception:
                 pass
+
+
 
             # Signal camera to recenter on player after zone change
             self.camera_needs_recenter = True
@@ -3007,8 +3014,14 @@ class Game:
 
         # After movement, seed/drain a small prewarm slice so neighboring zones
         # tend to be ready before the next boundary crossing.
-        self._seed_zone_prewarm_queue()
-        self._drain_zone_prewarm_queue(max(1, int(getattr(self, "zone_prewarm_budget_per_advance", 1) or 1)))
+        # Phase 0: never prewarm zones on the movement hot path.
+        # (Zones are caches, not ontology; this must not happen per-step.)
+        if getattr(self.cfg, "allow_zone_prewarm_during_move", False):
+            self._seed_zone_prewarm_queue()
+            budget = int(getattr(self, "zone_prewarm_budget_per_advance", 0) or 0)
+            if budget > 0:
+                self._drain_zone_prewarm_queue(budget)
+
 
         # Keep continuity: update FOV and Lorenz storm
         try:
@@ -3019,7 +3032,6 @@ class Game:
         self._reset_lorenz_on_zone_change(player)
         # Ensure the new zone views canonical pattern state
         self._sync_level_pattern_view(dest_level)
-
 
     # ---------------------------------------------------------------------
     # Canonical rune pattern state (ABS-space, per-depth)

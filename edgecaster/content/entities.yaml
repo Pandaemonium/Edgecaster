@@ -29,33 +29,37 @@
         props:
           size: 1
   description: A physical object, possessed of mass and size.
-
-
 - id: settlement
   name: Settlement
   parent: physical_object
-  glyph: "§"
-  color: [240, 220, 160]
+  glyph: §
+  color:
+  - 240
+  - 220
+  - 160
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: A settlement-scale overmap entity. Resolves into structures and inhabitants when observed closely.
+  description: A settlement-scale overmap entity. Resolves into structures and inhabitants
+    when observed closely.
   tags:
     world_entity: true
     site: true
-
-
 - id: berry_patch
   name: Berry Patch
   parent: entity
-  glyph: '♣'
-  color: [120, 200, 120]
+  glyph: ♣
+  color:
+  - 120
+  - 200
+  - 120
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 8
-  description: A patch of berry shrubs. Resolves into individual berries when observed closely.
+  description: A patch of berry shrubs. Resolves into individual berries when observed
+    closely.
   tags:
     world_entity: true
     aggregate: true
@@ -63,10 +67,39 @@
     detail_mode: cluster
     detail_child: blueberry
     radius: 6
-    density: 0.25
+    density: 0.04
+    # Worldgen knobs (opt-in). These restore "berry patches exist" under the new general rule.
+    # Tuned to approximate prior behavior (expected ~0.45 patches per bucket attempt).
+    worldgen_chance: 0.03
+    worldgen_min: 1
+    worldgen_max: 2
+- id: ecology_controller
+  name: Ecology Controller
+  parent: entity
+  glyph: '?'
+  color:
+  - 200
+  - 200
+  - 80
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 16
+  description: 'TEST VISIBLE: Ecology Controller (spawns wolves when observed).'
+  tags:
+    hidden: false
+    world_entity: true
+    aggregate: true
+    aggregate_kind: ecology_controller
+    detail_mode: cluster
+    detail_child: wolf
+    radius: 10
+    density: 0.01
     detail_lod_threshold: -1.25
-
-
+    worldgen_chance: 0.64
+    worldgen_min: 1
+    worldgen_max: 2
+    detail_child_type: actor
 - id: berry
   name: Berry
   glyph: b
@@ -158,24 +191,25 @@
     container: true
     item_type: inventory
     not_stackable: true
-
-# --- ENERGY FLASK (Throwable) --------------------------------------------
 - id: energy_flask
   name: Energy Flask
-  glyph: '∆'
-  color: [0, 255, 200]
+  glyph: ∆
+  color:
+  - 0
+  - 255
+  - 200
   kind: item
   render_layer: 1
   blocks_movement: false
   parent: physical_object
-  description: "A volatile flask of raw arcane energy. Throw it to activate nearby vertices."
+  description: A volatile flask of raw arcane energy. Throw it to activate nearby
+    vertices.
   tags:
     item_type: energy_flask
     equip_stacked: true
     quantity: 10
     grants_abilities: throw_flask
     grant_requires: equipped
-
 - id: destabilizer
   name: Destabilizer
   glyph: '*'
@@ -703,8 +737,11 @@
 
 - id: wall
   name: Wall
-  glyph: "#"
-  color: [120, 100, 80]
+  glyph: '#'
+  color:
+  - 120
+  - 100
+  - 80
   kind: feature
   render_layer: 0
   blocks_movement: true
@@ -714,8 +751,6 @@
   tags:
     wall: true
     remember_in_fog: true
-
-
 - id: sign
   name: Sign
   glyph: §
@@ -741,14 +776,6 @@
   render_layer: 0
   blocks_movement: true
   blocks_vision: true
-  parent: entity
-  description: A sturdy wooden door.
-  tags:
-    door_state: closed
-    door: true
-    remember_in_fog: true
-
-
   parent: entity
   description: A sturdy wooden door.
   tags:

@@ -336,6 +336,51 @@ def kill_actor(
         killer_is_player=bool(killer_is_player),
     )
 
+    # Yoga aggregate persistence: dead stays dead for attention-refined enemies.
+    try:
+        tags = getattr(actor, "tags", {}) or {}
+        agg_id = tags.get("from_aggregate", None)
+        slot = tags.get("aggregate_slot", None)
+        if agg_id is not None and slot is not None:
+            amap = getattr(game, "_attn_agg_id_to_ent", None)
+            if isinstance(amap, dict):
+                aent = amap.get(str(agg_id))
+            else:
+                aent = None
+            if aent is not None:
+                harvested = getattr(aent, "_agg_harvested_slots", None)
+                if not isinstance(harvested, set):
+                    harvested = set()
+                    try:
+                        setattr(aent, "_agg_harvested_slots", harvested)
+                    except Exception:
+                        pass
+                try:
+                    harvested.add(int(slot))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    try:
+        agg_children = getattr(game, "_attn_active_agg_children", None)
+        if isinstance(agg_children, dict) and agg_id in agg_children:
+            slot_map = agg_children.get(agg_id)
+            if isinstance(slot_map, dict):
+                slot_map.pop(int(slot), None)
+    except Exception:
+        pass
+
+
+    # Ensure attention-staged entities vanish immediately on death (otherwise they'd still render from attn_store).
+    try:
+        attn_store = getattr(game, "attn_store", None)
+        if attn_store is not None:
+            attn_store.despawn(actor.id)
+    except Exception:
+        pass
+
+
     # Remove from actors dict
     if aid in level.actors:
         del level.actors[aid]

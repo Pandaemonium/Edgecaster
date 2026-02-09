@@ -45,6 +45,15 @@ _enemy_ids_cache: Optional[List[str]] = None
 _entity_templates_cache: Optional[Dict[str, dict]] = None
 
 
+# ---------------------------------------------------------------------------
+# Biome Enemy Pool Caches
+# ---------------------------------------------------------------------------
+
+_biome_enemy_data_cache: Optional[list] = None
+_biome_enemy_pool_cache: Dict[tuple[int, bool], List[str]] = {}
+
+
+
 def get_enemy_template_ids(game: "Game") -> List[str]:
     """Get list of valid enemy template IDs for random spawning.
 
@@ -1210,40 +1219,42 @@ def spawn_npcs(
 # Biome-Aware Spawning
 # ---------------------------------------------------------------------------
 
-def get_biome_enemy_pool(biome_id: int, include_neutral_factions: bool = False) -> List[str]:
+def get_biome_enemy_pool(biome_id: int, include_neutral_factions: bool = True) -> List[str]:
     """Get enemy template IDs appropriate for a specific biome.
 
-    Reads enemies.yaml and filters by biome_spawn tag.
-    Falls back to generic enemies if no biome-specific ones found.
-
-    Args:
-        biome_id: The biome ID to get enemies for
-        include_neutral_factions: If True, include creatures from neutral factions
-            (like natures_chosen, high_society). If False, only hostile factions.
-
-    Returns:
-        List of enemy template IDs appropriate for the biome.
+    Reads enemies.yaml and filters by tags.biome_spawn.
+    For ecology controllers we prefer: biome-specific + generic (if available).
+    Results are cached for performance.
     """
     from edgecaster.climate import Biome
     from pathlib import Path
 
+    global _biome_enemy_data_cache, _biome_enemy_pool_cache
+
+    key = (int(biome_id), bool(include_neutral_factions))
+    cached = _biome_enemy_pool_cache.get(key)
+    if cached is not None:
+        return list(cached)
+
     content_dir = Path(__file__).resolve().parent.parent / "content"
     yaml_path = content_dir / "enemies.yaml"
 
-    try:
-        with yaml_path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or []
-    except FileNotFoundError:
-        return ["imp"]
+    # Load + parse YAML once per run
+    if _biome_enemy_data_cache is None:
+        try:
+            with yaml_path.open("r", encoding="utf-8") as f:
+                _biome_enemy_data_cache = yaml.safe_load(f) or []
+        except FileNotFoundError:
+            _biome_enemy_data_cache = []
 
-    # Get biome name
+    data = _biome_enemy_data_cache or []
+
+    # Get biome name (string like "TEMPERATE_FOREST")
     try:
-        biome = Biome(biome_id)
-        biome_name = biome.name
-    except (ValueError, KeyError):
+        biome_name = Biome(int(biome_id)).name
+    except Exception:
         biome_name = None
 
-    # Factions that are hostile by default (hostile_below >= 125)
     hostile_factions = {
         "hostile",
         "demon_cult_flame",
@@ -1251,14 +1262,12 @@ def get_biome_enemy_pool(biome_id: int, include_neutral_factions: bool = False) 
         "demon_cult_flesh",
     }
 
-    # Factions that are neutral - may attack if provoked
     neutral_factions = {
         "natures_chosen",
         "high_society",
         "patternkeepers",
     }
 
-    # Determine which factions to include
     allowed_factions = set(hostile_factions)
     if include_neutral_factions:
         allowed_factions.update(neutral_factions)
@@ -1279,34 +1288,43 @@ def get_biome_enemy_pool(biome_id: int, include_neutral_factions: bool = False) 
         if faction in ("template", "npc", "player", "neutral"):
             continue
 
-        # Check if faction is allowed
         if faction not in allowed_factions:
             continue
 
-        tags_raw = entry.get("tags", None)
-        if isinstance(tags_raw, dict):
-            tags = tags_raw
-        else:
+        tags = entry.get("tags", {})
+        if not isinstance(tags, dict):
             tags = {}
 
-        # Skip no_random_spawn and template enemies
         if tags.get("no_random_spawn") or tags.get("template") or tags.get("training_dummy"):
             continue
 
-        # Check biome_spawn tag
         biome_spawn = tags.get("biome_spawn", [])
+        # Be forgiving: allow biome_spawn to be a single string
+        if isinstance(biome_spawn, str):
+            biome_spawn = [biome_spawn]
+        if not isinstance(biome_spawn, list):
+            biome_spawn = []
+
         if biome_spawn and biome_name:
             if biome_name in biome_spawn:
-                biome_enemies.append(tid)
+                biome_enemies.append(str(tid))
         elif not biome_spawn:
-            # No biome restriction, can spawn anywhere
-            generic_enemies.append(tid)
+            generic_enemies.append(str(tid))
 
-    if biome_enemies:
-        return biome_enemies
-    if generic_enemies:
-        return generic_enemies
-    return ["imp"]
+    # NEW behavior: prefer biome-specific, but keep generic variety too
+    out: List[str] = []
+    seen: set[str] = set()
+
+    for tid in biome_enemies + generic_enemies:
+        if tid not in seen:
+            seen.add(tid)
+            out.append(tid)
+
+    if not out:
+        out = ["imp"]
+
+    _biome_enemy_pool_cache[key] = list(out)
+    return list(out)
 
 
 def spawn_enemies_for_biome(
