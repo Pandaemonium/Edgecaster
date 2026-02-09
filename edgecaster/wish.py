@@ -125,7 +125,6 @@ def _try_spawn_enemy(game: Any, text: str) -> tuple[bool, str]:
         return False, ""
 
     try:
-        from edgecaster.enemies import factory as enemy_factory
         from edgecaster.systems import spawning as spawning_system
     except Exception:
         return False, ""
@@ -163,19 +162,16 @@ def _try_spawn_enemy(game: Any, text: str) -> tuple[bool, str]:
         return False, "No open tile nearby to spawn on."
 
     try:
-        abs_pos = game.abs_from_zone_local(level.coord, spawn_pos)
-    except Exception:
-        abs_pos = None
-
-    try:
-        actor = enemy_factory.spawn_enemy(proto_id, spawn_pos, abs_pos=abs_pos)
+        actor = spawning_system.spawn_enemy_with_pack(
+            game,
+            level,
+            proto_id,
+            spawn_pos,
+            zone_tier=int(getattr(level, "danger_tier", 1) or 1),
+            schedule_ai=True,
+        )
     except Exception as e:
         return False, f"Couldn't spawn {proto_id!r}: {e!r}"
-
-    try:
-        spawning_system.register_actor(game, level, actor, schedule_ai=True)
-    except Exception as e:
-        return False, f"Couldn't register {proto_id!r}: {e!r}"
 
     name = getattr(actor, "name", proto_id)
     try:
@@ -256,4 +252,3 @@ def apply_wish(game: Any, text: str) -> tuple[bool, str]:
         pass
 
     return True, ""
-

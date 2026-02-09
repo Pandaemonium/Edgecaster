@@ -460,6 +460,91 @@ def collect_all_chakra_nodes(
     return result
 
 
+def chakra_display_name(full_id: str) -> str:
+    """
+    Convert a full chakra node id into a readable label.
+
+    Examples:
+      - "arm" -> "Arm"
+      - "arm_m" -> "Arm (Mirror)"
+      - "arm.hand.thumb" -> "Arm > Hand > Thumb"
+      - "leg_m.knee" -> "Leg (Mirror) > Knee"
+    """
+    parts = str(full_id or "").split(".")
+    out: List[str] = []
+    for p in parts:
+        if p.endswith("_m"):
+            base = p[:-2].replace("_", " ").title()
+            out.append(f"{base} (Mirror)")
+        else:
+            out.append(p.replace("_", " ").title())
+    return " > ".join(out)
+
+
+def _unlock_prereqs_for_full_id(full_id: str) -> List[str]:
+    """
+    Return required prefix ids for a full chakra id.
+
+    Example:
+      "arm.hand.thumb.knuckle_1" ->
+        ["arm", "arm.hand", "arm.hand.thumb"]
+    """
+    parts = str(full_id or "").split(".")
+    if len(parts) <= 1:
+        return []
+    out: List[str] = []
+    for i in range(len(parts) - 1):
+        out.append(".".join(parts[: i + 1]))
+    return out
+
+
+def can_unlock_full_chakra_id(chakra_state: ChakraState, full_id: str) -> bool:
+    """
+    Check unlockability for a full (possibly prefixed) chakra id.
+
+    We treat all prefix segments as branch-root gates. That matches how nested
+    chakra schemas are traversed in the scene and in generation.
+    """
+    if not full_id:
+        return False
+    if full_id in chakra_state.unlocked:
+        return False
+    for req in _unlock_prereqs_for_full_id(full_id):
+        if req not in chakra_state.unlocked:
+            return False
+    return True
+
+
+def list_unlockable_chakras(
+    body_schema: Dict[str, Any],
+    chakra_state: ChakraState,
+) -> List[str]:
+    """
+    Return all currently unlockable chakra ids (full/prefixed ids).
+
+    This is the canonical query for "what can I unlock right now?" and is shared
+    by class progression and NPC unlock UI so both use identical gating logic.
+    """
+    all_nodes = collect_all_chakra_nodes(body_schema, chakra_state.unlocked)
+    locked = [
+        (full_id, depth)
+        for (full_id, _display_name, depth) in all_nodes
+        if full_id not in chakra_state.unlocked
+    ]
+
+    # Stable deterministic order:
+    #   1) shallower nodes first
+    #   2) readable label
+    #   3) full id
+    locked.sort(key=lambda row: (row[1], chakra_display_name(row[0]), row[0]))
+
+    return [
+        full_id
+        for (full_id, _depth) in locked
+        if can_unlock_full_chakra_id(chakra_state, full_id)
+    ]
+
+
 # =============================================================================
 # CHAKRA OPERATIONS
 # =============================================================================

@@ -324,7 +324,9 @@ class UrgentMessageScene(PopupMenuScene):
             line_spacing=2,
             wrap_width_px=560,
             auto_font=False,  # <<< FIXED FONT
-            scrollable=False,
+            # Some urgent popups can now carry long choice lists
+            # (e.g., Monk chakra awakenings). Keep scrolling enabled.
+            scrollable=True,
 
         )
         choice_list.rect = pygame.Rect(0, 0, 0, 0)

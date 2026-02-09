@@ -617,6 +617,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
     - Can unlock one chakra per conversation
     """
     title = _npc_name(npc, npc_def)
+    from edgecaster.systems.chakras import chakra_display_name
 
     # Helper to get player's chakra info
     def _get_chakra_count(game: Any) -> tuple[int, int]:
@@ -630,77 +631,20 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         except Exception:
             return (1, 1)
 
-    def _chakra_display_name(full_id: str) -> str:
+    def _get_unlockable_chakras(game: Any) -> list[str]:
         """
-        Convert a full prefixed node ID to a human-readable display name.
-
-        Examples:
-            "arm" -> "Arm"
-            "arm_m" -> "Arm (Mirror)"
-            "arm.shoulder" -> "Arm > Shoulder"
-            "arm.hand.wrist" -> "Arm > Hand > Wrist"
-            "arm_m.shoulder" -> "Arm (Mirror) > Shoulder"
-        """
-        parts = full_id.split(".")
-        formatted = []
-        for p in parts:
-            if p.endswith("_m"):
-                base = p[:-2].replace("_", " ").title()
-                formatted.append(f"{base} (Mirror)")
-            else:
-                formatted.append(p.replace("_", " ").title())
-        return " > ".join(formatted)
-
-    def _get_all_locked_chakras(game: Any) -> list[str]:
-        """
-        Return list of ALL chakra node IDs that are currently locked,
-        including sub-schema nodes when their parent branch root is unlocked.
-
-        This allows progressive unlocking:
-        - Start: head, arm, arm_m, leg, leg_m
-        - After unlocking "arm": arm.shoulder, arm.upper_arm, arm.elbow, arm.forearm, arm.hand
-        - After unlocking "arm.hand": arm.hand.wrist, arm.hand.palm, arm.hand.thumb, etc.
+        Return all currently unlockable chakra ids based on shared gating rules.
         """
         try:
             from edgecaster.prototypes import resolve_body_schema
-            from edgecaster.systems.chakras import collect_all_chakra_nodes
+            from edgecaster.systems.chakras import list_unlockable_chakras
 
             player = game._player()
             if not hasattr(player, "chakra_state") or player.chakra_state is None:
                 return []
 
             body_schema = resolve_body_schema(player)
-            unlocked = player.chakra_state.unlocked
-
-            # Get ALL nodes recursively (expanding unlocked branch roots)
-            all_nodes = collect_all_chakra_nodes(body_schema, unlocked)
-
-            # Filter to only locked nodes
-            locked = [(fid, name, depth) for fid, name, depth in all_nodes if fid not in unlocked]
-
-            # Sort by depth first (top-level before sub-schemas), then by priority
-            priority_order = {
-                # Top-level body parts
-                "head": 0, "arm": 1, "arm_m": 2, "leg": 3, "leg_m": 4,
-                "torso": 5, "chest": 6, "back": 7, "abdomen": 8, "hips": 9,
-                # Arm sub-schema
-                "shoulder": 0, "upper_arm": 1, "elbow": 2, "forearm": 3, "hand": 4,
-                # Hand sub-schema
-                "wrist": 0, "palm": 1, "thumb": 2, "index": 3, "middle": 4, "ring": 5, "pinky": 6,
-                # Leg sub-schema
-                "thigh": 0, "knee": 1, "calf": 2, "foot": 3,
-            }
-
-            def sort_key(item: tuple) -> tuple:
-                full_id, name, depth = item
-                # Get leaf node name for priority lookup
-                leaf = full_id.split(".")[-1] if "." in full_id else full_id
-                base = leaf[:-2] if leaf.endswith("_m") else leaf
-                priority = priority_order.get(base, 99)
-                return (depth, priority, full_id)
-
-            locked.sort(key=sort_key)
-            return [fid for fid, _, _ in locked]
+            return list_unlockable_chakras(body_schema, player.chakra_state)
         except Exception:
             return []
 
@@ -708,12 +652,8 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         """
         Create an effect function that unlocks a specific chakra.
 
-        The Sage bypasses gating - she'll also unlock any prerequisites automatically.
+        Choices for the Sage are pre-filtered to currently unlockable nodes.
         Also grants the "chakra" ability if not already owned.
-
-        Handles prefixed node IDs like "arm.shoulder" or "arm.hand.wrist":
-        - For "arm.shoulder", ensures "arm" is unlocked first
-        - For "arm.hand.wrist", ensures "arm" and "arm.hand" are unlocked first
         """
         def effect(game: Any) -> None:
             try:
@@ -725,23 +665,8 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
 
                 chakra_state = player.chakra_state
 
-                # Parse prefixed ID to find prerequisites
-                # "arm.hand.wrist" -> prereqs are ["arm", "arm.hand"]
-                parts = node_id.split(".")
-                prereqs = []
-                for i in range(len(parts) - 1):
-                    prereqs.append(".".join(parts[:i + 1]))
-
-                # Unlock prerequisites first (the Sage's power!)
-                for prereq_id in prereqs:
-                    if prereq_id not in chakra_state.unlocked:
-                        unlock_chakra(chakra_state, prereq_id, auto_activate=True)
-                        prereq_name = _chakra_display_name(prereq_id)
-                        game.log.add(f"The Sage also opens your {prereq_name} chakra as a gateway.")
-
-                # Now unlock the requested chakra
                 if unlock_chakra(chakra_state, node_id, auto_activate=True):
-                    display_name = _chakra_display_name(node_id)
+                    display_name = chakra_display_name(node_id)
                     game.log.add(f"The Chakra Sage awakens your {display_name} chakra!")
                     game.log.add("You feel new energy flowing through you.")
 
@@ -755,7 +680,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         return effect
 
     unlocked, active = _get_chakra_count(game)
-    unlockable = _get_all_locked_chakras(game)
+    unlockable = _get_unlockable_chakras(game)
 
     # Build the dialogue nodes
     nodes: dict[str, DialogueNode] = {}
@@ -797,10 +722,10 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
     # UNLOCK CHAKRA NODE
     # =========================================================================
     if unlockable:
-        # Build choices for each unlockable chakra (limit to first 5 to show more options)
+        # Build choices for all currently unlockable chakras.
         unlock_choices: list[DialogueChoice] = []
-        for node_id in unlockable[:5]:
-            display_name = _chakra_display_name(node_id)
+        for node_id in unlockable:
+            display_name = chakra_display_name(node_id)
             unlock_choices.append(DialogueChoice(
                 text=display_name,
                 next_id="unlock_done",

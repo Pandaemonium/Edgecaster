@@ -617,6 +617,10 @@ def spawn_enemies(
             enemy_bounds=bounds.get(tmpl_id),
         )
 
+        # Register the leader first so sidecar spawns can always reference
+        # a live actor in `level.actors` (important for ringmaster troupe tags).
+        register_actor(game, level, mob, schedule_ai=True)
+
         # Slaver packs: a slaver arrives chained to two brutes.
         if tmpl_id == "slaver":
             _spawn_slaver_pack(game, level, mob, pos)
@@ -624,7 +628,6 @@ def spawn_enemies(
         if tmpl_id == "furious_ringmaster":
             _spawn_angry_circus(game, level, mob, pos)
 
-        register_actor(game, level, mob, schedule_ai=True)
         spawned += 1
 
     return spawned
@@ -730,8 +733,9 @@ def _spawn_angry_circus(
     x, y = pos
     member_ids: List[str] = []
     used_positions: set[tuple[int, int]] = {pos}
-    for tmpl in member_templates:
-        spawn_xy: tuple[int, int] | None = None
+
+    def _find_member_spawn() -> Optional[Tuple[int, int]]:
+        # Pass 1: try curated offsets so the group appears "together".
         for dx, dy in offsets:
             tx, ty = x + dx, y + dy
             if (tx, ty) in used_positions:
@@ -746,11 +750,32 @@ def _spawn_angry_circus(
                 continue
             if game._entity_at(level, (tx, ty)):
                 continue
-            spawn_xy = (tx, ty)
-            used_positions.add((tx, ty))
-            break
+            return (tx, ty)
+
+        # Pass 2: if local offsets are blocked, expand search radius so
+        # ringmaster still gets a troupe in dense/ruined zones.
+        for radius in (4, 6, 8, 10, 12, 15):
+            probe = find_spawn_position(
+                game,
+                level,
+                near=pos,
+                radius=radius,
+                avoid_actors=True,
+                avoid_entities=True,
+                max_attempts=60,
+            )
+            if probe is None:
+                continue
+            if probe in used_positions:
+                continue
+            return probe
+        return None
+
+    for tmpl in member_templates:
+        spawn_xy = _find_member_spawn()
         if spawn_xy is None:
             continue
+        used_positions.add(spawn_xy)
 
         m_abs = game.abs_from_zone_local(level.coord, spawn_xy)
         mate = enemy_factory.spawn_enemy(tmpl, spawn_xy, abs_pos=m_abs)
@@ -770,6 +795,41 @@ def _spawn_angry_circus(
         member_ids.append(mate.id)
 
     ringmaster.tags["circus_member_ids"] = member_ids
+    try:
+        game._debug(
+            f"[circus] ringmaster={ringmaster.id} spawned_members={len(member_ids)} "
+            f"at_zone={level.coord}"
+        )
+    except Exception:
+        pass
+
+
+def spawn_enemy_with_pack(
+    game: "Game",
+    level: "LevelState",
+    enemy_id: str,
+    pos: Tuple[int, int],
+    *,
+    zone_tier: Optional[int] = None,
+    enemy_bounds: Optional[Tuple[int, int]] = None,
+    schedule_ai: bool = True,
+) -> "Actor":
+    """Spawn an enemy and attach known sidecar packs when needed.
+
+    This is a shared path for non-random spawners (sites/POIs/events) so
+    `furious_ringmaster` and `slaver` behave consistently everywhere.
+    """
+    if zone_tier is None:
+        zone_tier = int(getattr(level, "danger_tier", 1) or 1)
+    abs_pos = game.abs_from_zone_local(level.coord, pos)
+    mob = enemy_factory.spawn_enemy(enemy_id, pos, abs_pos=abs_pos)
+    _apply_enemy_zone_scaling(level, mob, zone_tier=zone_tier, enemy_bounds=enemy_bounds)
+    register_actor(game, level, mob, schedule_ai=schedule_ai)
+    if enemy_id == "slaver":
+        _spawn_slaver_pack(game, level, mob, pos)
+    elif enemy_id == "furious_ringmaster":
+        _spawn_angry_circus(game, level, mob, pos)
+    return mob
 
 
 def spawn_imps_near(

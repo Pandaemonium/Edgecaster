@@ -114,6 +114,7 @@ from edgecaster.systems import damage_policy as damage_policy_system
 from edgecaster.systems import combat_actions as combat_actions_system
 from edgecaster.systems import pattern_runtime as pattern_runtime_system
 from edgecaster.systems import blade_runtime as blade_runtime_system
+from edgecaster.systems import chakras as chakras_system
 from edgecaster.systems import chakra_effects as chakra_effects_system
 from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import perf_profiler
@@ -992,6 +993,70 @@ class Game:
         )
         return True
 
+    def _is_monk_player(self) -> bool:
+        cls = (
+            getattr(self.character, "player_class", None)
+            or getattr(self.character, "char_class", None)
+            or ""
+        )
+        return str(cls).strip().lower() == "monk"
+
+    def _unlockable_chakras_for_player(self) -> List[str]:
+        """Return currently unlockable chakra ids for the active player."""
+        try:
+            player = self._player()
+            chakra_state = getattr(player, "chakra_state", None)
+            if chakra_state is None:
+                return []
+            body_schema = prototypes.resolve_body_schema(player)
+            return chakras_system.list_unlockable_chakras(body_schema, chakra_state)
+        except Exception:
+            return []
+
+    def _maybe_prompt_monk_chakra_unlock(self, level: int) -> None:
+        """
+        Every 3rd level, Monk can unlock one currently-gated chakra.
+
+        Uses the same gating query as the Chakra Sage so both systems stay in sync.
+        """
+        if not self._is_monk_player():
+            return
+        if int(level) <= 0 or int(level) % 3 != 0:
+            return
+
+        unlockable = self._unlockable_chakras_for_player()
+        if not unlockable:
+            self.log.add("No additional chakras are currently available to awaken.")
+            return
+
+        labels = [chakras_system.chakra_display_name(node_id) for node_id in unlockable]
+        choices = list(labels) + ["Not right now."]
+
+        def _apply_choice(idx: int, g: "Game") -> None:
+            i = int(idx)
+            if i < 0 or i >= len(unlockable):
+                g.log.add("You postpone your chakra awakening for now.")
+                return
+            node_id = unlockable[i]
+            try:
+                p = g._player()
+                chakra_state = getattr(p, "chakra_state", None)
+                if chakra_state is None:
+                    return
+                if chakras_system.unlock_chakra(chakra_state, node_id, auto_activate=True):
+                    display_name = chakras_system.chakra_display_name(node_id)
+                    g.log.add(f"You awaken your {display_name} chakra.")
+                    g.grant_ability("chakra")
+            except Exception:
+                return
+
+        self.set_urgent(
+            f"Level {int(level)} insight: choose one chakra to awaken.",
+            title="Monk Awakening",
+            choices=choices,
+            on_choice_effect=_apply_choice,
+        )
+
     def _fizzle_roll(self, over: int, limit: int) -> bool:
         """Return True if activation should fizzle (probability increases with overage)."""
         if over <= 0:
@@ -1048,10 +1113,15 @@ class Game:
         lvl = player.stats.level
         if lvl % 2 == 1:
             self._auto_stat_roll()
+
+            def _after_odd_continue(_idx: int, g: "Game") -> None:
+                g._maybe_prompt_monk_chakra_unlock(int(lvl))
+
             self.set_urgent(
                 f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)",
                 title="Level Up!",
                 choices=["Continue..."],
+                on_choice_effect=_after_odd_continue,
             )
         else:
             options = ["CON", "RES", "INT", "AGI"]
@@ -1065,6 +1135,7 @@ class Game:
                     stat = fallback
                 g.log.add(f"You focus your training: {stat.upper()} +1.")
                 g._recalc_param_state_max()
+                g._maybe_prompt_monk_chakra_unlock(int(lvl))
 
             self.set_urgent(
                 f"You reach level {player.stats.level}! (+{hp_gain} HP, +{mana_gain} MP)\nChoose a stat to improve.",
@@ -4078,5 +4149,3 @@ class Game:
                 f.write(msg + "\n")
         except Exception:
             pass
-
-

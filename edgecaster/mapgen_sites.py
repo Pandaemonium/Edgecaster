@@ -431,7 +431,6 @@ def _spawn_site_enemy(
 ) -> bool:
     """Spawn an enemy for a site. Returns True if spawned."""
     from edgecaster.systems import spawning
-    from edgecaster.enemies import factory as enemy_factory
 
     final_pos = spawning.find_spawn_position(
         game, level, near=pos, radius=4, avoid_actors=True
@@ -440,11 +439,15 @@ def _spawn_site_enemy(
         return False
 
     try:
-        mob = enemy_factory.spawn_enemy(enemy_id, final_pos)
+        mob = spawning.spawn_enemy_with_pack(
+            game,
+            level,
+            enemy_id,
+            final_pos,
+            zone_tier=int(getattr(level, "danger_tier", 1) or 1),
+        )
         mob.tags = getattr(mob, "tags", None) or {}
         mob.tags["site_id"] = site.id
-
-        spawning.register_actor(game, level, mob, schedule_ai=True)
         return True
     except Exception:
         return False
@@ -839,4 +842,3 @@ def realize_sites_in_zone(
         return (1, site)
 
     return (0, None)
-

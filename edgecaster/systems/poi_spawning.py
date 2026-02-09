@@ -333,10 +333,15 @@ def spawn_poi_contents(game: "Game", level: "LevelState", coord: Tuple[int, int,
                     if pos is None:
                         continue
                     try:
-                        mob = enemy_factory.spawn_enemy(enemy_id, pos, abs_pos=game.abs_from_zone_local(coord, pos))
+                        mob = spawning_system.spawn_enemy_with_pack(
+                            game,
+                            level,
+                            enemy_id,
+                            pos,
+                            zone_tier=int(getattr(level, "danger_tier", 1) or 1),
+                        )
                         mob.tags = getattr(mob, "tags", None) or {}
                         mob.tags["poi_id"] = pid
-                        spawning_system.register_actor(game, level, mob, schedule_ai=True)
                     except Exception:
                         continue
 
