@@ -34,13 +34,18 @@ class GameConfig:
 
     # Ambient hostile population maintenance (active-zone top-up).
     # These knobs are intentionally conservative to avoid sudden spawn bursts.
-    ambient_spawn_enabled: bool = True
+    # Turning this off for now at least, causing huge lag and implementing more yogic spawn controller entities.
+    ambient_spawn_enabled: bool = False
     ambient_spawn_interval_ticks: int = 120
     ambient_spawn_target_base: int = 2
     ambient_spawn_target_per_tier: float = 0.5
     ambient_spawn_target_max: int = 8
     ambient_spawn_max_per_cycle: int = 1
     ambient_spawn_player_safe_radius: int = 8
+    
+    allow_zone_prewarm_during_tick = False
+    allow_zone_prewarm_during_move = False
+
 
     # Lightweight performance profiler (logs timing windows to debug.log).
     # Set to False to disable all profiler instrumentation overhead.

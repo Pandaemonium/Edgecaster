@@ -9,6 +9,7 @@ from edgecaster import spawn_factory
 from edgecaster.content import npcs
 from edgecaster.enemies import factory as enemy_factory
 from edgecaster.systems import aggregate_resolution as aggregate_system
+from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems.sites import load_site_types
 from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.state.actors import Human, Stats
@@ -248,7 +249,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             zy0=zy0c,
             zy1=zy1c,
             zz=zz,
-            kinds=("berry_patch",),
+            kinds=None,
         )
     except Exception:
         pass
@@ -276,12 +277,85 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
         tags = getattr(ent, "tags", {}) or {}
         kind = str(tags.get("aggregate_kind", "") or getattr(ent, "kind", "") or "")
-        if kind != "berry_patch":
+        if not kind:
             continue
 
-        # Only refine when zoomed in enough
-        thresh = float(tags.get("detail_lod_threshold", -1.25))
-        if float(cam_lod) > thresh:
+        # Generic aggregate refinement (cluster mode)
+        if tags.get("aggregate") is not True:
+            continue
+        if str(tags.get("detail_mode", "") or "") != "cluster":
+            continue
+
+        # ------------------------------------------------------------
+        # YOGA: Detail instantiation threshold derives from the child’s size,
+        # using the same LoD regime as renderables_in_abs_rect().
+        #
+        # Child is eligible to render when:
+        #   delta = cam_lod - log2(child_abs_size) <= dmax
+        # so instantiate when:
+        #   cam_lod <= log2(child_abs_size) + dmax
+        #
+        # We keep an escape hatch: if tags set detail_lod_threshold_mode="fixed",
+        # we honor the explicit detail_lod_threshold for bespoke tuning.
+        # ------------------------------------------------------------
+        mode = str(tags.get("detail_lod_threshold_mode", "") or "")
+        if mode == "fixed":
+            thresh = float(tags.get("detail_lod_threshold", -1.25))
+        else:
+            # Use the same dmax the renderer used most recently (defaults to 0.75).
+            # Use the same dmax the renderer used most recently (defaults to 0.75),
+            # and include the renderer fade margin so instantiation doesn't lag behind visibility.
+            dmax = float(getattr(game, "_attn_render_dmax", 0.75) or 0.75)
+            fade_w = float(getattr(cfg, "entity_lod_fade_w", 0.6) or 0.6)  # fallback; matches renderables default
+
+            # Derive child render size the same way the renderer would:
+            # prefer tags.abs_size if present, otherwise base_size.
+            child_size = 1.0
+            try:
+                child_id = str(tags.get("detail_child", "") or "")
+                if child_id:
+                    child_proto = prototypes.resolve_proto(child_id)
+
+                    # proto may be dict-like or object-like
+                    ptags = {}
+                    try:
+                        ptags = (getattr(child_proto, "tags", None) or {})  # object style
+                    except Exception:
+                        ptags = {}
+                    if not ptags:
+                        try:
+                            ptags = (child_proto.get("tags", None) or {})  # dict style
+                        except Exception:
+                            ptags = {}
+
+                    abs_size_tag = None
+                    try:
+                        abs_size_tag = ptags.get("abs_size", None)
+                    except Exception:
+                        abs_size_tag = None
+
+                    if abs_size_tag is not None:
+                        child_size = float(abs_size_tag)
+                    else:
+                        # base_size fallback
+                        try:
+                            child_size = float(getattr(child_proto, "base_size", None) or 1.0)
+                        except Exception:
+                            try:
+                                child_size = float(child_proto.get("base_size", 1.0) or 1.0)
+                            except Exception:
+                                child_size = 1.0
+            except Exception:
+                child_size = 1.0
+
+            child_size = max(1e-9, float(child_size))
+            child_lod = math.log2(child_size)
+
+            # Instantiate whenever it could plausibly render in the same band as normal entities.
+            thresh = child_lod + (dmax + fade_w)
+
+
+        if float(cam_lod) > float(thresh):
             continue
 
         zc = tuple(getattr(r, "zone_coord", (0, 0, zz)))
@@ -292,6 +366,17 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         if not agg_id:
             continue
 
+        # Allow combat.kill_actor to find the macro aggregate entity by id
+        try:
+            amap = getattr(game, "_attn_agg_id_to_ent", None)
+            if not isinstance(amap, dict):
+                amap = {}
+                game._attn_agg_id_to_ent = amap
+            amap[str(agg_id)] = ent
+        except Exception:
+            pass
+
+
         in_scope_aggs.add(agg_id)
 
         slot_to_eid = game._attn_active_agg_children.get(agg_id)
@@ -299,25 +384,40 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             slot_to_eid = {}
             game._attn_active_agg_children[agg_id] = slot_to_eid
 
+        child_type = str(tags.get("detail_child_type", "entity") or "entity").lower().strip()
+        is_harvestable = (str(kind) == "berry_patch") or (child_type == "actor")
+
         # Harvest persistence stored on the aggregate itself (truthy macro object)
         harvested = getattr(ent, "_agg_harvested_slots", None)
         if not isinstance(harvested, set):
             harvested = set()
-            try:
-                setattr(ent, "_agg_harvested_slots", harvested)
-            except Exception:
-                pass
+            if is_harvestable:
+                try:
+                    setattr(ent, "_agg_harvested_slots", harvested)
+                except Exception:
+                    pass
 
-        # If something removed a berry from a *loaded zone* (pickup), record its slot harvested.
+        # If something removed a harvestable child from a *loaded zone* (pickup), record its slot harvested.
         # (This keeps existing gameplay interactions working while zones still exist locally.)
         try:
             level = game.get_zone_for_render(zc)
         except Exception:
             level = None
-        if level is not None:
+
+
+
+
+        # Harvest persistence (berries only): only treat "missing from level.entities" as pickup
+        # if we KNOW this eid was previously mirrored into this loaded level.
+        if is_harvestable and level is not None and child_type != "actor":
             try:
+                mirrored = getattr(level, "_attn_mirrored_ids", None)
+                if not isinstance(mirrored, set):
+                    mirrored = set()
+                    setattr(level, "_attn_mirrored_ids", mirrored)
+
                 for s, eid in list(slot_to_eid.items()):
-                    if eid not in level.entities and eid in attn_store.entities:
+                    if (eid in mirrored) and (eid not in level.entities) and (eid in attn_store.entities):
                         harvested.add(int(s))
                         attn_store.despawn(eid)
                         del slot_to_eid[s]
@@ -359,50 +459,187 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 continue
 
             eid = f"{agg_id}:{child_id}:{slot}"
+
+            # If this is an actor slot and the zone is loaded, the loaded level is authoritative.
+            # This prevents re-staging "graduated" actors and avoids invisible/ghost desync.
+            if child_type == "actor" and level is not None:
+                try:
+                    if eid in level.actors:
+                        if eid in attn_store.entities:
+                            attn_store.despawn(eid)
+                        slot_to_eid[slot] = eid
+                        continue
+                except Exception:
+                    pass
+
             if eid in attn_store.entities:
                 slot_to_eid[slot] = eid
-                # Mirror into loaded zone if present (enables pickup/look)
+
+                # If this slot is an ACTOR and we have a loaded level, promote it into simulation
+                # instead of leaving it as a non-simulated render-only ghost.
+                if child_type == "actor" and level is not None:
+                    try:
+                        # Ensure it exists in the level entity registry (some systems expect this)
+                        if eid not in level.entities:
+                            level.entities[eid] = attn_store.entities[eid]
+                            level.spatial_dirty = True
+
+                        # Register/promote into the actor system if not already there
+                        if eid not in level.actors:
+                            try:
+                                # Prefer the canonical path if present
+                                spawning_system.register_actor(game, level, attn_store.entities[eid], schedule_ai=True)
+                            except Exception:
+                                print("What an exception")
+                                # Fallback: direct insertion if register_actor signature differs
+                                level.actors[eid] = attn_store.entities[eid]
+                                level.spatial_dirty = True
+
+                        # Once promoted, remove from attention-store to avoid duplicate ownership
+                        try:
+                            attn_store.despawn(eid)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                    continue
+
+                # Non-actor: mirror into loaded zone if present (enables pickup/look)
                 if level is not None and eid not in level.entities:
                     try:
                         level.entities[eid] = attn_store.entities[eid]
                         level.spatial_dirty = True
                     except Exception:
                         pass
+
                 continue
 
-            # Spawn real entity (native local coords for its zone coord; ABS for rendering)
-            try:
-                bent = spawn_factory.build_entity_from_spec(
-                    spec=child_proto,
-                    eid=eid,
-                    pos=(int(lx), int(ly)),
-                    abs_pos=(int(ax), int(ay)),
-                    overrides={
-                        "tags": {
-                            "from_aggregate": agg_id,
-                            "aggregate_slot": int(slot),
-                            "aggregate_kind": "berry_patch",
-                        }
-                    },
-                )
-            except Exception:
-                continue
 
-            # Stage into attention store (primary)
-            try:
-                attn_store.stage(bent, abs_x=ax, abs_y=ay, zz=zz, lineage_id=f"{agg_id}:{child_id}:{slot}")
-            except Exception:
-                continue
+            child_type = str(tags.get("detail_child_type", "entity") or "entity").lower().strip()
 
-            # Mirror into loaded zone if present
-            if level is not None:
+            if child_type == "actor":
+                # Deterministic actor child (e.g., ecology_controller -> wolves).
+                # CRITICAL: actor id must be the deterministic slot eid, otherwise we spawn forever.
+
+                # If already staged, we're done.
+                if eid in attn_store.entities:
+                    slot_to_eid[slot] = eid
+                    # If this zone is loaded, ensure it is registered once for simulation,
+                    # then remove from attn_store so zone rendering/simulation stays coherent for moving actors.
+                    if level is not None:
+                        try:
+                            if eid not in level.actors:
+                                spawning_system.register_actor(game, level, attn_store.entities[eid], schedule_ai=True)
+                                level.spatial_dirty = True
+                            try:
+                                attn_store.despawn(eid)
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    continue
+
+                # Build Actor from spec with deterministic id.
                 try:
-                    level.entities[eid] = bent
-                    level.spatial_dirty = True
+                    actor_spec = prototypes.resolve_proto(str(child_id))
                 except Exception:
-                    pass
+                    continue
+                if not isinstance(actor_spec, dict) or not actor_spec:
+                    continue
+
+                try:
+                    actor_obj = spawn_factory.build_actor_from_spec(
+                        spec=actor_spec,
+                        aid=eid,  # deterministic!
+                        pos=(int(lx), int(ly)),
+                        abs_pos=(int(ax), int(ay)),
+                        overrides={
+                            "tags": {
+                                "from_aggregate": agg_id,
+                                "aggregate_slot": int(slot),
+                                "aggregate_kind": str(kind),
+                            }
+                        },
+                    )
+                except Exception:
+                    continue
+
+                # Stage into attention store (primary truth)
+                try:
+                    attn_store.stage(
+                        actor_obj,
+                        abs_x=ax,
+                        abs_y=ay,
+                        zz=zz,
+                        lineage_id=f"{agg_id}:{child_id}:{slot}",
+                    )
+                except Exception:
+                    continue
+
+                # If this zone is loaded, register exactly once (schedules AI).
+                if level is not None:
+                    try:
+                        if eid not in level.actors:
+                            spawning_system.register_actor(game, level, actor_obj, schedule_ai=True)
+                            # IMPORTANT: once an actor is simulating in a loaded zone, don't keep it in attn_store,
+                            # otherwise attn_store bin staleness makes it "invisible" while still attacking.
+                            try:
+                                attn_store.despawn(eid)
+                            except Exception:
+                                pass
+
+                            level.spatial_dirty = True
+                    except Exception:
+                        pass
+
+                slot_to_eid[slot] = eid
+                continue
+
+
+            else:
+                # Generic entity child (berry patch style)
+                try:
+                    bent = spawn_factory.build_entity_from_spec(
+                        spec=child_proto,
+                        eid=eid,
+                        pos=(int(lx), int(ly)),
+                        abs_pos=(int(ax), int(ay)),
+                        overrides={
+                            "tags": {
+                                "from_aggregate": agg_id,
+                                "aggregate_slot": int(slot),
+                                "aggregate_kind": str(kind),
+                            }
+                        },
+                    )
+                except Exception:
+                    continue
+
+                # Stage into attention store (primary)
+                try:
+                    attn_store.stage(bent, abs_x=ax, abs_y=ay, zz=zz, lineage_id=f"{agg_id}:{child_id}:{slot}")
+                except Exception:
+                    continue
+
+                # Mirror into loaded zone if present
+                if level is not None:
+                    try:
+                        level.entities[eid] = bent
+                        level.spatial_dirty = True
+                        try:
+                            mirrored = getattr(level, "_attn_mirrored_ids", None)
+                            if not isinstance(mirrored, set):
+                                mirrored = set()
+                                setattr(level, "_attn_mirrored_ids", mirrored)
+                            mirrored.add(eid)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
             slot_to_eid[slot] = eid
+
 
     # Evict berries for aggregates no longer in scope.
     # IMPORTANT: only evict when our macro query is complete. If the query was clamped/capped,
@@ -629,11 +866,14 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                         if not site_id:
                             continue
 
-                        # Gate refinement by zoom, like POIs do
-                        # (You can tune this; this is a sane default band.)
-                        thresh = -0.75
+                        # YOGA: gate detail instantiation by the same size-derived LoD regime as rendering.
+                        dmax = float(getattr(game, "_attn_render_dmax", 0.75) or 0.75)
+                        fade_w = float(getattr(cfg, "entity_lod_fade_w", 0.6) or 0.6)
+                        actor_size = 1.0  # NPCs are size-1 in the renderer regime (player-like)
+                        thresh = math.log2(max(1e-9, actor_size)) + (dmax + fade_w)
                         if float(cam_lod) > float(thresh):
                             continue
+
 
                         # Yoga: camera observation is sufficient to resolve site details.
                         # Do NOT gate resolution on discovery/zone-visit visibility.
@@ -789,6 +1029,268 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         except Exception:
             pass
 
+    # -----------------------------
+    # D) POI DETAILS (NPCs from POIRegistry; yoga-style resolution)
+    #
+    # Goal: POI internals (NPCs etc.) must be stageable by camera attention,
+    # not by zone visit / mapgen stamping.
+    #
+    # We stage POI NPCs into attn_store (primary truth), and mirror into loaded
+    # zones if present (enables talk/look) — exactly like site details.
+    # -----------------------------
+    try:
+        poi_reg = getattr(game, "poi_registry", None)
+    except Exception:
+        poi_reg = None
+
+    if poi_reg is not None:
+        if not hasattr(game, "_attn_active_poi_children"):
+            game._attn_active_poi_children = {}  # poi_id -> set[eid]
+
+        in_scope_pois: set[str] = set()
+
+        # Same size-derived threshold regime as berries/sites
+        dmax = float(getattr(game, "_attn_render_dmax", 0.75) or 0.75)
+        fade_w = float(getattr(cfg, "entity_lod_fade_w", 0.6) or 0.6)
+        actor_size = 1.0
+        poi_thresh = math.log2(max(1e-9, actor_size)) + (dmax + fade_w)
+
+        # Deterministic fallback offsets near anchor (if npc_specs don't specify positions)
+        offsets = [(0, 0), (2, 0), (-2, 0), (0, 2), (0, -2), (3, 1), (-3, 1), (1, 3), (-1, -3)]
+
+        for poi in poi_reg:
+            try:
+                poi_id = str(getattr(poi, "id", "") or "")
+                if not poi_id:
+                    continue
+
+                # Gate by zoom (same regime as player-ish actors)
+                if float(cam_lod) > float(poi_thresh):
+                    continue
+
+                # POI footprint/anchor in ABS; only resolve if it intersects our warm rect
+                try:
+                    fp = getattr(poi, "footprint", None)
+                    if fp is not None:
+                        # footprint expected to be ABSRect-like with x0,y0,x1,y1
+                        fx0 = float(getattr(fp, "x0"))
+                        fy0 = float(getattr(fp, "y0"))
+                        fx1 = float(getattr(fp, "x1"))
+                        fy1 = float(getattr(fp, "y1"))
+                        if fx1 <= wx0 or fx0 >= wx1 or fy1 <= wy0 or fy0 >= wy1:
+                            continue
+                    else:
+                        ax, ay = getattr(poi, "anchor_abs", (None, None))
+                        if ax is None or ay is None:
+                            continue
+                        ax = float(ax); ay = float(ay)
+                        if ax < wx0 or ax >= wx1 or ay < wy0 or ay >= wy1:
+                            continue
+                except Exception:
+                    # If footprint is malformed, be conservative and skip
+                    continue
+
+                in_scope_pois.add(poi_id)
+
+                active: set[str] = game._attn_active_poi_children.get(poi_id)
+                if not isinstance(active, set):
+                    active = set()
+                    game._attn_active_poi_children[poi_id] = active
+                desired: set[str] = set()
+
+                # Pull npc_specs list (preferred), else fall back to tags["npc_pool"] if present.
+                npc_specs = list(getattr(poi, "npc_specs", []) or [])
+                if not npc_specs:
+                    try:
+                        ptags = getattr(poi, "tags", {}) or {}
+                        npc_pool = list(ptags.get("npc_pool", []) or [])
+                        npc_specs = [{"npc_id": x} for x in npc_pool]
+                    except Exception:
+                        npc_specs = []
+
+                if not npc_specs:
+                    continue
+
+                # Anchor
+                ax0, ay0 = getattr(poi, "anchor_abs", (None, None))
+                if ax0 is None or ay0 is None:
+                    # If no anchor, use footprint center if available
+                    fp = getattr(poi, "footprint", None)
+                    if fp is None:
+                        continue
+                    ax0 = int((int(getattr(fp, "x0")) + int(getattr(fp, "x1"))) // 2)
+                    ay0 = int((int(getattr(fp, "y0")) + int(getattr(fp, "y1"))) // 2)
+                ax0 = int(ax0); ay0 = int(ay0)
+
+                for i, spec in enumerate(npc_specs):
+                    try:
+                        # Spec can be dict-like or object-like
+                        npc_id = None
+                        ns = None
+                        if isinstance(spec, dict):
+                            npc_id = spec.get("npc_id") or spec.get("id") or spec.get("kind")
+                            ns = spec
+                        else:
+                            npc_id = getattr(spec, "npc_id", None) or getattr(spec, "id", None) or getattr(spec, "kind", None)
+                            ns = spec
+
+                        npc_id = str(npc_id or "")
+                        if not npc_id:
+                            continue
+
+                        # Position: prefer explicit offsets if present, else deterministic fallback offsets
+                        dx = dy = None
+                        if isinstance(spec, dict):
+                            dx = spec.get("dx", None); dy = spec.get("dy", None)
+                            if dx is None or dy is None:
+                                off = spec.get("offset", None)
+                                if isinstance(off, (list, tuple)) and len(off) >= 2:
+                                    dx, dy = off[0], off[1]
+                        else:
+                            dx = getattr(spec, "dx", None); dy = getattr(spec, "dy", None)
+                            if dx is None or dy is None:
+                                off = getattr(spec, "offset", None)
+                                if isinstance(off, (list, tuple)) and len(off) >= 2:
+                                    dx, dy = off[0], off[1]
+
+                        if dx is None or dy is None:
+                            ox, oy = offsets[i % len(offsets)]
+                        else:
+                            ox, oy = int(dx), int(dy)
+
+                        ax = int(ax0 + ox)
+                        ay = int(ay0 + oy)
+
+                        # Only instantiate within warm rect
+                        if ax < wx0 or ax >= wx1 or ay < wy0 or ay >= wy1:
+                            continue
+
+                        eid = f"poi:{poi_id}:npc:{npc_id}:{i}"
+                        desired.add(eid)
+
+                        # Already staged? mirror into loaded zone and continue
+                        if eid in attn_store.entities:
+                            try:
+                                obj = attn_store.entities[eid]
+                                _mirror_actor_into_loaded_zone(eid, obj, (ax, ay))
+                            except Exception:
+                                pass
+                            continue
+
+                        # Compute local coords for the actor's own zone
+                        lzx = ax // int(zone_w)
+                        lzy = ay // int(zone_h)
+                        lx = ax - (lzx * int(zone_w))
+                        ly = ay - (lzy * int(zone_h))
+
+                        npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
+                        glyph = None
+                        color = None
+                        name = None
+                        desc = None
+
+                        # Allow npc_spec overrides (if present)
+                        try:
+                            if isinstance(spec, dict):
+                                glyph = spec.get("glyph", None)
+                                color = spec.get("color", None)
+                                name = spec.get("name", None)
+                                desc = spec.get("description", None)
+                            else:
+                                glyph = getattr(spec, "glyph", None)
+                                color = getattr(spec, "color", None)
+                                name = getattr(spec, "name", None)
+                                desc = getattr(spec, "description", None)
+                        except Exception:
+                            pass
+
+                        glyph = glyph if glyph is not None else npc_def.get("glyph", "@")
+                        color = color if color is not None else npc_def.get("color", (255, 255, 255))
+                        name = name if name is not None else npc_def.get("name", npc_id.title())
+
+                        a = _build_staged_actor(
+                            eid=eid,
+                            npc_id=npc_id,
+                            name=str(name),
+                            glyph=str(glyph)[0] if glyph else "@",
+                            color=tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
+                            abs_pos=(ax, ay),
+                            local_pos=(int(lx), int(ly)),
+                            owner_id=f"poi:{poi_id}",
+                            ns=None,
+                        )
+                        try:
+                            a.tags = getattr(a, "tags", {}) or {}
+                            a.tags.update({"poi": True, "poi_id": poi_id, "poi_npc": True})
+                        except Exception:
+                            pass
+                        if desc:
+                            try:
+                                a.description = str(desc)
+                            except Exception:
+                                pass
+
+                        attn_store.stage(a, abs_x=ax, abs_y=ay, zz=zz, lineage_id=eid)
+                        _mirror_actor_into_loaded_zone(eid, a, (ax, ay))
+
+                    except Exception:
+                        continue
+
+                # Evict POI children no longer desired
+                try:
+                    for eid in list(active):
+                        if eid not in desired:
+                            try:
+                                obj = attn_store.entities.get(eid)
+                                ap = getattr(obj, "abs_pos", None) if obj is not None else None
+                                if ap:
+                                    try:
+                                        zc = (int(ap[0]) // int(zone_w), int(ap[1]) // int(zone_h), int(zz))
+                                        lvl = game.get_zone_for_render(zc)
+                                    except Exception:
+                                        lvl = None
+                                    if lvl is not None:
+                                        try:
+                                            if eid in lvl.entities:
+                                                del lvl.entities[eid]
+                                                lvl.spatial_dirty = True
+                                        except Exception:
+                                            pass
+                                        try:
+                                            if eid in lvl.actors:
+                                                del lvl.actors[eid]
+                                                lvl.spatial_dirty = True
+                                        except Exception:
+                                            pass
+                                attn_store.despawn(eid)
+                            except Exception:
+                                pass
+                            active.discard(eid)
+
+                    for eid in desired:
+                        active.add(eid)
+                except Exception:
+                    pass
+
+            except Exception:
+                continue
+
+        # Evict POIs that left scope entirely
+        try:
+            for poi_id, active in list(game._attn_active_poi_children.items()):
+                if poi_id in in_scope_pois:
+                    continue
+                if isinstance(active, set):
+                    for eid in list(active):
+                        try:
+                            attn_store.despawn(eid)
+                        except Exception:
+                            pass
+                del game._attn_active_poi_children[poi_id]
+        except Exception:
+            pass
+
+
 
 def renderables_in_abs_rect(
     game,
@@ -861,11 +1363,19 @@ def renderables_in_abs_rect(
         last = getattr(game, "_attn_last_sig", None)
         if sig != last:
             game._attn_last_sig = sig
+
+            # Keep attention instantiation thresholds consistent with the renderer LoD band.
+            try:
+                game._attn_render_dmax = float(dmax)
+            except Exception:
+                pass
+
             try:
                 game.sync_attention_instantiation((ax0, ay0, ax1, ay1), cam_lod=float(cam_lod))
             except Exception:
                 # Never fail rendering because attention sync hiccuped.
                 pass
+
     except Exception:
         pass
 
@@ -916,6 +1426,11 @@ def renderables_in_abs_rect(
     out: List[object] = []
     candidates: List[Tuple[object, float, float, Tuple[int, int, int], Tuple[int, int], float]] = []
 
+    # Reuse a single handle to attention store throughout this function.
+    attn_store = getattr(game, "attn_store", None)
+    attn_ids = set(getattr(attn_store, "entities", {}) or {}) if attn_store is not None else set()
+
+
     # Camera center for scoring (raw camera center, not warm center)
     ccx = 0.5 * (ax0 + ax1)
     ccy = 0.5 * (ay0 + ay1)
@@ -949,7 +1464,7 @@ def renderables_in_abs_rect(
             zy0=zy0c,
             zy1=zy1c,
             zz=zz,
-            kinds=("berry_patch",),
+            kinds=None,
         )
     except Exception:
         pass
@@ -962,6 +1477,8 @@ def renderables_in_abs_rect(
                 obj = ref.ent
                 zx, zy, _z = ref.zone_coord
                 ox, oy = ref.local_pos
+
+
 
                 abs_x = float(zx * zone_w + ox)
                 abs_y = float(zy * zone_h + oy)
@@ -1101,6 +1618,12 @@ def renderables_in_abs_rect(
                         continue
                     seen_ids.add(obj_id)
 
+                    # YOGA: If an object is managed by attention (staged into attn_store),
+                    # do NOT also render it from the loaded-zone dictionaries. Zone load
+                    # must not change LoD bands or visibility.
+                    if obj_id in attn_ids:
+                        continue
+
                     obj = None
                     if include_actors:
                         obj = level.actors.get(obj_id)
@@ -1109,8 +1632,19 @@ def renderables_in_abs_rect(
                     if obj is None:
                         continue
 
+                    # Suppress legacy stamped *site/POI* children so attention remains the sole truth source for those.
+                    # DO NOT suppress aggregate children here: they may have "graduated" into the loaded zone for simulation.
+                    try:
+                        _tags = getattr(obj, "tags", {}) or {}
+                        if _tags.get("site_npc") or _tags.get("poi_npc"):
+                            continue
+                    except Exception:
+                        pass
+
+
                     try:
                         ox, oy = obj.pos
+
                     except Exception:
                         continue
                     if not (lx0 <= ox < lx1 and ly0 <= oy < ly1):
@@ -1697,28 +2231,14 @@ def _ensure_world_aggregate_entities(
     )
 
 def _realize_aggregate_details_in_zone(game, level: "LevelState", coord: Tuple[int, int, int], kinds=None) -> None:
-    """When a zone is created/entered (simulation allowed), realize aggregate details into real entities."""
-    cfg = getattr(game, "cfg", None)
-    zone_w = int(getattr(cfg, "world_width", 60) or 60)
-    zone_h = int(getattr(cfg, "world_height", 40) or 40)
+    """DEPRECATED (Yoga): do not stamp aggregate children into zones on entry.
 
-    # Ensure aggregates for this bucket exist in the world index first.
-    game._ensure_world_aggregate_entities(
-        zone_w=zone_w,
-        zone_h=zone_h,
-        zx0=int(coord[0]),
-        zx1=int(coord[0]),
-        zy0=int(coord[1]),
-        zy1=int(coord[1]),
-        zz=int(coord[2]),
-        kinds=kinds,
-    )
+    Aggregate detail is now attention-driven and staged via AttnStore so that
+    god-vision / camera observation is sufficient to realize entities anywhere.
 
-    aggregate_system.realize_details_for_loaded_zone(
-        game,
-        level,
-        zone_coord=(int(coord[0]), int(coord[1]), int(coord[2])),
-        zone_w=zone_w,
-        zone_h=zone_h,
-        kinds=kinds,
-    )
+    Zone entry must not create a parallel population (duplication + perf cliffs).
+
+    If, in the future, we want remote attention-staged actors to *simulate* while their
+    zone is loaded, we should register/import the already-staged entities by stable eid/lineage.
+    """
+    return

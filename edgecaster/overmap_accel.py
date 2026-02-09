@@ -6,6 +6,93 @@ if TYPE_CHECKING:
     from edgecaster.climate import ClimateConfig
 
 
+def sample_biome_id_at_world_xy(
+    wx: int,
+    wy: int,
+    *,
+    total_w: int,
+    total_h: int,
+    params: dict,
+    iters: int = 64,
+) -> Optional[int]:
+    """
+    Convenience wrapper: sample the climate biome id at a single world-tile coordinate.
+    Keeps overmap/climate parameter plumbing localized to overmap_accel.
+
+    IMPORTANT:
+    We intentionally sample a tiny *grid* (not 1x1) because some climate field
+    computations (wind/moisture/distance) can fail or be ill-defined on 1x1.
+    """
+    try:
+        from edgecaster.overmap_accel import render_overmap_fields_climate  # self import ok, explicit
+    except Exception:
+        return None
+
+    try:
+        wx = int(wx)
+        wy = int(wy)
+        total_w = int(total_w)
+        total_h = int(total_h)
+        if total_w <= 1 or total_h <= 1:
+            return None
+        wx = max(0, min(total_w - 1, wx))
+        wy = max(0, min(total_h - 1, wy))
+    except Exception:
+        return None
+
+    p = params or {}
+
+    # Coerce visual_c defensively (some pipelines may serialize it).
+    vc = p.get("visual_c", -0.8 + 0.156j)
+    try:
+        if isinstance(vc, (list, tuple)) and len(vc) == 2:
+            vc = complex(float(vc[0]), float(vc[1]))
+        elif isinstance(vc, dict) and "re" in vc and "im" in vc:
+            vc = complex(float(vc["re"]), float(vc["im"]))
+        elif not isinstance(vc, complex):
+            vc = complex(vc)  # may still fail; handled below
+    except Exception:
+        vc = -0.8 + 0.156j
+
+    # Sample a tiny neighborhood so the climate math has room to breathe.
+    px_w = 3
+    px_h = 3
+    cx = px_w // 2
+    cy = px_h // 2
+
+    # Center the window on (wx, wy).
+    view_min_wx = float(wx) - 0.5
+    view_min_wy = float(wy) - 0.5
+
+    try:
+        _elev2, biome2, _peak2 = render_overmap_fields_climate(
+            px_w=px_w,
+            px_h=px_h,
+            total_w=total_w,
+            total_h=total_h,
+            j_min_x=float(p.get("view_min_jx", -2.0)),
+            j_max_x=float(p.get("view_max_jx",  2.0)),
+            j_min_y=float(p.get("view_min_jy", -2.0)),
+            j_max_y=float(p.get("view_max_jy",  2.0)),
+            view_min_wx=view_min_wx,
+            view_min_wy=view_min_wy,
+            view_span_wx=1.0,
+            view_span_wy=1.0,
+            visual_c=vc,
+            iters=int(iters),
+            corruption_level=float(p.get("corruption_level", 0.0) or 0.0),
+            corruption_seed=int(p.get("corruption_seed", 1337) or 1337),
+            spline_weight=float(p.get("corruption_spline_weight", 0.0) or 0.0),
+            hotspots=p.get("corruption_hotspots", None),
+            anchors=p.get("corruption_anchors", None),
+            climate_config=p.get("climate_config", None),
+        )
+        return int(biome2[cy, cx])
+    except Exception:
+        return None
+
+
+
 def render_overmap_buffers_numpy(
     *,
     px_w: int,

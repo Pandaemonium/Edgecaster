@@ -313,7 +313,7 @@
   tier_min: 3
   tier_max: 8
   parent: humanoid
-  description: It would probably choose to kill you even unshackled.
+  description: "No such thing as bad brutes, only bad owners."
   tags:
     shackled_brute: true
     no_random_spawn: true

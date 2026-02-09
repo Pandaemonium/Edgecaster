@@ -37,6 +37,7 @@ def maintain_population(game: "Game", active_levels: Iterable["LevelState"], del
         return
 
     cfg = game.cfg
+
     if not bool(getattr(cfg, "ambient_spawn_enabled", True)):
         return
 

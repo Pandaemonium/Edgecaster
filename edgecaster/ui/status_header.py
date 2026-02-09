@@ -160,7 +160,8 @@ class StatusHeaderWidget(Widget):
             ctx.surface.blit(coh_text2, (x, y))
 
         # --- Tick / zone info top-right ---
-        tick_text = small_font.render(f"Tick: {game.current_tick}", True, fg)
+        heart_color = (200, 60, 60)  # soft red
+        tick_text = small_font.render(f"♥ {game.current_tick}", True, heart_color)
         zx, zy, zz = getattr(game, "zone", (0, 0, getattr(game, "level_index", 0)))
         level_text = small_font.render(f"Zone ({zx},{zy}) Depth {zz}", True, fg)
 

@@ -81,6 +81,117 @@ def _seed_for(game: "Game", *parts: object) -> int:
 # Aggregate discovery / worldgen
 # -----------------------------
 
+def _biome_id_at_abs(game: "Game", abs_x: int, abs_y: int, *, depth: int = 0) -> Optional[int]:
+    if int(depth) != 0:
+        return None
+
+    try:
+        from edgecaster.overmap_accel import sample_biome_id_at_world_xy
+    except Exception:
+        return None
+
+    # World extents should come from config (same truth as renderer uses).
+    cfg = getattr(game, "cfg", None)
+    if cfg is None:
+        return None
+
+    try:
+        total_w = int(cfg.world_map_screens * cfg.world_width)
+        total_h = int(cfg.world_map_screens * cfg.world_height)
+    except Exception:
+        return None
+
+    params = getattr(game, "overmap_params", None) or {}
+    return sample_biome_id_at_world_xy(
+        int(abs_x), int(abs_y),
+        total_w=total_w,
+        total_h=total_h,
+        params=params,
+        iters=24,  # intentionally approximate & stable
+    )
+
+
+def _ecology_choose_child_id(
+    game: "Game",
+    *,
+    agg_eid: str,
+    biome_id: Optional[int],
+    default_child: str,
+) -> str:
+    """Choose a deterministic enemy template id for an ecology controller."""
+    if biome_id is None:
+        biome_id = -1
+
+    try:
+        pool = spawning_system.get_biome_enemy_pool(int(biome_id), include_neutral_factions=False)
+    except Exception:
+        pool = []
+
+    if not pool:
+        return str(default_child)
+
+    rng = random.Random(_seed_for(game, "eco_child", str(agg_eid), int(biome_id)))
+    try:
+        return str(rng.choice(list(pool)))
+    except Exception:
+        return str(default_child)
+
+def _discover_worldgen_aggregate_kinds(game: "Game") -> tuple[str, ...]:
+    """Return aggregate kinds that should be worldgen'd, discovered from prototypes.
+
+    Primary rule (safe + data-driven):
+      - tags.world_entity == True
+      - tags.aggregate == True
+      - tags.aggregate_kind present (defaults to proto id)
+      - tags.worldgen_chance present (and optionally worldgen_min/worldgen_max)
+
+    Back-compat rule:
+      - Include berry_patch if it's marked world_entity+aggregate even if worldgen_chance is missing.
+        (Remove once YAML is fully migrated.)
+
+    Cached on the Game instance to avoid scanning prototypes every frame.
+    """
+    cache = getattr(game, "_agg_worldgen_kinds_cache", None)
+    if isinstance(cache, tuple) and cache:
+        return cache
+
+    kinds: list[str] = []
+    try:
+        bucket = prototypes.get_master_bucket()
+    except Exception:
+        bucket = {}
+
+    for proto_id in (bucket or {}).keys():
+        try:
+            spec = prototypes.resolve_proto(str(proto_id))
+        except Exception:
+            continue
+        if not isinstance(spec, dict):
+            continue
+        tags = spec.get("tags", {}) or {}
+        if not isinstance(tags, dict):
+            continue
+        if tags.get("world_entity") is not True:
+            continue
+        if tags.get("aggregate") is not True:
+            continue
+
+        if "worldgen_chance" not in tags and str(proto_id) != "berry_patch":
+            continue
+
+        kind = str(tags.get("aggregate_kind") or proto_id or "").strip()
+        if not kind:
+            continue
+        kinds.append(kind)
+
+    kinds = sorted(set(kinds))
+    out = tuple(kinds)
+    try:
+        setattr(game, "_agg_worldgen_kinds_cache", out)
+    except Exception:
+        pass
+    return out
+
 def ensure_world_aggregates(
     game: "Game",
     *,
@@ -96,22 +207,24 @@ def ensure_world_aggregates(
     """
     Ensure aggregate world entities exist for the requested zone bucket range.
 
-    This function MUST be side-effect free with respect to gameplay state:
-    it only adds *world entities* to WorldEntityIndex.
+    Side-effect constraints:
+      - Adds *only* macro entities to WorldEntityIndex.
+      - No zone creation, no time advance, no simulation deltas.
 
     `kinds`: optional filter on aggregate_kind (e.g. ["berry_patch"]).
     """
-    # Track which zone buckets we've generated per kind (incremental worldgen).
     if not hasattr(game, "_agg_worldgen_done"):
         game._agg_worldgen_done = set()  # type: ignore[attr-defined]
 
-    # Determine which aggregate prototype ids exist.
-    # Convention (for now): aggregate_kind == prototype id.
-    # (Later: you can add a mapping table or allow tags to specify proto_id.)
+    if getattr(game, "world_entity_index", None) is None:
+        return
+
     if kinds is None:
-        # First pass: discover from prototypes by scanning templates is expensive;
-        # so we default to a safe small list if user hasn't specified.
-        kinds = ("berry_patch",)
+        kinds = _discover_worldgen_aggregate_kinds(game)
+        if not kinds:
+            return
+    else:
+        kinds = tuple(str(k) for k in kinds if k)
 
     for zx in range(int(zx0), int(zx1) + 1):
         for zy in range(int(zy0), int(zy1) + 1):
@@ -120,48 +233,117 @@ def ensure_world_aggregates(
                 if key in game._agg_worldgen_done:  # type: ignore[attr-defined]
                     continue
 
+                # Resolve prototype/spec for this aggregate kind (proto id == kind in current content)
+                try:
+                    proto = prototypes.resolve_proto(str(kind))
+                except Exception:
+                    game._agg_worldgen_done.add(key)  # type: ignore[attr-defined]
+                    continue
+
                 # Deterministic RNG per (kind, zone bucket)
                 rng = random.Random(_seed_for(game, "agg_world", kind, zx, zy, zz))
 
-                # Spawn probability/count heuristics per kind (can be moved to YAML later)
-                # For berry_patch test: 35% chance of 1 patch, 10% chance of 2.
-                count = 0
-                roll = rng.random()
-                if roll < 0.10:
-                    count = 2
-                elif roll < 0.45:
-                    count = 1
+                # Read knobs from tags
+                tags = {}
+                if isinstance(proto, dict):
+                    tags = proto.get("tags", {}) or {}
+                else:
+                    try:
+                        tags = getattr(proto, "tags", {}) or {}
+                    except Exception:
+                        tags = {}
+
+                # Back-compat: if berry_patch has no knobs, emulate the old hardcoded behavior.
+                if str(kind) == "berry_patch" and "worldgen_chance" not in (tags or {}):
+                    # old behavior: 10% => 2, else 25% => 1, else 0
+                    count = 0
+                    r = rng.random()
+                    if r < 0.10:
+                        count = 2
+                    elif r < 0.35:
+                        count = 1
+                else:
+                    try:
+                        chance = float((tags or {}).get("worldgen_chance", 0.0) or 0.0)
+                    except Exception:
+                        chance = 0.0
+                    try:
+                        cmin = int((tags or {}).get("worldgen_min", 1) or 1)
+                    except Exception:
+                        cmin = 1
+                    try:
+                        cmax = int((tags or {}).get("worldgen_max", cmin) or cmin)
+                    except Exception:
+                        cmax = cmin
+
+                    chance = max(0.0, min(1.0, chance))
+                    cmin = max(0, cmin)
+                    cmax = max(cmin, cmax)
+
+                    count = 0
+                    if chance > 0.0 and rng.random() < chance:
+                        count = cmin if cmax == cmin else rng.randint(cmin, cmax)
 
                 if count <= 0:
                     game._agg_worldgen_done.add(key)  # type: ignore[attr-defined]
                     continue
 
-                try:
-                    proto = prototypes.resolve_proto(str(kind))
-                except Exception:
-                    # Prototype doesn't exist (yet); skip cleanly.
-                    game._agg_worldgen_done.add(key)  # type: ignore[attr-defined]
-                    continue
-
-                for i in range(count):
-                    # Choose a location within the zone bucket (avoid extreme edges).
+                for i in range(int(count)):
                     ox = rng.randint(2, max(2, int(zone_w) - 3))
                     oy = rng.randint(2, max(2, int(zone_h) - 3))
 
                     eid = f"agg:{kind}:{zx},{zy},{zz}:{i}"
-                    # Build entity using prototype; override ensures world_entity+aggregate tags exist.
-                    base_tags = dict(_tags(proto))
-                    # If proto is dict, _tags won't work. We'll just pull tags from proto when dict.
+
+                    base_tags = {}
                     if isinstance(proto, dict):
                         base_tags = dict(proto.get("tags", {}) or {})
+                    else:
+                        try:
+                            base_tags = dict(getattr(proto, "tags", {}) or {})
+                        except Exception:
+                            base_tags = {}
+
+
+                    # Ecology controllers: bind to biome + choose a biome-appropriate enemy at spawn time.
+                    eco_extra_tags: Dict = {}
+                    try:
+                        agg_kind = str(base_tags.get("aggregate_kind") or kind)
+                    except Exception:
+                        agg_kind = str(kind)
+
+                    if agg_kind == "ecology_controller":
+                        ax = int(zx) * int(zone_w) + int(ox)
+                        ay = int(zy) * int(zone_h) + int(oy)
+
+                        b_id = _biome_id_at_abs(game, ax, ay, depth=int(zz))
+                        try:
+                            if b_id is not None:
+                                from edgecaster.climate import Biome as _Biome
+                                eco_extra_tags["eco_biome_id"] = int(b_id)
+                                try:
+                                    eco_extra_tags["eco_biome_name"] = str(_Biome(int(b_id)).name)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                        default_child = str(base_tags.get("detail_child") or "wolf")
+                        chosen_child = _ecology_choose_child_id(
+                            game,
+                            agg_eid=str(eid),
+                            biome_id=b_id,
+                            default_child=default_child,
+                        )
+                        eco_extra_tags["detail_child"] = str(chosen_child)
+
 
                     overrides = {
                         "tags": {
                             **base_tags,
+                            **(eco_extra_tags or {}),
                             "world_entity": True,
                             "aggregate": True,
-                            "aggregate_kind": str(kind),
-                            # Ensure detail mode exists (defaults can be in YAML)
+                            "aggregate_kind": str(base_tags.get("aggregate_kind") or kind),
                             "detail_mode": base_tags.get("detail_mode", "cluster"),
                         }
                     }
@@ -170,20 +352,22 @@ def ensure_world_aggregates(
                         ent = spawn_factory.build_entity_from_spec(
                             spec=proto,
                             eid=eid,
-                            pos=(ox, oy),
+                            pos=(int(ox), int(oy)),
                             overrides=overrides,
                         )
                     except Exception:
                         continue
 
                     try:
-                        game.world_entity_index.add(ent, zone_coord=(int(zx), int(zy), int(zz)), local_pos=(int(ox), int(oy)))
+                        game.world_entity_index.add(
+                            ent,
+                            zone_coord=(int(zx), int(zy), int(zz)),
+                            local_pos=(int(ox), int(oy)),
+                        )
                     except Exception:
-                        # If index not available, bail (site system probably hasn't initialized it yet)
                         pass
 
                 game._agg_worldgen_done.add(key)  # type: ignore[attr-defined]
-
 
 # -----------------------------
 # Detail resolution (cluster mode)
@@ -411,92 +595,13 @@ def realize_details_for_loaded_zone(
     zone_h: int,
     kinds: Optional[Sequence[str]] = None,
 ) -> int:
+    """DEPRECATED (Yoga): do not stamp aggregate children into LevelState on zone load.
+
+    Detail is realized/staged by the attention lifecycle so it can work via god-vision.
+    Zone entry must not create a parallel population (duplication + perf cliffs).
+
+    Returns:
+        0 (no entities placed).
     """
-    When a zone is created/entered (simulation allowed), realize aggregate details
-    into real entities owned by the LevelState.
+    return 0
 
-    Idempotent per zone instance: doesn't double-spawn for the same aggregate.
-
-    Determinism goal:
-    - The *candidate* child positions are the same ones used by render proxies.
-    - Placement may skip blocked/occupied tiles, but zoom should never reshuffle.
-    """
-    if kinds is None:
-        kinds = ("berry_patch",)
-
-    if not hasattr(level, "_realized_aggregate_ids"):
-        level._realized_aggregate_ids = set()  # type: ignore[attr-defined]
-    realized = level._realized_aggregate_ids  # type: ignore[attr-defined]
-
-    placed_total = 0
-
-    # Pull aggregates from world index for this zone bucket
-    try:
-        refs = list(game.world_entity_index.iter_zone(tuple(map(int, zone_coord))))
-    except Exception:
-        return 0
-
-    for ref in refs:
-        agg = ref.ent
-        tags = _tags(agg)
-        if not tags.get("aggregate"):
-            continue
-        kind = str(tags.get("aggregate_kind") or "")
-        if kinds and kind not in set(map(str, kinds)):
-            continue
-
-        agg_id = _ent_id(agg)
-        if agg_id in realized:
-            continue
-
-        mode = str(tags.get("detail_mode") or "")
-        if mode != "cluster":
-            continue
-
-        # Determine child prototype
-        child_id = str(tags.get("detail_child") or tags.get("child") or "blueberry")
-
-        radius = float(tags.get("radius", 6.0))
-        density = float(tags.get("density", 0.25))
-        max_children = int(tags.get("detail_max_children", 120))
-        approx = int(max(1, min(max_children, density * math.pi * radius * radius)))
-
-        ox0, oy0 = map(int, ref.local_pos)
-
-        pts = _cluster_points(
-            game,
-            agg_id=agg_id,
-            child_id=child_id,
-            center=(ox0, oy0),
-            radius=radius,
-            count=approx,
-            zone_w=int(zone_w),
-            zone_h=int(zone_h),
-        )
-
-        made = 0
-        for (x, y) in pts:
-            # Basic placement constraints
-            try:
-                if not level.world.in_bounds(int(x), int(y)):
-                    continue
-                if not level.world.is_walkable(int(x), int(y)):
-                    continue
-                if game._actor_at(level, (int(x), int(y))):
-                    continue
-                if game._entity_at(level, (int(x), int(y))):
-                    continue
-            except Exception:
-                pass
-
-            try:
-                ent = spawning_system.spawn_entity_from_template(game, child_id, (int(x), int(y)))
-                level.entities[ent.id] = ent
-                made += 1
-                placed_total += 1
-            except Exception:
-                continue
-
-        realized.add(agg_id)
-
-    return placed_total

@@ -803,6 +803,7 @@ class DungeonScene(Scene):
 
         # 8) Camera recenter requested (after zone transition / fast travel)
         if getattr(game, "camera_needs_recenter", False):
+            
             game.camera_needs_recenter = False
             try:
                 with open("C:/Games/Edgecaster/debug.log", "a") as f:
