@@ -34,6 +34,7 @@ CHAR_CLASSES: List[str] = [
     "Chromaticist",
     "Epiphenomenal",
     "Monk",
+    "Blade",
 ]
 
 CLASS_DESCRIPTIONS = {
@@ -45,6 +46,7 @@ CLASS_DESCRIPTIONS = {
     "Chromaticist": "Disciple of the Eightfold Way, correct in the habit that water flows.",
     "Epiphenomenal": "What's in a name? Is there anything else besides?",
     "Monk": "A living mandala. Your body is the rune, your chakras the pattern.",
+    "Blade": "A fractal duelist. Your knife is a theorem sharpened to violence.",
 }
 
 # Species options (label -> template id)

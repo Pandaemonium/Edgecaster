@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import item_grants
+from edgecaster.systems import equip_rules
 
 
 # ---------------------------------------------------------------------------
@@ -874,13 +875,21 @@ def equip_item_to_slot(
     iid = str(item_id)
     sid = str(slot_id)
 
-    # Ensure only one item occupies a slot.
-    unequip_slot(game, oid, sid)
-
     inv = get_inventory(game, oid)
     for ent in inv:
         if str(getattr(ent, "id", "")) != iid:
             continue
+
+        # Validate slot compatibility before mutating currently equipped state.
+        allowed, reason = equip_rules.can_equip_item_in_slot(ent, sid)
+        if not allowed:
+            if oid == str(getattr(game, "player_id", "")) and reason:
+                game.log.add(str(reason))
+            return
+
+        # Ensure only one item occupies a slot.
+        unequip_slot(game, oid, sid)
+
         tags = getattr(ent, "tags", {}) or {}
         tags["equipped_slot"] = sid
         try:

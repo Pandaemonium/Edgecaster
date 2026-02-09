@@ -28,7 +28,7 @@ import math
 import pygame
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from .base import (
     PanelScene,
@@ -49,11 +49,13 @@ from edgecaster.systems.chakras import (
     toggle_chakra_active,
     check_resonance_bonuses,
     get_all_chakra_positions_recursive,
+    get_chakra_connections_recursive,
     collect_all_chakra_nodes,
     get_resonance_modifiers,
     CHARGE_MAX_BASE,
     is_branch_root,
 )
+from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.prototypes import resolve_body_schema
 
 if TYPE_CHECKING:
@@ -308,6 +310,7 @@ class ChakraSilhouetteWidget(Widget):
         self,
         *,
         actor: Any = None,
+        state_provider: Optional[Callable[[], ChakraState]] = None,
         on_chakra_click: Optional[callable] = None,
         on_chakra_hover: Optional[callable] = None,
         on_chakra_drag_start: Optional[callable] = None,
@@ -317,6 +320,7 @@ class ChakraSilhouetteWidget(Widget):
     ) -> None:
         super().__init__()
         self.actor = actor
+        self._state_provider = state_provider
         self.on_chakra_click = on_chakra_click
         self.on_chakra_hover = on_chakra_hover
         self.on_chakra_drag_start = on_chakra_drag_start
@@ -479,53 +483,24 @@ class ChakraSilhouetteWidget(Widget):
         depth: int = 0,
         recursion_guard: Optional[Set[str]] = None,
     ) -> None:
-        """Recursively build parent-child connections for energy flow lines."""
-        guard = set(recursion_guard or ())
+        """Build parent-child connections for energy flow lines.
 
-        nodes = _get_nodes_from_schema(body_schema)
-        if not nodes:
-            return
-
-        for node_id, node in nodes.items():
-            if not isinstance(node, dict):
-                continue
-
-            full_id = f"{prefix}{node_id}" if prefix else node_id
-
-            # Add connections to children within this schema
-            children = node.get("children", [])
-            if isinstance(children, list):
-                for child_id in children:
-                    if child_id:
-                        child_full_id = f"{prefix}{child_id}" if prefix else str(child_id)
-                        if child_full_id in self._chakra_points:
-                            self._connections.append((full_id, child_full_id))
-
-            # If this is an unlocked branch root, connect to sub-schema root
-            # and recurse into sub-schema
-            proto_id = node.get("proto", node_id)
-            if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
-                if str(proto_id) in guard:
-                    continue
-                try:
-                    sub_schema = resolve_body_schema(proto_id)
-                    if sub_schema and isinstance(sub_schema, dict):
-                        sub_root = sub_schema.get("root")
-                        if sub_root:
-                            sub_root_full = f"{full_id}.{sub_root}"
-                            if sub_root_full in self._chakra_points:
-                                # Connect branch root to sub-schema root
-                                self._connections.append((full_id, sub_root_full))
-                        # Recurse into sub-schema
-                        self._build_connections(
-                            sub_schema, chakra_state,
-                            prefix=f"{full_id}.",
-                            depth=depth + 1
-                            ,
-                            recursion_guard=guard | {str(proto_id)},
-                        )
-                except Exception:
-                    pass
+        Delegate to the canonical chakra graph builder so silhouette wiring
+        matches runtime/preview generator wiring exactly.
+        """
+        try:
+            all_edges = get_chakra_connections_recursive(
+                body_schema,
+                chakra_state,
+                prefix=prefix,
+                depth=depth,
+                recursion_guard=recursion_guard,
+            )
+        except Exception:
+            all_edges = []
+        for a_id, b_id in all_edges:
+            if a_id in self._chakra_points and b_id in self._chakra_points:
+                self._connections.append((a_id, b_id))
 
     def _compute_pixel_positions(self) -> None:
         """Convert unit positions to pixel positions based on current camera."""
@@ -1040,6 +1015,13 @@ class ChakraSilhouetteWidget(Widget):
         """Return state override when present, otherwise actor state."""
         if self.state_override is not None:
             return self.state_override
+        if self._state_provider is not None:
+            try:
+                state = self._state_provider()
+                if isinstance(state, ChakraState):
+                    return state
+            except Exception:
+                pass
         if self.actor is None:
             return ChakraState()
         return _get_chakra_state(self.actor)
@@ -1194,9 +1176,15 @@ class PatternPreviewWidget(Widget):
     Updates whenever chakras are toggled, with a smooth morph animation.
     """
 
-    def __init__(self, *, actor: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        actor: Any = None,
+        state_provider: Optional[Callable[[], ChakraState]] = None,
+    ) -> None:
         super().__init__()
         self.actor = actor
+        self._state_provider = state_provider
         self._pattern_surface: Optional[pygame.Surface] = None
         self._dirty: bool = True
         self._anim_time_ms: int = 0
@@ -1285,7 +1273,15 @@ class PatternPreviewWidget(Widget):
             return
 
         body_schema = _get_body_schema(self.actor)
-        chakra_state = self.state_override or _get_chakra_state(self.actor)
+        if self.state_override is not None:
+            chakra_state = self.state_override
+        elif self._state_provider is not None:
+            try:
+                chakra_state = self._state_provider()
+            except Exception:
+                chakra_state = _get_chakra_state(self.actor)
+        else:
+            chakra_state = _get_chakra_state(self.actor)
 
         try:
             # Canonical seed builder used by runtime cast as well.
@@ -1296,7 +1292,8 @@ class PatternPreviewWidget(Widget):
                 body_schema,
                 chakra_state,
                 base_scale=1.0,
-                require_root=False,
+                # Match runtime cast behavior exactly so preview is WYSIWYG.
+                require_root=True,
             )
         except Exception:
             self._pattern_surface = None
@@ -1677,6 +1674,7 @@ class ChakraSelectionScene(PanelScene):
         # Create widgets
         self._silhouette = ChakraSilhouetteWidget(
             actor=self._actor,
+            state_provider=self._get_ui_state,
             on_chakra_click=self._on_chakra_click,
             on_chakra_hover=self._on_chakra_hover,
             on_chakra_drag_start=self._on_chakra_drag_start,
@@ -1685,7 +1683,7 @@ class ChakraSelectionScene(PanelScene):
             on_drag_select=self._on_drag_select,
         )
 
-        self._preview = PatternPreviewWidget(actor=self._actor)
+        self._preview = PatternPreviewWidget(actor=self._actor, state_provider=self._get_ui_state)
         self._list_widget = ChakraListWidget(
             items=[],
             get_state=self._get_ui_state,
@@ -1791,7 +1789,7 @@ class ChakraSelectionScene(PanelScene):
         if not self._actor:
             self._list_widget.set_items([])
             return
-        chakra_state = self._get_actor_state()
+        chakra_state = self._get_ui_state()
         body_schema = _get_body_schema(self._actor)
 
         entries: List[ChakraListEntry] = []
@@ -2112,6 +2110,15 @@ class ChakraSelectionScene(PanelScene):
             return self._working_state
         if self._actor is None:
             return ChakraState()
+        # Live Chakra UI should reflect temporary equipped-item effects.
+        # We keep persistent edits on actor.chakra_state, but display uses this
+        # effective overlay so unlock/auto-activate item behavior is visible.
+        try:
+            eff = chakra_items_system.effective_chakra_state(self.game, self._actor)
+            if isinstance(eff, ChakraState):
+                return eff
+        except Exception:
+            pass
         return _get_chakra_state(self._actor)
 
     def _get_actor_state(self) -> ChakraState:

@@ -3407,7 +3407,7 @@ class AsciiRenderer:
         pred = self._ui_attr("aim_prediction", None)
         ox, oy = self._zone_abs_offset(game)
         aim_action = getattr(pred, "action", None) or self._ui_attr("aim_action", None)
-        if aim_action not in ("activate_all", "activate_seed", "throw_flask"):
+        if aim_action not in ("activate_all", "activate_seed", "throw_flask", "wind_rush"):
             return
         origin = game.pattern_anchor
         if origin is None or not game.pattern.vertices:
@@ -3438,8 +3438,8 @@ class AsciiRenderer:
                     center = (tx + 0.5, ty + 0.5)
             else:
                 center = verts[hover_vertex]
-                cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
             r2 = radius * radius
             target_vertices = getattr(pred, "target_vertices", None)
@@ -3451,12 +3451,13 @@ class AsciiRenderer:
                 vx, vy = verts[idx]
                 px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
                 py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
-                pygame.draw.circle(self.surface, (200, 240, 255), (px, py), max(3, self.tile // 5))
-        else:  # activate_seed
+                pygame.draw.circle(self.surface, (200, 240, 255), (px, py), int(max(3, self.tile // 5)))
+        elif aim_action == "activate_seed":
             center = verts[hover_vertex]
+            vx, vy = center
             px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
             py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
-            pygame.draw.circle(self.surface, (255, 230, 120), (px, py), max(5, self.tile // 3))
+            pygame.draw.circle(self.surface, (255, 230, 120), (px, py), int(max(5, self.tile // 3)))
             target_vertices = getattr(pred, "target_vertices", None) or []
             seen = set()
             ordered_targets = []
@@ -3472,11 +3473,84 @@ class AsciiRenderer:
                 px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
                 py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
                 color = (200, 220, 255) if idx != hover_vertex else (255, 230, 120)
-                pygame.draw.circle(self.surface, color, (px, py), max(3, self.tile // 5))
+                pygame.draw.circle(self.surface, color, (px, py), int(max(3, self.tile // 5)))
                 tx = int(round(vx))
                 ty = int(round(vy))
                 rect = pygame.Rect(tx * self.tile + self.origin_x, ty * self.tile + self.origin_y, self.tile, self.tile)
                 pygame.draw.rect(self.surface, color, rect, 1)
+        else:  # wind_rush
+            # Highlight selected destination vertex.
+            center = verts[hover_vertex]
+            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            pygame.draw.circle(self.surface, (255, 240, 130), (cx, cy), int(max(6, self.tile // 3)), width=2)
+            pygame.draw.circle(self.surface, (255, 240, 130), (cx, cy), int(max(3, self.tile // 6)))
+
+            # Draw each graph edge in the predicted rush path.
+            # Wind Rush applies damage with falloff out to ~1 tile from the path;
+            # render a soft gradient halo so the hit zone is legible.
+            path_vertices = list(getattr(pred, "target_vertices", None) or [])
+            if len(path_vertices) >= 2:
+                path_segments_px: list[tuple[tuple[int, int], tuple[int, int]]] = []
+
+                # If the caster is mid-edge, include the initial partial segment
+                # from caster tile center to the first path vertex.
+                try:
+                    caster = game._level().actors.get(game.player_id)
+                except Exception:
+                    caster = None
+                if caster is not None:
+                    first_idx = path_vertices[0]
+                    if first_idx is not None and 0 <= first_idx < len(verts):
+                        av = verts[first_idx]
+                        ax = int((av[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                        ay = int((av[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                        sx = int((caster.pos[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                        sy = int((caster.pos[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                        if (sx, sy) != (ax, ay):
+                            path_segments_px.append(((sx, sy), (ax, ay)))
+
+                for i in range(len(path_vertices) - 1):
+                    a_idx = path_vertices[i]
+                    b_idx = path_vertices[i + 1]
+                    if (
+                        a_idx is None
+                        or b_idx is None
+                        or a_idx < 0
+                        or b_idx < 0
+                        or a_idx >= len(verts)
+                        or b_idx >= len(verts)
+                    ):
+                        continue
+                    av = verts[a_idx]
+                    bv = verts[b_idx]
+                    ax = int((av[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                    ay = int((av[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    bx = int((bv[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                    by = int((bv[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    path_segments_px.append(((ax, ay), (bx, by)))
+
+                if path_segments_px:
+                    layer = pygame.Surface(self.surface.get_size(), pygame.SRCALPHA)
+                    core_w = int(max(2, self.tile // 8))
+                    # Match game logic: no Wind Rush damage beyond one tile.
+                    aura_radius_px = int(max(core_w + 2, round(self.tile)))
+                    for (a, b) in path_segments_px:
+                        # Outer-to-inner bands approximate distance falloff.
+                        for frac, alpha_band in ((1.00, 26), (0.66, 44), (0.33, 68)):
+                            width = int(max(core_w + 1, core_w + 2 * aura_radius_px * frac))
+                            pygame.draw.line(layer, (90, 245, 255, int(alpha_band)), a, b, width)
+                        pygame.draw.line(self.surface, (95, 245, 255), a, b, core_w)
+                    self.surface.blit(layer, (0, 0))
+
+                # Highlight path vertices to communicate traversal order.
+                for idx in path_vertices:
+                    if idx is None or idx < 0 or idx >= len(verts):
+                        continue
+                    vx, vy = verts[idx]
+                    px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+                    py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    pygame.draw.circle(self.surface, (170, 255, 255), (px, py), int(max(3, self.tile // 7)))
 
         # render previews with 2s triangle-wave fade
         t = pygame.time.get_ticks()
@@ -3529,6 +3603,51 @@ class AsciiRenderer:
             # position above circle: just outside the top edge
             offset = int(radius * self.tile) if radius else int(1.0 * self.tile)
             self.surface.blit(surf, (cx - txt.get_width() // 2, cy - offset - txt.get_height() - 4))
+
+
+    def draw_deferred_overlay(self, game: Game) -> None:
+        """Visual telegraph for pending deferred (slow) actions.
+
+        Draws a pulsing coloured overlay on each tile in the danger zone.
+        Pulse speed increases as resolution approaches.
+        """
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+        deferred_actions = getattr(level, "deferred_actions", None)
+        if not deferred_actions:
+            return
+        ox, oy = self._zone_abs_offset(game)
+        tval = pygame.time.get_ticks() / 1000.0
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        for da in deferred_actions:
+            # Time-remaining fraction (1.0 = just started, 0.0 = about to fire).
+            total = max(1, da.resolve_tick - da.created_tick)
+            remaining = max(0, da.resolve_tick - level.current_tick)
+            frac = remaining / total
+
+            # Pulse frequency ramps up as resolution approaches.
+            freq = 2.0 + 6.0 * (1.0 - frac)
+            pulse = 0.5 + 0.5 * math.sin(tval * freq * 2.0 * math.pi)
+
+            # Base alpha ramps up as resolution nears.
+            base_alpha = int(80 + 80 * (1.0 - frac))
+            alpha = int(base_alpha * (0.5 + 0.5 * pulse))
+
+            r, g, b = da.color
+            tile_color = (r, g, b, alpha)
+            border_color = (r, g, b, int(alpha * 0.6))
+
+            for tx, ty in da.tiles:
+                px = int((tx + ox) * self.tile + self.origin_x)
+                py = int((ty + oy) * self.tile + self.origin_y)
+                rect = pygame.Rect(px, py, self.tile, self.tile)
+                pygame.draw.rect(overlay, tile_color, rect)
+                pygame.draw.rect(overlay, border_color, rect, width=1)
+
+        self.surface.blit(overlay, (0, 0))
 
 
     def draw_activation_overlay(self, game: Game) -> None:
@@ -3965,6 +4084,72 @@ class AsciiRenderer:
             px = int(tx * self.tile + self.tile * 0.5 + self.origin_x)
             py = int(ty * self.tile + self.tile * 0.5 + self.origin_y)
             pygame.draw.circle(overlay, tip_col, (px, py), tip_r)
+
+        self.surface.blit(overlay, (0, 0))
+
+    def draw_throwing_knife_overlay(self, game: Game) -> None:
+        """Draw active thrown-knife projectiles as spinning rune-like blades."""
+        level = getattr(game, "_level", lambda: None)()
+        if level is None:
+            return
+        knives = list(getattr(level, "thrown_knives_state", []) or [])
+        if not knives:
+            return
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        # Keep knife geometry crisp and readable at all zoom levels:
+        # use anti-aliased 1px lines instead of tile-scaled thick strokes.
+        # This avoids dense edge overlap when zoomed in.
+        tip_r = 1 if self.tile >= 20 else 2
+
+        for knife in knives:
+            try:
+                cx = float(knife.get("x", 0.0))
+                cy = float(knife.get("y", 0.0))
+                spin = float(knife.get("spin", 0.0))
+                heading = float(knife.get("heading", 0.0))
+                scale = float(knife.get("shape_scale_tiles", 0.75))
+                verts = list(knife.get("shape_verts", []) or [])
+                segs = list(knife.get("shape_segs", []) or [])
+                travelled = float(knife.get("distance", 0.0))
+                max_dist = max(1e-6, float(knife.get("max_distance", 9.0)))
+            except Exception:
+                continue
+
+            if not verts:
+                continue
+
+            # Fade as the knife approaches its range cap, with a subtle pulse.
+            life = max(0.0, min(1.0, 1.0 - (travelled / max_dist)))
+            pulse = 0.78 + 0.22 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 120.0))
+            alpha = int(max(30, min(255, 230.0 * life * pulse)))
+            halo_col = (120, 240, 255, int(max(18, alpha * 0.42)))
+            core_col = (185, 250, 255, alpha)
+
+            ang = heading + spin
+            c = math.cos(ang)
+            s = math.sin(ang)
+            screen_pts: list[tuple[int, int]] = []
+            for vx, vy in verts:
+                lx = float(vx) * scale
+                ly = float(vy) * scale
+                wx = cx + (lx * c - ly * s)
+                wy = cy + (lx * s + ly * c)
+                px, py = self.abs_tile_to_screen_px(wx, wy)
+                screen_pts.append((int(round(px)), int(round(py))))
+
+            for a_idx, b_idx in segs:
+                if a_idx < 0 or b_idx < 0 or a_idx >= len(screen_pts) or b_idx >= len(screen_pts):
+                    continue
+                p0 = screen_pts[a_idx]
+                p1 = screen_pts[b_idx]
+                # Very subtle glow under-pass, then crisp core.
+                pygame.draw.aaline(overlay, halo_col, p0, p1)
+                pygame.draw.aaline(overlay, core_col, p0, p1)
+
+            # Bright center to make the projectile readable at distance.
+            cpx, cpy = self.abs_tile_to_screen_px(cx, cy)
+            pygame.draw.circle(overlay, core_col, (int(round(cpx)), int(round(cpy))), tip_r)
 
         self.surface.blit(overlay, (0, 0))
 
@@ -4505,11 +4690,13 @@ class AsciiRenderer:
         self.draw_seal_trial_overlay(game)
         self.draw_pattern_overlay(game)
         self.draw_choking_vines_overlay(game)
+        self.draw_throwing_knife_overlay(game)
         self.draw_sparkle_overlay(game)
         self.draw_lightning_overlay(game)
         self.draw_action_preview_underlay(game)
         self.draw_push_preview(game)
         self.draw_place_overlay(game)
+        self.draw_deferred_overlay(game)
         self.draw_activation_overlay(game)
         self.draw_aim_overlay(game)
         # Unified entity rendering: items + actors together.

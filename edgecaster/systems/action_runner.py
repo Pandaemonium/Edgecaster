@@ -152,7 +152,44 @@ def apply_tick_offset(actor: "Actor", delay: int) -> int:
     return max(1, int(delay) + int(offset))
 
 
-def calculate_final_delay(actor: "Actor", base_delay: int) -> int:
+def _apply_chakra_delay_modifiers(
+    game: "Game",
+    actor_id: str,
+    action_name: str,
+    delay: int,
+) -> int:
+    """Apply chakra-derived delay modifiers.
+
+    This is intentionally action-specific:
+    - `move` and `brute_move` can be modified by movement chakra passives.
+    - Other actions currently ignore movement modifiers.
+    """
+    if delay <= 0:
+        return delay
+    if actor_id != getattr(game, "player_id", None):
+        return delay
+    if action_name not in {"move", "brute_move"}:
+        return delay
+
+    try:
+        mult = float(game.chakra_effect_value("move_delay_mult", actor_id=actor_id))
+    except Exception:
+        mult = 1.0
+    if mult <= 0.0:
+        mult = 1.0
+    if abs(mult - 1.0) < 1e-6:
+        return delay
+
+    return max(1, int(round(float(delay) * mult)))
+
+
+def calculate_final_delay(
+    game: "Game",
+    actor: "Actor",
+    actor_id: str,
+    action_name: str,
+    base_delay: int,
+) -> int:
     """Calculate final action delay after applying all modifiers."""
     delay = base_delay
 
@@ -163,6 +200,9 @@ def calculate_final_delay(actor: "Actor", base_delay: int) -> int:
 
     # Apply tick offset (haste effects)
     delay = apply_tick_offset(actor, delay)
+
+    # Apply chakra passives (e.g., foot speed).
+    delay = _apply_chakra_delay_modifiers(game, actor_id, action_name, delay)
 
     return delay
 
@@ -481,7 +521,7 @@ def run_action(
         apply_cooldown(origin, action_name, action_def.cooldown_ticks)
 
     # Calculate final delay with modifiers
-    final_delay = calculate_final_delay(actor, base_delay)
+    final_delay = calculate_final_delay(game, actor, actor_id, action_name, base_delay)
     _telemetry(
         game,
         "action_executed",

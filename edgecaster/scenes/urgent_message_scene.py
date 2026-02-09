@@ -189,6 +189,10 @@ class UrgentMessageScene(PopupMenuScene):
         self.game = game
         self.message = message
         self.title = title
+        # Title fit state is computed from renderer metrics in _compute_snug_rect().
+        # Defaults keep legacy behavior until first layout pass.
+        self._title_scale: int = 2
+        self._title_wrap_px: int = 0
 
         self.stinger_music_key = stinger_music_key
         self.stinger_scary = stinger_scary
@@ -272,8 +276,26 @@ class UrgentMessageScene(PopupMenuScene):
         title = (self.get_ascii_art() or "").strip()
         body_text = (self.get_body_text() or "").strip()
 
-        # Big chunky title (fixed behavior: draw base title font, then scale pixels).
-        banner = ScaledLabelWidget(title, align="center", scale=2) if title else None
+        # Title auto-fit:
+        # - scale=2 when short enough
+        # - scale=1 when medium
+        # - wrapped single-scale text when too wide
+        banner = None
+        if title:
+            wrap_px = int(getattr(self, "_title_wrap_px", 0))
+            if wrap_px > 0:
+                banner = WrappedMultiLineLabelWidget(
+                    title,
+                    align="center",
+                    line_spacing=2,
+                    max_width_px=wrap_px,
+                )
+            else:
+                banner = ScaledLabelWidget(
+                    title,
+                    align="center",
+                    scale=max(1, int(getattr(self, "_title_scale", 2))),
+                )
 
         # Reserved art space (blank for now).
         art = None
@@ -352,7 +374,6 @@ class UrgentMessageScene(PopupMenuScene):
         font = getattr(r, "menu_font", getattr(r, "small_font", getattr(r, "font")))
         title_font = getattr(r, "menu_title_font", font)
 
-        title_scale = 2
         title = (self.title or "").strip()
         body = (self.message or "").strip()
         choices = list(self.choices or ["Continue..."])
@@ -360,10 +381,34 @@ class UrgentMessageScene(PopupMenuScene):
         max_text_w = min(760, int(screen_w * 0.78))
         max_text_w = max(360, max_text_w)
 
-        # Title (scaled)
-        t_w0, t_h0 = title_font.size(title or " ")
-        title_w = t_w0 * title_scale
-        title_h = t_h0 * title_scale
+        # Title fit policy:
+        # - keep chunky scale=2 when it fits;
+        # - drop to scale=1 when needed;
+        # - if still too wide, wrap title lines at max_text_w.
+        title_w = 0
+        title_h = 0
+        title_scale = 2
+        title_wrap_px = 0
+        if title:
+            t_w0, t_h0 = title_font.size(title)
+            if t_w0 * 2 <= max_text_w:
+                title_scale = 2
+                title_w = t_w0 * title_scale
+                title_h = t_h0 * title_scale
+            elif t_w0 <= max_text_w:
+                title_scale = 1
+                title_w = t_w0
+                title_h = t_h0
+            else:
+                title_scale = 1
+                title_wrap_px = max_text_w
+                title_lines = _wrap_text_px(title_font, title, max_text_w)
+                title_w = max((title_font.size(line)[0] for line in title_lines), default=0)
+                title_h = len(title_lines) * title_font.get_height() + max(0, len(title_lines) - 1) * 2
+
+        # Persist fit state so _build_widgets can render matching title widgets.
+        self._title_scale = int(title_scale)
+        self._title_wrap_px = int(title_wrap_px)
 
         # Art block
         art_h = int(self.ART_HEIGHT_PX) if getattr(self, "art_surface", None) is not None else 0

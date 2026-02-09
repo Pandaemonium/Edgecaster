@@ -27,6 +27,7 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "zigzag": "Apply a zigzag iteration to the current rune.",
     "custom": "Apply your current custom saved generator pattern.",
     "chakra": "Rebuild the rune from active chakras in your body schema.",
+    "wind_rush": "Dash to a selected rune vertex and strike along the path.",
     "activate_all": "Activate vertices in a radius around the selected vertex.",
     "activate_seed": "Activate selected vertex and neighboring graph hops.",
     "energy_kick": "Pulse from foot-lineage vertices and damage nearby targets.",
@@ -65,6 +66,12 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
         "Vines originate from edge midpoints near enemies.",
         "Existing vines can extend and branch over time.",
     ),
+    "wind_rush": (
+        "Targeting: choose a rune vertex.",
+        "You must be standing on the rune to begin the dash.",
+        "Travel time is fixed to 5 heartbeats and has a long cooldown.",
+        "Hits hostile actors standing on the dash line.",
+    ),
     "lightning": (
         "Excludes the caster from damage.",
         "Damage is split evenly among affected targets.",
@@ -98,7 +105,7 @@ def _cooldown_and_charges(
 
     base_cd = int(getattr(action_def, "cooldown_ticks", 0) or 0)
     if base_cd > 0:
-        lines.append(f"Base cooldown: {base_cd} ticks.")
+        lines.append(f"Base cooldown: {base_cd} heartbeats.")
 
     if actor_id is None:
         return tuple(lines)
@@ -120,7 +127,7 @@ def _cooldown_and_charges(
         cd = 0
 
     if cd > 0:
-        lines.append(f"Recharging: {cd} ticks remaining.")
+        lines.append(f"Recharging: {cd} heartbeats remaining.")
 
     # If this action is item-granted and charged, surface remaining charges.
     try:
@@ -165,4 +172,3 @@ def resolve_action_tooltip(game: Any, action_name: str, actor_id: str | None = N
         summary=summary,
         lines=tuple(lines),
     )
-

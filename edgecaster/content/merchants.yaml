@@ -44,3 +44,30 @@ general_store:
     - proto: energy_flask
       weight: 3
       qty: [5, 10]
+    - proto: heel_charm
+      weight: 2
+      qty: [1, 1]
+    - proto: rootwrap_boot
+      weight: 2
+      qty: [1, 1]
+    - proto: sun_palm_wrap
+      weight: 2
+      qty: [1, 1]
+    - proto: mirror_knuckle_wire
+      weight: 2
+      qty: [1, 1]
+    - proto: wrist_compass
+      weight: 2
+      qty: [1, 1]
+    - proto: ring_of_echoes
+      weight: 2
+      qty: [1, 1]
+    - proto: eye_sigil
+      weight: 1
+      qty: [1, 1]
+    - proto: seer_pin
+      weight: 2
+      qty: [1, 1]
+    - proto: silent_gait_strap
+      weight: 2
+      qty: [1, 1]

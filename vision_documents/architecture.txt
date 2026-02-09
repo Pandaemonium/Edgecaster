@@ -12,6 +12,10 @@ SCENES (edgecaster/scenes/)
 - Do scene transitions/stacking via SceneManager.
 - Declare visual effects by NAME (but do not implement simulation rules).
 - Do not do low-level rendering or camera math.
+- `edgecaster/scenes/blade_editor_scene.py`: V1 Fractal Blade editor.
+  - Open via `open_blade_editor` command (default `B`) or knife context action in inventory.
+  - Edits Blade-class intrinsic blade profile only in V1.
+  - Immediate apply on each edit; `Esc/Cancel` restores entry snapshot.
 
 INVENTORY / LOOK SCENES (edgecaster/scenes/inventory_scene.py)
 - Purpose: a two-pane "inspect + manipulate" UI for an entity.
@@ -153,6 +157,32 @@ Current concern map (authoritative):
 - `edgecaster/systems/ambient_spawns.py`
   - Active-window ambient hostile population maintenance (tier-aware top-up over time).
   - Called from `Game._advance_time` after per-level scheduling ticks.
+- `edgecaster/systems/combat_actions.py`
+  - Runtime simulation for action-heavy combat abilities (Wind Rush, Energy Kick,
+    Palm Burst, Mirror Strike, Choking Vines, Corrosive Melt, Fern Start,
+    Throw Flask, Destabilize, Ignite, Regrow, Freeze, and Wind Rush
+    preview/path helpers).
+  - `Game` now keeps thin delegate methods for compatibility while the
+    implementation lives in this module.
+- `edgecaster/systems/blade_runtime.py`
+  - Runtime for fractal blade melee (V1): actor blade state, INT-based generator
+    slot caps, and verb evaluators for `slash` / `thrust` / `cleave`.
+  - Exposes `blade_stat_snapshot(...)` for editor/tooltips so UI and combat share
+    one stat source of truth.
+  - Owns bump-safe melee execution entry point used by both action handlers and
+    movement bump routing (`act_blade_attack`).
+  - Keeps hostile-only policy for blade melee centralized to avoid per-verb drift.
+- `edgecaster/systems/pattern_runtime.py`
+  - Runtime logic for pattern/chakra graph mutation and activation:
+    fractal-op application, Activate R/N damage execution, and polygon/star/chakra
+    generator actions.
+  - Owns chakra resonance/charge helpers used by pattern actions.
+  - `Game` keeps delegate wrappers (`_apply_fractal_op`, `_activate_pattern_*`,
+    `act_polygon`, `act_star`, `act_chakra`, chakra charge/modifier helpers).
+- `edgecaster/systems/chakra_effects.py`
+  - Data-driven passive effects derived from active chakra conditions.
+  - Exposes aggregated effect values (e.g. `fov_radius_bonus`, `move_delay_mult`) so systems query
+    one API instead of inspecting chakra node ids ad hoc.
 - `edgecaster/systems/damage_policy.py`
   - Central target-filtering rules for damaging effects (self/hostile/neutral/friendly/environment).
   - Replaces ad-hoc per-ability faction checks with declarative `DamagePolicy`.
@@ -181,12 +211,21 @@ Key modules (non-exhaustive):
 - systems/scheduling.py: event queue and time advance helpers
 - systems/combat.py: attack resolution + on-death hooks
 - systems/inventory.py + systems/equipment.py: inventory, equip/unequip, stat mods
+- systems/equip_rules.py: item->slot compatibility policy (allowed/blocked slots, prefixes, kinds)
 - systems/pattern_ops.py: pattern placement, activation, and pattern-related effects
 - systems/targeting.py: aim prediction data (used by renderer only to draw)
 - systems/previews.py: non-committing previews for UI
 - systems/overmap.py: Julia grid, world map cache/threading, corruption/anchors
 - systems/spawning.py: spawn helpers, biome-aware creature selection (tile.biome_id + biome_spawn tags)
 - systems/ambient_spawns.py: active-zone population maintenance (Option 2 roaming spawn model)
+- systems/combat_actions.py: extracted runtime logic for advanced combat actions
+  (Wind Rush / Energy Kick / Palm Burst / Mirror Strike / Choking Vines /
+   Throw Flask / Destabilize / Ignite / Regrow / Freeze / corrosion + fern toggles)
+- systems/blade_runtime.py: extracted runtime logic for Blade-class melee verbs
+  (`slash`, `thrust`, `cleave`), actor blade state management, and blade stat snapshots
+  consumed by editor/tooltip UI.
+- systems/pattern_runtime.py: extracted pattern/chakra runtime execution
+  (fractal op mutation, Activate R/N, polygon/star/chakra actions, chakra charge/modifiers)
 - systems/poi_spawning.py: zone-time POI realization policy (structures/NPCs/lair ruin content)
 - systems/damage_policy.py: reusable damage target filtering + relation gating
 - systems/tooltips.py: action help resolver for ability-bar hover tooltips
@@ -197,6 +236,25 @@ Key modules (non-exhaustive):
 - systems/lorenz_aura.py: Strange Attractor aura simulation (game-side)
 - systems/lighting.py: light emission from entities (illumination, visibility)
 - systems/chakras.py: body-based chakra system for fractal pattern generation
+- systems/chakra_effects.py: centralized chakra passive-rule evaluation
+- systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers)
+
+Chakra item content tags (entities.yaml):
+- Temporary unlocks:
+  - `chakra_unlock_equipped_slot: true`
+  - `chakra_unlock_nodes: [head.skull.face.eye, ...]`
+- Temporary auto-activation while equipped:
+  - `chakra_auto_activate_equipped_slot: true`
+  - `chakra_auto_activate_nodes: [...]`
+- Per-hit damage modifiers:
+  - `chakra_hit_mods: [{actions, match, use_equipped_slot, descendants, op, value, ...}]`
+  - `match=source|illuminated|either` selects provenance scope.
+  - `op=add|mul|max` defines stacking behavior.
+- Slot constraints:
+  - `allowed_slot_kinds`, `blocked_slot_kinds`
+  - `allowed_slot_prefixes`, `blocked_slot_prefixes`
+  - `allowed_slots`, `blocked_slots`
+  - Slot path delimiters `:` and `/` are both supported at runtime.
 
 ===============================================================================
 6) VISIBILITY + LIGHTING
@@ -205,6 +263,11 @@ FOV (Field of View):
 - game.py `_update_fov()` computes which tiles the player can see
 - Uses Bresenham LOS checks (`_los()`) from player to each tile in radius
 - Equipment can modify view radius via `equip_mods: {view: N}` tag
+- Chakra passives can also modify view radius via `systems/chakra_effects.py`
+  (currently: active eye chakra grants `fov_radius_bonus=+3`).
+- Chakra passives can modify move timing via `systems/chakra_effects.py`
+  (currently: active foot chakra grants `move_delay_mult=0.8`, so default move
+  cost is 10 -> 8 heartbeats).
 
 Lighting System:
 - systems/lighting.py handles light-emitting entities
@@ -320,6 +383,8 @@ UI:
 Chakra pipeline responsibilities (key scripts):
 - edgecaster/systems/chakras.py: core chakra data model (unlock/activate), body schema traversal,
   world-position projection, and seed pattern generation + metadata.
+- edgecaster/systems/chakra_items.py: runtime effective chakra overlays from equipped items
+  (temporary unlocks, auto-activation, and hit-modifier tag parsing).
 - edgecaster/scenes/chakra_scene.py: player-facing UI for selecting/activating chakras, choosing
   the pattern root, and previewing the generated shape (does not apply gameplay effects).
 - edgecaster/game.py (act_chakra): applies the chakra generator to the live rune, aligning the

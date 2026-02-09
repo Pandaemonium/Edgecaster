@@ -620,6 +620,9 @@ def spawn_enemies(
         # Slaver packs: a slaver arrives chained to two brutes.
         if tmpl_id == "slaver":
             _spawn_slaver_pack(game, level, mob, pos)
+        # Angry circus: ringmaster arrives with troupe members.
+        if tmpl_id == "furious_ringmaster":
+            _spawn_angry_circus(game, level, mob, pos)
 
         register_actor(game, level, mob, schedule_ai=True)
         spawned += 1
@@ -685,6 +688,88 @@ def _spawn_slaver_pack(
 
     if brute_ids:
         slaver.tags["slaver_minion_ids"] = brute_ids
+
+
+def _spawn_angry_circus(
+    game: "Game",
+    level: "LevelState",
+    ringmaster: "Actor",
+    pos: Tuple[int, int],
+) -> None:
+    """Spawn a coordinated circus pack centered on a furious ringmaster.
+
+    Group rules are encoded in tags and enforced in two places:
+    1) AI intent (`circus_member` / `furious_ringmaster`)
+    2) movement dispatcher hard-leash in `Game._handle_move_or_attack`
+    """
+    ringmaster.tags = getattr(ringmaster, "tags", None) or {}
+    group_id = f"angry_circus_{ringmaster.id}"
+    leash = int(ringmaster.tags.get("circus_leash_range", 15) or 15)
+    ringmaster.tags["circus_group_id"] = group_id
+    ringmaster.tags["circus_leash_range"] = leash
+
+    member_templates = [
+        "angry_elephant",
+        "angry_clown",
+        "angry_acrobat",
+        "angry_human_cannonball",
+        "angry_bearded_lady",
+    ]
+    # Start close to ringmaster so the group reads as a single encounter.
+    offsets = [
+        (-2, 0), (2, 0), (0, -2), (0, 2),
+        (-2, -2), (2, -2), (-2, 2), (2, 2),
+        (-3, 0), (3, 0), (0, -3), (0, 3),
+        (-1, -2), (1, -2), (-1, 2), (1, 2),
+    ]
+    try:
+        game.rng.shuffle(offsets)
+    except Exception:
+        pass
+
+    x, y = pos
+    member_ids: List[str] = []
+    used_positions: set[tuple[int, int]] = {pos}
+    for tmpl in member_templates:
+        spawn_xy: tuple[int, int] | None = None
+        for dx, dy in offsets:
+            tx, ty = x + dx, y + dy
+            if (tx, ty) in used_positions:
+                continue
+            if not level.world.in_bounds(tx, ty):
+                continue
+            if not level.world.is_walkable(tx, ty):
+                continue
+            if game._actor_at(level, (tx, ty)):
+                continue
+            if game._blocking_entity_at(level, (tx, ty)):
+                continue
+            if game._entity_at(level, (tx, ty)):
+                continue
+            spawn_xy = (tx, ty)
+            used_positions.add((tx, ty))
+            break
+        if spawn_xy is None:
+            continue
+
+        m_abs = game.abs_from_zone_local(level.coord, spawn_xy)
+        mate = enemy_factory.spawn_enemy(tmpl, spawn_xy, abs_pos=m_abs)
+        mate.tags = getattr(mate, "tags", None) or {}
+        mate.tags["circus_group_id"] = group_id
+        mate.tags["circus_ringmaster_id"] = ringmaster.id
+        mate.tags["circus_leash_range"] = leash
+
+        zone_tier = getattr(level, "danger_tier", 1) or 1
+        _apply_enemy_zone_scaling(
+            level,
+            mate,
+            zone_tier=zone_tier,
+            enemy_bounds=(5, 9),
+        )
+        register_actor(game, level, mate, schedule_ai=True)
+        member_ids.append(mate.id)
+
+    ringmaster.tags["circus_member_ids"] = member_ids
 
 
 def spawn_imps_near(

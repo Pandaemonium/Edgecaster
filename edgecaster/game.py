@@ -111,6 +111,11 @@ from edgecaster.systems import overmap as overmap_system
 from edgecaster.systems import difficulty as difficulty_system
 from edgecaster.systems import ambient_spawns as ambient_spawns_system
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import combat_actions as combat_actions_system
+from edgecaster.systems import pattern_runtime as pattern_runtime_system
+from edgecaster.systems import blade_runtime as blade_runtime_system
+from edgecaster.systems import chakra_effects as chakra_effects_system
+from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import perf_profiler
 from edgecaster.systems import telemetry as telemetry_system
 from . import lorenz
@@ -239,11 +244,15 @@ class LevelState:
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
     # Choking Vines runtime state (ABS-space tendril segments + tips).
     choking_vines_state: Optional[Dict[str, Any]] = None
+    # Visible thrown-knife projectiles (ABS-space center positions + rune-shape payload).
+    thrown_knives_state: List[Dict[str, Any]] = field(default_factory=list)
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
     # Zone difficulty metadata (computed on zone creation).
     danger_value: float = 0.0
     danger_tier: int = 1
     danger_sources: Dict[str, float] = field(default_factory=dict)
+    # Active deferred (telegraphed) actions pending resolution.
+    deferred_actions: List[Any] = field(default_factory=list)
     # Accumulator for ambient hostile top-up timing (Option 2 roaming spawns).
     ambient_spawn_accum: float = 0.0
 
@@ -397,6 +406,7 @@ class Game:
         # flags
         self.map_requested = False
         self.fractal_editor_requested = False
+        self.blade_editor_requested = False
         self.fractal_editor_state = None
         self.camera_needs_recenter = False  # Set by zone transitions to signal camera update
 
@@ -473,6 +483,8 @@ class Game:
         # Inventories: mapping from owner id to a list of carried Entities.
         # Initially empty; per-owner lists are created lazily via get_inventory().
         self.inventories: Dict[str, List[Entity]] = {}
+        # Per-actor fractal blade runtime state.
+        self.blade_states: Dict[str, blade_runtime_system.BladeState] = {}
         # Simple SFX cache for lightweight sounds
         self._sfx_cache: Dict[str, object] = {}
 
@@ -626,10 +638,27 @@ class Game:
                 "meditate",
                 "push_pattern",
                 "chakra",
+                "wind_rush",
                 "energy_kick",
                 "palm_burst",
                 "mirror_strike",
                 "choking_vines",
+            ]
+        elif player_class == "Blade":
+            # Blade kit: melee verbs + core rune manipulation.
+            # Starts with an intrinsic *empty* blade; slots scale with INT.
+            actions += [
+                "slash",
+                "thrust",
+                "cleave",
+                "throwing_knife",
+                "place",
+                "subdivide",
+                "extend",
+                "activate_seed",
+                "reset",
+                "meditate",
+                "push_pattern",
             ]
 
         # For now, all other classes keep only move/wait (empty ability bar).
@@ -654,6 +683,12 @@ class Game:
         lvl = self._level()
         lvl.actors[player.id] = player
         lvl.entities[player.id] = player
+        # Blade class starts with an intrinsic empty blade profile.
+        if player_class == "Blade":
+            try:
+                blade_runtime_system.ensure_actor_blade_state(self, player.id)
+            except Exception:
+                pass
 
         # Canonical absolute position (Phase 1.5 yoga)
         # This makes abs-space the source of truth for player movement/render queries later.
@@ -2432,6 +2467,17 @@ class Game:
         target = self._actor_at(level, (nx, ny))
         if target and target.id != id:
             if self.is_hostile(actor, target) or self.is_hostile(target, actor):
+                # Blade-class hosts replace bump-attack with blade slash.
+                if blade_runtime_system.actor_uses_blade_melee(self, id):
+                    handled = blade_runtime_system.act_blade_attack(
+                        self,
+                        id,
+                        "slash",
+                        target_pos=(nx, ny),
+                        from_bump=True,
+                    )
+                    if handled:
+                        return
                 self._attack(level, actor, target)
                 return
             # Friendly/neutral actors block movement.
@@ -2483,6 +2529,43 @@ class Game:
                         if id == self.player_id:
                             self.log.add("The chain tugs you back.")
                         return
+
+            # Angry circus pack leash: members remain near ringmaster and
+            # ringmaster avoids straying too far from troupe members.
+            if tags.get("circus_group_id"):
+                leash = int(tags.get("circus_leash_range", 15) or 15)
+                ringmaster_id = tags.get("circus_ringmaster_id")
+                # Member rule: cannot increase distance past leash from ringmaster.
+                if ringmaster_id:
+                    ringmaster = level.actors.get(str(ringmaster_id))
+                    if ringmaster is None or not getattr(ringmaster, "alive", False):
+                        # Group leader gone: drop leash tags and continue.
+                        tags.pop("circus_ringmaster_id", None)
+                        tags.pop("circus_group_id", None)
+                        tags.pop("circus_leash_range", None)
+                        actor.tags = tags
+                    else:
+                        rx, ry = ringmaster.pos
+                        cur_d = max(abs(x - rx), abs(y - ry))
+                        new_d = max(abs(nx - rx), abs(ny - ry))
+                        if new_d > leash and new_d > cur_d:
+                            if id == self.player_id:
+                                self.log.add("The ringmaster's whistle calls the troupe back.")
+                            return
+                else:
+                    # Ringmaster rule: keep troupe members within leash.
+                    member_ids = list(tags.get("circus_member_ids", []) or [])
+                    for mid in member_ids:
+                        mate = level.actors.get(str(mid))
+                        if mate is None or not getattr(mate, "alive", False):
+                            continue
+                        mx, my = mate.pos
+                        cur_d = max(abs(x - mx), abs(y - my))
+                        new_d = max(abs(nx - mx), abs(ny - my))
+                        if new_d > leash and new_d > cur_d:
+                            if id == self.player_id:
+                                self.log.add("You can't abandon your circus troupe.")
+                            return
         except Exception:
             pass
 
@@ -3167,648 +3250,26 @@ class Game:
         actor_id: str,
         target_pos: Optional[Tuple[int, int]]
     ) -> None:
-        """Throw an energy flask to activate nearby vertices with high damage.
-
-        Args:
-            actor_id: ID of the actor throwing the flask (usually player)
-            target_pos: (x, y) tile coordinates where the flask lands
-        """
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        if actor is None:
-            return
-
-        # Validate target position
-        if target_pos is None or not level.world.in_bounds(*target_pos):
-            self.log.add("Invalid target location.")
-            return
-
-        # Find the equipped flask
-        from edgecaster.systems.item_grants import find_grant_origin
-
-        inv = self.get_inventory(actor_id)
-        flask = find_grant_origin(inv, "throw_flask")
-
-        if flask is None:
-            self.log.add("No energy flask equipped.")
-            return
-
-        # Get pattern origin and vertices
-        origin = self._activation_origin(level)
-        if origin is None or not level.pattern.vertices:
-            self.log.add("No rune pattern active to energize.")
-            self._consume_flask(actor_id, flask)  # Still consume the flask
-            return
-
-        # Project vertices into world space
-        from edgecaster.patterns.activation import project_vertices
-        world_vertices = project_vertices(level.pattern, origin)
-
-        # Find vertices within flask radius
-        FLASK_RADIUS = 3.0  # 3-tile radius impact zone
-        PER_VERTEX_DAMAGE = 5
-        DAMAGE_CAP = 100
-
-        tx, ty = target_pos
-        center_x = tx + 0.5  # Tile center
-        center_y = ty + 0.5
-
-        active_verts = []
-        r2 = FLASK_RADIUS * FLASK_RADIUS
-
-        for vx, vy in world_vertices:
-            dx = vx - center_x
-            dy = vy - center_y
-            if dx*dx + dy*dy <= r2:
-                active_verts.append((vx, vy))
-
-        if not active_verts:
-            self.log.add("The flask shatters, but no vertices were in range.")
-            self._consume_flask(actor_id, flask)
-            return
-
-        # Apply damage to nearby enemies
-        from edgecaster.patterns.activation import damage_from_vertices
-
-        # Hostile-only splash (no self/environment), centralized via policy.
-        policy = damage_policy_system.DamagePolicy(
-            include_self=False,
-            include_hostile=True,
-            include_neutral=False,
-            include_friendly=False,
-            include_environment=False,
-        )
-        hit_count = 0
-        for _tid, enemy in damage_policy_system.iter_damage_targets(
-            self,
-            level,
-            actor_id,
-            policy,
-            include_actors=True,
-            include_entities=False,
-        ):
-            if not getattr(enemy, "alive", True):
-                continue
-
-            # Calculate damage based on vertices near enemy.
-            dmg = damage_from_vertices(
-                active_verts,
-                enemy.pos,
-                FLASK_RADIUS,
-                PER_VERTEX_DAMAGE,
-                cap=DAMAGE_CAP,
-            )
-
-            if dmg > 0:
-                enemy.stats.hp -= dmg
-                hit_count += 1
-                self.log.add(f"Arcane energy sears {enemy.name} for {dmg} damage!")
-
-                if enemy.stats.hp <= 0:
-                    self._kill_actor(
-                        level,
-                        enemy,
-                        killer_id=actor_id,
-                        killer_is_player=(actor_id == self.player_id),
-                    )
-
-        # Log result
-        if hit_count == 0:
-            self.log.add(f"The flask energizes {len(active_verts)} vertices, but no enemies are nearby.")
-        else:
-            self.log.add(f"Flask impact: {len(active_verts)} vertices activated!")
-
-        # Consume one flask from the stack
-        self._consume_flask(actor_id, flask)
+        return combat_actions_system.act_throw_flask(self, actor_id, target_pos)
 
     def _consume_flask(self, actor_id: str, flask_item: Any) -> None:
-        """Consume one flask from the equipped stack.
-
-        Args:
-            actor_id: Owner of the flask
-            flask_item: The flask item entity
-        """
-        from edgecaster.systems.inventory import get_quantity, set_quantity
-        from edgecaster.systems import equipment as equipment_system
-
-        qty = get_quantity(flask_item)
-
-        if qty > 1:
-            # Reduce stack by 1
-            set_quantity(flask_item, qty - 1)
-            self.log.add(f"Flask thrown. {qty - 1} remaining.")
-        else:
-            # Last flask - remove from inventory and unequip
-            inv = self.get_inventory(actor_id)
-            try:
-                inv.remove(flask_item)
-            except ValueError:
-                pass  # Already removed
-
-            # Unequip if it was equipped
-            if equipment_system.is_equipped(flask_item):
-                try:
-                    self.unequip_item(actor_id, str(flask_item.id))
-                except Exception:
-                    pass
-
-            self.log.add("Last flask consumed.")
-
-        # Refresh actions (flask action may disappear if stack depleted)
-        self.refresh_actor_actions(actor_id)
+        return combat_actions_system._consume_flask(self, actor_id, flask_item)
 
     def act_push_pattern(self, actor_id: str, target_pos=None, rotation_deg: float = 0) -> None:
         level = self._level()
         pattern_ops.push_pattern(self, level, target_pos, rotation_deg)
 
     def act_destabilize(self, actor_id: str) -> None:
-        """Teleport randomly within 10 tiles; 50% chance to take 10% max HP."""
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        if actor is None:
-            return
-        px, py = actor.pos
-        radius = 10
-        rng = getattr(self, "rng", None)
-
-        candidates = []
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                if max(abs(dx), abs(dy)) > radius:
-                    continue
-                tx, ty = px + dx, py + dy
-                if not level.world.in_bounds(tx, ty):
-                    continue
-                if not level.world.is_walkable(tx, ty):
-                    continue
-                candidates.append((tx, ty))
-
-        if candidates:
-            dest = rng.choice(candidates) if rng else candidates[0]
-            actor.pos = dest
-            if actor_id == self.player_id:
-                self.log.add(f"You destabilize and reappear at {dest[0]},{dest[1]}.")
-            else:
-                self.log.add(f"{actor.name} flickers and reappears elsewhere.")
-            level.need_fov = True
-
-        # Damage roll: 50% chance
-        if (rng.random() < 0.5) if rng else True:
-            dmg = max(1, int(actor.stats.max_hp * 0.1))
-            actor.stats.hp -= dmg
-            actor.stats.clamp()
-            if actor_id == self.player_id:
-                self.log.add(f"Chaos bites! You take {dmg} damage.")
-                if actor.stats.hp <= 0:
-                    self.set_urgent("by way of destabilization", title="You unravel...", choices=["Continue..."])
-            else:
-                self.log.add(f"{actor.name} shudders from the destabilization.")
-                if actor.stats.hp <= 0:
-                    self._kill_actor(level, actor, killer_id=actor_id)
+        return combat_actions_system.act_destabilize(self, actor_id)
 
     def act_ignite(self, actor_id: str) -> None:
-        """
-        Ignite red edges for 30 ticks with decaying direct/indirect damage.
-        """
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        pattern = getattr(level, "pattern", None)
-        if actor is None or pattern is None or not pattern.edges:
-            return
-
-        caster_is_player = actor_id == self.player_id
-
-        # High mana cost gate
-        cost = 30
-        try:
-            if actor.stats.mana < cost:
-                if actor_id == self.player_id:
-                    self.log.add("Not enough mana to ignite.")
-                return
-            actor.stats.mana -= cost
-            actor.stats.clamp()
-        except Exception:
-            pass
-
-        duration = 30
-        base_direct = 4.0
-        base_indirect = 2.0
-
-        state = {
-            "remaining": duration,
-            "duration": duration,
-            "accum": {},  # target_id -> fractional dmg
-            "direct_tiles": [],
-            "indirect_tiles": [],
-        }
-        level.ignite_state = state
-        if actor_id == self.player_id:
-            self.log.add("You ignite the pattern!")
-
-        def normalize_edge_key(a: int, b: int) -> tuple[int, int]:
-            return (a, b) if a <= b else (b, a)
-
-        def edge_color_map():
-            edge_colors = getattr(pattern, "edge_colors", {}) or {}
-            if edge_colors:
-                return edge_colors
-            return {}
-
-        color_map = edge_color_map()
-
-        def tiles_for_edge(a_idx: int, b_idx: int) -> list[tuple[int, int]]:
-            try:
-                anchor = getattr(level, "pattern_anchor", None)
-                verts = project_vertices(pattern, anchor)
-                ax, ay = verts[a_idx]
-                bx, by = verts[b_idx]
-            except Exception:
-                return []
-            return _line_points(int(round(ax)), int(round(ay)), int(round(bx)), int(round(by)))
-
-        def apply_tick() -> None:
-            if state.get("remaining", 0) <= 0:
-                level.ignite_state = None
-                return
-            anchor = getattr(level, "pattern_anchor", None)
-            if anchor is None:
-                level.ignite_state = None
-                return
-            # Decay multiplier
-            mult = state["remaining"] / duration
-
-            # Collect direct tiles and redness values
-            direct_tiles: dict[tuple[int, int], float] = {}
-            for edge in pattern.edges:
-                a = getattr(edge, "a", None)
-                b = getattr(edge, "b", None)
-                if a is None or b is None:
-                    continue
-                col = color_map.get(normalize_edge_key(a, b), None)
-                if col is None:
-                    if isinstance(edge.color, tuple) and len(edge.color) >= 3:
-                        col = edge.color
-                    else:
-                        continue
-                try:
-                    r, g, bl = int(col[0]), int(col[1]), int(col[2])
-                except Exception:
-                    continue
-                redness = max(0, r - max(g, bl))
-                if redness <= 0:
-                    continue
-                for t in tiles_for_edge(a, b):
-                    prev = direct_tiles.get(t, 0.0)
-                    if redness > prev:
-                        direct_tiles[t] = redness
-
-            if not direct_tiles:
-                state["remaining"] = 0
-                level.ignite_state = None
-                return
-
-            # Indirect tiles: neighbors of direct
-            indirect_tiles: dict[tuple[int, int], float] = {}
-            for (dx, dy), red in direct_tiles.items():
-                for ox in (-1, 0, 1):
-                    for oy in (-1, 0, 1):
-                        nx, ny = dx + ox, dy + oy
-                        if (nx, ny) in direct_tiles:
-                            continue
-                        prev = indirect_tiles.get((nx, ny), 0.0)
-                        if red > prev:
-                            indirect_tiles[(nx, ny)] = red
-
-            # Persist tiles for renderer
-            state["direct_tiles"] = list(direct_tiles.keys())
-            state["indirect_tiles"] = list(indirect_tiles.keys())
-
-            # Damage application:
-            # Ignite is intentionally reckless and can hit anything damageable,
-            # including the caster and HP-bearing environment entities.
-            policy = damage_policy_system.DamagePolicy(
-                include_self=True,
-                include_hostile=True,
-                include_neutral=True,
-                include_friendly=True,
-                include_environment=True,
-            )
-
-            for tid, obj in damage_policy_system.iter_damage_targets(
-                self,
-                level,
-                actor_id,
-                policy,
-                include_actors=True,
-                include_entities=True,
-            ):
-                pos = getattr(obj, "pos", None)
-                if not pos:
-                    continue
-                tx, ty = int(round(pos[0])), int(round(pos[1]))
-                dmg_val = 0.0
-                if (tx, ty) in direct_tiles:
-                    redness = direct_tiles[(tx, ty)]
-                    dmg_val = base_direct * (redness / 255.0) * mult
-                elif (tx, ty) in indirect_tiles:
-                    redness = indirect_tiles[(tx, ty)]
-                    dmg_val = base_indirect * (redness / 255.0) * mult
-                if dmg_val <= 0:
-                    continue
-                acc = state["accum"].get(tid, 0.0) + dmg_val
-                dmg_int = int(acc)
-                state["accum"][tid] = acc - dmg_int
-                if dmg_int > 0:
-                    try:
-                        obj.stats.hp -= dmg_int
-                        obj.stats.clamp()
-                        if int(getattr(obj.stats, "hp", 0)) <= 0:
-                            if tid in level.actors:
-                                if tid == self.player_id:
-                                    self.set_urgent(
-                                        "by way of ignition",
-                                        title="You unravel...",
-                                        choices=["Continue..."],
-                                    )
-                                    continue
-                                self._kill_actor(
-                                    level,
-                                    obj,
-                                    killer_id=actor_id,
-                                    killer_is_player=caster_is_player,
-                                )
-                            elif tid in level.entities:
-                                del level.entities[tid]
-                                if caster_is_player:
-                                    name = getattr(obj, "name", None) or "object"
-                                    self.log.add(f"The {name} burns away.")
-                    except Exception:
-                        pass
-
-            state["remaining"] -= 1
-            if state["remaining"] > 0:
-                self._schedule(level, 1, apply_tick)
-            else:
-                level.ignite_state = None
-
-        # First tick immediately
-        apply_tick()
+        return combat_actions_system.act_ignite(self, actor_id)
 
     def act_regrow(self, actor_id: str) -> None:
-        """
-        Heal along green edges for 30 ticks with decaying strength.
-        """
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        pattern = getattr(level, "pattern", None)
-        if actor is None or pattern is None or not pattern.edges:
-            return
-
-        cost = 30
-        try:
-            if actor.stats.mana < cost:
-                if actor_id == self.player_id:
-                    self.log.add("Not enough mana to regrow.")
-                return
-            actor.stats.mana -= cost
-            actor.stats.clamp()
-        except Exception:
-            pass
-
-        duration = 30
-        base_direct = 3.5
-        base_indirect = 1.5
-
-        state = {
-            "remaining": duration,
-            "duration": duration,
-            "accum": {},  # target_id -> fractional heal
-            "direct_tiles": [],
-            "indirect_tiles": [],
-        }
-        level.regrow_state = state
-        if actor_id == self.player_id:
-            self.log.add("You flood the pattern with renewal.")
-
-        def normalize_edge_key(a: int, b: int) -> tuple[int, int]:
-            return (a, b) if a <= b else (b, a)
-
-        def edge_color_map():
-            edge_colors = getattr(pattern, "edge_colors", {}) or {}
-            if edge_colors:
-                return edge_colors
-            return {}
-
-        color_map = edge_color_map()
-
-        def tiles_for_edge(a_idx: int, b_idx: int) -> list[tuple[int, int]]:
-            try:
-                anchor = getattr(level, "pattern_anchor", None)
-                verts = project_vertices(pattern, anchor)
-                ax, ay = verts[a_idx]
-                bx, by = verts[b_idx]
-            except Exception:
-                return []
-            return _line_points(int(round(ax)), int(round(ay)), int(round(bx)), int(round(by)))
-
-        def apply_tick() -> None:
-            if state.get("remaining", 0) <= 0:
-                level.regrow_state = None
-                return
-            anchor = getattr(level, "pattern_anchor", None)
-            if anchor is None:
-                level.regrow_state = None
-                return
-            mult = state["remaining"] / duration
-
-            direct_tiles: dict[tuple[int, int], float] = {}
-            for edge in pattern.edges:
-                a = getattr(edge, "a", None)
-                b = getattr(edge, "b", None)
-                if a is None or b is None:
-                    continue
-                col = color_map.get(normalize_edge_key(a, b), None)
-                if col is None:
-                    if isinstance(edge.color, tuple) and len(edge.color) >= 3:
-                        col = edge.color
-                    else:
-                        continue
-                try:
-                    r, g, bl = int(col[0]), int(col[1]), int(col[2])
-                except Exception:
-                    continue
-                greenness = max(0, g - max(r, bl))
-                if greenness <= 0:
-                    continue
-                for t in tiles_for_edge(a, b):
-                    prev = direct_tiles.get(t, 0.0)
-                    if greenness > prev:
-                        direct_tiles[t] = greenness
-
-            if not direct_tiles:
-                state["remaining"] = 0
-                level.regrow_state = None
-                return
-
-            indirect_tiles: dict[tuple[int, int], float] = {}
-            for (dx, dy), gval in direct_tiles.items():
-                for ox in (-1, 0, 1):
-                    for oy in (-1, 0, 1):
-                        nx, ny = dx + ox, dy + oy
-                        if (nx, ny) in direct_tiles:
-                            continue
-                        prev = indirect_tiles.get((nx, ny), 0.0)
-                        if gval > prev:
-                            indirect_tiles[(nx, ny)] = gval
-
-            state["direct_tiles"] = list(direct_tiles.keys())
-            state["indirect_tiles"] = list(indirect_tiles.keys())
-
-            combined: dict[str, any] = {}
-            for aid, act in level.actors.items():
-                combined[aid] = act
-            for eid, ent in level.entities.items():
-                if eid not in combined:
-                    combined[eid] = ent
-
-            for tid, obj in combined.items():
-                pos = getattr(obj, "pos", None)
-                if not pos:
-                    continue
-                tx, ty = int(round(pos[0])), int(round(pos[1]))
-                heal_val = 0.0
-                if (tx, ty) in direct_tiles:
-                    gval = direct_tiles[(tx, ty)]
-                    heal_val = base_direct * (gval / 255.0) * mult
-                elif (tx, ty) in indirect_tiles:
-                    gval = indirect_tiles[(tx, ty)]
-                    heal_val = base_indirect * (gval / 255.0) * mult
-                if heal_val <= 0:
-                    continue
-                acc = state["accum"].get(tid, 0.0) + heal_val
-                heal_int = int(acc)
-                state["accum"][tid] = acc - heal_int
-                if heal_int > 0:
-                    try:
-                        obj.stats.hp = min(obj.stats.max_hp, obj.stats.hp + heal_int)
-                    except Exception:
-                        pass
-
-            state["remaining"] -= 1
-            if state["remaining"] > 0:
-                self._schedule(level, 1, apply_tick)
-            else:
-                level.regrow_state = None
-
-        apply_tick()
+        return combat_actions_system.act_regrow(self, actor_id)
 
     def act_freeze(self, actor_id: str) -> None:
-        """
-        Deal damage and apply slowing based on pattern blueness across all tiles the pattern occupies.
-        """
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        pattern = getattr(level, "pattern", None)
-        anchor = getattr(level, "pattern_anchor", None)
-        if actor is None or pattern is None or anchor is None or not pattern.vertices:
-            return
-
-        caster_is_player = actor_id == self.player_id
-
-        # High mana cost gate (no cooldown)
-        cost = 35
-        try:
-            if actor.stats.mana < cost:
-                if actor_id == self.player_id:
-                    self.log.add("Not enough mana to freeze.")
-                return
-            actor.stats.mana -= cost
-            actor.stats.clamp()
-        except Exception:
-            pass
-
-        dmg_scale = getattr(self, "get_param_value", lambda a, k: 0.1)("freeze", "damage_scale") or 0.1
-        slow_scale = getattr(self, "get_param_value", lambda a, k: 0.04)("freeze", "slow_scale") or 0.04
-
-        verts_world = project_vertices(pattern, anchor)
-        vcolors = getattr(pattern, "vertex_colors", None) or []
-
-        def blueness(idx: int) -> float:
-            try:
-                col = vcolors[idx]
-            except Exception:
-                col = None
-            if not col or len(col) < 3:
-                return 0.0
-            r, g, b = col[0], col[1], col[2]
-            return max(0.0, float(b) - max(float(r), float(g)))
-
-        tile_blue: Dict[Tuple[int, int], float] = {}
-        for i, (vx, vy) in enumerate(verts_world):
-            tx = int(round(vx))
-            ty = int(round(vy))
-            blue = blueness(i)
-            tile_blue[(tx, ty)] = tile_blue.get((tx, ty), 0.0) + blue
-
-        if actor_id == self.player_id:
-            self.log.add("You unleash a freezing wave through the pattern.")
-
-        # Freeze currently affects all actors on touched tiles (including self),
-        # but not environment entities.
-        policy = damage_policy_system.DamagePolicy(
-            include_self=True,
-            include_hostile=True,
-            include_neutral=True,
-            include_friendly=True,
-            include_environment=False,
-        )
-        freeze_targets = list(
-            damage_policy_system.iter_damage_targets(
-                self,
-                level,
-                actor_id,
-                policy,
-                include_actors=True,
-                include_entities=False,
-            )
-        )
-
-        for (tx, ty), bsum in tile_blue.items():
-            if bsum <= 0:
-                continue
-            dmg = bsum * float(dmg_scale)
-            slow_mult = 1.0 + bsum * float(slow_scale)
-            if slow_mult > 4.0:
-                slow_mult = 4.0
-            for _tid, target in freeze_targets:
-                if not getattr(target, "alive", True):
-                    continue
-                if tuple(getattr(target, "pos", (None, None))) != (tx, ty):
-                    continue
-                if dmg > 0:
-                    dmg_int = int(max(0, dmg))
-                    if dmg_int > 0:
-                        target.stats.hp -= dmg_int
-                        target.stats.clamp()
-                        if target.id == self.player_id:
-                            self.log.add(f"The freeze bites you for {dmg_int} damage.")
-                            if target.stats.hp <= 0:
-                                self.set_urgent("by way of freezing", title="You unravel...", choices=["Continue..."])
-                        else:
-                            self.log.add(f"{target.name} is frozen for {dmg_int} damage.")
-                            if target.stats.hp <= 0:
-                                self._kill_actor(
-                                    level,
-                                    target,
-                                    killer_id=actor_id,
-                                    killer_is_player=caster_is_player,
-                                )
-                tags = getattr(target, "tags", {}) or {}
-                current = float(tags.get("frozen_slow", 1.0))
-                if slow_mult > current:
-                    tags["frozen_slow"] = slow_mult
-                    tags["frozen_slow_timer"] = 0.0
-                    target.tags = tags
+        return combat_actions_system.act_freeze(self, actor_id)
 
     def act_corruption_cone(self, actor_id: str) -> None:
         """Create a localized 'cone' of corruption centered on the actor's current position.
@@ -4034,1056 +3495,182 @@ class Game:
         self._meditate_core(level, actor_id)
 
     def act_polygon(self, actor_id: str) -> None:
-        """Place a regular polygon pattern centered on the player.
-
-        Clears any existing pattern and creates a new polygon with the
-        configured number of sides and radius. The root/terminus vertex
-        is directly north of center, and vertices proceed clockwise.
-        """
-        level = self._level()
-        player = self._player()
-
-        # Get parameters from the param system
-        num_sides = self._param_value("polygon", "sides")
-        radius = self._param_value("polygon", "radius")
-
-        # Default fallbacks if params not found
-        if num_sides is None:
-            num_sides = 6
-        if radius is None:
-            radius = 4
-
-        # Create the polygon pattern and anchor it on the player (CANONICAL ABS).
-        pat = builder.regular_polygon_pattern(num_sides, radius)
-
-        # Compute canonical ABS anchor at the player's current position.
-        anchor_abs = getattr(player, "abs_pos", None)
-        if anchor_abs is None:
-            anchor_abs = self.abs_from_zone_local(self.zone_coord, player.pos)
-
-        st = self._pattern_state(depth=self.zone_coord[2])
-        st["pattern"] = pat
-        st["anchor_abs"] = (int(anchor_abs[0]), int(anchor_abs[1]))
-        st["activation_points"] = []
-        st["activation_ttl"] = 0
-        st["pattern_motion"] = None
-        st["choking_vines_state"] = None
-
-        # Sync the current zone view to canonical state immediately.
-        self._sync_level_pattern_view(level)
-
-        # Clear per-level auxiliaries tied to the current pattern.
-        level.pattern_motion = None
-        level.acidic_pattern = False
-        level.fern_active = False
-        level.fern_growth_tips = []
-        level.fern_accum = 0.0
-        level.choking_vines_state = None
-
-        self._commit_pattern_state_from_level(level)
-
-        self.log.add(f"Polygon ({num_sides} sides, radius {radius}) placed.")
+        return pattern_runtime_system.act_polygon(self, actor_id)
 
     def act_star(self, actor_id: str) -> None:
-        """Place a star pattern centered on the player.
-
-        Clears any existing pattern and creates a new star with the
-        configured number of points, outer radius, and inner radius.
-        The first point (root/terminus) is directly north.
-        """
-        level = self._level()
-        player = self._player()
-
-        # Get parameters from the param system
-        num_points = self._param_value("star", "points")
-        outer_radius = self._param_value("star", "outer_radius")
-        inner_radius = self._param_value("star", "inner_radius")
-
-        # Default fallbacks if params not found
-        if num_points is None:
-            num_points = 5
-        if outer_radius is None:
-            outer_radius = 5
-        if inner_radius is None:
-            inner_radius = 2
-
-        # Create the star pattern and anchor it on the player (CANONICAL ABS).
-        pat = builder.star_pattern(num_points, outer_radius, inner_radius)
-
-        anchor_abs = getattr(player, "abs_pos", None)
-        if anchor_abs is None:
-            anchor_abs = self.abs_from_zone_local(self.zone_coord, player.pos)
-
-        st = self._pattern_state(depth=self.zone_coord[2])
-        st["pattern"] = pat
-        st["anchor_abs"] = (int(anchor_abs[0]), int(anchor_abs[1]))
-        st["activation_points"] = []
-        st["activation_ttl"] = 0
-        st["pattern_motion"] = None
-        st["choking_vines_state"] = None
-
-        self._sync_level_pattern_view(level)
-
-        level.pattern_motion = None
-        level.acidic_pattern = False
-        level.fern_active = False
-        level.fern_growth_tips = []
-        level.fern_accum = 0.0
-        level.choking_vines_state = None
-
-        self._commit_pattern_state_from_level(level)
-
-        self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
+        return pattern_runtime_system.act_star(self, actor_id)
 
     # --- chakra modifiers / charge helpers ---
 
     def _chakra_modifiers(self, actor_id: str):
-        """Return ChakraModifiers for the given actor (resonance + charge)."""
+        return pattern_runtime_system.chakra_modifiers(self, actor_id)
+
+    def chakra_effects(self, actor_id: Optional[str] = None) -> chakra_effects_system.ChakraEffectSnapshot:
+        """Return aggregated passive effects from the actor's active chakras.
+
+        This is the canonical query point for chakra-conditioned passives.
+        New systems should use this helper instead of inspecting chakra node ids
+        directly, so condition logic stays centralized in chakra_effects.py.
+        """
+        aid = str(actor_id or getattr(self, "player_id", ""))
+        actor: Optional[Actor] = None
         try:
-            actor = self._level().actors.get(actor_id)
+            actor = self._level().actors.get(aid)
         except Exception:
             actor = None
         if actor is None:
-            return None
+            # Fallback: actor may not be in the current zone cache bucket.
+            for lvl in getattr(self, "levels", {}).values():
+                actor = lvl.actors.get(aid)
+                if actor is not None:
+                    break
+        if actor is None:
+            return chakra_effects_system.ChakraEffectSnapshot()
 
-        chakra_state = getattr(actor, "chakra_state", None)
-        if chakra_state is None:
-            return None
+        # Active set includes explicit activations plus item-driven temporary
+        # auto-activations, so passives can react to equipped chakra gear.
+        active = chakra_items_system.effective_active_nodes(self, actor)
+        return chakra_effects_system.evaluate_effects(active)
 
-        try:
-            from edgecaster.prototypes import resolve_body_schema
-            from edgecaster.systems import chakras as chakra_system
-        except Exception:
-            return None
-
-        body_schema = resolve_body_schema(actor) or {}
-        bonuses = chakra_system.check_resonance_bonuses(body_schema, chakra_state)
-        mods = chakra_system.get_resonance_modifiers(bonuses)
-        avg_charge = chakra_system.get_average_charge(chakra_state)
-        mods = chakra_system.apply_charge_to_modifiers(mods, avg_charge)
-        return mods
+    def chakra_effect_value(
+        self,
+        key: str,
+        *,
+        actor_id: Optional[str] = None,
+        default: float = 0.0,
+    ) -> float:
+        return self.chakra_effects(actor_id).value(key, default)
 
     def _consume_chakra_charge(self, actor_id: str, amount: float) -> None:
-        """Consume chakra charge from the actor's active chakras."""
-        if amount <= 0:
-            return
-        try:
-            actor = self._level().actors.get(actor_id)
-        except Exception:
-            actor = None
-        if actor is None:
-            return
-        chakra_state = getattr(actor, "chakra_state", None)
-        if chakra_state is None:
-            return
-        try:
-            from edgecaster.systems import chakras as chakra_system
-        except Exception:
-            return
-        chakra_system.consume_chakra_charge(chakra_state, amount)
+        return pattern_runtime_system.consume_chakra_charge(self, actor_id, amount)
 
     def act_chakra(self, actor_id: str) -> None:
-        """Apply the actor's active chakra graph as a custom generator shape."""
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        if actor is None:
-            return
+        return pattern_runtime_system.act_chakra(self, actor_id)
 
-        if not level.pattern.vertices:
-            self.log.add("No pattern to modify. Place a terminus first.")
-            return
+    # --- Blade runtime delegates (systems/blade_runtime.py) ---
+    def ensure_actor_blade_state(self, actor_id: str):
+        return blade_runtime_system.ensure_actor_blade_state(self, actor_id)
 
-        chakra_state = getattr(actor, "chakra_state", None)
-        if chakra_state is None:
-            self.log.add("No chakra state found.")
-            return
+    def set_actor_blade_generators(self, actor_id: str, generators: List[str]):
+        return blade_runtime_system.set_actor_blade_generators(self, actor_id, generators)
 
-        try:
-            from edgecaster.prototypes import resolve_body_schema
-            from edgecaster.systems.chakras import (
-                build_chakra_generator_seed,
-            )
-            body_schema = resolve_body_schema(actor)
-        except Exception:
-            self.log.add("Could not resolve body schema.")
-            return
-
-        if not body_schema or not body_schema.get("nodes"):
-            self.log.add("No body schema to generate pattern from.")
-            return
-
-        try:
-            seed = build_chakra_generator_seed(
-                body_schema,
-                chakra_state,
-                base_scale=1.0,
-                require_root=True,
-            )
-        except ValueError as e:
-            self.log.add(str(e))
-            return
-        except Exception as e:
-            self.log.add(f"Chakra pattern generation failed: {e}")
-            return
-
-        # Debug trace (kept concise; useful for future chakra->vertex targeting).
-        try:
-            self._debug(
-                f"[chakra_gen] root={seed.root_id} terminus={seed.terminus_id} base_len={seed.base_len:.4f}"
-            )
-            self._debug(f"[chakra_gen] nodes={seed.node_order}")
-            self._debug(
-                f"[chakra_gen] verts={[(round(x, 4), round(y, 4)) for (x, y) in seed.verts]}"
-            )
-            self._debug(f"[chakra_gen] edges={seed.edges}")
-        except Exception:
-            pass
-
-        # Get amplitude from param system (like custom generator)
-        amp = self._param_value("chakra", "amplitude")
-        if amp is None:
-            amp = 1.0
-        # Apply chakra resonance/charge amp multiplier if available.
-        mods = self._chakra_modifiers(actor_id)
-        if mods is not None:
-            amp *= mods.chakra_amp_mult
-
-        # Create a CustomGraphGenerator with the chakra shape
-        gen = builder.CustomGraphGenerator(
-            seed.verts,
-            seed.edges,
-            amplitude=amp,
-            vertex_labels=seed.node_order,
-        )
-
-        # Apply to current pattern (same flow as _apply_fractal_op)
-        segs = level.pattern.to_segments()
-        level.pattern_motion = None  # Cancel any ongoing motion
-
-        segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
-        segs = builder.cleanup_duplicates(segs)
-        if len(segs) > self.cfg.max_vertices:
-            segs = segs[: self.cfg.max_vertices]
-            self.log.add("Pattern capped at max vertices.")
-
-        level.pattern = builder.Pattern.from_segments(segs)
-        level.choking_vines_state = None
-        # Preserve chakra seed metadata for future ability targeting.
-        try:
-            import json
-            level.pattern.meta["chakra_seed_nodes"] = json.dumps(seed.node_order)
-            level.pattern.meta["chakra_seed_verts"] = json.dumps(seed.verts)
-            level.pattern.meta["chakra_seed_edges"] = json.dumps(seed.edges)
-            level.pattern.meta["chakra_seed_root"] = str(seed.root_id)
-            level.pattern.meta["chakra_seed_terminus"] = str(seed.terminus_id)
-        except Exception:
-            pass
-        self.log.add(f"Chakra generator applied ({len(seed.verts)} chakra vertices).")
-
-        # Spend a bit of chakra charge when applying the generator.
-        if mods is not None:
-            try:
-                from edgecaster.systems import chakras as chakra_system
-                self._consume_chakra_charge(
-                    actor_id,
-                    chakra_system.CHARGE_CONSUME_GENERATOR * mods.charge_consume_mult,
-                )
-            except Exception:
-                pass
-
-    def act_energy_kick(self, actor_id: str) -> None:
-        """Pulse damage around all foot-lineage chakra vertices in the current pattern.
-
-        Targeting rules (current implementation):
-        - Never damages the caster.
-        - Can damage any other actor or entity that has HP.
-        - Non-actor entities with HP are removed when reduced to <= 0.
-        """
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        if actor is None:
-            return
-        pattern = getattr(level, "pattern", None)
-        anchor = getattr(level, "pattern_anchor", None)
-        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
-            if actor_id == self.player_id:
-                self.log.add("No pattern to channel through your feet.")
-            return
-
-        # Mana gate for a strong short-range pulse.
-        mana_cost = 24
-        try:
-            if actor.stats.mana < mana_cost:
-                if actor_id == self.player_id:
-                    self.log.add("Not enough mana for Energy Kick.")
-                return
-            actor.stats.mana -= mana_cost
-            actor.stats.clamp()
-        except Exception:
-            return
-
-        def _is_foot_lineage(node_id: str) -> bool:
-            n = str(node_id or "").lower()
-            # Match broad lower-body endpoints while staying schema-agnostic.
-            return (
-                "foot" in n
-                or "toe" in n
-                or "ankle" in n
-                or "heel" in n
-            )
-
-        # Build world-space kick points from vertex-level chakra provenance.
-        kick_points: List[Tuple[float, float]] = []
-        for v in pattern.vertices:
-            tags = getattr(v, "tags", {}) or {}
-            nodes: List[str] = []
-            single = str(tags.get("chakra_node", "")).strip()
-            if single:
-                nodes.append(single)
-            many = str(tags.get("chakra_nodes", "")).strip()
-            if many:
-                nodes.extend([s for s in many.split("|") if s])
-            if not nodes:
-                continue
-            if any(_is_foot_lineage(node_id) for node_id in nodes):
-                kick_points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
-
-        if not kick_points:
-            if actor_id == self.player_id:
-                self.log.add("No active foot chakras are encoded in this pattern.")
-            return
-
-        # Show a short pulse overlay at each kick source.
-        level.activation_points = list(kick_points)
-        level.activation_ttl = max(8, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
-
-        radius = 1.8
-        # Slight rebound after sweep; still below the old spike potential.
-        base_damage = 6  # per kick point at distance 0
-        r_eps = 1e-6
-
-        caster_is_player = actor_id == self.player_id
-        # Centralized policy: this move is intentionally "reckless" and can hit
-        # almost anything with HP except the caster (hostiles, friendlies, neutrals,
-        # and HP-bearing environment entities).
-        policy = damage_policy_system.DamagePolicy(
-            include_self=False,
-            include_hostile=True,
-            include_neutral=True,
-            include_friendly=True,
-            include_environment=True,
-        )
-
-        hit_any = False
-        for tid, obj in damage_policy_system.iter_damage_targets(
+    def act_blade_attack(
+        self,
+        actor_id: str,
+        verb: str,
+        *,
+        target_pos: Optional[Tuple[int, int]] = None,
+        from_bump: bool = False,
+    ) -> bool:
+        return blade_runtime_system.act_blade_attack(
             self,
-            level,
             actor_id,
-            policy,
-            include_actors=True,
-            include_entities=True,
-        ):
-            pos = getattr(obj, "pos", None)
-            stats = getattr(obj, "stats", None)
-            if not pos or stats is None or not hasattr(stats, "hp"):
-                continue
-            tx = float(pos[0]) + 0.5
-            ty = float(pos[1]) + 0.5
+            verb,
+            target_pos=target_pos,
+            from_bump=from_bump,
+        )
 
-            total_dmg = 0
-            for kx, ky in kick_points:
-                dx = tx - kx
-                dy = ty - ky
-                dist = math.hypot(dx, dy)
-                if dist > radius:
-                    continue
-                falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
-                total_dmg += max(1, int(math.ceil(base_damage * falloff)))
+    def act_throwing_knife(
+        self,
+        actor_id: str,
+        *,
+        target_pos: Optional[Tuple[int, int]] = None,
+    ) -> bool:
+        return blade_runtime_system.act_throwing_knife(
+            self,
+            actor_id,
+            target_pos=target_pos,
+        )
 
-            if total_dmg <= 0:
-                continue
-
-            hit_any = True
-            try:
-                stats.hp -= total_dmg
-                if hasattr(stats, "clamp"):
-                    stats.clamp()
-            except Exception:
-                continue
-
-            if caster_is_player:
-                name = getattr(obj, "name", None) or "something"
-                self.log.add(f"Energy Kick shudders {name} for {total_dmg}.")
-
-            # Actors use canonical death handling.
-            if tid in level.actors:
-                if int(getattr(stats, "hp", 0)) <= 0:
-                    self._kill_actor(
-                        level,
-                        obj,
-                        killer_id=actor_id,
-                        killer_is_player=caster_is_player,
-                    )
-                continue
-
-            # Non-actor entities with HP are removed when broken.
-            if int(getattr(stats, "hp", 0)) <= 0 and tid in level.entities:
-                del level.entities[tid]
-                if caster_is_player:
-                    name = getattr(obj, "name", None) or "object"
-                    self.log.add(f"The {name} shatters.")
-
-        if caster_is_player and not hit_any:
-            self.log.add("Your kick ripples out, but hits nothing.")
-
+    # --- Combat action delegates (systems/combat_actions.py) ---
+    def _wind_rush_start_vertex_candidates(
+        self,
+        actor_tile: Tuple[int, int],
+        world_vertices: List[Tuple[float, float]],
+        pattern: builder.Pattern,
+    ) -> set[int]:
+        return combat_actions_system._wind_rush_start_vertex_candidates(
+            self,
+            actor_tile,
+            world_vertices,
+            pattern,
+        )
+    def _wind_rush_vertex_path(
+        self,
+        pattern: builder.Pattern,
+        start_candidates: set[int],
+        target_idx: int,
+        num_vertices: int,
+    ) -> Optional[List[int]]:
+        return combat_actions_system._wind_rush_vertex_path(
+            self,
+            pattern,
+            start_candidates,
+            target_idx,
+            num_vertices,
+        )
+    def _wind_rush_local_path_points(
+        self,
+        actor_tile: Tuple[int, int],
+        path_indices: List[int],
+        world_vertices: List[Tuple[float, float]],
+    ) -> List[Tuple[int, int]]:
+        return combat_actions_system._wind_rush_local_path_points(
+            self,
+            actor_tile,
+            path_indices,
+            world_vertices,
+        )
+    def wind_rush_preview(
+        self,
+        target_vertex: Optional[int],
+        *,
+        actor_id: Optional[str] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        return combat_actions_system.wind_rush_preview(
+            self,
+            target_vertex,
+            actor_id=actor_id,
+        )
+    def act_wind_rush(self, actor_id: str, target_vertex: Optional[int]) -> None:
+        return combat_actions_system.act_wind_rush(self, actor_id, target_vertex)
+    def act_energy_kick(self, actor_id: str) -> None:
+        return combat_actions_system.act_energy_kick(self, actor_id)
     def _chakra_nodes_for_vertex(self, v: Any) -> set[str]:
-        """Return chakra node ids associated with a pattern vertex.
-
-        Chakra provenance can arrive either as:
-        - tags["chakra_node"] = "node_id"
-        - tags["chakra_nodes"] = "a|b|c"
-        """
-        tags = getattr(v, "tags", {}) or {}
-        nodes: set[str] = set()
-
-        single = str(tags.get("chakra_node", "")).strip()
-        if single:
-            nodes.add(single)
-
-        many = str(tags.get("chakra_nodes", "")).strip()
-        if many:
-            for part in many.split("|"):
-                p = str(part).strip()
-                if p:
-                    nodes.add(p)
-
-        return nodes
-
+        return combat_actions_system._chakra_nodes_for_vertex(self, v)
     def _chakra_world_points(
         self,
-        pattern: Any,
+        pattern: builder.Pattern,
         anchor: Tuple[int, int],
+        include_predicate: Optional[Callable[[str], bool]] = None,
         *,
-        predicate: Callable[[str], bool],
-    ) -> list[tuple[float, float]]:
-        """Collect world-space points for vertices matching chakra-node predicate."""
-        points: list[tuple[float, float]] = []
-        for v in getattr(pattern, "vertices", []) or []:
-            nodes = self._chakra_nodes_for_vertex(v)
-            if not nodes:
-                continue
-            if not any(predicate(node_id) for node_id in nodes):
-                continue
-            points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
-        return points
-
-    def act_palm_burst(self, actor_id: str) -> None:
-        """Pulse damage from hand/palm/finger-lineage chakra vertices."""
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        if actor is None:
-            return
-        pattern = getattr(level, "pattern", None)
-        anchor = getattr(level, "pattern_anchor", None)
-        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
-            if actor_id == self.player_id:
-                self.log.add("No pattern to channel through your hands.")
-            return
-
-        mana_cost = 18
-        try:
-            if actor.stats.mana < mana_cost:
-                if actor_id == self.player_id:
-                    self.log.add("Not enough mana for Palm Burst.")
-                return
-            actor.stats.mana -= mana_cost
-            actor.stats.clamp()
-        except Exception:
-            return
-
-        def _is_palm_lineage(node_id: str) -> bool:
-            n = str(node_id or "").lower()
-            return (
-                "hand" in n
-                or "palm" in n
-                or "finger" in n
-                or "thumb" in n
-                or "index" in n
-                or "middle" in n
-                or "ring" in n
-                or "pinky" in n
-                or "knuckle" in n
-                or "wrist" in n
-            )
-
-        burst_points = self._chakra_world_points(
+        predicate: Optional[Callable[[str], bool]] = None,
+    ) -> List[Tuple[float, float]]:
+        # Compatibility wrapper:
+        # combat_actions uses keyword `predicate=...` while older call sites passed
+        # the callable positionally as `include_predicate`. Accept either form.
+        pred = predicate or include_predicate
+        if pred is None:
+            return []
+        return combat_actions_system._chakra_world_points(
+            self,
             pattern,
             anchor,
-            predicate=_is_palm_lineage,
+            predicate=pred,
         )
-        if not burst_points:
-            if actor_id == self.player_id:
-                self.log.add("No active palm chakras are encoded in this pattern.")
-            return
-
-        level.activation_points = list(burst_points)
-        level.activation_ttl = max(8, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
-
-        radius = 1.6
-        # Slight rebound after sweep; still in the same band as Energy Kick.
-        base_damage = 6
-        r_eps = 1e-6
-        caster_is_player = actor_id == self.player_id
-
-        # Palm Burst is a directed combat move: hostile actors only.
-        policy = damage_policy_system.DamagePolicy(
-            include_self=False,
-            include_hostile=True,
-            include_neutral=False,
-            include_friendly=False,
-            include_environment=False,
-        )
-
-        hit_any = False
-        for tid, obj in damage_policy_system.iter_damage_targets(
-            self,
-            level,
-            actor_id,
-            policy,
-            include_actors=True,
-            include_entities=False,
-        ):
-            pos = getattr(obj, "pos", None)
-            stats = getattr(obj, "stats", None)
-            if not pos or stats is None or not hasattr(stats, "hp"):
-                continue
-            tx = float(pos[0]) + 0.5
-            ty = float(pos[1]) + 0.5
-
-            total_dmg = 0
-            for px, py in burst_points:
-                dx = tx - px
-                dy = ty - py
-                dist = math.hypot(dx, dy)
-                if dist > radius:
-                    continue
-                falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
-                total_dmg += max(1, int(math.ceil(base_damage * falloff)))
-
-            if total_dmg <= 0:
-                continue
-
-            hit_any = True
-            try:
-                stats.hp -= total_dmg
-                if hasattr(stats, "clamp"):
-                    stats.clamp()
-            except Exception:
-                continue
-
-            if caster_is_player:
-                name = getattr(obj, "name", None) or "something"
-                self.log.add(f"Palm Burst cracks {name} for {total_dmg}.")
-
-            if tid in level.actors and int(getattr(stats, "hp", 0)) <= 0:
-                self._kill_actor(
-                    level,
-                    obj,
-                    killer_id=actor_id,
-                    killer_is_player=caster_is_player,
-                )
-
-        if caster_is_player and not hit_any:
-            self.log.add("Your palms flare, but no foes are close enough.")
-
+    def act_palm_burst(self, actor_id: str) -> None:
+        return combat_actions_system.act_palm_burst(self, actor_id)
     def act_mirror_strike(self, actor_id: str) -> None:
-        """Pulse damage from mirrored chakra pairs.
-
-        A mirrored pair is inferred from provenance ids:
-        - left:  "arm.hand.thumb"
-        - right: "arm_m.hand_m.thumb_m"
-        i.e., node ids differing by the `_m` suffix.
-        """
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        if actor is None:
-            return
-        pattern = getattr(level, "pattern", None)
-        anchor = getattr(level, "pattern_anchor", None)
-        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
-            if actor_id == self.player_id:
-                self.log.add("No pattern to channel through mirrored pairs.")
-            return
-
-        mana_cost = 22
-        try:
-            if actor.stats.mana < mana_cost:
-                if actor_id == self.player_id:
-                    self.log.add("Not enough mana for Mirror Strike.")
-                return
-            actor.stats.mana -= mana_cost
-            actor.stats.clamp()
-        except Exception:
-            return
-
-        # Build node -> world points map from vertex provenance.
-        node_points: dict[str, list[tuple[float, float]]] = {}
-        for v in getattr(pattern, "vertices", []) or []:
-            nodes = self._chakra_nodes_for_vertex(v)
-            if not nodes:
-                continue
-            wx = float(v.pos[0] + anchor[0])
-            wy = float(v.pos[1] + anchor[1])
-            for node_id in nodes:
-                node_points.setdefault(node_id, []).append((wx, wy))
-
-        if not node_points:
-            if actor_id == self.player_id:
-                self.log.add("No chakra provenance found for Mirror Strike.")
-            return
-
-        # Derive strike points from present mirrored pairs.
-        strike_points: list[tuple[float, float]] = []
-        seen_pairs: set[tuple[str, str]] = set()
-        for node_id, left_pts in node_points.items():
-            if not left_pts:
-                continue
-            if node_id.endswith("_m"):
-                base = node_id[:-2]
-                mirror = node_id
-            else:
-                base = node_id
-                mirror = f"{node_id}_m"
-            right_pts = node_points.get(mirror, [])
-            if not right_pts:
-                continue
-
-            key = tuple(sorted((base, mirror)))
-            if key in seen_pairs:
-                continue
-            seen_pairs.add(key)
-
-            # Use centroid of each side and strike at the midpoint between them.
-            lx = sum(p[0] for p in left_pts) / len(left_pts)
-            ly = sum(p[1] for p in left_pts) / len(left_pts)
-            rx = sum(p[0] for p in right_pts) / len(right_pts)
-            ry = sum(p[1] for p in right_pts) / len(right_pts)
-            strike_points.append(((lx + rx) * 0.5, (ly + ry) * 0.5))
-
-        if not strike_points:
-            if actor_id == self.player_id:
-                self.log.add("No mirrored chakra pairs are active in this pattern.")
-            return
-
-        level.activation_points = list(strike_points)
-        level.activation_ttl = max(10, int(getattr(self.cfg, "pattern_overlay_ttl", 12)))
-
-        radius = 1.85
-        # Mirror Strike remains a premium burst, but no longer far above peers.
-        base_damage = 6
-        r_eps = 1e-6
-        caster_is_player = actor_id == self.player_id
-
-        # Mirror Strike is precise: hostile actors only.
-        policy = damage_policy_system.DamagePolicy(
-            include_self=False,
-            include_hostile=True,
-            include_neutral=False,
-            include_friendly=False,
-            include_environment=False,
-        )
-
-        hit_any = False
-        for tid, obj in damage_policy_system.iter_damage_targets(
-            self,
-            level,
-            actor_id,
-            policy,
-            include_actors=True,
-            include_entities=False,
-        ):
-            pos = getattr(obj, "pos", None)
-            stats = getattr(obj, "stats", None)
-            if not pos or stats is None or not hasattr(stats, "hp"):
-                continue
-            tx = float(pos[0]) + 0.5
-            ty = float(pos[1]) + 0.5
-
-            total_dmg = 0
-            for sx, sy in strike_points:
-                dx = tx - sx
-                dy = ty - sy
-                dist = math.hypot(dx, dy)
-                if dist > radius:
-                    continue
-                falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
-                total_dmg += max(1, int(math.ceil(base_damage * falloff)))
-
-            if total_dmg <= 0:
-                continue
-
-            hit_any = True
-            try:
-                stats.hp -= total_dmg
-                if hasattr(stats, "clamp"):
-                    stats.clamp()
-            except Exception:
-                continue
-
-            if caster_is_player:
-                name = getattr(obj, "name", None) or "something"
-                self.log.add(f"Mirror Strike rends {name} for {total_dmg}.")
-
-            if tid in level.actors and int(getattr(stats, "hp", 0)) <= 0:
-                self._kill_actor(
-                    level,
-                    obj,
-                    killer_id=actor_id,
-                    killer_is_player=caster_is_player,
-                )
-
-        if caster_is_player and not hit_any:
-            self.log.add("Your mirrored strike finds no target.")
-
+        return combat_actions_system.act_mirror_strike(self, actor_id)
     def act_choking_vines(self, actor_id: str) -> None:
-        """Seed a tendril field that grows from rune-edge centers near enemies.
-
-        Behavior model:
-        - Initial tendril tips spawn from centers of pattern edges that are near
-          hostile targets.
-        - Each tick, tips extend toward nearby hostiles.
-        - Existing tips can branch into new tips, producing a creeping vine net.
-        - Contact applies light damage plus a mild ensnare slow.
-
-        Runtime simulation is advanced by scheduling.choking_vines_tick().
-        """
-        level = self._level()
-        actor = level.actors.get(actor_id)
-        if actor is None:
-            return
-
-        pattern = getattr(level, "pattern", None)
-        anchor = getattr(level, "pattern_anchor", None)
-        if pattern is None or anchor is None or not getattr(pattern, "edges", None):
-            if actor_id == self.player_id:
-                self.log.add("No rune edges available for Choking Vines.")
-            return
-
-        # Cost gate. This is intentionally expensive for a persistent control tool.
-        mana_cost = 28
-        try:
-            if actor.stats.mana < mana_cost:
-                if actor_id == self.player_id:
-                    self.log.add("Not enough mana for Choking Vines.")
-                return
-            actor.stats.mana -= mana_cost
-            actor.stats.clamp()
-        except Exception:
-            return
-
-        # Project edge midpoints in ABS tile-space so the simulation stays stable
-        # even if the current zone view changes.
-        verts_world = project_vertices(pattern, anchor)
-        if not verts_world:
-            if actor_id == self.player_id:
-                self.log.add("No rune geometry to grow vines from.")
-            return
-
-        zx, zy, _ = getattr(level, "coord", self.zone_coord)
-        zw, zh = self._zone_dims()
-        abs_ox = float(zx * zw)
-        abs_oy = float(zy * zh)
-
-        edge_midpoints_abs: list[tuple[float, float]] = []
-        for e in getattr(pattern, "edges", []) or []:
-            try:
-                ax, ay = verts_world[int(e.a)]
-                bx, by = verts_world[int(e.b)]
-            except Exception:
-                continue
-            edge_midpoints_abs.append((
-                (float(ax) + float(bx)) * 0.5 + abs_ox,
-                (float(ay) + float(by)) * 0.5 + abs_oy,
-            ))
-
-        if not edge_midpoints_abs:
-            if actor_id == self.player_id:
-                self.log.add("No rune edges available for Choking Vines.")
-            return
-
-        # Hostile actor targets only.
-        policy = damage_policy_system.DamagePolicy(
-            include_self=False,
-            include_hostile=True,
-            include_neutral=False,
-            include_friendly=False,
-            include_environment=False,
-        )
-        hostile_abs: list[tuple[str, Actor, float, float]] = []
-        for tid, obj in damage_policy_system.iter_damage_targets(
-            self,
-            level,
-            actor_id,
-            policy,
-            include_actors=True,
-            include_entities=False,
-        ):
-            pos = getattr(obj, "pos", None)
-            if not pos:
-                continue
-            hostile_abs.append((
-                str(tid),
-                obj,
-                float(pos[0]) + abs_ox + 0.5,
-                float(pos[1]) + abs_oy + 0.5,
-            ))
-
-        if not hostile_abs:
-            if actor_id == self.player_id:
-                self.log.add("No nearby hostile minds for the vines to seek.")
-            return
-
-        # Choose initial tips: nearest edge center to each hostile, with dedupe.
-        # Keep initial tendril seeding close to the rune so the effect reads as
-        # a local control zone instead of a map-wide projectile.
-        seed_radius = 2.6
-        tip_keys: set[tuple[int, int]] = set()
-        tips: list[dict[str, float]] = []
-        for _tid, _obj, hx, hy in hostile_abs:
-            best = None
-            best_d2 = 1e18
-            for mx, my in edge_midpoints_abs:
-                dx = hx - mx
-                dy = hy - my
-                d2 = dx * dx + dy * dy
-                if d2 < best_d2:
-                    best_d2 = d2
-                    best = (mx, my)
-            if best is None:
-                continue
-            if math.sqrt(best_d2) > seed_radius:
-                continue
-            key = (int(round(best[0] * 10.0)), int(round(best[1] * 10.0)))
-            if key in tip_keys:
-                continue
-            tip_keys.add(key)
-            tips.append(
-                {
-                    "x": float(best[0]),
-                    "y": float(best[1]),
-                    "age": 0.0,
-                    # Per-tip local origin used by scheduler leash logic.
-                    "ox": float(best[0]),
-                    "oy": float(best[1]),
-                }
-            )
-
-        # Fallback: ensure at least one tip exists by choosing the globally nearest
-        # hostile/edge pair even if it exceeds seed_radius.
-        if not tips:
-            best = None
-            best_d2 = 1e18
-            for _tid, _obj, hx, hy in hostile_abs:
-                for mx, my in edge_midpoints_abs:
-                    dx = hx - mx
-                    dy = hy - my
-                    d2 = dx * dx + dy * dy
-                    if d2 < best_d2:
-                        best_d2 = d2
-                        best = (mx, my)
-            if best is not None:
-                tips.append(
-                    {
-                        "x": float(best[0]),
-                        "y": float(best[1]),
-                        "age": 0.0,
-                        "ox": float(best[0]),
-                        "oy": float(best[1]),
-                    }
-                )
-
-        if not tips:
-            if actor_id == self.player_id:
-                self.log.add("The vines fail to find purchase.")
-            return
-
-        # Slightly longer duration, but much lower spread parameters below.
-        duration_ticks = 120
-        state: dict[str, Any] = {
-            "caster_id": str(actor_id),
-            "duration": int(duration_ticks),
-            "remaining": int(duration_ticks),
-            "tick": 0,
-            "seed": int(self.rng.randint(0, 2**31 - 1)),
-            "edge_midpoints_abs": edge_midpoints_abs,
-            "tips": tips,
-            "segments": [],  # (x0, y0, x1, y1) in ABS tile coords
-            "accum_damage": {},  # target id -> fractional damage
-            "spawn_radius": float(seed_radius),
-            # Lower growth step makes per-turn movement subtle.
-            "grow_step": 0.30,
-            # Fewer branches to avoid explosive map coverage.
-            "branch_chance": 0.12,
-            "max_tips": 10,
-            "max_segments": 360,
-            # Ignore far-away hostiles; vines stay near the rune.
-            "seek_radius": 7.0,
-            # Hard leash from each tip's seed origin.
-            "max_tip_range": 6.5,
-            "hit_radius": 1.15,
-            "base_damage": 1.6,
-            "ensnare_slow_mult": 1.30,
-        }
-        level.choking_vines_state = state
-
-        # Optional compatibility overlay: localize current tip positions.
-        level.activation_points = [
-            (float(t["x"] - abs_ox), float(t["y"] - abs_oy))
-            for t in tips
-        ]
-        level.activation_ttl = max(level.activation_ttl, 8)
-
-        if actor_id == self.player_id:
-            self.log.add("Vines uncoil from your rune and seek warm blood.")
-
-        # Persist to canonical per-depth pattern state.
-        if hasattr(self, "_commit_pattern_state_from_level"):
-            self._commit_pattern_state_from_level(level)
-
+        return combat_actions_system.act_choking_vines(self, actor_id)
     def act_corrosive_melt(self, actor_id: str) -> None:
-        """Activate acidic mode on the current pattern.
-
-        When active, edges that touch enemy tiles dissolve and deal damage
-        based on their green intensity. Lasts until pattern reset.
-        """
-        level = self._level()
-        player = self._player()
-
-        # Check if already acidic
-        if level.acidic_pattern:
-            self.log.add("Pattern is already acidic.")
-            return
-
-        # Check if there's a pattern to make acidic
-        if not level.pattern.vertices:
-            self.log.add("No pattern to corrode. Place a terminus first.")
-            return
-
-        # Get mana cost from params
-        mana_cost = self._param_value("corrosive_melt", "mana_cost")
-        if mana_cost is None:
-            mana_cost = 30
-
-        # Check mana
-        if player.stats.mana < mana_cost:
-            self.log.add(f"Not enough mana ({int(player.stats.mana)}/{mana_cost}).")
-            return
-
-        # Spend mana and activate
-        player.stats.mana -= mana_cost
-        player.stats.clamp()
-        level.acidic_pattern = True
-
-        self.log.add("Pattern becomes acidic! Edges will dissolve on enemy contact.")
-
+        return combat_actions_system.act_corrosive_melt(self, actor_id)
     def act_start_fern(self, actor_id: str) -> None:
-        """Toggle Barnsley fern auto-growth on the current pattern.
-
-        When active, the fern grows as a connected tree using Barnsley affine
-        transforms. Growth consumes coherence and oldest vertices are pruned
-        when over capacity.
-        """
-        from edgecaster.systems import fern_growth
-
-        level = self._level()
-
-        # Check if there's a pattern anchor
-        if not level.pattern_anchor:
-            self.log.add("Need a pattern anchor to grow the fern from.")
-            return
-
-        # Toggle fern growth
-        if level.fern_active:
-            level.fern_active = False
-            level.fern_accum = 0.0
-            # Reset fern state for next activation
-            fern_growth._reset_fern_state(level)
-            if hasattr(level, "_fern_node_to_vertex"):
-                del level._fern_node_to_vertex
-            self.log.add("Fern growth stopped.")
-            return
-
-        # Activate fern growth
-        level.fern_active = True
-        level.fern_accum = 0.0
-        # Reset fern state to start fresh
-        fern_growth._reset_fern_state(level)
-        if hasattr(level, "_fern_node_to_vertex"):
-            del level._fern_node_to_vertex
-        self.log.add("Fern begins to grow...")
+        return combat_actions_system.act_start_fern(self, actor_id)
 
     def _apply_fractal_op(self, lvl: LevelState, kind: str) -> None:
-        if not lvl.pattern.vertices:
-            self.log.add("No pattern to modify. Place a terminus first.")
-            return
-        segs = lvl.pattern.to_segments()
-        # Editing the pattern should cancel any ongoing motion.
-        lvl.pattern_motion = None
-        if kind == "subdivide":
-            parts = self._param_value("subdivide", "parts")
-            gen = builder.SubdivideGenerator(parts=parts)
-        elif kind == "koch":
-            height = self._param_value("koch", "height")
-            flip = self._param_value("koch", "flip")
-            gen = builder.KochGenerator(height_factor=height, flip=flip)
-        elif kind == "branch":
-            angle = self._param_value("branch", "angle")
-            count = self._param_value("branch", "count")
-            gen = builder.BranchGenerator(angle_deg=angle, length_factor=0.45, branch_count=count)
-        elif kind == "extend":
-            gen = builder.ExtendGenerator()
-        elif kind == "zigzag":
-            parts = self._param_value("zigzag", "parts")
-            amp = self._param_value("zigzag", "amp")
-            gen = builder.ZigzagGenerator(parts=parts, amplitude_factor=amp)
-        elif kind.startswith("custom"):
-            idx = 0
-            if kind != "custom":
-                try:
-                    idx = int(kind.split("_", 1)[1])
-                except Exception:
-                    idx = 0
-            if not self.custom_patterns or idx >= len(self.custom_patterns):
-                self.log.add("No custom pattern saved.")
-                return
-            pattern = self.custom_patterns[idx]
-            verts = None
-            edges = []
-            if isinstance(pattern, dict):
-                verts = pattern.get("vertices")
-                edges = pattern.get("edges", [])
-            else:
-                verts = pattern
-            if not verts or len(verts) < 2:
-                self.log.add("No custom pattern saved.")
-                return
-            amp = self._param_value("custom", "amplitude")
-            if edges:
-                gen = builder.CustomGraphGenerator(verts, edges, amplitude=amp)
-            else:
-                gen = builder.CustomPolyGenerator(verts, amplitude=amp)
-        else:
-            self.log.add("Unknown fractal op.")
-            return
-
-        segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
-        segs = builder.cleanup_duplicates(segs)
-        if len(segs) > self.cfg.max_vertices:
-            segs = segs[: self.cfg.max_vertices]
-            self.log.add("Pattern capped at max vertices.")
-        lvl.pattern = builder.Pattern.from_segments(segs)
-        lvl.choking_vines_state = None
-        self._commit_pattern_state_from_level(lvl)
+        return pattern_runtime_system.apply_fractal_op(self, lvl, kind)
 
 
     def _reset_pattern_core(self, lvl: LevelState) -> None:
@@ -5106,227 +3693,17 @@ class Game:
 
 
     def _activation_origin(self, level: LevelState) -> Optional[Tuple[int, int]]:
-        return level.pattern_anchor
+        return pattern_runtime_system.activation_origin(self, level)
 
     def _activate_pattern_all(self, level: LevelState, target_vertex: Optional[int]) -> None:
-        if not level.pattern.vertices:
-            self.log.add("No pattern defined.")
-            return
-        origin = self._activation_origin(level)
-        if origin is None:
-            self.log.add("Pattern has no anchor.")
-            return
-        world_vertices = project_vertices(level.pattern, origin)
-        # coherence check: overall pattern size vs INT
-        coh_limit = self._coherence_limit()
-        if len(world_vertices) > coh_limit and self._fizzle_roll(len(world_vertices) - coh_limit, coh_limit):
-            self.log.add("This pattern strains your mind.")
-            return
-        if target_vertex is None or target_vertex < 0 or target_vertex >= len(world_vertices):
-            self.log.add("Select a vertex to target the circle.")
-            return
-        center = world_vertices[target_vertex]
-        dmg_radius = self.get_param_value("activate_all", "radius")
-        per_vertex = self.get_param_value("activate_all", "damage")
-        cap = self.cfg.pattern_damage_cap
-
-        # Apply chakra resonance/charge modifiers (player only for now).
-        mods = self._chakra_modifiers(self.player_id)
-        if mods is not None:
-            dmg_radius = max(0.1, float(dmg_radius) + float(mods.radius_bonus))
-            per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
-
-        # pick vertices in radius
-        active_vertices = []
-        r2 = dmg_radius * dmg_radius
-        for v in world_vertices:
-            dx = v[0] - center[0]
-            dy = v[1] - center[1]
-            if dx * dx + dy * dy <= r2:
-                active_vertices.append(v)
-        str_limit = self._strength_limit()
-        if len(active_vertices) > str_limit and self._fizzle_roll(len(active_vertices) - str_limit, str_limit):
-            self.log.add("You strain to channel that many vertices at once and lose focus.")
-            return
-
-        mana_cost = len(active_vertices)
-        player = self._player()
-        if mana_cost == 0:
-            self.log.add("No vertices in range of the target.")
-            return
-        if mods is not None:
-            mana_cost = int(math.ceil(float(mana_cost) * float(mods.mana_cost_mult)))
-        if player.stats.mana < mana_cost:
-            self.log.add(f"Not enough mana ({player.stats.mana}/{mana_cost}).")
-            return
-        player.stats.mana -= mana_cost
-        player.stats.clamp()
-
-        level.activation_points = active_vertices
-        level.activation_ttl = self.cfg.pattern_overlay_ttl
-
-        total_vertices = len(active_vertices)
-        # Soft-cap rune scaling so very large patterns don't explode damage.
-        # First 8 vertices are full strength, extras contribute at 25%.
-        effective_vertices = min(total_vertices, 8) + max(0, total_vertices - 8) * 0.25
-        hits = 0
-        # Centralized policy: Activate R damages hostiles only, never self.
-        policy = damage_policy_system.DamagePolicy(
-            include_self=False,
-            include_hostile=True,
-            include_neutral=False,
-            include_friendly=False,
-            include_environment=False,
-        )
-        for tid, actor in damage_policy_system.iter_damage_targets(
-            self,
-            level,
-            self.player_id,
-            policy,
-            include_actors=True,
-            include_entities=False,
-        ):
-            if not getattr(actor, "alive", True):
-                continue
-            tile = level.world.get_tile(*actor.pos)
-            if tile is None or not tile.visible:
-                continue
-            # Tile square center distance to circle, approximate coverage factor.
-            ax = actor.pos[0] + 0.5
-            ay = actor.pos[1] + 0.5
-            dx = ax - center[0]
-            dy = ay - center[1]
-            dist = (dx * dx + dy * dy) ** 0.5
-            half_diag = 0.7071
-            if dist <= dmg_radius - half_diag:
-                coverage = 1.0
-            elif dist >= dmg_radius + half_diag:
-                coverage = 0.0
-            else:
-                span = (dmg_radius + half_diag) - (dmg_radius - half_diag)
-                coverage = max(0.0, min(1.0, 1 - (dist - (dmg_radius - half_diag)) / span))
-            if coverage <= 0:
-                continue
-            dmg = int(per_vertex * effective_vertices * coverage)
-            if dmg <= 0:
-                continue
-            hits += 1
-            actor.stats.hp -= dmg
-            self.log.add(f"Your rune sears {actor.name} for {dmg}.")
-            if actor.stats.hp <= 0:
-                self.log.add(f"{actor.name} is annihilated.")
-                self._kill_actor(
-                    level,
-                    actor,
-                    killer_id=self.player_id,
-                    killer_is_player=True,
-                )
-
-        if hits == 0:
-            self.log.add("Your rune fizzles; no foes in its reach.")
-
-        # Spend chakra charge on activation.
-        if mods is not None:
-            try:
-                from edgecaster.systems import chakras as chakra_system
-                self._consume_chakra_charge(
-                    self.player_id,
-                    chakra_system.CHARGE_CONSUME_ACTIVATE * mods.charge_consume_mult,
-                )
-            except Exception:
-                pass
+        return pattern_runtime_system.activate_pattern_all(self, level, target_vertex)
 
     def _activate_pattern_seed_neighbors(self, level: LevelState, target_vertex: Optional[int]) -> None:
-        if not level.pattern.vertices:
-            self.log.add("No pattern defined.")
-            return
-        origin = self._activation_origin(level)
-        if origin is None:
-            self.log.add("Pattern has no anchor.")
-            return
-        world_vertices = project_vertices(level.pattern, origin)
-        if not world_vertices:
-            self.log.add("No vertices to activate.")
-            return
-        if target_vertex is None or target_vertex < 0 or target_vertex >= len(world_vertices):
-            self.log.add("Select a vertex to target.")
-            return
-
-        seed_idx = target_vertex
-        # coherence check: overall pattern size vs INT
-        coh_limit = self._coherence_limit()
-        if len(world_vertices) > coh_limit and self._fizzle_roll(len(world_vertices) - coh_limit, coh_limit):
-            self.log.add("Your pattern destabilizes; the activation slips away.")
-            return
-        depth = self._param_value("activate_seed", "neighbor_depth")
-        mods = self._chakra_modifiers(self.player_id)
-        if mods is not None:
-            depth = int(depth) + int(mods.neighbor_depth_bonus)
-        active_indices = set(self.neighbor_set_depth(seed_idx, depth))
-        active_vertices = [world_vertices[i] for i in active_indices if 0 <= i < len(world_vertices)]
-        level.activation_points = active_vertices
-        level.activation_ttl = self.cfg.pattern_overlay_ttl
-
-        mana_cost = len(active_vertices)
-        player = self._player()
-        str_limit = self._strength_limit()
-        if len(active_vertices) > str_limit and self._fizzle_roll(len(active_vertices) - str_limit, str_limit):
-            self.log.add("This weave challenges your focus.")
-            return
-        if mods is not None:
-            mana_cost = int(math.ceil(float(mana_cost) * float(mods.mana_cost_mult)))
-        if player.stats.mana < mana_cost:
-            self.log.add(f"Not enough mana ({player.stats.mana}/{mana_cost}).")
-            return
-        player.stats.mana -= mana_cost
-        player.stats.clamp()
-
-        per_vertex = self._param_value("activate_seed", "damage")
-        if mods is not None:
-            per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
-        hits = 0
-        # Centralized policy: Activate N damages hostiles only, never self.
-        policy = damage_policy_system.DamagePolicy(
-            include_self=False,
-            include_hostile=True,
-            include_neutral=False,
-            include_friendly=False,
-            include_environment=False,
+        return pattern_runtime_system.activate_pattern_seed_neighbors(
+            self,
+            level,
+            target_vertex,
         )
-        # Damage hostiles in tiles containing active vertices.
-        for ax, ay in active_vertices:
-            tile_x = int(round(ax))
-            tile_y = int(round(ay))
-            target_actor = self._actor_at(level, (tile_x, tile_y))
-            if (
-                target_actor
-                and damage_policy_system.can_damage_target(
-                    self,
-                    level,
-                    self.player_id,
-                    target_actor.id,
-                    target_actor,
-                    policy,
-                )
-            ):
-                target_actor.stats.hp -= per_vertex
-                hits += 1
-                self.log.add(f"Your focus bites {target_actor.name} for {per_vertex}.")
-                if target_actor.stats.hp <= 0:
-                    self.log.add(f"{target_actor.name} crumbles.")
-                    self._kill_actor(level, target_actor, killer_id=self.player_id, killer_is_player=True)
-        if hits == 0:
-            self.log.add("Your focus fizzles; no foes in reach.")
-
-        if mods is not None:
-            try:
-                from edgecaster.systems import chakras as chakra_system
-                self._consume_chakra_charge(
-                    self.player_id,
-                    chakra_system.CHARGE_CONSUME_ACTIVATE * mods.charge_consume_mult,
-                )
-            except Exception:
-                pass
 
     # --- FOV ---
 
@@ -5444,8 +3821,9 @@ class Game:
         if self.player_id not in level.actors:
             return
 
-        # Apply view bonus from equipment
+        # Apply view bonus from equipment + chakra passives.
         view_bonus = self.effective_character_stats().get("view", 0)
+        view_bonus += int(round(self.chakra_effect_value("fov_radius_bonus", actor_id=self.player_id)))
         radius = int(radius + view_bonus)
         if radius < 1:
             radius = 1
@@ -5700,4 +4078,5 @@ class Game:
                 f.write(msg + "\n")
         except Exception:
             pass
+
 
