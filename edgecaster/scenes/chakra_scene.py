@@ -1636,6 +1636,9 @@ class ChakraSelectionScene(PanelScene):
     """
 
     uses_live_loop: bool = True
+    music_key = "chakric"
+    music_loop = True
+
 
     def __init__(self, *, game: Any = None) -> None:
         super().__init__()
