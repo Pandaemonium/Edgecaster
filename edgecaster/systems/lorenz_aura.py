@@ -323,6 +323,7 @@ def reset_on_zone_change(game: "Game", player: "Actor") -> None:
     lvl.activation_points = []
     lvl.activation_ttl = 0
     lvl.choking_vines_state = None
+    lvl.rune_choking_vines_state = None
     lvl.acidic_pattern = False
     lvl.fern_active = False
     lvl.fern_growth_tips = []

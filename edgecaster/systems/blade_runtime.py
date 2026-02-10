@@ -152,6 +152,16 @@ def blade_stat_snapshot(game: "Game", actor_id: str) -> BladeStatSnapshot:
     slash_reach = _verb_reach(state, "slash")
     thrust_reach = _verb_reach(state, "thrust")
     cleave_reach = _verb_reach(state, "cleave")
+    # Status: phantom_limb extends all blade reach by 2.
+    try:
+        level = game._level()
+        actor = level.actors.get(actor_id)
+        if actor and game._has_status(actor, "phantom_limb"):
+            slash_reach += 2.0
+            thrust_reach += 2.0
+            cleave_reach += 2.0
+    except Exception:
+        pass
     return BladeStatSnapshot(
         slots=blade_slots(game, actor_id),
         slash_damage=_verb_damage(state, "slash"),
@@ -318,6 +328,12 @@ def act_blade_attack(
     actor_abs = _actor_abs(game, level, actor)
     target_abs = _target_abs_from_local(game, target_pos)
     reach = _verb_reach(state, verb)
+    # Status: phantom_limb extends melee reach by 2 tiles.
+    try:
+        if game._has_status(actor, "phantom_limb"):
+            reach += 2.0
+    except Exception:
+        pass
 
     candidates = list(_iter_hostile_actor_targets(game, actor_id))
     if not candidates:

@@ -1544,8 +1544,8 @@ def act_mirror_strike(self, actor_id: str) -> None:
     if caster_is_player and not hit_any:
         self.log.add("Your mirrored strike finds no target.")
 
-def act_choking_vines(self, actor_id: str) -> None:
-    """Seed a tendril field that grows from rune-edge centers near enemies.
+def act_aggressive_vines(self, actor_id: str) -> None:
+    """Seed a free-form tendril field that grows from rune-edge centers.
 
     Behavior model:
     - Initial tendril tips spawn from centers of pattern edges that are near
@@ -1565,7 +1565,7 @@ def act_choking_vines(self, actor_id: str) -> None:
     anchor = getattr(level, "pattern_anchor", None)
     if pattern is None or anchor is None or not getattr(pattern, "edges", None):
         if actor_id == self.player_id:
-            self.log.add("No rune edges available for Choking Vines.")
+            self.log.add("No rune edges available for Aggressive Vines.")
         return
 
     # Cost gate. This is intentionally expensive for a persistent control tool.
@@ -1573,7 +1573,7 @@ def act_choking_vines(self, actor_id: str) -> None:
     try:
         if actor.stats.mana < mana_cost:
             if actor_id == self.player_id:
-                self.log.add("Not enough mana for Choking Vines.")
+                self.log.add("Not enough mana for Aggressive Vines.")
             return
         actor.stats.mana -= mana_cost
         actor.stats.clamp()
@@ -1585,7 +1585,7 @@ def act_choking_vines(self, actor_id: str) -> None:
     verts_world = project_vertices(pattern, anchor)
     if not verts_world:
         if actor_id == self.player_id:
-            self.log.add("No rune geometry to grow vines from.")
+            self.log.add("No rune geometry to grow aggressive vines from.")
         return
 
     zx, zy, _ = getattr(level, "coord", self.zone_coord)
@@ -1607,7 +1607,7 @@ def act_choking_vines(self, actor_id: str) -> None:
 
     if not edge_midpoints_abs:
         if actor_id == self.player_id:
-            self.log.add("No rune edges available for Choking Vines.")
+            self.log.add("No rune edges available for Aggressive Vines.")
         return
 
     # Hostile actor targets only.
@@ -1743,11 +1743,895 @@ def act_choking_vines(self, actor_id: str) -> None:
     level.activation_ttl = max(level.activation_ttl, 8)
 
     if actor_id == self.player_id:
-        self.log.add("Vines uncoil from your rune and seek warm blood.")
+            self.log.add("Aggressive vines uncoil from your rune and seek warm blood.")
 
     # Persist to canonical per-depth pattern state.
     if hasattr(self, "_commit_pattern_state_from_level"):
         self._commit_pattern_state_from_level(level)
+
+
+def _safe_norm(dx: float, dy: float) -> tuple[float, float]:
+    mag = math.hypot(dx, dy)
+    if mag <= 1e-9:
+        return (0.0, 0.0)
+    return (dx / mag, dy / mag)
+
+
+def _clamp_turn(prev_dir: tuple[float, float], desired_dir: tuple[float, float], max_deg: float) -> tuple[float, float]:
+    """Limit angular turn from prev_dir toward desired_dir by max_deg."""
+    px, py = _safe_norm(prev_dir[0], prev_dir[1])
+    dx, dy = _safe_norm(desired_dir[0], desired_dir[1])
+    if (px == 0.0 and py == 0.0) or (dx == 0.0 and dy == 0.0):
+        return (dx, dy)
+
+    a_prev = math.atan2(py, px)
+    a_des = math.atan2(dy, dx)
+    delta = (a_des - a_prev + math.pi) % (2.0 * math.pi) - math.pi
+    limit = math.radians(max(0.0, float(max_deg)))
+    if abs(delta) <= limit:
+        return (dx, dy)
+    a_new = a_prev + (limit if delta > 0.0 else -limit)
+    return (math.cos(a_new), math.sin(a_new))
+
+
+def _distance_point_to_segment(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+    """Return Euclidean distance from point P to segment AB."""
+    abx = bx - ax
+    aby = by - ay
+    apx = px - ax
+    apy = py - ay
+    denom = abx * abx + aby * aby
+    if denom <= 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, (apx * abx + apy * aby) / denom))
+    qx = ax + abx * t
+    qy = ay + aby * t
+    return math.hypot(px - qx, py - qy)
+
+
+def _vertex_chakra_nodes(v: Any) -> set[str]:
+    tags = getattr(v, "tags", {}) or {}
+    out: set[str] = set()
+    one = str(tags.get("chakra_node", "")).strip()
+    if one:
+        out.add(one)
+    many = str(tags.get("chakra_nodes", "")).strip()
+    if many:
+        out.update({p for p in many.split("|") if p})
+    return out
+
+
+def _split_pattern_edge_at_midpoint(pattern: Any, edge_idx: int) -> Optional[tuple[int, tuple[float, float], tuple[float, float]]]:
+    """Split edge `edge_idx` into two edges via a newly inserted midpoint vertex."""
+    try:
+        e = pattern.edges[edge_idx]
+        a_idx = int(getattr(e, "a"))
+        b_idx = int(getattr(e, "b"))
+        va = pattern.vertices[a_idx]
+        vb = pattern.vertices[b_idx]
+        ax, ay = float(va.pos[0]), float(va.pos[1])
+        bx, by = float(vb.pos[0]), float(vb.pos[1])
+    except Exception:
+        return None
+
+    if math.hypot(bx - ax, by - ay) <= 1e-6:
+        return None
+
+    mx = (ax + bx) * 0.5
+    my = (ay + by) * 0.5
+
+    node_ids: set[str] = set()
+    node_ids.update(_vertex_chakra_nodes(va))
+    node_ids.update(_vertex_chakra_nodes(vb))
+    tags: dict[str, str] = {}
+    if node_ids:
+        ordered = sorted(node_ids)
+        tags["chakra_node"] = ordered[0]
+        if len(ordered) > 1:
+            tags["chakra_nodes"] = "|".join(ordered)
+
+    new_idx = pattern.add_vertex((mx, my), color=getattr(e, "color", "neutral"), tags=tags)
+    weight = float(getattr(e, "weight", 1.0) or 1.0)
+    color = getattr(e, "color", "neutral")
+
+    # Replace original edge with two new edges through midpoint.
+    pattern.edges.pop(edge_idx)
+    pattern.add_edge(a_idx, new_idx, color=color, weight=weight)
+    pattern.add_edge(new_idx, b_idx, color=color, weight=weight)
+    return (new_idx, (ax, ay), (bx, by))
+
+
+def act_choking_vines(self, actor_id: str) -> None:
+    """Grow constricting rune branches from rune edges toward hostiles.
+
+    Unlike Aggressive Vines (free-form overlay), this variant mutates the
+    actual rune graph by inserting new vertices/edges over time.
+    """
+    level = self._level()
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+    _dbg = getattr(self, "_debug", None)
+    def _d(msg: str) -> None:
+        try:
+            if _dbg is not None:
+                _dbg(f"[rune_vines] {msg}")
+        except Exception:
+            pass
+
+    pattern = getattr(level, "pattern", None)
+    anchor = getattr(level, "pattern_anchor", None)
+    if pattern is None or anchor is None or not getattr(pattern, "edges", None):
+        _d("cast denied: no pattern/anchor/edges")
+        if actor_id == self.player_id:
+            self.log.add("No rune edges available for Choking Vines.")
+        return
+
+    mana_cost = 26
+    try:
+        if actor.stats.mana < mana_cost:
+            _d(f"cast denied: mana {int(getattr(actor.stats, 'mana', 0))}/{mana_cost}")
+            if actor_id == self.player_id:
+                self.log.add("Not enough mana for Choking Vines.")
+            return
+        actor.stats.mana -= mana_cost
+        actor.stats.clamp()
+    except Exception:
+        _d("cast denied: actor stats unavailable")
+        return
+
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=False,
+        include_friendly=False,
+        include_environment=False,
+    )
+    # Hostiles are tracked in both world-space (for logs/FX) and local
+    # rune-space (for geometric growth decisions against pattern vertices).
+    hostile_local: list[tuple[str, Actor, float, float, float, float]] = []
+    for tid, obj in damage_policy_system.iter_damage_targets(
+        self,
+        level,
+        actor_id,
+        policy,
+        include_actors=True,
+        include_entities=False,
+    ):
+        pos = getattr(obj, "pos", None)
+        if not pos:
+            continue
+        wx = float(pos[0]) + 0.5
+        wy = float(pos[1]) + 0.5
+        lx = wx - float(anchor[0])
+        ly = wy - float(anchor[1])
+        hostile_local.append((str(tid), obj, wx, wy, lx, ly))
+    _d(
+        f"cast begin: hostiles={len(hostile_local)} edges={len(getattr(pattern, 'edges', []) or [])} "
+        f"verts={len(getattr(pattern, 'vertices', []) or [])} actor={actor_id}"
+    )
+
+    if not hostile_local:
+        _d("cast denied: no hostile targets")
+        if actor_id == self.player_id:
+            self.log.add("No nearby hostile minds for the vines to seek.")
+        return
+
+    seed_radius = 6.0
+    used_edge_keys: set[tuple[int, int]] = set()
+    tips: list[dict[str, Any]] = []
+    # First visible growth step created immediately at cast time.
+    initial_max_step = 4.0
+    initial_nominal_step = 1.8
+    # Relaxed from 25deg to 40deg per design request.
+    angle_limit_deg = 25.0
+
+    def _nearest_edge_for_target(tx: float, ty: float) -> tuple[int, float, tuple[int, int]] | None:
+        best_idx = -1
+        best_d2 = 1e18
+        best_key = (0, 0)
+        for idx, e in enumerate(getattr(pattern, "edges", []) or []):
+            try:
+                a_idx = int(getattr(e, "a"))
+                b_idx = int(getattr(e, "b"))
+                va = pattern.vertices[a_idx]
+                vb = pattern.vertices[b_idx]
+                ax, ay = float(va.pos[0]), float(va.pos[1])
+                bx, by = float(vb.pos[0]), float(vb.pos[1])
+            except Exception:
+                continue
+            key = (min(a_idx, b_idx), max(a_idx, b_idx))
+            if key in used_edge_keys:
+                continue
+            mx = (ax + bx) * 0.5
+            my = (ay + by) * 0.5
+            dx = tx - mx
+            dy = ty - my
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_idx = idx
+                best_key = key
+        if best_idx < 0:
+            return None
+        return (best_idx, best_d2, best_key)
+
+    def _seed_tip_from_split(
+        *,
+        mid_idx: int,
+        ax: float,
+        ay: float,
+        bx: float,
+        by: float,
+        target_x: float,
+        target_y: float,
+    ) -> dict[str, Any]:
+        """
+        Create one immediate branch segment from a newly split midpoint.
+
+        This guarantees that Choking Vines visibly branches on cast, instead
+        of only inserting split vertices and waiting for later tick growth.
+        """
+        mx, my = map(float, pattern.vertices[mid_idx].pos)
+        edge_dir = _safe_norm(float(bx) - float(ax), float(by) - float(ay))
+        to_target = _safe_norm(float(target_x) - mx, float(target_y) - my)
+        # Keep forward orientation of edge_dir toward target.
+        if edge_dir[0] * to_target[0] + edge_dir[1] * to_target[1] < 0.0:
+            edge_dir = (-edge_dir[0], -edge_dir[1])
+        desired = to_target if to_target != (0.0, 0.0) else edge_dir
+        if desired == (0.0, 0.0):
+            desired = (1.0, 0.0)
+        grow_dir = _clamp_turn(edge_dir, desired, angle_limit_deg)
+        if grow_dir == (0.0, 0.0):
+            grow_dir = desired
+
+        dist = math.hypot(float(target_x) - mx, float(target_y) - my)
+        step = min(initial_max_step, max(1.0, min(initial_nominal_step, dist)))
+        nx = mx + grow_dir[0] * step
+        ny = my + grow_dir[1] * step
+
+        src_tags = dict(getattr(pattern.vertices[mid_idx], "tags", {}) or {})
+        src_tags["rune_vine"] = "1"
+        head_idx = pattern.add_vertex((nx, ny), color="verdant", tags=src_tags)
+        pattern.add_edge(int(mid_idx), int(head_idx), color="verdant", weight=1.0)
+        return {
+            "vertex": int(head_idx),
+            "dx": float(grow_dir[0]),
+            "dy": float(grow_dir[1]),
+            "age": 0.0,
+        }
+
+    for _tid, _obj, wx, wy, hx, hy in hostile_local:
+        found = _nearest_edge_for_target(hx, hy)
+        if found is None:
+            _d(f"seed skip: no edge for hostile@w({wx:.2f},{wy:.2f}) l({hx:.2f},{hy:.2f})")
+            continue
+        edge_idx, d2, edge_key = found
+        if math.sqrt(d2) > seed_radius:
+            _d(
+                f"seed skip: hostile@w({wx:.2f},{wy:.2f}) l({hx:.2f},{hy:.2f}) nearest_edge={edge_idx} "
+                f"dist={math.sqrt(d2):.2f} > seed_radius={seed_radius:.2f}"
+            )
+            continue
+        split = _split_pattern_edge_at_midpoint(pattern, edge_idx)
+        if split is None:
+            _d(f"seed skip: split failed edge_idx={edge_idx} key={edge_key}")
+            continue
+        mid_idx, (ax, ay), (bx, by) = split
+        used_edge_keys.add(edge_key)
+        _d(
+            f"seed add: edge_idx={edge_idx} key={edge_key} mid={mid_idx} "
+            f"hostile@w({wx:.2f},{wy:.2f}) l({hx:.2f},{hy:.2f}) edge=(({ax:.2f},{ay:.2f})->({bx:.2f},{by:.2f}))"
+        )
+        tips.append(
+            _seed_tip_from_split(
+                mid_idx=int(mid_idx),
+                ax=float(ax),
+                ay=float(ay),
+                bx=float(bx),
+                by=float(by),
+                target_x=float(hx),
+                target_y=float(hy),
+            )
+        )
+        if len(tips) >= 6:
+            break
+
+    # Fallback: split the globally-nearest edge once so the ability always starts.
+    if not tips:
+        best = None
+        best_d2 = 1e18
+        best_h = None
+        for _tid, _obj, _wx, _wy, hx, hy in hostile_local:
+            found = _nearest_edge_for_target(hx, hy)
+            if found is None:
+                continue
+            idx, d2, key = found
+            if d2 < best_d2:
+                best = (idx, key)
+                best_d2 = d2
+                best_h = (hx, hy)
+        if best is not None and best_h is not None:
+            split = _split_pattern_edge_at_midpoint(pattern, best[0])
+            if split is not None:
+                mid_idx, (ax, ay), (bx, by) = split
+                _d(
+                    f"seed fallback: edge_idx={best[0]} mid={mid_idx} "
+                    f"hostile@({best_h[0]:.2f},{best_h[1]:.2f})"
+                )
+                tips.append(
+                    _seed_tip_from_split(
+                        mid_idx=int(mid_idx),
+                        ax=float(ax),
+                        ay=float(ay),
+                        bx=float(bx),
+                        by=float(by),
+                        target_x=float(best_h[0]),
+                        target_y=float(best_h[1]),
+                    )
+                )
+
+    if not tips:
+        _d("cast denied: no tips could be seeded")
+        if actor_id == self.player_id:
+            self.log.add("The vines fail to find purchase.")
+        return
+
+    level.rune_choking_vines_state = {
+        "caster_id": str(actor_id),
+        "duration": 60,
+        "remaining": 60,
+        "tick": 0,
+        "tips": tips,
+        "dot_targets": {},
+        "seed_radius": float(seed_radius),
+        "seek_radius": 5,
+        "grow_step": 1.15,
+        "max_step": 2.0,
+        "angle_limit_deg": angle_limit_deg,
+        "branch_chance": 0.06,
+        "max_tips": 4,
+        # Grow on a slower cadence so vines feel like creeping tendrils.
+        # `grow_every=5` means one growth pass every 5 heartbeats.
+        "grow_every": 15,
+        # Limit how many existing tip heads can advance per growth pass.
+        "growth_budget": 1,
+        # Limit how many fresh edge reseeds can spawn per growth pass.
+        "reseed_per_tick": 1,
+        # Disable the temporary aggressive early-growth booster used for diagnostics.
+        "min_growth_heartbeats": 0,
+        "hit_radius": 1.0,
+        "hit_damage": 1,
+        "dot_damage": 1,
+        "dot_duration": 2,
+        "root_duration": 2,
+        # Leave verbose diagnostics off in normal play.
+        "debug_verbose": False,
+    }
+    _d(
+        f"cast state created: tips={len(tips)} remaining={level.rune_choking_vines_state.get('remaining')} "
+        f"growth_budget={level.rune_choking_vines_state.get('growth_budget')} "
+        f"reseed_per_tick={level.rune_choking_vines_state.get('reseed_per_tick')}"
+    )
+
+    # Brief activation hint at seed vertices.
+    level.activation_points = [
+        tuple(pattern.vertices[int(t["vertex"])].pos)
+        for t in tips
+        if 0 <= int(t.get("vertex", -1)) < len(pattern.vertices)
+    ]
+    level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 8)
+
+    if actor_id == self.player_id:
+        self.log.add("Constricting vines split from your rune and begin to creep.")
+
+    if hasattr(self, "_commit_pattern_state_from_level"):
+        self._commit_pattern_state_from_level(level)
+
+
+def rune_choking_vines_tick(game: "Game", level: Any, delta: int) -> None:
+    """Advance rune-mutating Choking Vines for `delta` heartbeats."""
+    if delta <= 0:
+        return
+    state = getattr(level, "rune_choking_vines_state", None)
+    if not state:
+        return
+    _dbg = getattr(game, "_debug", None)
+    def _d(msg: str) -> None:
+        try:
+            if _dbg is not None:
+                _dbg(f"[rune_vines] {msg}")
+        except Exception:
+            pass
+
+    try:
+        remaining = int(state.get("remaining", 0))
+    except Exception:
+        _d("tick abort: invalid remaining -> clearing state")
+        level.rune_choking_vines_state = None
+        return
+    if bool(state.get("debug_verbose", False)):
+        _d(
+            f"tick start: delta={int(delta)} remaining={remaining} "
+            f"tips={len(list(state.get('tips', []) or []))} "
+            f"verts={len(getattr(getattr(level, 'pattern', None), 'vertices', []) or [])} "
+            f"edges={len(getattr(getattr(level, 'pattern', None), 'edges', []) or [])}"
+        )
+
+    for _ in range(int(delta)):
+        if remaining <= 0:
+            break
+        _step_rune_choking_vines(game, level, state)
+        remaining -= 1
+        state["remaining"] = remaining
+
+    if remaining <= 0:
+        _d("tick complete: duration expired -> clearing state")
+        level.rune_choking_vines_state = None
+
+    # Keep activation overlay tied to current vine tip vertices.
+    try:
+        pattern = getattr(level, "pattern", None)
+        tips = list(state.get("tips", []) or [])
+        if pattern is not None:
+            level.activation_points = [
+                tuple(pattern.vertices[int(t["vertex"])].pos)
+                for t in tips
+                if 0 <= int(t.get("vertex", -1)) < len(pattern.vertices)
+            ]
+            if level.activation_points:
+                level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 3)
+    except Exception:
+        pass
+
+    try:
+        game._commit_pattern_state_from_level(level)
+    except Exception:
+        pass
+
+
+def _step_rune_choking_vines(game: "Game", level: Any, state: dict[str, Any]) -> None:
+    """Single-step growth pass for rune-mutating Choking Vines."""
+    pattern = getattr(level, "pattern", None)
+    if pattern is None or not getattr(pattern, "vertices", None):
+        if bool(state.get("debug_verbose", False)):
+            try:
+                game._debug("[rune_vines] step abort: missing pattern/vertices")
+            except Exception:
+                pass
+        return
+
+    caster_id = str(state.get("caster_id", getattr(game, "player_id", "")))
+    tick = int(state.get("tick", 0))
+    state["tick"] = tick + 1
+    _debug_verbose = bool(state.get("debug_verbose", False))
+    if _debug_verbose:
+        try:
+            game._debug(
+                f"[rune_vines] step tick={tick} tips={len(list(state.get('tips', []) or []))} "
+                f"verts={len(getattr(pattern, 'vertices', []) or [])} "
+                f"edges={len(getattr(pattern, 'edges', []) or [])}"
+            )
+        except Exception:
+            pass
+
+    # Hostile actor targets only (no friendlies/environment for this control tool).
+    policy = damage_policy_system.DamagePolicy(
+        include_self=False,
+        include_hostile=True,
+        include_neutral=False,
+        include_friendly=False,
+        include_environment=False,
+    )
+    anchor = getattr(level, "pattern_anchor", None)
+    if anchor is None:
+        state["dot_targets"] = {}
+        return
+
+    # Hostiles tracked as:
+    # (id, actor, world_x, world_y, local_x, local_y)
+    hostiles: list[tuple[str, Actor, float, float, float, float]] = []
+    for tid, obj in damage_policy_system.iter_damage_targets(
+        game,
+        level,
+        caster_id,
+        policy,
+        include_actors=True,
+        include_entities=False,
+    ):
+        pos = getattr(obj, "pos", None)
+        if not pos:
+            continue
+        wx = float(pos[0]) + 0.5
+        wy = float(pos[1]) + 0.5
+        lx = wx - float(anchor[0])
+        ly = wy - float(anchor[1])
+        hostiles.append((str(tid), obj, wx, wy, lx, ly))
+    if _debug_verbose:
+        try:
+            game._debug(f"[rune_vines] step hostiles={len(hostiles)}")
+        except Exception:
+            pass
+
+    dot_targets: dict[str, int] = {
+        str(k): int(v) for (k, v) in dict(state.get("dot_targets", {}) or {}).items()
+    }
+    dot_damage = int(state.get("dot_damage", 3) or 3)
+    root_duration = int(state.get("root_duration", 2) or 2)
+    dot_duration = int(state.get("dot_duration", 2) or 2)
+    hit_damage = int(state.get("hit_damage", 3) or 3)
+
+    # Damage-over-time pass for already-ensnared targets.
+    for tid in list(dot_targets.keys()):
+        rem = int(dot_targets.get(tid, 0))
+        if rem <= 0:
+            dot_targets.pop(tid, None)
+            continue
+        target = level.actors.get(tid)
+        if target is None:
+            dot_targets.pop(tid, None)
+            continue
+        try:
+            target.stats.hp -= dot_damage
+            target.stats.clamp()
+        except Exception:
+            dot_targets.pop(tid, None)
+            continue
+        rem -= 1
+        if rem <= 0:
+            dot_targets.pop(tid, None)
+        else:
+            dot_targets[tid] = rem
+        if int(getattr(target.stats, "hp", 0)) <= 0:
+            game._kill_actor(
+                level,
+                target,
+                killer_id=caster_id,
+                killer_is_player=(caster_id == str(getattr(game, "player_id", ""))),
+            )
+            dot_targets.pop(tid, None)
+    if _debug_verbose:
+        try:
+            game._debug(f"[rune_vines] step dot_targets_active={len(dot_targets)}")
+        except Exception:
+            pass
+
+    if not hostiles:
+        if _debug_verbose:
+            try:
+                game._debug("[rune_vines] step early-return: no hostiles")
+            except Exception:
+                pass
+        state["dot_targets"] = dot_targets
+        return
+
+    tips: list[dict[str, Any]] = list(state.get("tips", []) or [])
+
+    grow_every = max(1, int(state.get("grow_every", 2) or 2))
+    if (tick % grow_every) != 0:
+        if _debug_verbose:
+            try:
+                game._debug(
+                    f"[rune_vines] step early-return: tick%grow_every != 0 "
+                    f"(tick={tick}, grow_every={grow_every})"
+                )
+            except Exception:
+                pass
+        state["dot_targets"] = dot_targets
+        return
+
+    grow_step = float(state.get("grow_step", 1.15) or 1.15)
+    max_step = float(state.get("max_step", 3.2) or 3.2)
+    seek_radius = float(state.get("seek_radius", 8.5) or 8.5)
+    seed_radius = float(state.get("seed_radius", 6.0) or 6.0)
+    angle_limit_deg = float(state.get("angle_limit_deg", 40.0) or 40.0)
+    branch_chance = float(state.get("branch_chance", 0.08) or 0.08)
+    hit_radius = float(state.get("hit_radius", 1.0) or 1.0)
+    max_tips = max(1, int(state.get("max_tips", 24) or 24))
+    growth_budget = max(1, int(state.get("growth_budget", 2) or 2))
+    reseed_per_tick = max(0, int(state.get("reseed_per_tick", 2) or 2))
+    min_growth_heartbeats = max(0, int(state.get("min_growth_heartbeats", 50) or 50))
+
+    # During the early growth window, bias toward obvious continued growth:
+    # multiple reseeds and multiple advancing tips so the effect does not
+    # collapse into a single branch.
+    if tick < min_growth_heartbeats:
+        per_enemy = max(1, len(hostiles))
+        growth_budget = max(growth_budget, min(6, per_enemy))
+        reseed_per_tick = max(reseed_per_tick, min(6, per_enemy))
+    if _debug_verbose:
+        try:
+            game._debug(
+                f"[rune_vines] step params: growth_budget={growth_budget} "
+                f"reseed_per_tick={reseed_per_tick} seek_radius={seek_radius:.2f} "
+                f"seed_radius={seed_radius:.2f} max_tips={max_tips}"
+            )
+        except Exception:
+            pass
+
+    rng = getattr(game, "rng", None)
+    if rng is None:
+        class _FallbackRng:
+            def random(self) -> float:
+                return 0.0
+            def uniform(self, a: float, b: float) -> float:
+                return (a + b) * 0.5
+        rng = _FallbackRng()
+
+    new_tips: list[dict[str, Any]] = []
+    grew_segments: list[tuple[float, float, float, float]] = []
+
+    def _nearest_hostile_for(x: float, y: float) -> tuple[tuple[str, Actor, float, float, float, float] | None, float]:
+        nearest = None
+        best_d2 = 1e18
+        for target in hostiles:
+            dx = target[4] - x
+            dy = target[5] - y
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                nearest = target
+        return nearest, best_d2
+
+    def _grow_from_vertex(
+        src_idx: int,
+        prev_dx: float,
+        prev_dy: float,
+        tx: float,
+        ty: float,
+        *,
+        override_step: float | None = None,
+    ) -> tuple[dict[str, Any] | None, tuple[float, float, float, float] | None]:
+        if src_idx < 0 or src_idx >= len(pattern.vertices):
+            return None, None
+        if len(pattern.vertices) >= int(getattr(game.cfg, "max_vertices", 20000)):
+            return None, None
+        sx, sy = map(float, pattern.vertices[src_idx].pos)
+        desired = _safe_norm(tx - sx, ty - sy)
+        if desired == (0.0, 0.0):
+            return None, None
+        prev = _safe_norm(float(prev_dx), float(prev_dy))
+        if prev == (0.0, 0.0):
+            prev = desired
+        grow_dir = _clamp_turn(prev, desired, angle_limit_deg)
+        if grow_dir == (0.0, 0.0):
+            grow_dir = desired
+        dist = math.hypot(tx - sx, ty - sy)
+        step = float(override_step) if override_step is not None else min(grow_step, dist)
+        step = min(max_step, max(0.55, step))
+        nx = sx + grow_dir[0] * step
+        ny = sy + grow_dir[1] * step
+
+        src_tags = dict(getattr(pattern.vertices[src_idx], "tags", {}) or {})
+        src_tags["rune_vine"] = "1"
+        new_idx = pattern.add_vertex((nx, ny), color="verdant", tags=src_tags)
+        pattern.add_edge(src_idx, new_idx, color="verdant", weight=1.0)
+        tip_obj = {
+            "vertex": int(new_idx),
+            "dx": float(grow_dir[0]),
+            "dy": float(grow_dir[1]),
+            "age": 0.0,
+        }
+        return tip_obj, (sx, sy, nx, ny)
+
+    # 1) Reseed from pattern edges near hostiles each heartbeat.
+    #    Choose nearest eligible edge PER hostile (not global best-first), so
+    #    multiple fronts can form at once.
+    used_edge_keys: set[tuple[int, int]] = set()
+    reseeded = 0
+    for _target_id, _obj, _wx, _wy, tx, ty in hostiles:
+        if reseeded >= reseed_per_tick:
+            break
+        if len(tips) + len(new_tips) >= max_tips:
+            break
+        best_edge_idx = -1
+        best_key = (0, 0)
+        best_d2 = 1e18
+        for idx, e in enumerate(getattr(pattern, "edges", []) or []):
+            try:
+                a_idx = int(getattr(e, "a"))
+                b_idx = int(getattr(e, "b"))
+                va = pattern.vertices[a_idx]
+                vb = pattern.vertices[b_idx]
+                mx = (float(va.pos[0]) + float(vb.pos[0])) * 0.5
+                my = (float(va.pos[1]) + float(vb.pos[1])) * 0.5
+            except Exception:
+                continue
+            key = (min(a_idx, b_idx), max(a_idx, b_idx))
+            if key in used_edge_keys:
+                continue
+            dx = tx - mx
+            dy = ty - my
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_edge_idx = idx
+                best_key = key
+        if best_edge_idx < 0 or math.sqrt(best_d2) > seed_radius:
+            if _debug_verbose:
+                try:
+                    game._debug(
+                        f"[rune_vines] reseed skip target@l({tx:.2f},{ty:.2f}) "
+                        f"best_edge={best_edge_idx} dist={(math.sqrt(best_d2) if best_d2 < 1e17 else -1):.2f}"
+                    )
+                except Exception:
+                    pass
+            continue
+        split = _split_pattern_edge_at_midpoint(pattern, best_edge_idx)
+        if split is None:
+            if _debug_verbose:
+                try:
+                    game._debug(f"[rune_vines] reseed split-fail edge={best_edge_idx}")
+                except Exception:
+                    pass
+            continue
+        used_edge_keys.add(best_key)
+        mid_idx, (_ax, _ay), (_bx, _by) = split
+        tip_obj, seg = _grow_from_vertex(
+            int(mid_idx),
+            tx - float(pattern.vertices[mid_idx].pos[0]),
+            ty - float(pattern.vertices[mid_idx].pos[1]),
+            tx,
+            ty,
+            override_step=min(1.35, grow_step * 1.15),
+        )
+        if tip_obj is not None and seg is not None:
+            new_tips.append(tip_obj)
+            grew_segments.append(seg)
+            reseeded += 1
+    if _debug_verbose:
+        try:
+            game._debug(
+                f"[rune_vines] reseed summary: reseeded={reseeded} "
+                f"new_tips={len(new_tips)} used_edge_keys={len(used_edge_keys)}"
+            )
+        except Exception:
+            pass
+
+    # 2) Grow multiple existing tips each heartbeat.
+    #    Assign each hostile to its nearest tip (prefer distinct tips) to avoid
+    #    all growth collapsing into one tendril.
+    assignments: list[tuple[float, int, tuple[str, Actor, float, float, float, float]]] = []
+    used_tip_indices: set[int] = set()
+    for hostile in hostiles:
+        tx, ty = hostile[4], hostile[5]
+        best_i = -1
+        best_d2 = 1e18
+        for i, tip in enumerate(tips):
+            if i in used_tip_indices:
+                continue
+            v_idx = int(tip.get("vertex", -1))
+            if v_idx < 0 or v_idx >= len(pattern.vertices):
+                continue
+            sx, sy = map(float, pattern.vertices[v_idx].pos)
+            dx = tx - sx
+            dy = ty - sy
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+        if best_i >= 0 and best_d2 <= (seek_radius * seek_radius):
+            assignments.append((best_d2, best_i, hostile))
+            used_tip_indices.add(best_i)
+
+    # Fallback so a lone hostile can still drive one tip even when we have
+    # fewer/more tips than hostile assignments.
+    if not assignments:
+        for i, tip in enumerate(tips):
+            v_idx = int(tip.get("vertex", -1))
+            if v_idx < 0 or v_idx >= len(pattern.vertices):
+                continue
+            sx, sy = map(float, pattern.vertices[v_idx].pos)
+            nearest, d2 = _nearest_hostile_for(sx, sy)
+            if nearest is None or d2 > (seek_radius * seek_radius):
+                continue
+            assignments.append((d2, i, nearest))
+        assignments.sort(key=lambda t: t[0])
+    if _debug_verbose:
+        try:
+            game._debug(f"[rune_vines] growth assignments={len(assignments)}")
+        except Exception:
+            pass
+
+    moves = 0
+    for _d2, i, nearest in assignments:
+        if moves >= growth_budget:
+            break
+        if len(pattern.vertices) >= int(getattr(game.cfg, "max_vertices", 20000)):
+            break
+        if i < 0 or i >= len(tips):
+            continue
+        tip = tips[i]
+        v_idx = int(tip.get("vertex", -1))
+        if v_idx < 0 or v_idx >= len(pattern.vertices):
+            continue
+        tx, ty = nearest[4], nearest[5]
+        tip_obj, seg = _grow_from_vertex(
+            v_idx,
+            float(tip.get("dx", 0.0)),
+            float(tip.get("dy", 0.0)),
+            tx,
+            ty,
+        )
+        if tip_obj is None or seg is None:
+            if _debug_verbose:
+                try:
+                    game._debug(f"[rune_vines] grow skip: tip_idx={i} could not grow")
+                except Exception:
+                    pass
+            continue
+        # Advance this tip head.
+        tip["vertex"] = int(tip_obj["vertex"])
+        tip["dx"] = float(tip_obj["dx"])
+        tip["dy"] = float(tip_obj["dy"])
+        tip["age"] = float(tip.get("age", 0.0)) + 1.0
+        grew_segments.append(seg)
+        moves += 1
+
+        # Low-probability local branch at tip end to keep an organic silhouette.
+        if len(tips) + len(new_tips) < max_tips and float(rng.random()) < branch_chance:
+            base_ang = math.atan2(float(tip_obj["dy"]), float(tip_obj["dx"]))
+            ang = base_ang + math.radians(float(rng.uniform(-24.0, 24.0)))
+            btx = float(pattern.vertices[int(tip_obj["vertex"])].pos[0]) + math.cos(ang) * grow_step
+            bty = float(pattern.vertices[int(tip_obj["vertex"])].pos[1]) + math.sin(ang) * grow_step
+            branch_tip, branch_seg = _grow_from_vertex(
+                int(tip_obj["vertex"]),
+                math.cos(ang),
+                math.sin(ang),
+                btx,
+                bty,
+                override_step=min(1.0, grow_step * 0.85),
+            )
+            if branch_tip is not None and branch_seg is not None:
+                new_tips.append(branch_tip)
+                grew_segments.append(branch_seg)
+    if _debug_verbose:
+        try:
+            game._debug(
+                f"[rune_vines] growth summary: moves={moves} grew_segments={len(grew_segments)} "
+                f"tips_before={len(tips)} new_tips={len(new_tips)}"
+            )
+        except Exception:
+            pass
+
+    if new_tips:
+        tips.extend(new_tips[: max(0, max_tips - len(tips))])
+    state["tips"] = tips[:max_tips]
+
+    # Hit logic for newly-grown vine segments.
+    for ax, ay, bx, by in grew_segments:
+        for target_id, target_actor, _wx, _wy, tx, ty in hostiles:
+            if _distance_point_to_segment(tx, ty, ax, ay, bx, by) > hit_radius:
+                continue
+            try:
+                target_actor.stats.hp -= hit_damage
+                target_actor.stats.clamp()
+            except Exception:
+                continue
+            try:
+                target_actor.statuses["rooted"] = max(int(target_actor.statuses.get("rooted", 0)), root_duration)
+            except Exception:
+                pass
+            dot_targets[target_id] = max(int(dot_targets.get(target_id, 0)), dot_duration)
+            if int(getattr(target_actor.stats, "hp", 0)) <= 0:
+                game._kill_actor(
+                    level,
+                    target_actor,
+                    killer_id=caster_id,
+                    killer_is_player=(caster_id == str(getattr(game, "player_id", ""))),
+                )
+                dot_targets.pop(target_id, None)
+
+    state["dot_targets"] = dot_targets
+    if _debug_verbose:
+        try:
+            game._debug(
+                f"[rune_vines] step done: tips={len(state.get('tips', []) or [])} "
+                f"dot_targets={len(dot_targets)} verts={len(getattr(pattern, 'vertices', []) or [])} "
+                f"edges={len(getattr(pattern, 'edges', []) or [])}"
+            )
+        except Exception:
+            pass
 
 def act_corrosive_melt(self, actor_id: str) -> None:
     """Activate acidic mode on the current pattern.
@@ -1820,5 +2704,3 @@ def act_start_fern(self, actor_id: str) -> None:
     if hasattr(level, "_fern_node_to_vertex"):
         del level._fern_node_to_vertex
     self.log.add("Fern begins to grow...")
-
-

@@ -53,6 +53,7 @@ def act_polygon(self, actor_id: str) -> None:
     st["activation_ttl"] = 0
     st["pattern_motion"] = None
     st["choking_vines_state"] = None
+    st["rune_choking_vines_state"] = None
 
     # Sync the current zone view to canonical state immediately.
     self._sync_level_pattern_view(level)
@@ -64,6 +65,7 @@ def act_polygon(self, actor_id: str) -> None:
     level.fern_growth_tips = []
     level.fern_accum = 0.0
     level.choking_vines_state = None
+    level.rune_choking_vines_state = None
 
     self._commit_pattern_state_from_level(level)
 
@@ -107,6 +109,7 @@ def act_star(self, actor_id: str) -> None:
     st["activation_ttl"] = 0
     st["pattern_motion"] = None
     st["choking_vines_state"] = None
+    st["rune_choking_vines_state"] = None
 
     self._sync_level_pattern_view(level)
 
@@ -116,6 +119,7 @@ def act_star(self, actor_id: str) -> None:
     level.fern_growth_tips = []
     level.fern_accum = 0.0
     level.choking_vines_state = None
+    level.rune_choking_vines_state = None
 
     self._commit_pattern_state_from_level(level)
 
@@ -253,14 +257,28 @@ def act_chakra(self, actor_id: str) -> None:
     segs = level.pattern.to_segments()
     level.pattern_motion = None  # Cancel any ongoing motion
 
-    segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
-    segs = builder.cleanup_duplicates(segs)
+    # Determine total iteration passes (1 base + finger finesse bonus).
+    extra_iters = 0
+    try:
+        extra_iters = int(self.chakra_effect_value("generator_iteration_bonus", actor_id=actor_id))
+    except Exception:
+        pass
+    total_passes = 1 + max(0, min(3, extra_iters))  # Cap at 4 total passes.
+
+    for _ in range(total_passes):
+        segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
+        segs = builder.cleanup_duplicates(segs)
+        if len(segs) >= self.cfg.max_vertices:
+            segs = segs[: self.cfg.max_vertices]
+            break
+
     if len(segs) > self.cfg.max_vertices:
         segs = segs[: self.cfg.max_vertices]
         self.log.add("Pattern capped at max vertices.")
 
     level.pattern = builder.Pattern.from_segments(segs)
     level.choking_vines_state = None
+    level.rune_choking_vines_state = None
     # Preserve chakra seed metadata for future ability targeting.
     try:
         import json
@@ -349,6 +367,7 @@ def apply_fractal_op(self, lvl: Any, kind: str) -> None:
         self.log.add("Pattern capped at max vertices.")
     lvl.pattern = builder.Pattern.from_segments(segs)
     lvl.choking_vines_state = None
+    lvl.rune_choking_vines_state = None
     self._commit_pattern_state_from_level(lvl)
 
 
@@ -399,6 +418,13 @@ def activate_pattern_all(self, level: Any, target_vertex: Optional[int]) -> None
     if mods is not None:
         dmg_radius = max(0.1, float(dmg_radius) + float(mods.radius_bonus))
         per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
+
+    # Chakra passive bonuses (hand precision, palm reach).
+    try:
+        per_vertex += int(self.chakra_effect_value("activation_damage_bonus", actor_id=self.player_id))
+        dmg_radius += float(self.chakra_effect_value("activation_range_bonus", actor_id=self.player_id))
+    except Exception:
+        pass
 
     # pick vertices in radius
     active_vertices: list[tuple[float, float]] = []
@@ -572,6 +598,13 @@ def activate_pattern_seed_neighbors(self, level: Any, target_vertex: Optional[in
     per_vertex = self._param_value("activate_seed", "damage")
     if mods is not None:
         per_vertex = int(math.ceil(float(per_vertex) * float(mods.damage_mult)))
+
+    # Chakra passive bonus (hand precision).
+    try:
+        per_vertex += int(self.chakra_effect_value("activation_damage_bonus", actor_id=self.player_id))
+    except Exception:
+        pass
+
     hits = 0
     # Centralized policy: Activate N damages hostiles only, never self.
     policy = damage_policy_system.DamagePolicy(

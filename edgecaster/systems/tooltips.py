@@ -33,7 +33,8 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "energy_kick": "Pulse from foot-lineage vertices and damage nearby targets.",
     "palm_burst": "Pulse from hand-lineage vertices and damage nearby targets.",
     "mirror_strike": "Strike from mirrored chakra-pair endpoints.",
-    "choking_vines": "Grow tendrils from rune edges to ensnare nearby enemies.",
+    "aggressive_vines": "Grow free-form tendrils that whip out from rune edges.",
+    "choking_vines": "Mutate your rune by growing constricting branches toward enemies.",
     "push_pattern": "Push and rotate the current rune over time.",
     "rainbow_edges": "Recolor rune edges with a rainbow gradient.",
     "verdant_edges": "Recolor rune edges with a green depth gradient.",
@@ -62,9 +63,14 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
         "Only mirrored chakra pairs contribute strike points.",
         "Strongest when both mirrored branches are active.",
     ),
+    "aggressive_vines": (
+        "Free-form control effect; does not become permanent rune geometry.",
+        "Best in tight spaces where tendrils can repeatedly clip hostiles.",
+    ),
     "choking_vines": (
-        "Vines originate from edge midpoints near enemies.",
-        "Existing vines can extend and branch over time.",
+        "Splits rune edges at midpoints, then grows new real branches.",
+        "Each growth turn is clamped to a narrow angle toward hostiles.",
+        "Hits root targets and applies low damage-over-time while rooted.",
     ),
     "wind_rush": (
         "Targeting: choose a rune vertex.",

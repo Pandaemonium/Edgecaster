@@ -735,6 +735,218 @@
     equip_mods:
       agi: 1
 
+# ---------------------------------------------------------------------------
+# Chakra Items (passive unlocks, ability grants, hit modifiers)
+# ---------------------------------------------------------------------------
+
+- id: spinal_talisman
+  name: Spinal Talisman
+  glyph: '*'
+  color: [220, 200, 100]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A carved vertebra worn on a cord. Tingles against the spine.
+  tags:
+    item_type: spinal_talisman
+    value_bismuth: 30
+    allowed_slot_kinds: [back, chest]
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    equip_mods:
+      con: 1
+      res: 1
+
+- id: mindcrown
+  name: Mindcrown
+  glyph: '^'
+  color: [80, 220, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A thin circlet that hums with thought.
+  tags:
+    item_type: mindcrown
+    value_bismuth: 42
+    allowed_slot_kinds: [skull, neck]
+    chakra_unlock_nodes:
+    - head.skull
+    chakra_auto_activate_nodes:
+    - head.skull
+    equip_mods:
+      int: 2
+
+- id: knuckle_studs
+  name: Knuckle Studs
+  glyph: '"'
+  color: [180, 180, 200]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: Metal studs that make your fists resonate.
+  tags:
+    item_type: knuckle_studs
+    value_bismuth: 24
+    allowed_slot_kinds: [hand, palm]
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    equip_mods:
+      str: 1
+
+- id: rootwood_anklet
+  name: Rootwood Anklet
+  glyph: 'o'
+  color: [80, 180, 80]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: Grown from a living tree, it connects you to the earth beneath.
+  tags:
+    item_type: rootwood_anklet
+    value_bismuth: 38
+    allowed_slot_kinds: [foot, ankle]
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    equip_grants_abilities:
+    - root_grasp
+
+- id: third_eye_lens
+  name: Third Eye Lens
+  glyph: 'o'
+  color: [180, 80, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A dark monocle that shows what isn't there.
+  tags:
+    item_type: third_eye_lens
+    value_bismuth: 46
+    allowed_slot_kinds: [eye, face, skull]
+    chakra_unlock_nodes:
+    - head.skull.face.eye
+    chakra_auto_activate_nodes:
+    - head.skull.face.eye
+    equip_grants_abilities:
+    - third_eye
+
+- id: phantom_gauntlet
+  name: Phantom Gauntlet
+  glyph: '['
+  color: [120, 160, 255]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: The glove is there. The hand inside it is less certain.
+  tags:
+    item_type: phantom_gauntlet
+    value_bismuth: 40
+    allowed_slot_kinds: [hand, forearm]
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    equip_grants_abilities:
+    - phantom_limb
+
+- id: iron_heart_plate
+  name: Iron Heart Plate
+  glyph: ']'
+  color: [160, 160, 160]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A breastplate that pulses with your heartbeat.
+  tags:
+    item_type: iron_heart_plate
+    value_bismuth: 50
+    allowed_slot_kinds: [chest]
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    equip_grants_abilities:
+    - iron_skin
+    equip_mods:
+      con: 1
+
+- id: resonant_elbow_guard
+  name: Resonant Elbow Guard
+  glyph: '>'
+  color: [220, 180, 80]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: Strikes reverberate with doubled force.
+  tags:
+    item_type: resonant_elbow_guard
+    value_bismuth: 34
+    allowed_slot_kinds: [elbow, forearm]
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    chakra_hit_mods:
+    - actions:
+      - activate_all
+      - activate_seed
+      match: source
+      use_equipped_slot: true
+      descendants: true
+      op: mul
+      value: 1.15
+
+- id: burning_sole_wraps
+  name: Burning Sole Wraps
+  glyph: '_'
+  color: [255, 160, 60]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: Leave scorch marks with every step.
+  tags:
+    item_type: burning_sole_wraps
+    value_bismuth: 30
+    allowed_slot_kinds: [foot]
+    chakra_unlock_equipped_slot: true
+    chakra_auto_activate_equipped_slot: true
+    chakra_hit_mods:
+    - actions:
+      - energy_kick
+      match: source
+      use_equipped_slot: true
+      descendants: true
+      op: add
+      value: 3.0
+
+- id: skull_cage_helm
+  name: Skull Cage Helm
+  glyph: 'n'
+  color: [240, 230, 220]
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: A helmet of fused bone.
+  tags:
+    item_type: skull_cage_helm
+    value_bismuth: 44
+    allowed_slot_kinds: [skull, neck]
+    chakra_unlock_nodes:
+    - head.skull
+    chakra_auto_activate_nodes:
+    - head.skull
+    equip_mods:
+      res: 2
+    chakra_hit_mods:
+    - actions: '*'
+      match: illuminated
+      tokens: [skull]
+      op: add
+      value: 1.0
+
 - id: wall
   name: Wall
   glyph: '#'

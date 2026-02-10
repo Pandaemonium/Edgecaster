@@ -1916,6 +1916,13 @@ class ChakraSelectionScene(PanelScene):
         primary = self._silhouette.get_selected_chakra()
         self._update_info_for_chakra(primary)
         self._refresh_list_items()
+        # Refresh player actions so chakra-granted abilities appear/disappear.
+        try:
+            game = self.game
+            if hasattr(game, "refresh_actor_actions") and hasattr(game, "player_id"):
+                game.refresh_actor_actions(game.player_id)
+        except Exception:
+            pass
 
     def _set_pattern_root(self) -> None:
         """Set the chakra pattern root to the primary selected active chakra."""
@@ -2404,6 +2411,13 @@ class ChakraSelectionScene(PanelScene):
         self._silhouette.refresh_points()
         self._preview.mark_dirty()
         self._update_info_for_chakra(node_id)
+        # Refresh player actions so chakra-granted abilities appear/disappear.
+        try:
+            game = self.game
+            if hasattr(game, "refresh_actor_actions") and hasattr(game, "player_id"):
+                game.refresh_actor_actions(game.player_id)
+        except Exception:
+            pass
 
     def _ensure_background(self, panel: pygame.Surface, body_w: int, info_h: int) -> None:
         """Build a cached background surface (avoids per-frame gradient work)."""

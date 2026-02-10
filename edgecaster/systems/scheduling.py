@@ -19,6 +19,7 @@ import heapq
 import math
 from typing import TYPE_CHECKING, Callable
 
+from edgecaster.systems import combat_actions as combat_actions_system
 from edgecaster.systems import damage_policy as damage_policy_system
 
 if TYPE_CHECKING:
@@ -110,8 +111,10 @@ def advance_time(
     # Fern growth tick (Barnsley fern auto-growth)
     from edgecaster.systems import fern_growth
     fern_growth.tick(game, level, delta)
-    # Choking Vines tick (edge-grown tendril control effect)
+    # Aggressive Vines tick (legacy free-form tendril control effect).
     choking_vines_tick(game, level, delta)
+    # Rune-mutating Choking Vines tick (adds real rune edges over time).
+    combat_actions_system.rune_choking_vines_tick(game, level, delta)
     # Sealing rune trials (match evaluation)
     try:
         from edgecaster.systems import seal_trials
@@ -206,6 +209,7 @@ def coherence_tick(game: "Game", level: "LevelState", delta: int) -> None:
         level.fern_accum = 0.0
         # Clear vine simulation tied to the old rune geometry.
         level.choking_vines_state = None
+        level.rune_choking_vines_state = None
         game.log.add("Your pattern loses coherence and unravels.")
         stats.coherence = stats.max_coherence
 

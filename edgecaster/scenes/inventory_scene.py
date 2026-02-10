@@ -5073,6 +5073,7 @@ class InventoryScene(PopupMenuScene):
                 choices.append("Equip...")
         if can_edit_blade:
             choices.append("Edit Blade")
+        choices.append("Examine")
         if is_container and bool(getattr(self, "allow_open_containers", True)):
             choices.append("Open")
         if not choices:
@@ -5321,6 +5322,33 @@ class InventoryScene(PopupMenuScene):
             if choice == "Edit Blade":
                 from .blade_editor_scene import BladeEditorScene
                 mgr.push_scene(BladeEditorScene(self.game))
+                return
+
+            if choice == "Examine":
+                info = describe_entity_for_look(cur_ent) or {}
+                title = info.get("name", "You inspect...") or "You inspect..."
+                glyph = info.get("glyph", "?")
+                desc = info.get("description", "") or "You see nothing remarkable about it."
+
+                lines: list[str] = []
+                if glyph:
+                    lines.append(str(glyph))
+                    lines.append("")
+                lines.append(str(desc))
+
+                hp_txt = info.get("hp_text")
+                if hp_txt:
+                    lines.append("")
+                    lines.append(str(hp_txt))
+
+                mgr.push_scene(
+                    UrgentMessageScene(
+                        self.game,
+                        "\n".join(lines),
+                        title=title,
+                        choices=["OK"],
+                    )
+                )
                 return
 
             if choice == "Open" and cur_is_container and bool(getattr(self, "allow_open_containers", True)):

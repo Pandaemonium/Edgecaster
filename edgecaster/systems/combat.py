@@ -251,8 +251,33 @@ def attack(game: "Game", level: "LevelState", attacker: "Actor", defender: "Acto
     if apply_xp_drain(game, attacker, defender):
         return
 
+    # Chakra passive: dodge chance (ankle chakra).
+    try:
+        dodge = float(game.chakra_effect_value("dodge_chance", actor_id=defender.id))
+        if dodge > 0.0 and game.rng.random() < dodge:
+            game.log.add(f"You dodge {attacker.name}'s attack!")
+            return
+    except Exception:
+        pass
+
     # Calculate and apply damage
     dmg = calculate_damage(attacker, defender)
+
+    # Chakra passive: incoming damage reduction (skull chakra).
+    try:
+        reduction = int(game.chakra_effect_value("incoming_damage_reduction", actor_id=defender.id))
+        if reduction > 0:
+            dmg = max(1, dmg - reduction)
+    except Exception:
+        pass
+
+    # Status: iron_skin (halves incoming damage).
+    try:
+        if game._has_status(defender, "iron_skin"):
+            dmg = max(1, dmg // 2)
+    except Exception:
+        pass
+
     _telemetry(
         game,
         "attack_resolved",
@@ -261,6 +286,28 @@ def attack(game: "Game", level: "LevelState", attacker: "Actor", defender: "Acto
         damage=int(dmg),
     )
     apply_damage(game, attacker, defender, dmg)
+
+    # Chakra passive: counter damage (elbow chakra).
+    try:
+        counter = int(game.chakra_effect_value("counter_damage", actor_id=defender.id))
+        if counter > 0 and getattr(attacker, "alive", True):
+            attacker.stats.hp -= counter
+            if hasattr(attacker.stats, "clamp"):
+                attacker.stats.clamp()
+            game.log.add(f"Chakra energy reflects {counter} damage back to {attacker.name}!")
+            if int(getattr(attacker.stats, "hp", 0)) <= 0:
+                game.log.add(f"{attacker.name} dies.")
+                try:
+                    spawn_currency_drop(game, level, attacker)
+                    game._kill_actor(
+                        level, attacker,
+                        killer_id=defender.id,
+                        killer_is_player=(defender.id == game.player_id),
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     # Lifesteal on hit
     apply_lifesteal(game, attacker, defender, dmg)

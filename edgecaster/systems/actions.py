@@ -464,6 +464,15 @@ def _action_move(game: Any, actor_id: str, **kwargs: Any) -> None:
         return
 
     level = game._level()
+    # Status: rooted prevents movement.
+    try:
+        actor = level.actors.get(actor_id)
+        if actor and game._has_status(actor, "rooted"):
+            if actor_id == getattr(game, "player_id", ""):
+                game.log.add("You are rooted and cannot move!")
+            return
+    except Exception:
+        pass
     game._handle_move_or_attack(level, actor_id, dx, dy)
 
 
@@ -484,6 +493,13 @@ def _action_brute_move(game: Any, actor_id: str, **kwargs: Any) -> None:
         return
 
     level = game._level()
+    # Status: rooted prevents movement.
+    try:
+        actor = level.actors.get(actor_id)
+        if actor and game._has_status(actor, "rooted"):
+            return
+    except Exception:
+        pass
     game._handle_move_or_attack(level, actor_id, dx, dy)
 
 
@@ -914,9 +930,16 @@ def _action_mirror_strike(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_mirror_strike(actor_id)
 
 
-@register_action("choking_vines", label="Choking Vines", speed="fast", show_in_bar=True, cooldown_ticks=36)
+@register_action("aggressive_vines", label="Aggressive Vines", speed="fast", show_in_bar=True, cooldown_ticks=36)
+def _action_aggressive_vines(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Grow free-form tendrils from rune edges near enemies."""
+    if hasattr(game, "act_aggressive_vines"):
+        game.act_aggressive_vines(actor_id)
+
+
+@register_action("choking_vines", label="Choking Vines", speed="fast", show_in_bar=True, cooldown_ticks=34)
 def _action_choking_vines(game: Any, actor_id: str, **kwargs: Any) -> None:
-    """Grow ensnaring tendrils from rune edges near enemies."""
+    """Grow constricting rune branches from edges toward nearby enemies."""
     if hasattr(game, "act_choking_vines"):
         game.act_choking_vines(actor_id)
 
@@ -2612,3 +2635,350 @@ def _action_fire_breath(game: Any, actor_id: str, **kwargs: Any) -> None:
         damage_policy=policy,
         include_entities=True,
     )
+
+
+# ===========================================================================
+# CHAKRA ACTIVATED ABILITIES
+# ===========================================================================
+# These require specific chakras to be active.  They are typically granted
+# automatically when the prerequisite chakra is first activated, or by
+# equipping the matching chakra item.
+
+def _chakra_active_tokens(game: Any, actor_id: str) -> set[str]:
+    """Return the set of normalized tokens from the actor's effective active chakras."""
+    try:
+        from edgecaster.systems import chakra_items as chakra_items_system
+
+        level = game._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return set()
+        active = chakra_items_system.effective_active_nodes(game, actor)
+        out: set[str] = set()
+        for nid in active:
+            for tok in str(nid).lower().split("."):
+                t = tok.strip()
+                if t:
+                    out.add(t)
+                    if t.endswith("_m"):
+                        out.add(t[:-2])
+        return out
+    except Exception:
+        return set()
+
+
+def _consume_charge(game: Any, actor_id: str, amount: float) -> None:
+    """Consume chakra charge from the actor's active chakras."""
+    try:
+        game._consume_chakra_charge(actor_id, amount)
+    except Exception:
+        pass
+
+
+# ---- Chakra Pulse ----
+# Requires: any active chakra (always available once body is active)
+# Effect: AoE knockback centered on self, pushes enemies 2 tiles away.
+
+@register_action("chakra_pulse", label="Chakra Pulse", speed="fast", cooldown_ticks=30)
+def _action_chakra_pulse(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Release a pulse of chakra energy that pushes nearby enemies away."""
+    tokens = _chakra_active_tokens(game, actor_id)
+    if not tokens:
+        game.log.add("No active chakras to channel.")
+        return
+
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+
+    ax, ay = actor.pos
+    push_radius = 2
+    push_dist = 2
+
+    pushed_any = False
+    for tid, target in list(level.actors.items()):
+        if tid == actor_id:
+            continue
+        if not getattr(target, "alive", True):
+            continue
+        if not game.is_hostile(actor, target):
+            continue
+        tx, ty = target.pos
+        dx = tx - ax
+        dy = ty - ay
+        dist = abs(dx) + abs(dy)
+        if dist < 1 or dist > push_radius:
+            continue
+
+        # Determine push direction (away from caster).
+        mag = math.hypot(float(dx), float(dy))
+        if mag < 0.01:
+            continue
+        ndx = dx / mag
+        ndy = dy / mag
+
+        # Apply knockback_resist from target.
+        effective_push = push_dist
+        try:
+            resist = int(game.chakra_effect_value("knockback_resist", actor_id=tid))
+            effective_push = max(0, effective_push - resist)
+        except Exception:
+            pass
+        if effective_push <= 0:
+            game.log.add(f"{target.name} resists the pulse!")
+            pushed_any = True
+            continue
+
+        # Push tile by tile, stopping at walls or occupied tiles.
+        cx, cy = tx, ty
+        for _ in range(effective_push):
+            nx = cx + int(round(ndx))
+            ny = cy + int(round(ndy))
+            if not level.world.in_bounds(nx, ny):
+                break
+            if not level.world.is_walkable(nx, ny):
+                break
+            if game._actor_at(level, (nx, ny)):
+                break
+            cx, cy = nx, ny
+
+        if (cx, cy) != (tx, ty):
+            target.pos = (cx, cy)
+            pushed_any = True
+
+    _consume_charge(game, actor_id, 0.3)
+
+    if pushed_any:
+        game.log.add("You release a pulse of chakra energy!")
+    else:
+        game.log.add("The pulse ripples outward, but nothing is pushed.")
+
+
+# ---- Iron Skin ----
+# Requires: chest + back active
+# Effect: Temporary buff — 50% incoming damage reduction for 20 ticks.
+
+@register_action("iron_skin", label="Iron Skin", speed="instant", cooldown_ticks=60)
+def _action_iron_skin(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Harden your skin with chakra energy, halving incoming damage."""
+    tokens = _chakra_active_tokens(game, actor_id)
+    if "chest" not in tokens or "back" not in tokens:
+        game.log.add("Iron Skin requires both chest and back chakras active.")
+        return
+
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+
+    game._add_status(actor, "iron_skin", 20, on_apply="Your skin hardens to iron!")
+    _consume_charge(game, actor_id, 0.5)
+
+
+# ---- Third Eye ----
+# Requires: any eye chakra active
+# Effect: Reveals all enemies/items in radius 15 for 30 ticks (sees through walls).
+
+@register_action("third_eye", label="Third Eye", speed="instant", cooldown_ticks=50)
+def _action_third_eye(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Open your inner eye to perceive all nearby beings."""
+    tokens = _chakra_active_tokens(game, actor_id)
+    if "eye" not in tokens:
+        game.log.add("Third Eye requires an eye chakra to be active.")
+        return
+
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+
+    game._add_status(actor, "third_eye", 30, on_apply="Your inner eye opens wide...")
+    _consume_charge(game, actor_id, 0.4)
+
+
+# ---- Root Grasp ----
+# Requires: any foot chakra active
+# Effect: Deferred AoE — roots erupt from the ground, immobilizing enemies.
+
+@register_action("root_grasp", label="Root Grasp", speed="slow", cooldown_ticks=40)
+def _action_root_grasp(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Summon roots that immobilize enemies in a target area."""
+    tokens = _chakra_active_tokens(game, actor_id)
+    if "foot" not in tokens and "ankle" not in tokens and "sole" not in tokens:
+        game.log.add("Root Grasp requires a foot chakra to be active.")
+        return
+
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+
+    # Target the player's position (for enemies) or cursor (for player).
+    # For simplicity, target a radius-2 diamond centered on the nearest enemy.
+    player = level.actors.get(getattr(game, "player_id", ""))
+    if player is None:
+        return
+
+    if actor_id == getattr(game, "player_id", ""):
+        # Player usage: target nearest hostile.
+        best_target = None
+        best_dist = 999
+        for tid, t in level.actors.items():
+            if tid == actor_id or not getattr(t, "alive", True):
+                continue
+            if not game.is_hostile(actor, t):
+                continue
+            d = abs(t.pos[0] - actor.pos[0]) + abs(t.pos[1] - actor.pos[1])
+            if d < best_dist:
+                best_dist = d
+                best_target = t
+        if best_target is None or best_dist > 8:
+            game.log.add("No enemy close enough for Root Grasp.")
+            return
+        cx, cy = best_target.pos
+    else:
+        cx, cy = player.pos
+
+    radius = 2
+    tiles = [
+        (cx + dx, cy + dy)
+        for dx in range(-radius, radius + 1)
+        for dy in range(-radius, radius + 1)
+        if abs(dx) + abs(dy) <= radius
+        and level.world.in_bounds(cx + dx, cy + dy)
+    ]
+
+    from edgecaster.systems.deferred import DeferredAction
+    from edgecaster.systems import scheduling
+
+    prep_ticks = 8
+    deferred_id = f"{actor_id}_root_grasp_{level.current_tick}"
+
+    def resolve() -> None:
+        caster = level.actors.get(actor_id)
+        if caster is None or not getattr(caster, "alive", True):
+            level.deferred_actions = [
+                da for da in getattr(level, "deferred_actions", [])
+                if da.id != deferred_id
+            ]
+            return
+
+        level.deferred_actions = [
+            da for da in getattr(level, "deferred_actions", [])
+            if da.id != deferred_id
+        ]
+
+        tile_set = set(tiles)
+        rooted_any = False
+        for tid, target in list(level.actors.items()):
+            if tid == actor_id:
+                continue
+            if not getattr(target, "alive", True):
+                continue
+            if getattr(target, "pos", None) is None:
+                continue
+            if (int(target.pos[0]), int(target.pos[1])) not in tile_set:
+                continue
+            game._add_status(target, "rooted", 10)
+            game.log.add(f"Roots ensnare {target.name}!")
+            rooted_any = True
+
+        if rooted_any:
+            game.log.add("Roots claw up from the earth!")
+        else:
+            game.log.add("The roots find nothing to grasp.")
+
+    da = DeferredAction(
+        id=deferred_id,
+        caster_id=actor_id,
+        action_name="root_grasp",
+        label="Root Grasp",
+        tiles=tiles,
+        resolve_tick=level.current_tick + prep_ticks,
+        created_tick=level.current_tick,
+        resolve_fn=resolve,
+        color=(60, 180, 60),
+    )
+    if not hasattr(level, "deferred_actions"):
+        level.deferred_actions = []
+    level.deferred_actions.append(da)
+
+    scheduling.schedule(game, level, prep_ticks, resolve)
+    game.log.add("Roots begin to claw up from the earth!")
+    _consume_charge(game, actor_id, 0.3)
+
+
+# ---- Phantom Limb ----
+# Requires: any arm chakra active
+# Effect: Temporary buff — extends melee range by 2 for 15 ticks or 1 attack.
+
+@register_action("phantom_limb", label="Phantom Limb", speed="fast", cooldown_ticks=35)
+def _action_phantom_limb(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Extend a spectral arm, increasing melee range temporarily."""
+    tokens = _chakra_active_tokens(game, actor_id)
+    has_arm = any(t in tokens for t in ("arm", "shoulder", "elbow", "forearm", "hand"))
+    if not has_arm:
+        game.log.add("Phantom Limb requires an arm chakra to be active.")
+        return
+
+    try:
+        level = game._level()
+    except Exception:
+        return
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+
+    game._add_status(actor, "phantom_limb", 15, on_apply="A spectral arm extends from your shoulder!")
+    _consume_charge(game, actor_id, 0.3)
+
+
+# ---- Spinal Surge ----
+# Requires: back active, 3+ chakras active total
+# Effect: Instantly recharges all active chakras to full.
+
+@register_action("spinal_surge", label="Spinal Surge", speed="instant", cooldown_ticks=80)
+def _action_spinal_surge(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Surge energy up your spine, recharging all active chakras."""
+    tokens = _chakra_active_tokens(game, actor_id)
+    if "back" not in tokens:
+        game.log.add("Spinal Surge requires the back chakra to be active.")
+        return
+
+    try:
+        from edgecaster.systems import chakra_items as chakra_items_system
+
+        level = game._level()
+        actor = level.actors.get(actor_id)
+        if actor is None:
+            return
+        active = chakra_items_system.effective_active_nodes(game, actor)
+    except Exception:
+        game.log.add("Cannot read chakra state.")
+        return
+
+    if len(active) < 3:
+        game.log.add("Spinal Surge requires at least 3 active chakras.")
+        return
+
+    # Recharge all active chakras to full (1.0).
+    chakra_state = getattr(actor, "chakra_state", None)
+    if chakra_state is None:
+        return
+    for node_id in active:
+        chakra_state.charges[node_id] = 1.0
+
+    game.log.add("Energy surges up your spine, flooding every channel!")

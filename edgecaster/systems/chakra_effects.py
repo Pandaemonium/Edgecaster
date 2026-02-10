@@ -95,6 +95,60 @@ DEFAULT_RULES: Tuple[ChakraEffectRule, ...] = (
         # Multiplier applied to move action delay: 10 -> 8 by default.
         grants={"move_delay_mult": 0.8},
     ),
+    ChakraEffectRule(
+        id="hand_precision",
+        description="Attuned hands channel energy more precisely (+1 activation damage).",
+        requires_any_tokens=("hand",),
+        grants={"activation_damage_bonus": 1.0},
+    ),
+    ChakraEffectRule(
+        id="skull_ward",
+        description="Skull resonance creates a faint psychic barrier (-1 incoming damage).",
+        requires_any_tokens=("skull",),
+        grants={"incoming_damage_reduction": 1.0},
+    ),
+    ChakraEffectRule(
+        id="knee_brace",
+        description="Rooted stance resists forced movement (-1 knockback distance).",
+        requires_any_tokens=("knee",),
+        grants={"knockback_resist": 1.0},
+    ),
+    ChakraEffectRule(
+        id="chest_vigor",
+        description="Chest chakra circulates vitality (+2 HP when resting).",
+        requires_any_tokens=("chest",),
+        grants={"hp_regen_per_rest": 2.0},
+    ),
+    ChakraEffectRule(
+        id="back_endurance",
+        description="Spinal channel steadies mana flow (+0.5 mana regen while charging).",
+        requires_any_tokens=("back",),
+        grants={"mana_regen_bonus": 0.5},
+    ),
+    ChakraEffectRule(
+        id="palm_reach",
+        description="Open palms extend casting reach (+1 activation range).",
+        requires_any_tokens=("palm",),
+        grants={"activation_range_bonus": 1.0},
+    ),
+    ChakraEffectRule(
+        id="ankle_dodge",
+        description="Ankle agility grants 10% chance to evade melee attacks.",
+        requires_any_tokens=("ankle",),
+        grants={"dodge_chance": 0.10},
+    ),
+    ChakraEffectRule(
+        id="elbow_counter",
+        description="Angular elbow energy reflects 2 damage back to melee attackers.",
+        requires_any_tokens=("elbow",),
+        grants={"counter_damage": 2.0},
+    ),
+    ChakraEffectRule(
+        id="finger_finesse",
+        description="Finger dexterity adds +1 fractal iteration depth.",
+        requires_any_tokens=("finger", "thumb", "index", "middle", "ring", "pinky"),
+        grants={"generator_iteration_bonus": 1.0},
+    ),
 )
 
 

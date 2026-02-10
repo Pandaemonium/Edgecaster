@@ -245,6 +245,8 @@ class LevelState:
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
     # Choking Vines runtime state (ABS-space tendril segments + tips).
     choking_vines_state: Optional[Dict[str, Any]] = None
+    # Rune-mutating choking vines runtime state (branches that become real edges).
+    rune_choking_vines_state: Optional[Dict[str, Any]] = None
     # Visible thrown-knife projectiles (ABS-space center positions + rune-shape payload).
     thrown_knives_state: List[Dict[str, Any]] = field(default_factory=list)
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
@@ -622,6 +624,7 @@ class Game:
             actions.append("freeze")
             actions.append("ignite")
             actions.append("regrow")
+            actions.append("aggressive_vines")
             actions.append("choking_vines")
             actions.append("push_pattern")
             actions.append("corruption_cone")
@@ -643,6 +646,7 @@ class Game:
                 "energy_kick",
                 "palm_burst",
                 "mirror_strike",
+                "aggressive_vines",
                 "choking_vines",
             ]
         elif player_class == "Blade":
@@ -1348,9 +1352,36 @@ class Game:
             inv = []
         granted = item_grants.collect_active_granted_actions(inv)
 
+        # Chakra-granted abilities: auto-granted based on active chakra tokens.
+        chakra_granted: list[str] = []
+        try:
+            from edgecaster.systems import chakra_items as _ci
+            active = _ci.effective_active_nodes(self, actor)
+            tokens: set[str] = set()
+            for nid in active:
+                for tok in str(nid).lower().split("."):
+                    t = tok.strip()
+                    if t:
+                        tokens.add(t)
+                        if t.endswith("_m"):
+                            tokens.add(t[:-2])
+            _CHAKRA_ABILITY_MAP = {
+                "chakra_pulse": lambda t: bool(t),  # any active chakra
+                "iron_skin": lambda t: "chest" in t and "back" in t,
+                "third_eye": lambda t: "eye" in t,
+                "root_grasp": lambda t: "foot" in t or "ankle" in t or "sole" in t,
+                "phantom_limb": lambda t: any(x in t for x in ("arm", "shoulder", "elbow", "forearm", "hand")),
+                "spinal_surge": lambda t: "back" in t and len(active) >= 3,
+            }
+            for ability, check in _CHAKRA_ABILITY_MAP.items():
+                if check(tokens):
+                    chakra_granted.append(ability)
+        except Exception:
+            pass
+
         merged: List[str] = []
         seen: set[str] = set()
-        for name in list(intrinsic) + list(granted):
+        for name in list(intrinsic) + list(granted) + chakra_granted:
             if not name:
                 continue
             n = str(name)
@@ -2178,6 +2209,13 @@ class Game:
 
 
 
+
+    def _auto_look(self, level: LevelState) -> None:
+        """Describe items at the player's feet after moving."""
+        player = level.actors.get(self.player_id)
+        if player is None:
+            return
+        self._describe_tile(level, player.pos, observer_id=self.player_id, auto=True)
 
     def _describe_tile(
         self,
@@ -3103,6 +3141,11 @@ class Game:
         self._reset_lorenz_on_zone_change(player)
         # Ensure the new zone views canonical pattern state
         self._sync_level_pattern_view(dest_level)
+        # Auto-describe items at the player's new position.
+        try:
+            self._auto_look(dest_level)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------------
     # Canonical rune pattern state (ABS-space, per-depth)
@@ -3123,6 +3166,7 @@ class Game:
                 "fern_growth_tips": [],
                 "fern_accum": 0.0,
                 "choking_vines_state": None,
+                "rune_choking_vines_state": None,
             }
             self._pattern_state_by_depth[d] = state
 
@@ -3176,6 +3220,7 @@ class Game:
         st["fern_growth_tips"] = list(getattr(level, "fern_growth_tips", []) or [])
         st["fern_accum"] = float(getattr(level, "fern_accum", 0.0) or 0.0)
         st["choking_vines_state"] = getattr(level, "choking_vines_state", None)
+        st["rune_choking_vines_state"] = getattr(level, "rune_choking_vines_state", None)
 
     def _sync_level_pattern_view(self, level: "LevelState") -> None:
         """
@@ -3192,6 +3237,7 @@ class Game:
         level.fern_growth_tips = list(st.get("fern_growth_tips", []) or [])
         level.fern_accum = float(st.get("fern_accum", 0.0) or 0.0)
         level.choking_vines_state = st.get("choking_vines_state")
+        level.rune_choking_vines_state = st.get("rune_choking_vines_state")
 
         # Activation preview
         level.activation_points = list(st.get("activation_points", []) or [])
@@ -3254,6 +3300,17 @@ class Game:
                 return
             else:
                 self._tick_status(actor, "distracted")
+
+        # Status: Rooted (cannot act, just tick down)
+        if self._has_status(actor, "rooted"):
+            self.log.add(f"{actor.name} is rooted in place!")
+            self._tick_status(actor, "rooted")
+            self._schedule(
+                level,
+                self.cfg.action_time_fast,
+                lambda aid=id, lvl=level: self._monster_act(lvl, aid),
+            )
+            return
 
         # --- Decide + perform an Action via the AI layer -----------------
         try:
@@ -3733,6 +3790,8 @@ class Game:
         return combat_actions_system.act_palm_burst(self, actor_id)
     def act_mirror_strike(self, actor_id: str) -> None:
         return combat_actions_system.act_mirror_strike(self, actor_id)
+    def act_aggressive_vines(self, actor_id: str) -> None:
+        return combat_actions_system.act_aggressive_vines(self, actor_id)
     def act_choking_vines(self, actor_id: str) -> None:
         return combat_actions_system.act_choking_vines(self, actor_id)
     def act_corrosive_melt(self, actor_id: str) -> None:
@@ -3753,10 +3812,31 @@ class Game:
         player = self._player()
         before = player.stats.mana
         gain = 10
+        # Chakra passive: back endurance grants bonus mana regen.
+        try:
+            gain += int(self.chakra_effect_value("mana_regen_bonus", actor_id=self.player_id))
+        except Exception:
+            pass
         player.stats.mana = min(player.stats.max_mana, player.stats.mana + gain)
         restored = player.stats.mana - before
-        if restored > 0:
-            self.log.add(f"You meditate and restore {restored} mana.")
+
+        # Chakra passive: chest vigor grants HP on meditation.
+        hp_bonus = 0
+        try:
+            hp_bonus = int(self.chakra_effect_value("hp_regen_per_rest", actor_id=self.player_id))
+        except Exception:
+            pass
+        if hp_bonus > 0 and player.stats.hp < player.stats.max_hp:
+            player.stats.hp = min(player.stats.max_hp, player.stats.hp + hp_bonus)
+            player.stats.clamp()
+
+        if restored > 0 or hp_bonus > 0:
+            parts = []
+            if restored > 0:
+                parts.append(f"{restored} mana")
+            if hp_bonus > 0:
+                parts.append(f"{hp_bonus} HP")
+            self.log.add(f"You meditate and restore {' and '.join(parts)}.")
         else:
             self.log.add("You meditate but feel already full of mana.")
 
@@ -3895,6 +3975,13 @@ class Game:
         # Apply view bonus from equipment + chakra passives.
         view_bonus = self.effective_character_stats().get("view", 0)
         view_bonus += int(round(self.chakra_effect_value("fov_radius_bonus", actor_id=self.player_id)))
+        # Status: third_eye grants a large temporary vision boost.
+        try:
+            player = level.actors.get(self.player_id)
+            if player and self._has_status(player, "third_eye"):
+                view_bonus += 10
+        except Exception:
+            pass
         radius = int(radius + view_bonus)
         if radius < 1:
             radius = 1
@@ -3960,6 +4047,14 @@ class Game:
                 if getattr(ent, "blocks_vision", False):
                     ax, ay = self.abs_from_zone_local(zc, ent.pos)
                     opaque_abs.add((int(ax), int(ay)))
+
+        # Status: third_eye bypasses all vision-blocking entities.
+        try:
+            player = level.actors.get(self.player_id)
+            if player and self._has_status(player, "third_eye"):
+                opaque_abs = set()
+        except Exception:
+            pass
 
         # ABS-space terrain occluder query (walls/cliffs/etc.)
         def _blocks_vision_abs(ax: int, ay: int) -> bool:
