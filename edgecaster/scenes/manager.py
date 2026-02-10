@@ -105,6 +105,8 @@ class SceneManager:
             "polka": "assets/music/polka.wav",
             "shop": "assets/music/shop.wav",
             "sergeant": "assets/music/sergeant.ogg",
+            "chakric": "assets/music/chakric.ogg",
+            
             # Location music
             "morituri": "assets/music/morituri.ogg",
             "baal_cycle": "assets/music/baal_cycle.ogg",

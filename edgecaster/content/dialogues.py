@@ -1163,6 +1163,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         id=f"npc:{npc_id}",
         start_id="start",
         nodes=nodes,
+        music_key="chakric",
     )
 
 
