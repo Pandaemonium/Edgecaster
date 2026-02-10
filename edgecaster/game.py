@@ -649,6 +649,19 @@ class Game:
                 "aggressive_vines",
                 "choking_vines",
             ]
+        elif player_class == "Gardener":
+            # Gardener kit: branch-heavy rune shaping + vine toolkit.
+            actions += [
+                "place",
+                "branch",
+                "activate_all",      # Activate R
+                "activate_seed",     # Activate N
+                "verdant_edges",     # Verdant
+                "start_fern",        # Fern Growth
+                "regrow",
+                "choking_vines",
+                "aggressive_vines",
+            ]
         elif player_class == "Blade":
             # Blade kit: melee verbs + core rune manipulation.
             # Starts with an intrinsic *empty* blade; slots scale with INT.

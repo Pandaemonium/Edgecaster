@@ -35,6 +35,7 @@ CHAR_CLASSES: List[str] = [
     "Epiphenomenal",
     "Monk",
     "Blade",
+    "Gardener",
 ]
 
 CLASS_DESCRIPTIONS = {
@@ -47,6 +48,7 @@ CLASS_DESCRIPTIONS = {
     "Epiphenomenal": "What's in a name? Is there anything else besides?",
     "Monk": "A living mandala. Your body is the rune, your chakras the pattern.",
     "Blade": "A fractal duelist. Your knife is a theorem sharpened to violence.",
+    "Gardener": "Patient root, sudden thorn. You coax living runes into grasping vines.",
 }
 
 # Species options (label -> template id)
@@ -436,12 +438,12 @@ class CharacterCreationScene(PanelScene):
         # Species field
         ty = self._draw_species(panel, (left_x, ty, left_w, 42), font, fg, sel, dim, st)
 
-        # Class section
+        # Class section + class selection grid
         ty += 6
-        ty = self._draw_class(panel, (left_x, ty, left_w, 140), font, small, fg, sel, dim, st)
+        ty = self._draw_class(panel, (left_x, ty, left_w, 270), font, small, fg, sel, dim, st)
 
         # Stats section (lower left)
-        ty += 8
+        ty += 12
         stats_h = 170
         ty = self._draw_stats(panel, (left_x, ty, left_w, stats_h), font, small, fg, sel, dim, bar_bg, st)
 
@@ -807,6 +809,17 @@ class CharacterCreationScene(PanelScene):
                 if k == "class":
                     st.focus = "class"
                     return
+                if k.startswith("class_opt:"):
+                    st.focus = "class"
+                    try:
+                        new_idx = int(k.split(":", 1)[1])
+                    except Exception:
+                        return
+                    if 0 <= new_idx < len(CHAR_CLASSES):
+                        st.class_idx = new_idx
+                        if st.is_monk():
+                            self._sync_monk_state()
+                    return
                 if k.startswith("stat_plus_"):
                     stat = k.split("_")[-1]
                     st.focus = "stats"
@@ -1007,12 +1020,44 @@ class CharacterCreationScene(PanelScene):
         dy = y + max(cls_rect.h, lab.get_height()) + 10
         if desc:
             lines = self._wrap(desc, small, w)
-            for line in lines[:4]:
+            for line in lines[:3]:
                 s = small.render(line, True, dim)
                 surf.blit(s, (x, dy))
                 dy += s.get_height() + 2
 
-        return y + h
+        # Always show the full class list in a 3-column grid.
+        dy += 8
+        cols = 3
+        gap_x = 8
+        gap_y = 6
+        cell_w = max(120, (w - gap_x * (cols - 1)) // cols)
+        cell_h = max(30, small.get_height() + 10)
+        rows = (len(CHAR_CLASSES) + cols - 1) // cols
+
+        for idx, class_name in enumerate(CHAR_CLASSES):
+            row = idx // cols
+            col_idx = idx % cols
+            rect = pygame.Rect(
+                x + col_idx * (cell_w + gap_x),
+                dy + row * (cell_h + gap_y),
+                cell_w,
+                cell_h,
+            )
+            self._hits[f"class_opt:{idx}"] = rect
+
+            selected = (idx == (st.class_idx % len(CHAR_CLASSES)))
+            hovered = (self._hover_key == f"class_opt:{idx}")
+            focused_selected = (st.focus == "class" and selected)
+            border_col = sel if (selected or hovered) else dim
+            fill_col = (28, 28, 44) if selected else (18, 18, 30)
+            border_w = 2 if (selected or focused_selected) else 1
+            self._draw_box(surf, rect, fill=fill_col, border=border_col, border_w=border_w)
+
+            text_col = sel if selected else fg
+            txt = small.render(class_name, True, text_col)
+            surf.blit(txt, (rect.x + 8, rect.y + (rect.h - txt.get_height()) // 2))
+
+        return dy + rows * (cell_h + gap_y)
 
     def _draw_species(
         self,

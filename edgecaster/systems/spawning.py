@@ -769,6 +769,24 @@ def _spawn_angry_circus(
             if probe in used_positions:
                 continue
             return probe
+
+        # Pass 3: guaranteed fallback - if local space is crowded, place troupe
+        # members anywhere on the current level so ringmasters do not appear solo.
+        for _ in range(4):
+            probe = find_spawn_position(
+                game,
+                level,
+                near=None,
+                radius=0,
+                avoid_actors=True,
+                avoid_entities=True,
+                max_attempts=120,
+            )
+            if probe is None:
+                continue
+            if probe in used_positions:
+                continue
+            return probe
         return None
 
     for tmpl in member_templates:
@@ -1406,8 +1424,6 @@ def spawn_enemies_for_biome(
     Returns:
         Number of enemies actually spawned
     """
-    from edgecaster.enemies import factory as enemy_factory
-
     pool = get_biome_enemy_pool(biome_id, include_neutral_factions=include_neutral_factions)
     if not pool:
         return 0
@@ -1432,16 +1448,17 @@ def spawn_enemies_for_biome(
         tmpl_id = game.rng.choice(pool)
 
         try:
-            # YOGA: Compute ABS position for canonical storage
-            abs_pos = game.abs_from_zone_local(level.coord, pos)
-            mob = enemy_factory.spawn_enemy(tmpl_id, pos, abs_pos=abs_pos)
-            _apply_enemy_zone_scaling(
+            # Use the sidecar-aware path so special leaders (e.g. ringmaster,
+            # slaver) always bring their coordinated packs in biome spawns too.
+            spawn_enemy_with_pack(
+                game,
                 level,
-                mob,
+                tmpl_id,
+                pos,
                 zone_tier=zone_tier,
                 enemy_bounds=bounds.get(tmpl_id),
+                schedule_ai=True,
             )
-            register_actor(game, level, mob, schedule_ai=True)
             spawned += 1
         except Exception:
             continue
