@@ -1545,8 +1545,8 @@
     biome_spawn: [GRASSLAND, SAVANNA, SHRUBLAND]
     no_random_spawn: true
 
-- id: pattern_merchant
-  name: Pattern Merchant
+- id: pattern_peddler
+  name: Pattern Peddler
   glyph: "M"
   color: [140, 180, 220]
   actions: []
