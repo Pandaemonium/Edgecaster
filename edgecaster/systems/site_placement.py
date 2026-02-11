@@ -43,6 +43,80 @@ if TYPE_CHECKING:
     from edgecaster.game import Game
 
 
+
+def _place_fixed_sites(game: "Game", *, zone_w: int, zone_h: int, existing_coords: Set[Tuple[int, int]]) -> int:
+    """
+    Place any site_* prototypes tagged with fixed_zone_coord or fixed_anchor_abs directly into WIE.
+    Returns number placed.
+    """
+    if getattr(game, "world_entity_index", None) is None:
+        return 0
+
+    placed = 0
+    bucket = prototypes.get_master_bucket()
+
+    for pid, proto in (bucket or {}).items():
+        if not str(pid).startswith("site_"):
+            continue
+        tags = (proto.get("tags") or {})
+        if not tags.get("site", False):
+            continue
+
+        fixed_zone = tags.get("fixed_zone_coord")
+        fixed_abs = tags.get("fixed_anchor_abs")
+
+        if not fixed_zone and not fixed_abs:
+            continue
+
+        # resolve placement
+        if fixed_zone:
+            try:
+                zx, zy, zz = map(int, fixed_zone)
+            except Exception:
+                continue
+            ox, oy = zone_w // 2, zone_h // 2
+        else:
+            try:
+                ax, ay, zz = map(int, fixed_abs)
+            except Exception:
+                continue
+            zx = ax // zone_w
+            zy = ay // zone_h
+            ox = ax % zone_w
+            oy = ay % zone_h
+
+        if (zx, zy) in existing_coords:
+            # avoid collisions; you can later add "allow_overlap" if you want
+            continue
+
+        site_kind = str(tags.get("site_kind") or pid[len("site_"):])
+        eid = f"site:{site_kind}_fixed_{zx}_{zy}"
+
+        ent = spawn_factory.build_entity_from_spec(
+            spec=proto,
+            eid=eid,
+            pos=(ox, oy),
+            overrides={
+                "kind": "feature",
+                "base_size": int(proto.get("base_size", 64) or 64),
+                "tags": {
+                    "world_entity": True,
+                    "site": True,
+                    "site_id": f"{site_kind}_fixed_{zx}_{zy}",
+                    "site_kind": site_kind,
+                    "site_seed": int(getattr(game, "seed", 1337) or 1337),
+                    **tags,
+                },
+            },
+        )
+
+        game.world_entity_index.add(ent, zone_coord=(zx, zy, zz), local_pos=(ox, oy))
+        existing_coords.add((zx, zy))
+        placed += 1
+
+    return placed
+
+
 # ------------------------------------------------------------
 # Helper: Build placement configs from site_* prototypes
 # ------------------------------------------------------------
@@ -444,7 +518,18 @@ def place_all_sites(game: "Game") -> None:
     existing_coords: Set[Tuple[int, int]] = set()
     total_placed = 0
 
+    total_placed += _place_fixed_sites(game, zone_w=zone_w, zone_h=zone_h, existing_coords=existing_coords)
+
+
     for kind, site_cfg in site_types.items():
+
+        # NEW: skip climate placement for fixed prototypes
+        proto_id = f"site_{kind}"
+        p = prototypes.resolve_proto(proto_id)
+        ptags = (p.get("tags") or {}) if isinstance(p, dict) else {}
+        if ptags.get("fixed_zone_coord") or ptags.get("fixed_anchor_abs"):
+            continue
+
         specs = place_sites_for_type(game, site_cfg, climate, existing_coords, rng)
 
         for spec in specs:

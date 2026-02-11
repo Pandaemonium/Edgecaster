@@ -214,3 +214,50 @@
     spacing: 20
     rarity: 0.35
     max_count: 6
+
+
+- id: site_starttsgard
+  name: "Starttsgard"
+  glyph: "⌂"
+  color: [220, 220, 160]
+  kind: "feature"
+  base_size: 96
+  tags:
+    world_entity: true
+    site: true
+    site_kind: "starttsgard"
+
+    # Fixed placement (new)
+    fixed_anchor_abs: [3030, 2039, 0]
+
+    # Who must always exist (first pass: only NPCs)
+    npc_pool: ["chakra_sage", "merchant"]  # use only IDs you *know* exist
+
+    # Keep these so it’s visible + discoverable like other sites
+    name: "Starttsgard"
+    structures: []
+    enemy_pool: []
+
+    # Prevent climate placement from also placing extras
+    max_count: 0
+    rarity: 0
+
+- id: site_colosseum
+  name: "Ancient Colosseum"
+  glyph: "O"
+  color: [230, 190, 120]
+  kind: "feature"
+  base_size: 256
+  tags:
+    world_entity: true
+    site: true
+    site_kind: "colosseum"
+
+    fixed_anchor_abs: [2117, 1223, 0]
+
+    npc_pool: []
+    structures: []
+    enemy_pool: []
+
+    max_count: 0
+    rarity: 0

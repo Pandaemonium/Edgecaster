@@ -80,10 +80,6 @@ from edgecaster import spawn_factory
 
 from edgecaster import mapgen
 from edgecaster import mapgen_sites
-from edgecaster.content.pois import get_poi_registry
-from edgecaster.systems.poi_registry import POIRegistry
-from edgecaster.systems import poi_worldgen
-from edgecaster.state.pois import ABSRect, POISpec
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
@@ -105,7 +101,6 @@ from edgecaster.systems import coords as coords_system
 from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems import render_query as render_query_system
 from edgecaster.systems import attention as attention_system
-from edgecaster.systems import poi_spawning as poi_spawning_system
 from edgecaster.systems import zones as zones_system
 from edgecaster.systems import overmap as overmap_system
 from edgecaster.systems import difficulty as difficulty_system
@@ -468,18 +463,8 @@ class Game:
         self._world_entity_index_wh = (zone_w_init, zone_h_init)  # Prevent recreation later
         self._world_entities_built: bool = False
 
-        # POI registry for yoga-compliant POI management.
-        # Supports multi-zone POIs, nesting, and ABS footprints.
-        self.poi_registry: POIRegistry = get_poi_registry(zone_w=zone_w_init, zone_h=zone_h_init)
 
-        # Create world entities for all POI contents (NPCs, structures, walls).
-        # This makes POIs visible when zooming around in God Vision, same as berries.
-        try:
-            poi_worldgen.ensure_all_poi_world_entities(
-                self, zone_w=zone_w_init, zone_h=zone_h_init
-            )
-        except Exception:
-            pass
+
 
         # Difficulty field configuration (tunable, decoupled from biomes).
         # Adjust this in one place to change zone difficulty behavior.
@@ -883,8 +868,6 @@ class Game:
 
         # Generate a batch of legendary lairs for this run (hidden until discovered/rumored).
         self._init_legendaries(count=50)
-        # Known POI markers (zone coords) for world map rendering / hints (after lab injected)
-        self.refresh_poi_locations()
 
 
     def _build_player_stats(self) -> Stats:
@@ -1553,55 +1536,8 @@ class Game:
         """Return a unique POI id for a newly-generated legendary lair."""
         return legendaries_system.alloc_legendary_lair_poi_id(self)
 
-    def refresh_poi_locations(self) -> None:
-        """Rebuild cached POI marker locations from the POI registry."""
-        poi_reg = getattr(self, "poi_registry", None)
-        if poi_reg is None:
-            self.poi_locations = {}
-            return
-        cfg = getattr(self, "cfg", None)
-        zone_w = int(getattr(cfg, "world_width", 60) or 60)
-        zone_h = int(getattr(cfg, "world_height", 40) or 40)
-        locs: Dict[str, Tuple[int, int, int]] = {}
-        for poi in poi_reg:
-            ax, ay = poi.anchor_abs
-            zx = int(ax) // zone_w
-            zy = int(ay) // zone_h
-            locs[str(poi.id)] = (zx, zy, int(poi.depth))
-        self.poi_locations = locs
 
-    def reanchor_poi(self, poi_id: str, coord: Tuple[int, int, int]) -> bool:
-        """Move an existing POI to a new zone (registry-only, ABS truth)."""
-        poi_reg = getattr(self, "poi_registry", None)
-        if poi_reg is None:
-            return False
-        poi_spec = poi_reg.get(str(poi_id))
-        if poi_spec is None:
-            return False
-        zx, zy, depth = coord
-        cfg = getattr(self, "cfg", None)
-        zone_w = int(getattr(cfg, "world_width", 60) or 60)
-        zone_h = int(getattr(cfg, "world_height", 40) or 40)
-        footprint = ABSRect.from_zone_coord(int(zx), int(zy), zone_w, zone_h)
-        anchor_abs = footprint.center
-        new_spec = POISpec(
-            id=poi_spec.id,
-            kind=poi_spec.kind,
-            name=poi_spec.name,
-            footprint=footprint,
-            depth=int(depth),
-            anchor_abs=anchor_abs,
-            parent_id=poi_spec.parent_id,
-            child_ids=list(poi_spec.child_ids),
-            npc_specs=list(poi_spec.npc_specs),
-            structure_specs=list(poi_spec.structure_specs),
-            entity_specs=list(poi_spec.entity_specs),
-            seed=int(getattr(poi_spec, "seed", 0) or 0),
-            tags=dict(poi_spec.tags or {}),
-        )
-        poi_reg.add(new_spec)
-        self.refresh_poi_locations()
-        return True
+
 
     def _init_legendaries(self, count: int = 50) -> None:
         """Generate legendary creatures and inject their lair POIs."""
@@ -1688,48 +1624,13 @@ class Game:
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
         x, y, depth = coord
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
-        # Determine any POIs that hit this coord (used for lab/structures).
-        # Use registry spatial query for multi-zone POI support.
-        poi_specs = self.poi_registry.get_at_zone(x, y, depth)
-        poi_hits = [p.id for p in poi_specs]
-        is_lab_zone = False
-        is_lair_zone = False
-        lair_layout = "multi_room"
-        lair_seed: int | None = None
-        for poi_spec in poi_specs:
-            # Check v2 structure specs
-            for struct_spec in poi_spec.structure_specs:
-                if struct_spec.kind == "lab":
-                    is_lab_zone = True
-                    break
-                if struct_spec.kind == "legendary_lair":
-                    is_lair_zone = True
-                    lair_layout = str(struct_spec.tags.get("layout") or lair_layout)
-                    try:
-                        lair_seed = int(struct_spec.tags.get("lair_seed", poi_spec.seed))
-                    except Exception:
-                        lair_seed = lair_seed
-            if is_lab_zone:
-                break
-            if is_lair_zone:
-                # Only one lair layout exists today, but keep this selector so
-                # adding arena/maze/fortress variants doesn't touch glue code.
-                break
 
-        if depth == 0 and is_lab_zone:
-            mapgen.generate_lab(world, self.rng)
-            lab_state = LabState()
-        elif depth == 0 and is_lair_zone:
-            lair_rng = self.rng
-            if lair_seed is not None:
-                try:
-                    lair_rng = random.Random(int(lair_seed) & 0xFFFFFFFF)
-                except Exception:
-                    lair_rng = self.rng
-            mapgen_sites.generate_legendary_lair(world, lair_rng, layout=lair_layout)
-            lab_state = None
-        elif depth == 0:
+        lab_state = None  # Legacy hook; keep the slot for now.
+
+        if depth == 0:
+            # Overworld terrain (pure terrain cache; macro entities resolve via WIE/attention).
             self._ensure_overmap_ready()
+
             jx_slice = jy_slice = None
             if getattr(self, "tile_julia_grid", None):
                 gx0 = x * world.width
@@ -1738,12 +1639,12 @@ class Game:
                 gy1 = gy0 + world.height
                 xgrid = self.tile_julia_grid.get("x", [])
                 ygrid = self.tile_julia_grid.get("y", [])
-                # fall back to None if out of bounds
                 if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
                     jx_slice = jy_slice = None
                 else:
                     jx_slice = xgrid[gx0:gx1]
                     jy_slice = ygrid[gy0:gy1]
+
             mapgen.generate_fractal_overworld(
                 world,
                 self.fractal_field,
@@ -1754,35 +1655,28 @@ class Game:
                 jx_slice=jx_slice,
                 jy_slice=jy_slice,
             )
-            # Default fast-travel spawn is the middle of the bottom edge so arriving
-            # in a new overworld zone feels directional. The starting zone is the
-            # exception: it should spawn in the center.
-            if up_pos is None and "starting_zone" not in poi_hits:
-                ex = world.width // 2
-                ey = max(0, world.height - 2)
+
+            # Default entry point when arriving via fast travel (up_pos is None).
+            # Start zone exception: spawn in the center.
+            if up_pos is None:
+                if coord == (0, 0, 0):
+                    ex = world.width // 2
+                    ey = world.height // 2
+                else:
+                    ex = world.width // 2
+                    ey = max(0, world.height - 2)
+
                 if world.in_bounds(ex, ey) and world.is_walkable(ex, ey):
                     world.entry = (ex, ey)
-            lab_state = None
+
         else:
+            # Non-overworld: terrain only for now.
             mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
-            lab_state = None
-        # Apply POIs (records ids on world)
-        # Use the registry for spatial queries (supports multi-zone POIs)
-        poi_hits = mapgen.apply_pois(world, coord, poi_registry=self.poi_registry)
-        # Build starting structures (e.g., depotdepot)
-        if "starting_zone" in poi_hits:
-            try:
-                depot_info = mapgen.build_item_depot(world, self.rng, world.entry)
-                world.depot_info = depot_info  # type: ignore[attr-defined]
-            except Exception:
-                world.depot_info = None  # type: ignore[attr-defined]
-        if "lab" in poi_hits:
-            # Already generated as a lab layout above; nothing extra for now.
-            pass
+
         lvl = LevelState(
             world=world,
             actors={},
-            entities={},   # NEW
+            entities={},
             events=[],
             order=0,
             current_tick=0,
@@ -1798,47 +1692,14 @@ class Game:
             coord=coord,
             lab_state=lab_state,
         )
-        # Compute difficulty metadata for this zone (tier + sources).
+
+        # Difficulty metadata (safe; should not fabricate ontology)
         difficulty_system.apply_zone_difficulty(self, lvl, coord)
-        # Spawn NPCs/entities from any POIs for this level (e.g., starting NPCs)
-        self._spawn_poi_contents(lvl, coord)
-
-        # Realize biome-based sites (if any) for this zone
-        if depth == 0 and not is_lab_zone and not is_lair_zone:
-            try:
-                # Check if site placement is complete
-                placement_complete = getattr(self, "site_placement_complete", False)
-                self._debug(f"[mapgen] Zone ({x}, {y}): site_placement_complete={placement_complete}")
-
-                count, discovered_site = mapgen_sites.realize_sites_in_zone(self, lvl, x, y, depth)
-                self._debug(f"[mapgen] Zone ({x}, {y}): realize_sites_in_zone returned count={count}, site={discovered_site}")
-
-                if count > 0 and discovered_site is not None:
-                    self._debug(f"[mapgen] Realized {count} site(s) at zone ({x}, {y}): {discovered_site.kind}")
-                    # Show discovery message for newly discovered sites
-                    from edgecaster.systems.sites import load_site_types
-                    site_types = load_site_types()
-                    site_config = site_types.get(discovered_site.kind)
-                    site_name = site_config.name if site_config else discovered_site.kind.replace("_", " ").title()
-                    self.set_urgent(
-                        f"You have found a {site_name}!",
-                        title="Discovery!",
-                        choices=["Continue..."]
-                    )
-            except Exception as e:
-                self._debug(f"[mapgen] Error realizing sites at ({x}, {y}): {e!r}")
-
-        if coord == (0, 0, 0) and not getattr(self, "_academy_hint_shown", False):
-            self._academy_hint_shown = True
-            academy = self.poi_locations.get("academy")
-            if academy:
-                ax, ay, _ = academy
-                self.log.add(f"You hear of an Academy at ({ax},{ay}).")
-
 
         # Ensure this zone views the canonical pattern state
         self._sync_level_pattern_view(lvl)
         return lvl
+
 
 
 
