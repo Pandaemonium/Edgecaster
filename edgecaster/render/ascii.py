@@ -3177,6 +3177,113 @@ class AsciiRenderer:
 
         self.surface.blit(panel, (panel_x, panel_y))
 
+    def draw_rune_anchor_siege_overlay(self, game: Game) -> None:
+        """Draw high-contrast in-world overlay for active rune-anchor sieges."""
+        level = game._level()
+        siege = getattr(level, "rune_anchor_siege", None)
+        if siege is None:
+            return
+
+        ox, oy = self._zone_abs_offset(game)
+        tile_px = max(1, int(round(self.tile)))
+
+        def _to_px(tx: int, ty: int) -> tuple[int, int]:
+            px = int((tx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
+            py = int((ty + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            return px, py
+
+        t = pygame.time.get_ticks() / 1000.0
+        pulse = 0.5 + 0.5 * math.sin(t * (math.tau / 1.4))
+        ax, ay = _to_px(int(siege.anchor_pos[0]), int(siege.anchor_pos[1]))
+
+        if siege.phase == "stabilized":
+            core_col = (120, 240, 180, 190)
+            edge_ok = (90, 220, 170, 170)
+            edge_bad = edge_ok
+        elif siege.phase == "stabilize":
+            core_col = (255, 210, 140, int(150 + 80 * pulse))
+            edge_ok = (130, 200, 255, 170)
+            edge_bad = (255, 90, 90, int(120 + 120 * pulse))
+        else:
+            core_col = (255, 170, 120, int(130 + 90 * pulse))
+            edge_ok = (120, 180, 240, 150)
+            edge_bad = (255, 80, 80, int(120 + 110 * pulse))
+
+        # Core ring + center spark.
+        outer = max(6, tile_px // 2 + 4)
+        inner = max(3, tile_px // 3)
+        pygame.draw.circle(self.surface, core_col, (ax, ay), outer, width=2)
+        pygame.draw.circle(self.surface, core_col, (ax, ay), inner, width=1)
+
+        # Stabilize phase: shrinking countdown ring for "hold it together".
+        if siege.phase == "stabilize" and siege.stabilize_ticks_total > 0:
+            hold_ratio = max(0.0, min(1.0, siege.stabilize_ticks_left / float(siege.stabilize_ticks_total)))
+            hold_r = max(outer + 4, int(round((outer + tile_px * 1.6) * hold_ratio)))
+            hold_col = (255, 230, 150, int(90 + 100 * pulse))
+            pygame.draw.circle(self.surface, hold_col, (ax, ay), hold_r, width=2)
+
+        # Fracture spokes + fracture nodes.
+        for fracture in siege.fractures:
+            fx, fy = _to_px(int(fracture.pos[0]), int(fracture.pos[1]))
+            line_col = edge_ok if fracture.repaired else edge_bad
+            pygame.draw.aaline(self.surface, line_col, (ax, ay), (fx, fy))
+
+            mark = max(4, tile_px // 3)
+            if fracture.repaired:
+                fill_col = (120, 220, 180, 170)
+            else:
+                fill_col = (255, 110, 110, int(120 + 120 * pulse))
+            rect = pygame.Rect(fx - mark, fy - mark, mark * 2, mark * 2)
+            pygame.draw.rect(self.surface, fill_col, rect, width=1)
+
+    def draw_rune_anchor_siege_status(self, game: Game) -> None:
+        """Draw HUD panel for rune-anchor siege state."""
+        level = game._level()
+        siege = getattr(level, "rune_anchor_siege", None)
+        if siege is None:
+            return
+
+        try:
+            from edgecaster.systems import rune_anchor_sieges
+
+            lines = rune_anchor_sieges.build_siege_status_lines(game, level, siege)
+        except Exception:
+            lines = []
+
+        if not lines:
+            return
+
+        max_w = max(220, self.width - self.log_panel_width - 24)
+        line_surfs = [self.small_font.render(line, True, self.fg) for line in lines]
+        text_w = max(s.get_width() for s in line_surfs)
+        text_h = sum(s.get_height() + 2 for s in line_surfs)
+
+        panel_w = min(max_w, text_w + 16)
+        panel_h = text_h + 12
+        panel_x = 8
+        panel_y = self.top_bar_height + 120
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        if siege.phase == "stabilized":
+            border = (80, 200, 140, 210)
+        elif siege.phase == "stabilize":
+            border = (230, 190, 120, 210)
+        else:
+            border = (220, 120, 120, 210)
+        panel.fill((16, 12, 20, 210))
+        pygame.draw.rect(panel, border, pygame.Rect(0, 0, panel_w, panel_h), 1)
+
+        y = 6
+        for i, surf in enumerate(line_surfs):
+            if i == 0:
+                header = self.small_font.render(lines[i], True, self.sel)
+                panel.blit(header, (8, y))
+            else:
+                panel.blit(surf, (8, y))
+            y += surf.get_height() + 2
+
+        self.surface.blit(panel, (panel_x, panel_y))
+
     def draw_action_preview_underlay(self, game: Game) -> None:
         """Draw a scene-provided action preview under entities (pure view)."""
         preview = self._ui_attr("action_preview", None)
@@ -4688,6 +4795,7 @@ class AsciiRenderer:
         self.draw_lorenz_overlay(game)
 
         self.draw_seal_trial_overlay(game)
+        self.draw_rune_anchor_siege_overlay(game)
         self.draw_pattern_overlay(game)
         self.draw_choking_vines_overlay(game)
         self.draw_throwing_knife_overlay(game)
@@ -4755,6 +4863,7 @@ class AsciiRenderer:
         self.draw_seal_root_hint(game)
         self.draw_look_overlay(game)
         self.draw_seal_trial_status(game)
+        self.draw_rune_anchor_siege_status(game)
 
         # HUD (status header, log panel, ability bar) is now routed
         # through a generic widget. For the moment this just forwards to the

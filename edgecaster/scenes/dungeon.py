@@ -517,6 +517,16 @@ class DungeonScene(Scene):
                 seal_trials.sync_zone_trial(self.game, self.game._level(), self.game.zone_coord)
             except Exception:
                 pass
+            try:
+                from edgecaster.systems import rune_anchor_sieges
+
+                rune_anchor_sieges.sync_zone_siege(
+                    self.game,
+                    self.game._level(),
+                    self.game.zone_coord,
+                )
+            except Exception:
+                pass
 
             # Precompute world map cache in the background
             if not getattr(self.game, "world_map_thread_started", False):
@@ -581,6 +591,16 @@ class DungeonScene(Scene):
                     game.grant_ability(ab_name)
                 # Reset editor state after applying result so '+' uses defaults next time.
                 setattr(game, "fractal_editor_state", None)
+
+        # If a branch editor result is waiting, absorb it into the gardener pattern.
+        if getattr(manager, "branch_edit_result", None):
+            res = manager.branch_edit_result
+            manager.branch_edit_result = None
+            if isinstance(res, dict) and res.get("vertices") and len(res["vertices"]) >= 2:
+                game.gardener_branch_pattern = res
+                game.character.gardener_branch = res
+                if hasattr(game, "ability_bar_state"):
+                    game.ability_bar_state.invalidate()
 
         # Sync ability bar state with current game abilities
         if not hasattr(game, "ability_bar_state"):
@@ -799,6 +819,18 @@ class DungeonScene(Scene):
             except Exception:
                 pass
             manager.push_scene(BladeEditorScene(game))
+            return
+
+        # 5c) Branch editor requested -> open branch editor scene
+        if getattr(game, "branch_editor_requested", False):
+            game.branch_editor_requested = False
+            from .branch_editor_scene import BranchEditorScene, branch_edge_budget
+
+            player = getattr(game, "_player", lambda: None)()
+            level = int(getattr(getattr(player, "stats", None), "level", 1) or 1)
+            tier, budget = branch_edge_budget(level)
+            existing = getattr(game, "gardener_branch_pattern", None)
+            manager.push_scene(BranchEditorScene(tier=tier, max_edges=budget, existing=existing))
             return
 
         # 6) Pause requested -> push pause menu overlay
@@ -2486,6 +2518,13 @@ class DungeonScene(Scene):
             return
 
         if kind == "open_fractal_editor":
+            # Gardener uses the branch editor instead of the generic fractal editor.
+            player_class = getattr(getattr(game, "character", None), "player_class", None)
+            if player_class == "Gardener":
+                setattr(game, "branch_editor_requested", True)
+                renderer.quit_requested = True
+                return
+
             from .fractal_editor_scene import FractalEditorState
 
             game.fractal_editor_state = FractalEditorState()  # default rect grid

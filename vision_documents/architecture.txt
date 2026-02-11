@@ -194,6 +194,10 @@ Current concern map (authoritative):
   - Action tooltip resolver for ability hover help.
   - Blends static action explanations with live runtime state (targeting, cooldown, charges).
   - Keeps text/logic in systems; scenes only expose hovered action and renderer only draws.
+- `edgecaster/systems/rune_anchor_sieges.py`
+  - Rune Anchor Siege runtime (auto-start on zone entry, fracture repair, stabilize hold,
+    pressure waves, backlash persistence, completion dampening reward).
+  - Owns encounter state/actions (`anchor_channel`, `anchor_stabilize`) and quest compatibility emit.
 
 Still in `game.py` and planned for extraction:
 - `_make_zone()` once mapgen/POI coupling is reduced.
@@ -238,6 +242,8 @@ Key modules (non-exhaustive):
 - systems/chakras.py: body-based chakra system for fractal pattern generation
 - systems/chakra_effects.py: centralized chakra passive-rule evaluation
 - systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers)
+- systems/rune_anchor_sieges.py: failing Rune Anchor gauntlet runtime
+  (fracture channeling, wave pacing, stabilize hold, persistent backlash, corruption dampening completion)
 
 Chakra item content tags (entities.yaml):
 - Temporary unlocks:

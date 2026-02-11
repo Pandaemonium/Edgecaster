@@ -2704,3 +2704,112 @@ def act_start_fern(self, actor_id: str) -> None:
     if hasattr(level, "_fern_node_to_vertex"):
         del level._fern_node_to_vertex
     self.log.add("Fern begins to grow...")
+
+
+def act_mirror_blade(
+    self,
+    actor_id: str,
+    *,
+    target_pos: Optional[Tuple[int, int]] = None,
+) -> None:
+    """Summon a mirror clone of the player that fights autonomously for 30 heartbeats."""
+    from edgecaster.state.actors import Actor, Stats
+    from edgecaster.systems import spawning as spawning_system
+    from edgecaster.systems import blade_runtime as blade_runtime_system
+
+    level = self._level()
+    player = level.actors.get(actor_id)
+    if player is None or not getattr(player, "alive", False):
+        return
+
+    # Mana cost: 8 or half max_mana, whichever is smaller
+    mana_cost = min(8, max(1, int(getattr(player.stats, "max_mana", 0) or 0) // 2))
+    current_mana = int(getattr(player.stats, "mana", 0) or 0)
+    if current_mana < mana_cost:
+        self.log.add(f"Not enough mana ({current_mana}/{mana_cost}).")
+        return
+
+    # Find spawn position near target
+    spawn_pos = target_pos or player.pos
+    # Search for nearest walkable, unoccupied tile
+    found_pos = None
+    sx, sy = spawn_pos
+    for r in range(0, 6):
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                if abs(dx) + abs(dy) != r:
+                    continue
+                tx, ty = sx + dx, sy + dy
+                if not level.world.in_bounds(tx, ty):
+                    continue
+                if not level.world.is_walkable(tx, ty):
+                    continue
+                if self._actor_at(level, (tx, ty)):
+                    continue
+                found_pos = (tx, ty)
+                break
+            if found_pos:
+                break
+        if found_pos:
+            break
+
+    if found_pos is None:
+        self.log.add("No space to summon a mirror blade.")
+        return
+
+    # Deduct mana
+    player.stats.mana -= mana_cost
+    if hasattr(player.stats, "clamp"):
+        player.stats.clamp()
+
+    # Build clone stats: half player max HP (capped at current HP)
+    p_stats = player.stats
+    clone_hp = max(1, min(int(p_stats.hp), int(p_stats.max_hp) // 2))
+    p_tags = getattr(player, "tags", {}) or {}
+    base_attack = int(p_tags.get("base_attack", 2) or 2)
+
+    # Create clone actor
+    clone_id = self._new_id()
+    abs_pos = self.abs_from_zone_local(level.coord, found_pos)
+    clone = Actor(
+        id=clone_id,
+        name=f"Mirror {player.name}",
+        pos=found_pos,
+        abs_pos=abs_pos,
+        glyph=getattr(player, "glyph", "@"),
+        color=(140, 200, 255),  # Cyan tint to distinguish
+        faction="player",
+        stats=Stats(
+            hp=clone_hp,
+            max_hp=clone_hp,
+            mana=0,
+            max_mana=0,
+        ),
+        actions=tuple(getattr(player, "actions", ("move", "wait"))),
+        tags={
+            "ai": "mirror_blade_clone",
+            "mirror_blade_clone": True,
+            "summoner_id": actor_id,
+            "base_attack": base_attack,
+            "no_xp": True,
+        },
+        statuses={"mirror_blade_ttl": 10},
+    )
+
+    # Copy blade state from player so clone has matching melee damage/reach
+    try:
+        player_blade = blade_runtime_system.ensure_actor_blade_state(self, actor_id)
+        from edgecaster.systems.blade_runtime import BladeState
+        clone_blade = BladeState(generators=list(player_blade.generators))
+        blade_states = getattr(self, "blade_states", None)
+        if not isinstance(blade_states, dict):
+            blade_states = {}
+            self.blade_states = blade_states
+        blade_states[clone_id] = clone_blade
+    except Exception:
+        pass
+
+    # Register and schedule AI
+    spawning_system.register_actor(self, level, clone, schedule_ai=True)
+
+    self.log.add("A shimmering mirror of yourself steps into being.")

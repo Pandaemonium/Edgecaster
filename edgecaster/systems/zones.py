@@ -32,6 +32,22 @@ if TYPE_CHECKING:
     from edgecaster.state.actors import Actor
 
 
+def _sync_zone_runtime(game: "Game", level: "LevelState", coord: Tuple[int, int, int]) -> None:
+    """Apply zone-entry runtime systems that depend on current player zone."""
+    try:
+        from edgecaster.systems import seal_trials
+
+        seal_trials.sync_zone_trial(game, level, coord)
+    except Exception:
+        pass
+    try:
+        from edgecaster.systems import rune_anchor_sieges
+
+        rune_anchor_sieges.sync_zone_siege(game, level, coord)
+    except Exception:
+        pass
+
+
 def get_zone(
     game: "Game",
     coord: Tuple[int, int, int],
@@ -108,6 +124,7 @@ def use_stairs_down(game: "Game") -> None:
         game.zone_coord = target_coord
         game.log.add(f"You descend to depth {game.zone_coord[2]}.")
         game._update_fov(dest_level)
+        _sync_zone_runtime(game, dest_level, target_coord)
 
         # Snap the Lorenz storm to the new floor
         game._reset_lorenz_on_zone_change(player)
@@ -150,6 +167,7 @@ def use_stairs_up(game: "Game") -> None:
         game.zone_coord = target_coord
         game.log.add(f"You ascend to depth {game.zone_coord[2]}.")
         game._update_fov(dest_level)
+        _sync_zone_runtime(game, dest_level, target_coord)
 
         # Snap the Lorenz storm to the new floor
         game._reset_lorenz_on_zone_change(player)
@@ -204,6 +222,7 @@ def transition_edge(game: "Game", actor: "Actor", dx: int, dy: int) -> None:
     actor.abs_pos = game.abs_from_zone_local(dest_coord, (dest_x, dest_y))
     dest_level.actors[game.player_id] = actor
     game.zone_coord = dest_coord
+    _sync_zone_runtime(game, dest_level, dest_coord)
 
     # Keep continuity: update FOV and keep Lorenz storm coherent.
     dest_level.need_fov = True
@@ -243,6 +262,7 @@ def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
     actor.abs_pos = game.abs_from_zone_local(dest_coord, dest_level.world.entry)
     dest_level.actors[game.player_id] = actor
     game.zone_coord = dest_coord
+    _sync_zone_runtime(game, dest_level, dest_coord)
     dest_level.need_fov = True
     game._update_fov(dest_level)
     game._reset_lorenz_on_zone_change(actor)

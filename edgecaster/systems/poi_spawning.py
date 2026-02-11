@@ -261,6 +261,15 @@ def spawn_poi_contents(game: "Game", level: "LevelState", coord: Tuple[int, int,
                 except Exception as e:
                     game._debug(f"[seal_trials] Failed to attach trial: {e!r}")
 
+            elif struct.get("kind") == "rune_anchor_siege":
+                try:
+                    from edgecaster.systems import rune_anchor_sieges
+
+                    siege_id = str(struct.get("siege_id") or "starter_anchor")
+                    rune_anchor_sieges.attach_siege_to_level(game, level, siege_id)
+                except Exception as e:
+                    game._debug(f"[rune_siege] Failed to attach siege: {e!r}")
+
             elif struct.get("kind") == "destabilizer_ruin":
                 layout = str(struct.get("layout") or "multi_room")
                 ruin_info = build_ruin_structure(layout=layout)

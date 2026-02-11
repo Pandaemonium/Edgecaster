@@ -25,6 +25,7 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "koch": "Apply a Koch-style triangular iteration to the rune.",
     "branch": "Branch rune segments into multiple angled paths.",
     "zigzag": "Apply a zigzag iteration to the current rune.",
+    "cultivate": "Apply your custom branch design as a fractal generator.",
     "custom": "Apply your current custom saved generator pattern.",
     "chakra": "Rebuild the rune from active chakras in your body schema.",
     "wind_rush": "Dash to a selected rune vertex and strike along the path.",
@@ -33,6 +34,7 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "energy_kick": "Pulse from foot-lineage vertices and damage nearby targets.",
     "palm_burst": "Pulse from hand-lineage vertices and damage nearby targets.",
     "mirror_strike": "Strike from mirrored chakra-pair endpoints.",
+    "mirror_blade": "Summon a mirror clone that fights for 30 heartbeats.",
     "aggressive_vines": "Grow free-form tendrils that whip out from rune edges.",
     "choking_vines": "Mutate your rune by growing constricting branches toward enemies.",
     "push_pattern": "Push and rotate the current rune over time.",
@@ -62,6 +64,14 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
     "mirror_strike": (
         "Only mirrored chakra pairs contribute strike points.",
         "Strongest when both mirrored branches are active.",
+    ),
+    "cultivate": (
+        "Applies your custom branch design as a fractal replacement rule.",
+        "Open the branch editor (+/=) to design your pattern first.",
+    ),
+    "mirror_blade": (
+        "Costs mana. Spawns a phantom clone with your blade profile.",
+        "The clone uses slash on nearby hostiles and dissolves after 30 heartbeats.",
     ),
     "aggressive_vines": (
         "Free-form control effect; does not become permanent rune geometry.",

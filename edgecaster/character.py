@@ -27,6 +27,8 @@ class Character:
     ability_layout: dict | None = None
     # Per-character reputation with each faction (faction_id -> score).
     reputation: Dict[str, int] = field(default_factory=dict)
+    # Gardener custom branch pattern (dict with vertices/edges or None).
+    gardener_branch: dict | None = None
 
 
 def default_character() -> Character:

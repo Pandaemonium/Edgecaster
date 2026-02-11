@@ -63,12 +63,21 @@ def _player_class(game: "Game") -> str:
 def actor_uses_blade_melee(game: "Game", actor_id: str) -> bool:
     """Whether this actor should use blade-melee routing.
 
-    V1 keeps this conservative: Blade-class player host only.
+    V1: Blade-class player host + mirror blade clones.
     """
     try:
-        return bool(actor_id == getattr(game, "player_id", None) and _player_class(game) == "Blade")
+        if actor_id == getattr(game, "player_id", None) and _player_class(game) == "Blade":
+            return True
+        # Mirror blade clones also use blade melee
+        level = game._level()
+        actor = level.actors.get(actor_id)
+        if actor is not None:
+            tags = getattr(actor, "tags", None) or {}
+            if tags.get("mirror_blade_clone"):
+                return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def blade_slots(game: "Game", actor_id: str) -> int:

@@ -65,8 +65,8 @@ failing_rune:
   coord: [0, 0, 0]  # overwritten at runtime (near starting_zone)
   npcs: []
   structures:
-    - kind: sealing_rune_trial
-      trial_id: starter_seal
+    - kind: rune_anchor_siege
+      siege_id: starter_anchor
 destabilizer_ruin:
   coord: [0, 0, 0]  # overwritten at runtime (near starting_zone)
   npcs: []

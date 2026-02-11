@@ -356,6 +356,21 @@ def apply_fractal_op(self, lvl: Any, kind: str) -> None:
             gen = builder.CustomGraphGenerator(verts, edges, amplitude=amp)
         else:
             gen = builder.CustomPolyGenerator(verts, amplitude=amp)
+    elif kind == "cultivate":
+        pattern = getattr(self, "gardener_branch_pattern", None)
+        if not pattern or not isinstance(pattern, dict):
+            self.log.add("No branch pattern designed. Open the editor (+/=) first.")
+            return
+        verts = pattern.get("vertices")
+        edges = pattern.get("edges", [])
+        if not verts or len(verts) < 2:
+            self.log.add("No branch pattern designed.")
+            return
+        amp = self._param_value("custom", "amplitude")
+        if edges:
+            gen = builder.CustomGraphGenerator(verts, edges, amplitude=amp)
+        else:
+            gen = builder.CustomPolyGenerator(verts, amplitude=amp)
     else:
         self.log.add("Unknown fractal op.")
         return

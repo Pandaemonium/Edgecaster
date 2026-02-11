@@ -250,6 +250,7 @@ class LevelState:
     # Visible thrown-knife projectiles (ABS-space center positions + rune-shape payload).
     thrown_knives_state: List[Dict[str, Any]] = field(default_factory=list)
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
+    rune_anchor_siege: Optional["RuneAnchorSiegeState"] = None  # Rune anchor siege state (if any)
     # Zone difficulty metadata (computed on zone creation).
     danger_value: float = 0.0
     danger_tier: int = 1
@@ -355,6 +356,8 @@ class Game:
         self.custom_patterns: List[list] = []
         if getattr(self.character, "custom_pattern", None):
             self.custom_patterns.append(self.character.custom_pattern)
+        # Gardener custom branch pattern (dict with vertices/edges or None).
+        self.gardener_branch_pattern: dict | None = getattr(self.character, "gardener_branch", None)
         # fractal field for overworld generation
         # seed: use character seed if provided, else derive from rng
         if getattr(self.character, "use_random_seed", False):
@@ -654,6 +657,7 @@ class Game:
             actions += [
                 "place",
                 "branch",
+                "cultivate",         # Custom branch editor
                 "activate_all",      # Activate R
                 "activate_seed",     # Activate N
                 "verdant_edges",     # Verdant
@@ -670,6 +674,7 @@ class Game:
                 "thrust",
                 "cleave",
                 "throwing_knife",
+                "mirror_blade",
                 "place",
                 "subdivide",
                 "extend",
@@ -791,6 +796,19 @@ class Game:
         self.log.add("Imps lurk nearby. Press ? for help.")
 
         self._update_fov(self._level())
+        # Re-sync zone runtime now that player_id and actor maps are ready.
+        try:
+            from edgecaster.systems import seal_trials
+
+            seal_trials.sync_zone_trial(self, self._level(), self.zone_coord)
+        except Exception:
+            pass
+        try:
+            from edgecaster.systems import rune_anchor_sieges
+
+            rune_anchor_sieges.sync_zone_siege(self, self._level(), self.zone_coord)
+        except Exception:
+            pass
 
         # decide a lab zone for this run (one random overworld zone)
         self.lab_zone: Tuple[int, int] = (
@@ -3618,6 +3636,24 @@ class Game:
         except Exception:
             self.log.add("The seal refuses to bind.")
 
+    def act_anchor_channel(self, actor_id: str) -> None:
+        """Stabilize a nearby rune-anchor fracture with coherence."""
+        try:
+            from edgecaster.systems import rune_anchor_sieges
+
+            rune_anchor_sieges.channel_fracture(self, actor_id)
+        except Exception:
+            self.log.add("The fracture slips out of phase.")
+
+    def act_anchor_stabilize(self, actor_id: str) -> None:
+        """Reinforce the active rune anchor during stabilize phase."""
+        try:
+            from edgecaster.systems import rune_anchor_sieges
+
+            rune_anchor_sieges.stabilize_anchor(self, actor_id)
+        except Exception:
+            self.log.add("The anchor resists your focus.")
+
     def act_fractal(self, actor_id: str, kind: str) -> None:
         """Generic action entry point: apply a fractal generator to the current pattern."""
         level = self._level()
@@ -3811,6 +3847,8 @@ class Game:
         return combat_actions_system.act_corrosive_melt(self, actor_id)
     def act_start_fern(self, actor_id: str) -> None:
         return combat_actions_system.act_start_fern(self, actor_id)
+    def act_mirror_blade(self, actor_id: str, *, target_pos=None) -> None:
+        return combat_actions_system.act_mirror_blade(self, actor_id, target_pos=target_pos)
 
     def _apply_fractal_op(self, lvl: LevelState, kind: str) -> None:
         return pattern_runtime_system.apply_fractal_op(self, lvl, kind)

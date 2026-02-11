@@ -1,0 +1,43 @@
+starter_anchor:
+  name: Failing Rune Anchor
+  # Local offset from zone entry for the anchor core.
+  anchor_offset: [0, 0]
+  # Damaged seal points that must be rebuilt with Coherence Crystals.
+  fracture_offsets:
+    - [-4, 0]
+    - [0, 3]
+    - [4, 0]
+  # How close the player must stand to channel a fracture.
+  channel_range: 1
+  # Crystal cost per channel action.
+  coherence_per_channel: 1
+  # Final "hold it together" phase duration after all fractures are repaired.
+  stabilize_ticks: 90
+  # Each stabilize action trims this many ticks off the hold timer.
+  stabilize_action_bonus: 4
+  # Stability model.
+  stability_max: 100.0
+  stability_start: 72.0
+  stability_decay_per_tick: 0.18
+  repair_stability_gain: 16.0
+  stabilize_stability_gain: 9.0
+  # Enemy wave pacing and spawn ring.
+  spawn_radius_min: 6
+  spawn_radius_max: 10
+  wave_min_interval: 8
+  wave_max_interval: 14
+  wave_base_count: 2
+  wave_pressure_scale: 3.0
+  enemy_pool: [imp, shadow, mana_viper, goblin, raving_lunatic]
+  # Corruption dampening reward on completion.
+  dampening_range_tiles: 14.0
+  dampening_strength: 0.55
+  # Reward drop near the anchor core.
+  reward_bismuth_min: 20
+  reward_bismuth_max: 36
+  # Compatibility bridge for existing quest content.
+  legacy_trial_id: starter_seal
+  intro_lines:
+    - "The Rune Anchor screams as you cross the threshold."
+    - "Fractures flare to life. The siege has begun."
+

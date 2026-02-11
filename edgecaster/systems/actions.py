@@ -804,6 +804,13 @@ def _action_zigzag(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_fractal(actor_id, "zigzag")
 
 
+@register_action("cultivate", label="Cultivate", speed="fast", show_in_bar=True)
+def _action_cultivate(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Apply the Gardener's custom branch design as a fractal generator."""
+    if hasattr(game, "act_fractal"):
+        game.act_fractal(actor_id, "cultivate")
+
+
 @register_action("custom", label="Custom", speed="fast", show_in_bar=True)
 def _action_custom(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
@@ -885,6 +892,21 @@ def _action_throwing_knife(game: Any, actor_id: str, **kwargs: Any) -> None:
     target_pos = kwargs.get("target_tile")
     if hasattr(game, "act_throwing_knife"):
         game.act_throwing_knife(actor_id, target_pos=target_pos)
+
+
+@register_action(
+    "mirror_blade",
+    label="Mirror Blade",
+    speed="fast",
+    show_in_bar=True,
+    cooldown_ticks=300,
+    targeting=TargetingSpec(kind="tile", mode="aim"),
+)
+def _action_mirror_blade(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Summon a mirror clone of yourself that fights for 100 heartbeats."""
+    target_pos = kwargs.get("target_tile")
+    if hasattr(game, "act_mirror_blade"):
+        game.act_mirror_blade(actor_id, target_pos=target_pos)
 
 
 @register_action(
@@ -1693,6 +1715,20 @@ def _action_seal_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Bind a sealing rune (trial zones only)."""
     if hasattr(game, "act_seal_rune"):
         game.act_seal_rune(actor_id)
+
+
+@register_action("anchor_channel", label="Seal Fracture", speed="slow", show_in_bar=True)
+def _action_anchor_channel(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Stabilize a nearby rune-anchor fracture using coherence crystals."""
+    if hasattr(game, "act_anchor_channel"):
+        game.act_anchor_channel(actor_id)
+
+
+@register_action("anchor_stabilize", label="Stabilize Anchor", speed="slow", show_in_bar=True)
+def _action_anchor_stabilize(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Reinforce the rune anchor core during the final hold phase."""
+    if hasattr(game, "act_anchor_stabilize"):
+        game.act_anchor_stabilize(actor_id)
 
 
 @register_action(

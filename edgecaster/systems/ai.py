@@ -96,6 +96,8 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return _circus_member(game, level, actor)
     if behavior_id == "furious_ringmaster":
         return _furious_ringmaster(game, level, actor)
+    if behavior_id == "mirror_blade_clone":
+        return _mirror_blade_clone(game, level, actor)
 
     # Default: generic "walk toward player and bump" brain.
     return _generic_walk_toward(game, level, actor)
@@ -670,3 +672,88 @@ def _walk_toward(
 
     step = rng.choice(candidates)  # type: ignore[attr-defined]
     return (move_action, {"dx": step[0], "dy": step[1]})
+
+
+def _mirror_blade_clone(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """Mirror Blade clone AI: hunt nearest hostile, slash when adjacent, dissolve on TTL expiry."""
+    # Tick down lifetime
+    ttl = actor.statuses.get("mirror_blade_ttl", 0)
+    if ttl <= 0:
+        # Dissolve: remove from level
+        try:
+            game.log.add(f"The mirror of {actor.name.replace('Mirror ', '')} shatters.")
+            level.actors.pop(actor.id, None)
+            level.entities.pop(actor.id, None)
+            # Clean up blade state
+            blade_states = getattr(game, "blade_states", None)
+            if isinstance(blade_states, dict):
+                blade_states.pop(actor.id, None)
+        except Exception:
+            pass
+        return ("wait", {})
+    actor.statuses["mirror_blade_ttl"] = ttl - 1
+
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    # Find nearest hostile actor
+    a_abs = _abs_pos(game, level, actor)
+    if a_abs is None:
+        return ("wait", {})
+
+    best_target = None
+    best_dist = 1e9
+    for aid, other in list(level.actors.items()):
+        if aid == actor.id:
+            continue
+        if not getattr(other, "alive", True):
+            continue
+        # Check hostility: try reputation system first, then fall back to
+        # direct faction check.  The reputation system may not have opinion
+        # tables for the synthetic "player" faction the clone uses, so
+        # is_hostile can return False even for genuinely hostile enemies.
+        hostile = False
+        try:
+            hostile = reputation_system.is_hostile(game, actor, other)
+        except Exception:
+            pass
+        if not hostile:
+            # Direct faction fallback: anything in "hostile" faction (or
+            # any faction hostile *to the player*) counts.
+            other_faction = getattr(other, "faction", "neutral")
+            if other_faction == "player":
+                continue  # never attack friendlies
+            if other_faction == "hostile":
+                hostile = True
+            elif other_faction != "neutral":
+                # Check if this faction is hostile to the player
+                try:
+                    player = _get_player_actor(game)
+                    if player is not None and reputation_system.is_hostile(game, player, other):
+                        hostile = True
+                except Exception:
+                    pass
+        if not hostile:
+            continue
+        t_abs = _abs_pos(game, level, other)
+        if t_abs is None:
+            continue
+        dist = abs(t_abs[0] - a_abs[0]) + abs(t_abs[1] - a_abs[1])
+        if dist < best_dist:
+            best_dist = dist
+            best_target = (other, t_abs)
+
+    if best_target is None:
+        return ("wait", {}) if "wait" in available else (available[0], {})
+
+    target, t_abs = best_target
+    dx = t_abs[0] - a_abs[0]
+    dy = t_abs[1] - a_abs[1]
+
+    # If adjacent, use slash for blade melee damage
+    if abs(dx) + abs(dy) == 1 and "slash" in available:
+        return ("slash", {"target_tile": target.pos})
+
+    # Otherwise walk toward the target
+    return _walk_toward(game, level, actor, available, dx, dy)

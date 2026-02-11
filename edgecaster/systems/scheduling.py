@@ -122,6 +122,14 @@ def advance_time(
     except Exception:
         pass
 
+    # Rune-anchor siege runtime (pressure/waves/stability).
+    try:
+        from edgecaster.systems import rune_anchor_sieges
+
+        rune_anchor_sieges.update_siege(game, level)
+    except Exception:
+        pass
+
 
 def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
     """Update chakra charge for actors with chakra_state."""
