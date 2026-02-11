@@ -1,149 +1,216 @@
-# Site type definitions for biome-aware POI placement
-#
-# Each site type defines:
-# - Biome affinity (which biomes are suitable)
-# - Suitability thresholds (elevation, temperature, moisture, corruption)
-# - Placement constraints (spacing, rarity)
-# - Content (structures, NPCs, enemies)
-# - Display (map glyph and color)
+- id: site_bird_aerie
+  name: Bird People Aerie
+  parent: settlement
+  glyph: "A"
+  color: [180, 200, 255]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: "A high-altitude aerie of bird folk."
+  tags:
+    world_entity: true
+    site: true
+    site_kind: bird_aerie
+    structures: [cliff_tower, nest_platform, open_arena]
+    npc_pool: [bird_elder, bird_merchant, bird_scout]
+    enemy_pool: [bird_warrior, hunting_hawk]
+    primary_biomes: [SNOW, BARE, TUNDRA]
+    secondary_biomes: [TEMPERATE_GRASSLAND, SHRUBLAND]
+    elevation_min: 0.65
+    elevation_max: 1.0
+    temperature_min: 0.0
+    temperature_max: 0.45
+    moisture_min: 0.0
+    moisture_max: 0.5
+    corruption_max: 0.1
+    water_proximity: null
+    spacing: 18
+    rarity: 0.4
+    max_count: 8
 
-bird_aerie:
-  name: "Bird People Aerie"
-  primary_biomes: [SNOW, BARE, TUNDRA]
-  secondary_biomes: [TEMPERATE_GRASSLAND, SHRUBLAND]
-  elevation_min: 0.65
-  elevation_max: 1.0
-  temperature_min: 0.0
-  temperature_max: 0.45
-  moisture_min: 0.0
-  moisture_max: 0.5
-  corruption_max: 0.1
-  spacing: 18
-  rarity: 0.4
-  max_count: 8
-  structures: [cliff_tower, nest_platform, open_arena]
-  npc_pool: [bird_elder, bird_merchant, bird_scout]
-  enemy_pool: [bird_warrior, hunting_hawk]
-  map_glyph: "A"
-  map_color: [180, 200, 255]
+- id: site_fishing_village
+  name: Fishing Village
+  parent: settlement
+  glyph: "F"
+  color: [120, 180, 220]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: "A small fishing village near water."
+  tags:
+    world_entity: true
+    site: true
+    site_kind: fishing_village
+    structures: [dock, fish_market, net_hut]
+    npc_pool: [fishmonger, boat_captain, net_mender]
+    enemy_pool: []
+    primary_biomes: [TEMPERATE_FOREST, TEMPERATE_GRASSLAND, TEMPERATE_RAINFOREST]
+    secondary_biomes: [TROPICAL_FOREST, SAVANNA, SHRUBLAND]
+    elevation_min: 0.15
+    elevation_max: 0.4
+    temperature_min: 0.25
+    temperature_max: 0.75
+    moisture_min: 0.3
+    moisture_max: 1.0
+    corruption_max: 0.05
+    water_proximity: 3
+    spacing: 14
+    rarity: 0.6
+    max_count: 12
 
-fishing_village:
-  name: "Fishing Village"
-  primary_biomes: [TEMPERATE_FOREST, TEMPERATE_GRASSLAND, TEMPERATE_RAINFOREST]
-  secondary_biomes: [TROPICAL_FOREST, SAVANNA, SHRUBLAND]
-  elevation_min: 0.15
-  elevation_max: 0.40
-  temperature_min: 0.25
-  temperature_max: 0.75
-  moisture_min: 0.3
-  moisture_max: 1.0
-  corruption_max: 0.05
-  water_proximity: 3
-  spacing: 14
-  rarity: 0.6
-  max_count: 12
-  structures: [dock, fish_market, net_hut]
-  npc_pool: [fishmonger, boat_captain, net_mender]
-  enemy_pool: []
-  map_glyph: "F"
-  map_color: [120, 180, 220]
+- id: site_spriggan_grove
+  name: Spriggan Grove
+  parent: settlement
+  glyph: "G"
+  color: [80, 220, 120]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: "A hidden grove inhabited by spriggans."
+  tags:
+    world_entity: true
+    site: true
+    site_kind: spriggan_grove
+    structures: [grove_circle, elder_tree, root_hollow]
+    npc_pool: [spriggan_elder, spriggan_trader, spriggan_scout]
+    enemy_pool: []
+    primary_biomes: [TEMPERATE_RAINFOREST, TROPICAL_FOREST]
+    secondary_biomes: [TEMPERATE_FOREST, SHRUBLAND]
+    elevation_min: 0.1
+    elevation_max: 0.5
+    temperature_min: 0.2
+    temperature_max: 0.9
+    moisture_min: 0.5
+    moisture_max: 1.0
+    corruption_max: 0.08
+    water_proximity: null
+    spacing: 16
+    rarity: 0.5
+    max_count: 10
 
-spriggan_grove:
-  name: "Spriggan Grove"
-  primary_biomes: [TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST]
-  secondary_biomes: [TEMPERATE_FOREST, TROPICAL_FOREST, TAIGA]
-  elevation_min: 0.25
-  elevation_max: 0.70
-  temperature_min: 0.2
-  temperature_max: 0.85
-  moisture_min: 0.55
-  moisture_max: 1.0
-  corruption_max: 0.08
-  spacing: 20
-  rarity: 0.35
-  max_count: 6
-  structures: [elder_tree, sapling_ring, fungal_circle]
-  npc_pool: [spriggan_elder, moss_keeper]
-  enemy_pool: [thorn_guardian, bark_golem]
-  map_glyph: "Y"
-  map_color: [60, 140, 80]
+- id: site_desert_camp
+  name: Desert Camp
+  parent: settlement
+  glyph: "C"
+  color: [240, 200, 120]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: "A temporary encampment in the desert."
+  tags:
+    world_entity: true
+    site: true
+    site_kind: desert_camp
+    structures: [tent_cluster, fire_pit, water_cache]
+    npc_pool: [camp_leader, camel_handler, sand_scout]
+    enemy_pool: [bandit, sand_worm]
+    primary_biomes: [DESERT, BADLANDS]
+    secondary_biomes: [SHRUBLAND, SAVANNA]
+    elevation_min: 0.1
+    elevation_max: 0.8
+    temperature_min: 0.6
+    temperature_max: 1.0
+    moisture_min: 0.0
+    moisture_max: 0.3
+    corruption_max: 0.12
+    water_proximity: null
+    spacing: 12
+    rarity: 0.65
+    max_count: 14
 
-desert_camp:
-  name: "Desert Nomad Camp"
-  primary_biomes: [SUBTROPICAL_DESERT, TEMPERATE_DESERT, SCORCHED]
-  secondary_biomes: [SAVANNA, BARE]
-  elevation_min: 0.20
-  elevation_max: 0.65
-  temperature_min: 0.50
-  temperature_max: 1.0
-  moisture_min: 0.0
-  moisture_max: 0.30
-  corruption_max: 0.12
-  spacing: 16
-  rarity: 0.5
-  max_count: 10
-  structures: [tent_cluster, trade_post, water_cache]
-  npc_pool: [nomad_chief, caravan_merchant, water_diviner]
-  enemy_pool: [sand_stalker, dust_wraith]
-  map_glyph: "C"
-  map_color: [230, 200, 140]
+- id: site_hunter_lodge
+  name: Hunter Lodge
+  parent: settlement
+  glyph: "H"
+  color: [180, 140, 100]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: "A rustic lodge used by hunters."
+  tags:
+    world_entity: true
+    site: true
+    site_kind: hunter_lodge
+    structures: [lodge, drying_rack, trophy_pole]
+    npc_pool: [hunter, trapper, cook]
+    enemy_pool: [wolf, boar]
+    primary_biomes: [TEMPERATE_FOREST, BOREAL_FOREST]
+    secondary_biomes: [TEMPERATE_GRASSLAND, SHRUBLAND]
+    elevation_min: 0.15
+    elevation_max: 0.7
+    temperature_min: 0.1
+    temperature_max: 0.75
+    moisture_min: 0.2
+    moisture_max: 0.8
+    corruption_max: 0.1
+    water_proximity: null
+    spacing: 15
+    rarity: 0.55
+    max_count: 12
 
-hunter_lodge:
-  name: "Hunter's Lodge"
-  primary_biomes: [TAIGA, TUNDRA]
-  secondary_biomes: [TEMPERATE_FOREST, SHRUBLAND]
-  elevation_min: 0.30
-  elevation_max: 0.70
-  temperature_min: 0.15
-  temperature_max: 0.45
-  moisture_min: 0.25
-  moisture_max: 0.65
-  corruption_max: 0.1
-  spacing: 15
-  rarity: 0.55
-  max_count: 10
-  structures: [lodge, fur_rack, trap_workshop]
-  npc_pool: [trapper, fur_trader, hunting_guide]
-  enemy_pool: [wolf, bear]
-  map_glyph: "L"
-  map_color: [160, 130, 100]
+- id: site_tropical_shrine
+  name: Tropical Shrine
+  parent: settlement
+  glyph: "S"
+  color: [200, 120, 240]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: "A small shrine in the tropics."
+  tags:
+    world_entity: true
+    site: true
+    site_kind: tropical_shrine
+    structures: [shrine, offering_table, stone_path]
+    npc_pool: [acolyte, pilgrim, caretaker]
+    enemy_pool: []
+    primary_biomes: [TROPICAL_FOREST, SAVANNA]
+    secondary_biomes: [TEMPERATE_RAINFOREST, TEMPERATE_GRASSLAND]
+    elevation_min: 0.0
+    elevation_max: 0.6
+    temperature_min: 0.55
+    temperature_max: 1.0
+    moisture_min: 0.35
+    moisture_max: 1.0
+    corruption_max: 0.1
+    water_proximity: null
+    spacing: 17
+    rarity: 0.45
+    max_count: 9
 
-tropical_shrine:
-  name: "Shaman's Shrine"
-  primary_biomes: [TROPICAL_FOREST, TROPICAL_RAINFOREST]
-  secondary_biomes: [SAVANNA, TEMPERATE_RAINFOREST]
-  elevation_min: 0.25
-  elevation_max: 0.55
-  temperature_min: 0.55
-  temperature_max: 1.0
-  moisture_min: 0.40
-  moisture_max: 1.0
-  corruption_max: 0.15
-  spacing: 18
-  rarity: 0.4
-  max_count: 7
-  structures: [shrine, ritual_circle, spirit_totem]
-  npc_pool: [shaman, spirit_speaker, offering_keeper]
-  enemy_pool: [jungle_cat, venomous_snake]
-  map_glyph: "S"
-  map_color: [200, 160, 100]
-
-corruption_outpost:
-  name: "Corruption Cult Outpost"
-  primary_biomes: [CORRUPTED_WASTELAND, CORRUPTED_FOREST]
-  secondary_biomes: [CORRUPTED_WATER]
-  elevation_min: 0.15
-  elevation_max: 0.80
-  temperature_min: 0.0
-  temperature_max: 1.0
-  moisture_min: 0.0
-  moisture_max: 1.0
-  corruption_max: 1.0  # Actually requires high corruption
-  spacing: 20
-  rarity: 0.3
-  max_count: 5
-  structures: [obelisk, ritual_pit, cage_row]
-  npc_pool: [cult_leader, corrupted_merchant]
-  enemy_pool: [cultist, summoned_demon]
-  map_glyph: "X"
-  map_color: [150, 80, 160]
+- id: site_corruption_outpost
+  name: Corruption Outpost
+  parent: settlement
+  glyph: "X"
+  color: [220, 80, 160]
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 64
+  description: "An outpost on the fringes of corruption."
+  tags:
+    world_entity: true
+    site: true
+    site_kind: corruption_outpost
+    structures: [watchtower, barricade, sigil_stone]
+    npc_pool: [outpost_commander, ward_scribe, scavenger]
+    enemy_pool: [corrupted_thrall, bismuth_imp]
+    primary_biomes: [CORRUPTED]
+    secondary_biomes: [BADLANDS, SHRUBLAND, TEMPERATE_GRASSLAND]
+    elevation_min: 0.0
+    elevation_max: 1.0
+    temperature_min: 0.0
+    temperature_max: 1.0
+    moisture_min: 0.0
+    moisture_max: 1.0
+    corruption_max: 1.0
+    water_proximity: null
+    spacing: 20
+    rarity: 0.35
+    max_count: 6

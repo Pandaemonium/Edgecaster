@@ -458,7 +458,8 @@ class Game:
         # Populated after overmap_params/tile_julia_grid are set up.
         from edgecaster.systems.sites import SiteRegistry
         from edgecaster.systems.site_placement import place_all_sites
-        self.site_registry: SiteRegistry = place_all_sites(self)
+        place_all_sites(self)
+
         # World-level entity index (macro-scale renderables).
         # Populated from site_registry once placement completes.
         zone_w_init = int(getattr(getattr(self, "cfg", None), "world_width", 60) or 60)
