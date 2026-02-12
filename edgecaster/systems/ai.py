@@ -46,6 +46,12 @@ def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     except Exception:
         behavior_id = None
 
+    try:
+        if str((getattr(actor, "tags", {}) or {}).get("rune_siege_role", "")) == "sapper":
+            return _rune_sapper(game, level, actor)
+    except Exception:
+        pass
+
     if behavior_id == "melee_brute":
         return _melee_brute(game, level, actor)
     if behavior_id == "skirmisher":
@@ -639,6 +645,62 @@ def _furious_ringmaster(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         return _deferred_attacker(game, level, actor, "lash", "lash_range", 3)
     # Fall back to generic hostile movement.
     return _generic_walk_toward(game, level, actor)
+
+
+def _rune_sapper(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
+    """Siege saboteur AI: prioritize repaired fractures over direct pursuit."""
+    available = tuple(getattr(actor, "actions", ()))
+    if not available:
+        return ("wait", {})
+
+    player = _get_player_actor(game)
+    if player is None:
+        return ("wait", {}) if "wait" in available else (available[0], {})
+
+    try:
+        if not reputation_system.is_hostile(game, actor, player):
+            return ("wait", {}) if "wait" in available else (available[0], {})
+    except Exception:
+        pass
+
+    a_abs = _abs_pos(game, level, actor)
+    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
+    if a_abs is None or p_abs is None:
+        return ("wait", {}) if "wait" in available else (available[0], {})
+
+    # If adjacent to player, still take the attack.
+    px, py = p_abs
+    ax, ay = a_abs
+    if abs(px - ax) + abs(py - ay) == 1 and "move" in available:
+        return ("move", {"dx": px - ax, "dy": py - ay})
+
+    siege = getattr(level, "rune_anchor_siege", None)
+    if siege is None or getattr(siege, "phase", "") == "stabilized":
+        return _generic_walk_toward(game, level, actor)
+
+    target = None
+    best_dist = None
+    # Repaired fractures are the highest-value sabotage targets.
+    for fracture in getattr(siege, "fractures", []):
+        if not getattr(fracture, "repaired", False):
+            continue
+        fx, fy = int(fracture.pos[0]), int(fracture.pos[1])
+        dist = abs(fx - ax) + abs(fy - ay)
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            target = (fx, fy)
+
+    # If no repaired fractures exist, pressure the anchor core.
+    if target is None:
+        ap = getattr(siege, "anchor_pos", None)
+        if ap is not None:
+            target = (int(ap[0]), int(ap[1]))
+
+    if target is None:
+        return _generic_walk_toward(game, level, actor)
+
+    tx, ty = target
+    return _walk_toward(game, level, actor, available, tx - ax, ty - ay)
 
 
 def _walk_toward(

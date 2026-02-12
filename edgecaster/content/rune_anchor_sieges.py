@@ -28,6 +28,14 @@ class RuneAnchorSiegeDef:
     wave_max_interval: int
     wave_base_count: int
     wave_pressure_scale: float
+    sapper_spawn_chance: float
+    sapper_max_alive: int
+    pulse_interval_min: int
+    pulse_interval_max: int
+    pulse_warning_ticks: int
+    pulse_damage: int
+    pulse_min_tiles: int
+    pulse_max_tiles: int
     enemy_pool: List[str]
     dampening_range_tiles: float
     dampening_strength: float
@@ -92,6 +100,14 @@ def load_rune_anchor_sieges() -> Dict[str, RuneAnchorSiegeDef]:
             wave_max_interval=max(1, int(spec.get("wave_max_interval", 14))),
             wave_base_count=max(1, int(spec.get("wave_base_count", 2))),
             wave_pressure_scale=max(0.0, float(spec.get("wave_pressure_scale", 3.0))),
+            sapper_spawn_chance=max(0.0, min(1.0, float(spec.get("sapper_spawn_chance", 0.22)))),
+            sapper_max_alive=max(0, int(spec.get("sapper_max_alive", 2))),
+            pulse_interval_min=max(1, int(spec.get("pulse_interval_min", 18))),
+            pulse_interval_max=max(1, int(spec.get("pulse_interval_max", 32))),
+            pulse_warning_ticks=max(1, int(spec.get("pulse_warning_ticks", 4))),
+            pulse_damage=max(1, int(spec.get("pulse_damage", 4))),
+            pulse_min_tiles=max(1, int(spec.get("pulse_min_tiles", 3))),
+            pulse_max_tiles=max(1, int(spec.get("pulse_max_tiles", 6))),
             enemy_pool=enemy_pool or ["imp"],
             dampening_range_tiles=max(1.0, float(spec.get("dampening_range_tiles", 14.0))),
             dampening_strength=max(0.0, min(1.0, float(spec.get("dampening_strength", 0.55)))),
@@ -114,4 +130,3 @@ def clear_rune_anchor_sieges_cache() -> None:
     """Clear cached rune-anchor siege definitions (testing convenience)."""
     global _RUNE_ANCHOR_SIEGES_CACHE
     _RUNE_ANCHOR_SIEGES_CACHE = None
-

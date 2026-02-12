@@ -113,10 +113,15 @@ Repo: `C:\Games\Edgecaster`
 - New actions:
   - `anchor_channel` (`Seal Fracture`)
   - `anchor_stabilize` (`Stabilize Anchor`)
+  - `anchor_purge` (`Anchor Purge`)
+- Escalation mechanics added in V2 pass:
+  - Catastrophe pulse loop (telegraph tiles -> detonation damage -> extra pressure wave).
+  - Sapper enemy role with dedicated AI objective (prioritizes fracture sabotage).
+  - Siege HUD now includes pulse countdown and active sapper count.
 
 ### Cool ideas queued for next passes
 1. Add Resonance Crystal phase after coherence repair (socket network, polarity/order rules).
-2. Add sabotage enemy archetypes (drainers, displacers, edge-shredders) with explicit AI role tags.
-3. Add ritual interrupt windows + telegraphed catastrophe events (wind shear, reality surge, blind pulse).
+2. Expand sapper ecosystem into named roles (drainers, displacers, edge-shredders) with unique sabotage verbs.
+3. Add shrine archetype-specific catastrophe signatures (wind shear, blind pulse, gravity sink).
 4. Add bespoke anchor arena generation and hazard lanes per shrine archetype.
 5. Add cinematic convergence pulse with regional map-state shifts and follow-up world events.

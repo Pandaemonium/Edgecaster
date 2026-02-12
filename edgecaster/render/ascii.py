@@ -3236,6 +3236,19 @@ class AsciiRenderer:
             rect = pygame.Rect(fx - mark, fy - mark, mark * 2, mark * 2)
             pygame.draw.rect(self.surface, fill_col, rect, width=1)
 
+        # Catastrophe pulse telegraph tiles.
+        if getattr(siege, "pulse_warning_left", 0) > 0 and getattr(siege, "pulse_tiles", None):
+            warn_phase = max(0.0, min(1.0, float(siege.pulse_warning_left) / max(1.0, float(getattr(siege, "pulse_warning_ticks", 1)))))
+            flash = 0.5 + 0.5 * math.sin(t * (math.tau / 0.35))
+            alpha = int(90 + 130 * flash + 30 * (1.0 - warn_phase))
+            tele_col = (255, 70, 40, max(80, min(255, alpha)))
+            r = max(4, tile_px // 2)
+            for tx, ty in siege.pulse_tiles:
+                px, py = _to_px(int(tx), int(ty))
+                pygame.draw.circle(self.surface, tele_col, (px, py), r, width=2)
+                pygame.draw.line(self.surface, tele_col, (px - r, py), (px + r, py), 1)
+                pygame.draw.line(self.surface, tele_col, (px, py - r), (px, py + r), 1)
+
     def draw_rune_anchor_siege_status(self, game: Game) -> None:
         """Draw HUD panel for rune-anchor siege state."""
         level = game._level()

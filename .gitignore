@@ -19,3 +19,5 @@ GEMINI.md
 tools/julia_world_fields_viewer.py
 tools/biome_proportions.csv
 tools/biome_proportions_along_path.py
+telemetry.ndjson
+nul

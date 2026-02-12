@@ -1731,6 +1731,13 @@ def _action_anchor_stabilize(game: Any, actor_id: str, **kwargs: Any) -> None:
         game.act_anchor_stabilize(actor_id)
 
 
+@register_action("anchor_purge", label="Anchor Purge", speed="slow", show_in_bar=True, cooldown_ticks=6)
+def _action_anchor_purge(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Burn coherence at the anchor core to blast back demonic pressure."""
+    if hasattr(game, "act_anchor_purge"):
+        game.act_anchor_purge(actor_id)
+
+
 @register_action(
     "push_pattern",
     label="Push",

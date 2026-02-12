@@ -196,8 +196,10 @@ Current concern map (authoritative):
   - Keeps text/logic in systems; scenes only expose hovered action and renderer only draws.
 - `edgecaster/systems/rune_anchor_sieges.py`
   - Rune Anchor Siege runtime (auto-start on zone entry, fracture repair, stabilize hold,
-    pressure waves, backlash persistence, completion dampening reward).
-  - Owns encounter state/actions (`anchor_channel`, `anchor_stabilize`) and quest compatibility emit.
+    pressure waves, backlash persistence, catastrophe pulse telegraphs/detonations,
+    sapper sabotage pressure, and completion dampening reward).
+  - Owns encounter state/actions (`anchor_channel`, `anchor_stabilize`, `anchor_purge`)
+    and quest compatibility emit.
 
 Still in `game.py` and planned for extraction:
 - `_make_zone()` once mapgen/POI coupling is reduced.
@@ -243,7 +245,8 @@ Key modules (non-exhaustive):
 - systems/chakra_effects.py: centralized chakra passive-rule evaluation
 - systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers)
 - systems/rune_anchor_sieges.py: failing Rune Anchor gauntlet runtime
-  (fracture channeling, wave pacing, stabilize hold, persistent backlash, corruption dampening completion)
+  (fracture channeling, wave pacing, stabilize hold, catastrophe pulses, sapper sabotage,
+   persistent backlash, corruption dampening completion)
 
 Chakra item content tags (entities.yaml):
 - Temporary unlocks:

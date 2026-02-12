@@ -28,6 +28,17 @@ starter_anchor:
   wave_max_interval: 14
   wave_base_count: 2
   wave_pressure_scale: 3.0
+  # Chance that a spawned enemy becomes a fracture-sabotaging sapper.
+  sapper_spawn_chance: 0.25
+  # Hard cap on concurrently alive sappers in this siege.
+  sapper_max_alive: 2
+  # Catastrophe pulse cadence and telegraph timing.
+  pulse_interval_min: 18
+  pulse_interval_max: 30
+  pulse_warning_ticks: 4
+  pulse_damage: 5
+  pulse_min_tiles: 3
+  pulse_max_tiles: 7
   enemy_pool: [imp, shadow, mana_viper, goblin, raving_lunatic]
   # Corruption dampening reward on completion.
   dampening_range_tiles: 14.0
@@ -40,4 +51,3 @@ starter_anchor:
   intro_lines:
     - "The Rune Anchor screams as you cross the threshold."
     - "Fractures flare to life. The siege has begun."
-

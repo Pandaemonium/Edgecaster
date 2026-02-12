@@ -3654,6 +3654,15 @@ class Game:
         except Exception:
             self.log.add("The anchor resists your focus.")
 
+    def act_anchor_purge(self, actor_id: str) -> None:
+        """Release an emergency coherence purge from the anchor core."""
+        try:
+            from edgecaster.systems import rune_anchor_sieges
+
+            rune_anchor_sieges.purge_anchor(self, actor_id)
+        except Exception:
+            self.log.add("The purge collapses before it can fire.")
+
     def act_fractal(self, actor_id: str, kind: str) -> None:
         """Generic action entry point: apply a fractal generator to the current pattern."""
         level = self._level()

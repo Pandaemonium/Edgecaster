@@ -56,12 +56,26 @@ class RuneAnchorSiegeState:
     wave_max_interval: int = 14
     wave_base_count: int = 2
     wave_pressure_scale: float = 3.0
+    sapper_spawn_chance: float = 0.22
+    sapper_max_alive: int = 2
+    sapper_sabotage_damage: float = 14.0
 
     wave_counter: int = 0
     total_spawned: int = 0
     backlash_count: int = 0
     last_spawn_tick: int = -9999
     last_tick: int = -1
+
+    pulse_interval_min: int = 18
+    pulse_interval_max: int = 30
+    pulse_warning_ticks: int = 4
+    pulse_damage: int = 5
+    pulse_min_tiles: int = 3
+    pulse_max_tiles: int = 7
+    pulse_count: int = 0
+    pulse_warning_left: int = 0
+    pulse_tiles: List[Tuple[int, int]] = field(default_factory=list)
+    next_pulse_tick: int = -1
 
     dampening_range_tiles: float = 14.0
     dampening_strength: float = 0.55
@@ -75,7 +89,7 @@ class RuneAnchorSiegeState:
     legacy_trial_id: str = ""
     grants_applied: bool = False
     grants_owner_id: Optional[str] = None
-    granted_actions: List[str] = field(default_factory=lambda: ["anchor_channel", "anchor_stabilize"])
+    granted_actions: List[str] = field(default_factory=lambda: ["anchor_channel", "anchor_stabilize", "anchor_purge"])
 
 
 def attach_siege_to_level(game: "Game", level: "LevelState", siege_id: str) -> None:
@@ -125,6 +139,14 @@ def attach_siege_to_level(game: "Game", level: "LevelState", siege_id: str) -> N
         wave_max_interval=siege_def.wave_max_interval,
         wave_base_count=siege_def.wave_base_count,
         wave_pressure_scale=siege_def.wave_pressure_scale,
+        sapper_spawn_chance=siege_def.sapper_spawn_chance,
+        sapper_max_alive=siege_def.sapper_max_alive,
+        pulse_interval_min=siege_def.pulse_interval_min,
+        pulse_interval_max=siege_def.pulse_interval_max,
+        pulse_warning_ticks=siege_def.pulse_warning_ticks,
+        pulse_damage=siege_def.pulse_damage,
+        pulse_min_tiles=siege_def.pulse_min_tiles,
+        pulse_max_tiles=siege_def.pulse_max_tiles,
         dampening_range_tiles=siege_def.dampening_range_tiles,
         dampening_strength=siege_def.dampening_strength,
         reward_bismuth_min=siege_def.reward_bismuth_min,
@@ -196,6 +218,8 @@ def sync_zone_siege(game: "Game", level: "LevelState", coord: Tuple[int, int, in
     if not siege.intro_announced:
         siege.intro_announced = True
         siege.last_tick = int(getattr(level, "current_tick", 0))
+        if siege.next_pulse_tick < 0:
+            _schedule_next_pulse(game, level, siege, from_tick=siege.last_tick)
         intro_lines = _intro_lines_for_siege(siege.siege_id)
         if intro_lines:
             for line in intro_lines:
@@ -356,6 +380,67 @@ def stabilize_anchor(game: "Game", actor_id: str) -> None:
             pass
 
 
+def purge_anchor(game: "Game", actor_id: str) -> None:
+    """Action: spend coherence to blast hostiles and steady the anchor."""
+    level = game._level()
+    siege = getattr(level, "rune_anchor_siege", None)
+    actor = level.actors.get(actor_id)
+    if actor is None:
+        return
+    if siege is None or siege.phase == "stabilized":
+        game.log.add("There is no active anchor to purge.")
+        return
+
+    dx = int(actor.pos[0]) - int(siege.anchor_pos[0])
+    dy = int(actor.pos[1]) - int(siege.anchor_pos[1])
+    if dx * dx + dy * dy > 2 * 2:
+        game.log.add("Stand at the anchor core to fire a purge.")
+        return
+
+    crystal_cost = max(2, int(siege.coherence_per_channel) + 1)
+    if not _consume_coherence_crystals(game, actor_id, crystal_cost):
+        game.log.add(f"Anchor Purge needs {crystal_cost} Coherence Crystals.")
+        return
+
+    base_damage = max(3, int(siege.pulse_damage) + 2)
+    radius2 = 3 * 3
+    hits = 0
+    kills = 0
+    for target in list(level.actors.values()):
+        if target is None or target.id == actor_id:
+            continue
+        if not getattr(target, "alive", True):
+            continue
+        if not _is_hostile(actor, target, game):
+            continue
+        tx, ty = int(target.pos[0]), int(target.pos[1])
+        ddx = tx - int(siege.anchor_pos[0])
+        ddy = ty - int(siege.anchor_pos[1])
+        if ddx * ddx + ddy * ddy > radius2:
+            continue
+
+        damage = base_damage + min(4, int(siege.backlash_count))
+        if _apply_actor_damage(game, level, target, damage, source_label="Anchor Purge"):
+            hits += 1
+            if not getattr(target, "alive", True):
+                kills += 1
+
+    siege.stability = min(siege.stability_max, siege.stability + 12.0)
+    if siege.phase == "stabilize" and siege.stabilize_ticks_left > 0:
+        siege.stabilize_ticks_left = max(0, siege.stabilize_ticks_left - 2)
+    # Purge also clears any active catastrophe telegraph once.
+    siege.pulse_tiles = []
+    siege.pulse_warning_left = 0
+    _schedule_next_pulse(game, level, siege)
+
+    if hits > 0:
+        game.log.add(f"The anchor detonates in a white harmonic flare ({hits} hit, {kills} down).")
+    else:
+        game.log.add("The purge wave erupts, but no demon is caught in it.")
+
+    _spawn_wave(game, level, siege, bonus_count=1, force=True)
+
+
 def update_siege(game: "Game", level: "LevelState") -> None:
     """Tick hook: pressure, decay, backlash, and wave spawning."""
     siege = getattr(level, "rune_anchor_siege", None)
@@ -387,6 +472,9 @@ def build_siege_status_lines(game: "Game", level: "LevelState", siege: RuneAncho
     stability_pct = int(round((max(0.0, siege.stability) / max(1.0, siege.stability_max)) * 100.0))
     lines.append(f"Stability: {stability_pct}%")
     lines.append(f"Fractures: {repaired}/{total}")
+    player_id = str(getattr(game, "player_id", "") or "")
+    if player_id:
+        lines.append(f"Coherence Crystals: {_count_coherence_crystals(game, player_id)}")
 
     if siege.phase == "coherence":
         lines.append("Phase: Seal fractures with Coherence Crystals")
@@ -396,6 +484,14 @@ def build_siege_status_lines(game: "Game", level: "LevelState", siege: RuneAncho
         lines.append("Phase: Stabilized")
 
     lines.append(f"Waves: {siege.wave_counter}  Spawned: {siege.total_spawned}")
+    if siege.pulse_warning_left > 0:
+        lines.append(f"Catastrophe Pulse: DETONATES IN {siege.pulse_warning_left}")
+    elif siege.next_pulse_tick >= 0:
+        now = int(getattr(level, "current_tick", 0))
+        lines.append(f"Catastrophe Pulse: {max(0, siege.next_pulse_tick - now)} ticks")
+    sappers_alive = _count_alive_sappers(level, siege)
+    if sappers_alive > 0:
+        lines.append(f"Sappers Active: {sappers_alive}")
     if siege.backlash_count > 0:
         lines.append(f"Backlashes: {siege.backlash_count}")
 
@@ -403,6 +499,8 @@ def build_siege_status_lines(game: "Game", level: "LevelState", siege: RuneAncho
 
 
 def _tick_once(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState, tick: int) -> None:
+    _tick_catastrophe_pulse(game, level, siege, tick)
+
     progress = _progress_ratio(siege)
     decay_mult = 1.0 + 0.16 * float(siege.backlash_count)
     decay_mult += 0.35 * progress
@@ -420,6 +518,8 @@ def _tick_once(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState, t
 
     if siege.stability <= 0.0:
         _trigger_backlash(game, siege)
+
+    _tick_sapper_pressure(game, level, siege, tick)
 
     if siege.phase == "stabilize":
         if _all_fractures_repaired(siege):
@@ -489,7 +589,8 @@ def _spawn_wave(
         if not enemy_id:
             continue
         try:
-            spawning_system.spawn_enemy_with_pack(game, level, str(enemy_id), pos, schedule_ai=True)
+            mob = spawning_system.spawn_enemy_with_pack(game, level, str(enemy_id), pos, schedule_ai=True)
+            _maybe_mark_sapper(game, level, siege, mob)
             spawned += 1
         except Exception:
             continue
@@ -510,6 +611,8 @@ def _complete_siege(game: "Game", level: "LevelState", siege: RuneAnchorSiegeSta
     siege.phase = "stabilized"
     siege.active = False
     siege.stabilize_ticks_left = 0
+    siege.pulse_warning_left = 0
+    siege.pulse_tiles = []
 
     revoke_siege_grants(game, actor_id)
     _apply_corruption_dampening(game, level, siege)
@@ -606,6 +709,357 @@ def _award_completion_loot(game: "Game", level: "LevelState", siege: RuneAnchorS
         pass
 
 
+def _tick_catastrophe_pulse(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState, tick: int) -> None:
+    """Manage telegraph + detonation cadence for catastrophe pulses."""
+    if siege.phase == "stabilized":
+        return
+    if siege.next_pulse_tick < 0:
+        _schedule_next_pulse(game, level, siege, from_tick=tick)
+
+    if siege.pulse_warning_left > 0:
+        siege.pulse_warning_left = max(0, siege.pulse_warning_left - 1)
+        if siege.pulse_warning_left <= 0:
+            _resolve_catastrophe_pulse(game, level, siege, tick=tick)
+        return
+
+    if tick >= siege.next_pulse_tick:
+        _begin_catastrophe_telegraph(game, level, siege, tick=tick)
+
+
+def _schedule_next_pulse(
+    game: "Game",
+    level: "LevelState",
+    siege: RuneAnchorSiegeState,
+    *,
+    from_tick: Optional[int] = None,
+) -> None:
+    imin = int(min(siege.pulse_interval_min, siege.pulse_interval_max))
+    imax = int(max(siege.pulse_interval_min, siege.pulse_interval_max))
+    base = imax
+    try:
+        base = int(game.rng.randint(imin, imax))
+    except Exception:
+        base = imax
+    pressure_cut = int(round(_progress_ratio(siege) * 4.0)) + min(4, int(siege.backlash_count // 2))
+    interval = max(6, base - pressure_cut)
+    start_tick = int(from_tick if from_tick is not None else getattr(level, "current_tick", 0))
+    siege.next_pulse_tick = start_tick + interval
+
+
+def _begin_catastrophe_telegraph(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState, *, tick: int) -> None:
+    tiles = _build_catastrophe_tiles(game, level, siege)
+    if not tiles:
+        _schedule_next_pulse(game, level, siege, from_tick=tick)
+        return
+    siege.pulse_tiles = tiles
+    siege.pulse_warning_left = max(1, int(siege.pulse_warning_ticks))
+    game.log.add("The anchor howls. Catastrophe pulse incoming.")
+
+
+def _build_catastrophe_tiles(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState) -> List[Tuple[int, int]]:
+    min_tiles = max(1, int(min(siege.pulse_min_tiles, siege.pulse_max_tiles)))
+    max_tiles = max(min_tiles, int(max(siege.pulse_min_tiles, siege.pulse_max_tiles)))
+    target = max_tiles
+    try:
+        target = int(game.rng.randint(min_tiles, max_tiles))
+    except Exception:
+        target = max_tiles
+    target += min(2, int(siege.backlash_count // 2))
+    target = max(1, min(16, target))
+
+    candidates: List[Tuple[int, int]] = []
+    ax, ay = int(siege.anchor_pos[0]), int(siege.anchor_pos[1])
+    for r in (1, 2):
+        for dx, dy in ((r, 0), (-r, 0), (0, r), (0, -r)):
+            tx, ty = ax + dx, ay + dy
+            if level.world.in_bounds(tx, ty) and level.world.is_walkable(tx, ty):
+                candidates.append((tx, ty))
+
+    for fracture in siege.fractures:
+        fx, fy = int(fracture.pos[0]), int(fracture.pos[1])
+        if level.world.in_bounds(fx, fy) and level.world.is_walkable(fx, fy):
+            candidates.append((fx, fy))
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            tx, ty = fx + dx, fy + dy
+            if level.world.in_bounds(tx, ty) and level.world.is_walkable(tx, ty):
+                candidates.append((tx, ty))
+
+    if siege.phase == "stabilize":
+        for dx in (-2, -1, 0, 1, 2):
+            for dy in (-2, -1, 0, 1, 2):
+                if abs(dx) + abs(dy) != 2:
+                    continue
+                tx, ty = ax + dx, ay + dy
+                if level.world.in_bounds(tx, ty) and level.world.is_walkable(tx, ty):
+                    candidates.append((tx, ty))
+
+    unique: List[Tuple[int, int]] = []
+    seen = set()
+    for pos in candidates:
+        if pos in seen:
+            continue
+        seen.add(pos)
+        unique.append(pos)
+
+    if not unique:
+        return []
+
+    out: List[Tuple[int, int]] = []
+    pool = list(unique)
+    while pool and len(out) < target:
+        pick_idx = 0
+        try:
+            pick_idx = int(game.rng.randint(0, len(pool) - 1))
+        except Exception:
+            pick_idx = 0
+        pick_idx = max(0, min(len(pool) - 1, pick_idx))
+        out.append(pool.pop(pick_idx))
+    return out
+
+
+def _resolve_catastrophe_pulse(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState, *, tick: int) -> None:
+    tiles = list(siege.pulse_tiles)
+    siege.pulse_tiles = []
+    siege.pulse_warning_left = 0
+    if not tiles:
+        _schedule_next_pulse(game, level, siege, from_tick=tick)
+        return
+
+    tile_set = set((int(x), int(y)) for x, y in tiles)
+    damage = max(1, int(siege.pulse_damage) + min(3, int(siege.backlash_count // 2)))
+    hits = 0
+    player_hit = False
+    for actor in list(level.actors.values()):
+        if actor is None or not getattr(actor, "alive", True):
+            continue
+        pos = getattr(actor, "pos", None)
+        if pos is None:
+            continue
+        if (int(pos[0]), int(pos[1])) not in tile_set:
+            continue
+        if _apply_actor_damage(game, level, actor, damage, source_label="Catastrophe Pulse"):
+            hits += 1
+            if actor.id == getattr(game, "player_id", ""):
+                player_hit = True
+
+    siege.pulse_count += 1
+    siege.stability = max(0.0, siege.stability - 6.0)
+    if hits > 0:
+        if player_hit:
+            game.log.add("The catastrophe pulse rips through you.")
+        else:
+            game.log.add(f"Catastrophe pulse detonates ({hits} caught).")
+    else:
+        game.log.add("Catastrophe pulse detonates into empty ground.")
+
+    _spawn_wave(game, level, siege, bonus_count=1, force=True)
+    _schedule_next_pulse(game, level, siege, from_tick=tick)
+
+
+def _maybe_mark_sapper(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState, mob: object) -> None:
+    if siege.sapper_max_alive <= 0:
+        return
+    if _count_alive_sappers(level, siege) >= int(siege.sapper_max_alive):
+        return
+
+    chance = float(siege.sapper_spawn_chance)
+    chance += 0.05 * _progress_ratio(siege)
+    if siege.phase == "stabilize":
+        chance += 0.12
+    chance += min(0.2, 0.03 * float(siege.backlash_count))
+    chance = max(0.0, min(0.95, chance))
+
+    roll = 1.0
+    try:
+        roll = float(game.rng.random())
+    except Exception:
+        roll = 1.0
+    if roll > chance:
+        return
+
+    tags = getattr(mob, "tags", {}) or {}
+    if tags.get("rune_siege_role") == "sapper":
+        return
+
+    tags["rune_siege_role"] = "sapper"
+    tags["rune_siege_id"] = str(siege.siege_id)
+    tags["rune_siege_sabotage_cd"] = 8
+    effects = list(tags.get("visual_effects", []) or [])
+    if "entropic" not in effects:
+        effects.append("entropic")
+    tags["visual_effects"] = effects
+    try:
+        mob.tags = tags
+    except Exception:
+        pass
+    try:
+        if not str(getattr(mob, "name", "")).startswith("Sapper "):
+            mob.name = f"Sapper {mob.name}"
+    except Exception:
+        pass
+    game.log.add("A demon saboteur breaks toward the fractures.")
+
+
+def _tick_sapper_pressure(game: "Game", level: "LevelState", siege: RuneAnchorSiegeState, tick: int) -> None:
+    if siege.phase == "stabilized":
+        return
+
+    for actor in list(level.actors.values()):
+        if actor is None or not getattr(actor, "alive", True):
+            continue
+        tags = getattr(actor, "tags", {}) or {}
+        if tags.get("rune_siege_role") != "sapper":
+            continue
+        if str(tags.get("rune_siege_id", "")) != str(siege.siege_id):
+            continue
+
+        cooldown = 0
+        try:
+            cooldown = int(tags.get("rune_siege_sabotage_cd", 0))
+        except Exception:
+            cooldown = 0
+        if cooldown > 0:
+            tags["rune_siege_sabotage_cd"] = cooldown - 1
+            try:
+                actor.tags = tags
+            except Exception:
+                pass
+            continue
+
+        target: Optional[RuneFractureState] = None
+        best_d2: Optional[int] = None
+        ax, ay = int(actor.pos[0]), int(actor.pos[1])
+        for fracture in siege.fractures:
+            if not fracture.repaired:
+                continue
+            dx = int(fracture.pos[0]) - ax
+            dy = int(fracture.pos[1]) - ay
+            d2 = dx * dx + dy * dy
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                target = fracture
+
+        if target is not None and best_d2 is not None and best_d2 <= 2:
+            target.repaired = False
+            target.progress = 0
+            target.required_channels = min(5, int(target.required_channels) + 1)
+            target.damage += 1
+            siege.stability = max(0.0, siege.stability - float(siege.sapper_sabotage_damage))
+            if siege.phase == "stabilize":
+                siege.stabilize_ticks_left = min(siege.stabilize_ticks_total, siege.stabilize_ticks_left + 5)
+            tags["rune_siege_sabotage_cd"] = 12
+            try:
+                actor.tags = tags
+            except Exception:
+                pass
+            game.log.add(
+                f"{getattr(actor, 'name', 'Saboteur')} rips open fracture {target.idx + 1} "
+                f"(now {target.required_channels} channels)."
+            )
+            # Risky role: some sappers combust in the anchor's backlash.
+            try:
+                if float(game.rng.random()) < 0.35:
+                    _apply_actor_damage(game, level, actor, 9999, source_label="Anchor Backlash")
+            except Exception:
+                pass
+            continue
+
+        if siege.phase == "stabilize":
+            dx = ax - int(siege.anchor_pos[0])
+            dy = ay - int(siege.anchor_pos[1])
+            if dx * dx + dy * dy <= 2:
+                siege.stability = max(0.0, siege.stability - 7.0)
+                siege.stabilize_ticks_left = min(siege.stabilize_ticks_total, siege.stabilize_ticks_left + 3)
+                tags["rune_siege_sabotage_cd"] = 10
+                try:
+                    actor.tags = tags
+                except Exception:
+                    pass
+                game.log.add(f"{getattr(actor, 'name', 'Saboteur')} corrupts the core lattice.")
+
+
+def _count_alive_sappers(level: "LevelState", siege: RuneAnchorSiegeState) -> int:
+    alive = 0
+    for actor in getattr(level, "actors", {}).values():
+        if actor is None or not getattr(actor, "alive", True):
+            continue
+        tags = getattr(actor, "tags", {}) or {}
+        if tags.get("rune_siege_role") != "sapper":
+            continue
+        if str(tags.get("rune_siege_id", "")) != str(siege.siege_id):
+            continue
+        alive += 1
+    return alive
+
+
+def _apply_actor_damage(
+    game: "Game",
+    level: "LevelState",
+    actor: object,
+    damage: int,
+    *,
+    source_label: str,
+) -> bool:
+    stats = getattr(actor, "stats", None)
+    if stats is None:
+        return False
+    try:
+        hp_before = int(getattr(stats, "hp", 0))
+    except Exception:
+        hp_before = 0
+    if hp_before <= 0:
+        return False
+
+    dmg = max(1, int(damage))
+    try:
+        stats.hp = int(getattr(stats, "hp", 0)) - dmg
+        if hasattr(stats, "clamp"):
+            stats.clamp()
+    except Exception:
+        return False
+
+    hp_after = int(getattr(stats, "hp", 0))
+    if getattr(actor, "id", "") == getattr(game, "player_id", ""):
+        game.log.add(f"{source_label} hits you for {dmg}.")
+    elif hp_after <= 0:
+        game.log.add(f"{source_label} destroys {getattr(actor, 'name', 'an enemy')}.")
+
+    if hp_after > 0:
+        return True
+
+    try:
+        game._kill_actor(level, actor)
+    except Exception:
+        try:
+            actor.alive = False
+        except Exception:
+            pass
+        try:
+            level.actors.pop(getattr(actor, "id", ""), None)
+            level.entities.pop(getattr(actor, "id", ""), None)
+        except Exception:
+            pass
+    return True
+
+
+def _is_hostile(attacker: object, target: object, game: "Game") -> bool:
+    try:
+        return bool(game.is_hostile(attacker, target))
+    except Exception:
+        pass
+    af = str(getattr(attacker, "faction", ""))
+    tf = str(getattr(target, "faction", ""))
+    if not af or not tf:
+        return False
+    if af == tf:
+        return False
+    if af == "player":
+        return tf == "hostile"
+    if tf == "player":
+        return af == "hostile"
+    return af == "hostile" or tf == "hostile"
+
+
 def _resolve_anchor_pos(level: "LevelState", offset: Tuple[int, int]) -> Tuple[int, int]:
     entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
     x = int(entry[0]) + int(offset[0])
@@ -691,6 +1145,16 @@ def _consume_coherence_crystals(game: "Game", actor_id: str, amount: int) -> boo
 
     game.refresh_actor_actions(actor_id)
     return True
+
+
+def _count_coherence_crystals(game: "Game", actor_id: str) -> int:
+    total = 0
+    for item in inventory_system.get_inventory(game, actor_id):
+        tags = getattr(item, "tags", {}) or {}
+        if tags.get("item_type") != "coherence_crystal":
+            continue
+        total += max(0, int(inventory_system.get_quantity(item)))
+    return max(0, int(total))
 
 
 def _progress_ratio(siege: RuneAnchorSiegeState) -> float:

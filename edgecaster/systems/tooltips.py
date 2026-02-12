@@ -48,6 +48,9 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "meditate": "Spend time to recover mana.",
     "reset": "Clear the current rune.",
     "destabilize": "Chaotic teleport with possible self-damage backlash.",
+    "anchor_channel": "Spend Coherence Crystals to seal a nearby fracture.",
+    "anchor_stabilize": "Hold the anchor core together during final stabilization.",
+    "anchor_purge": "Detonate stored coherence at the core to blast nearby demons.",
 }
 
 
@@ -91,6 +94,19 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
     "lightning": (
         "Excludes the caster from damage.",
         "Damage is split evenly among affected targets.",
+    ),
+    "anchor_channel": (
+        "Requires standing near an unrepaired fracture node.",
+        "Consumes Coherence Crystals and raises anchor stability.",
+    ),
+    "anchor_stabilize": (
+        "Requires standing near the anchor core.",
+        "Only works after all fractures are sealed.",
+    ),
+    "anchor_purge": (
+        "Requires standing at the anchor core.",
+        "Consumes extra Coherence Crystals for a defensive burst.",
+        "Clears active catastrophe telegraphs once on cast.",
     ),
 }
 
