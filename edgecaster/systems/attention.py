@@ -273,6 +273,10 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
     if attn_store is None:
         return
 
+    if not hasattr(game, "_attn_active_resolved_children"):
+        game._attn_active_resolved_children = {}  # parent_eid -> set[child_eid]
+
+
     # -----------------------------
     # A) BERRY PATCH -> BERRIES
     # -----------------------------
@@ -824,170 +828,296 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             pass
 
     # -----------------------------
-    # C) SITE DETAILS (NPCs from WorldEntityIndex site markers; yoga-style resolution)
+    # C) GENERIC RESOLVE RECIPES (sites + buildings + any future resolve-tagged parents)
     #
-    # Sites are now first-class entities in WorldEntityIndex (placed by site_placement.py).
-    # Therefore their NPC resolution must NOT depend on a SiteRegistry.
+    # attention.py decides *when/where* to resolve; aggregate_resolution decides *what/how*.
     # -----------------------------
     try:
-        if not hasattr(game, "_attn_active_site_children"):
-            game._attn_active_site_children = {}  # site_eid -> set[eid]
+        if not hasattr(game, "_attn_active_resolved_children"):
+            game._attn_active_resolved_children = {}  # parent_eid -> set[child_eid]
 
-        in_scope_sites: set[str] = set()
-
-        import random as _random
+        in_scope_parents: set[str] = set()
 
         # Same size-derived threshold regime as player-ish actors
         dmax = float(getattr(game, "_attn_render_dmax", 0.75) or 0.75)
         fade_w = float(getattr(cfg, "entity_lod_fade_w", 0.6) or 0.6)
         actor_size = 1.0
-        site_thresh = math.log2(max(1e-9, actor_size)) + (dmax + fade_w)
-        if float(cam_lod) <= float(site_thresh):
+        resolve_thresh = math.log2(max(1e-9, actor_size)) + (dmax + fade_w)
 
-            # We already computed `refs` from world_index.query_abs_rect(...) above.
-            # Iterate those and resolve any `tags.site == True`.
+        if float(cam_lod) <= float(resolve_thresh):
+            # Parents come from TWO sources:
+            #  1) macro WIE refs (sites, aggregates, etc.)
+            #  2) already-staged children in attn_store (e.g., buildings), so they can resolve further
+            parents: list[tuple[object, tuple[int, int, int], tuple[int, int]]] = []
+
+            # 1) WIE refs already computed earlier as `refs`
             for r in refs:
                 ent = getattr(r, "ent", None)
                 if ent is None:
                     continue
-
                 tags = getattr(ent, "tags", {}) or {}
-                if tags.get("site") is not True:
+                if not isinstance(tags, dict) or "resolve" not in tags:
                     continue
-
-                site_id = str(tags.get("site_id") or "")
-                if not site_id:
-                    continue
-
-                site_eid = str(getattr(ent, "id", "") or f"site:{site_id}")
-                in_scope_sites.add(site_eid)
-
-                npc_pool = list(tags.get("npc_pool", []) or [])
-                if not npc_pool:
-                    continue
-
-                # deterministic RNG from site_seed if available
-                try:
-                    seed = int(tags.get("site_seed", 0) or 0)
-                except Exception:
-                    seed = 0
-                rng = _random.Random(seed)
-
-                active: set[str] = game._attn_active_site_children.get(site_eid)
-                if not isinstance(active, set):
-                    active = set()
-                    game._attn_active_site_children[site_eid] = active
-                desired: set[str] = set()
-
-                # Anchor: the site marker's ABS position (zone_coord + local_pos)
                 zc = tuple(getattr(r, "zone_coord", (0, 0, zz)))
                 lp = tuple(getattr(r, "local_pos", (0, 0)))
-                zx, zy, _ = map(int, zc)
-                ox, oy = map(int, lp)
-                base_ax = zx * int(zone_w) + ox
-                base_ay = zy * int(zone_h) + oy
+                parents.append((ent, zc, lp))
 
-                # Pick 1–3 NPCs deterministically
-                k = min(len(npc_pool), max(1, rng.randint(1, 3)))
-                chosen = [npc_pool[rng.randrange(0, len(npc_pool))] for _ in range(k)]
-
-                offsets = [(0, 0), (2, 0), (-2, 0), (0, 2), (0, -2), (3, 1), (-3, 1), (1, 3), (-1, -3)]
-                rng.shuffle(offsets)
-
-                for i, npc_id in enumerate(chosen):
-                    npc_id = str(npc_id or "")
-                    if not npc_id:
+            # 2) staged entities inside warm rect
+            try:
+                staged = attn_store.query_abs_rect((wx0, wy0, wx1, wy1), zz=zz)
+                for ent, ax, ay in staged:
+                    tags = getattr(ent, "tags", {}) or {}
+                    if not isinstance(tags, dict) or "resolve" not in tags:
                         continue
+                    # derive zc/lp from abs
+                    zxx = int(ax) // int(zone_w)
+                    zyy = int(ay) // int(zone_h)
+                    lp = (int(ax) - zxx * int(zone_w), int(ay) - zyy * int(zone_h))
+                    parents.append((ent, (zxx, zyy, zz), lp))
+            except Exception:
+                pass
 
-                    ox2, oy2 = offsets[i % len(offsets)]
-                    ax = int(base_ax + ox2)
-                    ay = int(base_ay + oy2)
+            # Frontier-expanding loop: if a newly spawned child itself has "resolve",
+            # process it as a parent within the SAME attention sync (site -> building -> walls).
+            i = 0
+            while i < len(parents):
+                parent_ent, zc, lp = parents[i]
+                i += 1
 
-                    # Only instantiate within warm rect
+                parent_id = str(getattr(parent_ent, "id", "") or "")
+                if not parent_id:
+                    continue
+                in_scope_parents.add(parent_id)
+
+                active = game._attn_active_resolved_children.get(parent_id)
+                if not isinstance(active, set):
+                    active = set()
+                    game._attn_active_resolved_children[parent_id] = active
+                desired: set[str] = set()
+
+                # Ask aggregate_resolution for deterministic spawn intents
+                try:
+                    intents = aggregate_system.resolve_spawn_intents_from_recipe(
+                        game,
+                        parent_ent=parent_ent,
+                        zone_coord=tuple(map(int, zc)),
+                        local_pos=tuple(map(int, lp)),
+                        zone_w=int(zone_w),
+                        zone_h=int(zone_h),
+                        zz=int(zz),
+                        max_depth=2,
+                    )
+                except Exception:
+                    intents = []
+
+                for intent in intents:
+                    ax = int(intent.abs_x)
+                    ay = int(intent.abs_y)
+
+                    # Keep within warm rect
                     if ax < wx0 or ax >= wx1 or ay < wy0 or ay >= wy1:
                         continue
 
-                    eid = f"{site_eid}:npc:{npc_id}:{i}"
+                    eid = str(intent.eid)
                     desired.add(eid)
 
-                    # Already staged? mirror if loaded and continue
+                    # Already staged?
                     if eid in attn_store.entities:
+                        # If actor and loaded zone, promote it (same pattern as aggregate actor slots)
+                        if str(intent.child_type) == "actor":
+                            zc2 = (ax // int(zone_w), ay // int(zone_h), int(zz))
+                            level = game.get_zone_for_render(zc2)
+                            if level is not None:
+                                try:
+                                    if eid not in level.actors:
+                                        spawning_system.register_actor(
+                                            game, level, attn_store.entities[eid], schedule_ai=True
+                                        )
+                                        level.spatial_dirty = True
+                                    # Once simulating in zone, remove from attn_store to avoid ghosting
+                                    try:
+                                        attn_store.despawn(eid)
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
+                        else:
+                            # Mirror non-actor into loaded zone if present
+                            zc2 = (ax // int(zone_w), ay // int(zone_h), int(zz))
+                            level = game.get_zone_for_render(zc2)
+                            if level is not None and eid not in level.entities:
+                                try:
+                                    level.entities[eid] = attn_store.entities[eid]
+                                    level.spatial_dirty = True
+                                except Exception:
+                                    pass
+                        continue
+
+                    # Not staged yet: build it
+                    zxx = ax // int(zone_w)
+                    zyy = ay // int(zone_h)
+                    lx = ax - zxx * int(zone_w)
+                    ly = ay - zyy * int(zone_h)
+
+                    child_type = str(intent.child_type or "entity").lower().strip()
+
+                    # Track the actual spawned object if we create one (so we can frontier-expand)
+                    spawned_obj = None
+
+                    if child_type == "staged" and intent.staged:
+                        sd = intent.staged
+                        obj = _YogaStagedEntity(
+                            id=eid,
+                            pos=(int(lx), int(ly)),
+                            abs_pos=(int(ax), int(ay)),
+                            kind=str(sd.get("kind", "structure") or "structure"),
+                            glyph=str(sd.get("glyph", "#") or "#")[0],
+                            color=tuple(sd.get("color", (140, 120, 100))),
+                            base_size=float(sd.get("base_size", 1.0) or 1.0),
+                            tags=dict(sd.get("tags", {}) or {}),
+                        )
+                        attn_store.stage(
+                            obj,
+                            abs_x=ax,
+                            abs_y=ay,
+                            zz=zz,
+                            lineage_id=str(intent.lineage_id or eid),
+                        )
+                        # staged geometry is not a resolver-parent in Phase 1
+                        continue
+
+                    # Actor child: use existing staged actor helper
+                    if child_type == "actor":
+                        npc_id = str(intent.proto_id)
+                        npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
+                        glyph = npc_def.get("glyph", "@")
+                        color = npc_def.get("color", (255, 255, 255))
+                        name = npc_def.get("name", npc_id.title())
+
+                        a = _build_staged_actor(
+                            eid=eid,
+                            npc_id=npc_id,
+                            name=str(name),
+                            glyph=str(glyph)[0] if glyph else "@",
+                            color=tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
+                            abs_pos=(int(ax), int(ay)),
+                            local_pos=(int(lx), int(ly)),
+                            owner_id=parent_id,
+                            ns=None,
+                        )
+                        # carry tags
                         try:
-                            obj = attn_store.entities[eid]
-                            _mirror_actor_into_loaded_zone(eid, obj, (ax, ay))
+                            a.tags = getattr(a, "tags", {}) or {}
+                            if intent.tags:
+                                a.tags.update(dict(intent.tags))
                         except Exception:
                             pass
+
+                        spawned_obj = a
+                        attn_store.stage(
+                            a,
+                            abs_x=ax,
+                            abs_y=ay,
+                            zz=zz,
+                            lineage_id=str(intent.lineage_id or eid),
+                        )
+
+                        # Promote if loaded
+                        level = game.get_zone_for_render((zxx, zyy, int(zz)))
+                        if level is not None:
+                            try:
+                                if eid not in level.actors:
+                                    spawning_system.register_actor(game, level, a, schedule_ai=True)
+                                    level.spatial_dirty = True
+                                try:
+                                    attn_store.despawn(eid)
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                    else:
+                        # Generic entity child
+                        child_proto = prototypes.resolve_proto(str(intent.proto_id))
+                        if not isinstance(child_proto, dict):
+                            continue
+                        obj = spawn_factory.build_entity_from_spec(
+                            spec=child_proto,
+                            eid=eid,
+                            pos=(int(lx), int(ly)),
+                            abs_pos=(int(ax), int(ay)),
+                            overrides={"tags": dict(intent.tags or {})},
+                        )
+                        spawned_obj = obj
+                        attn_store.stage(
+                            obj,
+                            abs_x=ax,
+                            abs_y=ay,
+                            zz=zz,
+                            lineage_id=str(intent.lineage_id or eid),
+                        )
+
+                        # Mirror if loaded
+                        level = game.get_zone_for_render((zxx, zyy, int(zz)))
+                        if level is not None:
+                            try:
+                                level.entities[eid] = obj
+                                level.spatial_dirty = True
+                            except Exception:
+                                pass
+
+                    # Frontier-expand: if the spawned child can itself resolve, process it this sync.
+                    if spawned_obj is not None:
+                        try:
+                            stags = getattr(spawned_obj, "tags", {}) or {}
+                        except Exception:
+                            stags = {}
+                        if isinstance(stags, dict) and "resolve" in stags:
+                            try:
+                                zpp = (int(ax) // int(zone_w), int(ay) // int(zone_h), int(zz))
+                                lpp = (int(ax) - zpp[0] * int(zone_w), int(ay) - zpp[1] * int(zone_h))
+                                parents.append((spawned_obj, zpp, lpp))
+                            except Exception:
+                                pass
+
+                # Evict no-longer-desired children
+                for ceid in list(active):
+                    if ceid in desired:
                         continue
-
-                    # Local coords for actor's own zone
-                    lzx = ax // int(zone_w)
-                    lzy = ay // int(zone_h)
-                    lx = ax - (lzx * int(zone_w))
-                    ly = ay - (lzy * int(zone_h))
-
-                    npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
-                    glyph = npc_def.get("glyph", "@")
-                    color = npc_def.get("color", (255, 255, 255))
-                    name = npc_def.get("name", npc_id.title())
-
-                    a = _build_staged_actor(
-                        eid=eid,
-                        npc_id=npc_id,
-                        name=str(name),
-                        glyph=str(glyph)[0] if glyph else "@",
-                        color=tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
-                        abs_pos=(ax, ay),
-                        local_pos=(int(lx), int(ly)),
-                        owner_id=site_eid,
-                        ns=None,
-                    )
                     try:
-                        a.tags = getattr(a, "tags", {}) or {}
-                        a.tags.update({"site": True, "site_id": site_id, "site_npc": True})
-                    except Exception:
-                        pass
-
-                    attn_store.stage(a, abs_x=ax, abs_y=ay, zz=zz, lineage_id=eid)
-                    _mirror_actor_into_loaded_zone(eid, a, (ax, ay))
-
-                # Evict no-longer-desired
-                for eid in list(active):
-                    if eid in desired:
-                        continue
-                    try:
-                        # also remove from loaded zone if present
-                        obj = attn_store.entities.get(eid)
+                        obj = attn_store.entities.get(ceid)
                         ap = getattr(obj, "abs_pos", None) if obj is not None else None
                         if ap:
                             zc2 = (int(ap[0]) // int(zone_w), int(ap[1]) // int(zone_h), int(zz))
                             lvl = game.get_zone_for_render(zc2)
                             if lvl is not None:
-                                lvl.entities.pop(eid, None)
-                                lvl.actors.pop(eid, None)
+                                lvl.entities.pop(ceid, None)
+                                lvl.actors.pop(ceid, None)
                                 lvl.spatial_dirty = True
-                        attn_store.despawn(eid)
+                        attn_store.despawn(ceid)
                     except Exception:
                         pass
-                    active.discard(eid)
+                    active.discard(ceid)
 
-                for eid in desired:
-                    active.add(eid)
+                for ceid in desired:
+                    active.add(ceid)
 
-        # Evict sites that left scope entirely
-        for site_eid, active in list(getattr(game, "_attn_active_site_children", {}).items()):
-            if site_eid in in_scope_sites:
+        # Evict parents that left scope entirely
+        for parent_id, active in list(getattr(game, "_attn_active_resolved_children", {}).items()):
+            if parent_id in in_scope_parents:
                 continue
             if isinstance(active, set):
-                for eid in list(active):
+                for ceid in list(active):
                     try:
-                        attn_store.despawn(eid)
+                        attn_store.despawn(ceid)
                     except Exception:
                         pass
-            del game._attn_active_site_children[site_eid]
+            del game._attn_active_resolved_children[parent_id]
 
     except Exception:
-        # Never let site-detail logic break the rest of attention (POIs, etc.)
+        # Never let resolve-recipe logic break the rest of attention.
         pass
+
+
 
 
 

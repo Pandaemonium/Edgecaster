@@ -1263,7 +1263,7 @@ def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
         return _build_hexmage(game, npc, npc_id, npc_def)
     if npc_id == "cartographer":
         return _build_cartographer(game, npc, npc_id, npc_def)
-    if npc_id == "guide_npc":
+    if npc_id == "local_guide":
         return _build_guide(game, npc, npc_id, npc_def)
     if npc_id == "inventor_npc":
         return _build_inventor(game, npc, npc_id, npc_def)
