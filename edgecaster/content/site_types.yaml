@@ -216,31 +216,39 @@
     max_count: 6
 
 
+
 - id: site_starttsgard
   name: "Starttsgard"
   glyph: "⌂"
-  color: [220, 220, 160]
-  kind: "feature"
-  base_size: 96
+  color: [255, 255, 255]
+  base_size: 64
+
   tags:
     world_entity: true
     site: true
     site_kind: "starttsgard"
 
-    # Fixed placement (new)
+    # Fixed placement
     fixed_anchor_abs: [3030, 2039, 0]
+    abs_size: 64
+    # Generic resolution recipe list (no npc_fixed/buildings_fixed special tags)
+    resolve:
+      - kind: children_fixed
+        children: ["building_item_depot", "building_bureau", "building_chakric_shrine"]
+        placement:
+          pattern: cluster
+          radius: 22          # more breathing room
+          min_sep: 14         # prevents overlap
+          # deterministic salt to keep layouts stable per parent
+          salt: "starttsgard_buildings"
 
-    # Who must always exist (first pass: only NPCs)
-    npc_pool: ["chakra_sage", "merchant"]  # use only IDs you *know* exist
-
-    # Keep these so it’s visible + discoverable like other sites
-    name: "Starttsgard"
+    # Keep for compatibility with any existing site UI
+    npc_pool: []
     structures: []
     enemy_pool: []
-
-    # Prevent climate placement from also placing extras
     max_count: 0
     rarity: 0
+
 
 - id: site_colosseum
   name: "Ancient Colosseum"

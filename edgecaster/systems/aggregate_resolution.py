@@ -481,6 +481,435 @@ def compute_cluster_children_layout(
     return (child_id, pts)
 
 
+# -----------------------------
+# Generic resolver recipes (Phase 1: sites + buildings)
+# -----------------------------
+
+from dataclasses import dataclass
+from typing import Any, Optional
+
+@dataclass(frozen=True)
+class SpawnIntent:
+    """A deterministic instruction to spawn/stage a child at an ABS position."""
+    eid: str
+    proto_id: str
+    abs_x: int
+    abs_y: int
+    zz: int
+    child_type: str = "entity"   # "entity" or "actor" or "staged"
+    staged: Optional[dict] = None  # for staged geometry like floors
+    tags: Optional[dict] = None
+    lineage_id: Optional[str] = None
+
+
+def _resolve_recipe_list(parent_tags: dict) -> list[dict]:
+    r = parent_tags.get("resolve")
+    if isinstance(r, list):
+        return [x for x in r if isinstance(x, dict)]
+    return []
+
+
+def _abs_from_zone_local(zx: int, zy: int, zone_w: int, zone_h: int, lx: int, ly: int) -> tuple[int, int]:
+    return (int(zx) * int(zone_w) + int(lx), int(zy) * int(zone_h) + int(ly))
+
+
+def _zone_local_from_abs(ax: int, ay: int, zone_w: int, zone_h: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    zxx = int(ax) // int(zone_w)
+    zyy = int(ay) // int(zone_h)
+    lx = int(ax) - zxx * int(zone_w)
+    ly = int(ay) - zyy * int(zone_h)
+    return (zxx, zyy), (lx, ly)
+
+
+def resolve_spawn_intents_from_recipe(
+    game: "Game",
+    *,
+    parent_ent: object,
+    zone_coord: tuple[int, int, int],
+    local_pos: tuple[int, int],
+    zone_w: int,
+    zone_h: int,
+    zz: int,
+    max_depth: int = 2,
+) -> list[SpawnIntent]:
+    """
+    Generic resolver: read parent_ent.tags.resolve and return deterministic SpawnIntents.
+
+    Phase 1 supports:
+      - children_fixed + placement.pattern=cluster
+      - children_fixed + placement.pattern=scatter_interior (requires a prior geom_rect)
+      - geom_rect -> emits wall entities + staged floor tiles
+    """
+    tags = _tags(parent_ent)
+    if not isinstance(tags, dict):
+        return []
+
+    # Simple depth limiter to prevent runaway recursion.
+    depth = int(tags.get("_resolve_depth", 0) or 0)
+    if depth >= int(max_depth):
+        return []
+
+    recipes = _resolve_recipe_list(tags)
+    if not recipes:
+        return []
+
+    parent_id = _ent_id(parent_ent)
+    zx, zy, _ = map(int, zone_coord)
+    ox0, oy0 = map(int, local_pos)
+
+    intents: list[SpawnIntent] = []
+
+    # We allow geom_rect to define an "interior region" for later scatter rules.
+    geom_rects: list[tuple[int, int, int, int]] = []  # abs x0,y0,x1,y1 for each rect
+
+    for rule in recipes:
+        kind = str(rule.get("kind") or "").strip().lower()
+        if not kind:
+            continue
+
+        # -----------------
+        # geom_rect
+        # -----------------
+        if kind == "geom_rect":
+            w = int(rule.get("w", 7) or 7)
+            h = int(rule.get("h", 7) or 7)
+            emit = rule.get("emit") or {}
+            if not isinstance(emit, dict):
+                emit = {}
+
+            wall_proto = str(emit.get("wall_proto", "wall") or "wall")
+            floor = emit.get("floor") or {}
+            if not isinstance(floor, dict):
+                floor = {}
+            floor_glyph = str(floor.get("glyph", ".") or ".")[0]
+            fc = floor.get("color", [90, 80, 70])
+            floor_color = tuple(fc) if isinstance(fc, (list, tuple)) and len(fc) == 3 else (90, 80, 70)
+
+            # center around parent anchor ABS
+            pax, pay = _abs_from_zone_local(zx, zy, zone_w, zone_h, ox0, oy0)
+            ax0 = int(pax - w // 2)
+            ay0 = int(pay - h // 2)
+            ax1 = int(ax0 + w)
+            ay1 = int(ay0 + h)
+            geom_rects.append((ax0, ay0, ax1, ay1))
+
+            # Optional deterministic door
+            door = rule.get("door") or {}
+            if not isinstance(door, dict):
+                door = {}
+
+            door_enabled = bool(door.get("enabled", True))
+            door_side = str(door.get("side", "south") or "south").lower()  # north/south/east/west
+            door_proto = str(door.get("proto", "") or "")  # e.g. "door" if you want an entity, otherwise "" = gap only
+
+            door_xy = None
+            if door_enabled:
+                rng_door = random.Random(_seed_for(game, "resolve_door", parent_id, ax0, ay0, ax1, ay1))
+                if door_side in ("north", "south"):
+                    y = ay0 if door_side == "north" else (ay1 - 1)
+                    x = rng_door.randint(ax0 + 1, ax1 - 2)
+                    door_xy = (x, y)
+                else:
+                    x = ax0 if door_side == "west" else (ax1 - 1)
+                    y = rng_door.randint(ay0 + 1, ay1 - 2)
+                    door_xy = (x, y)
+
+
+            # perimeter walls + interior floors
+            for y in range(ay0, ay1):
+                for x in range(ax0, ax1):
+                    is_wall = (x == ax0 or x == ax1 - 1 or y == ay0 or y == ay1 - 1)
+                    if is_wall:
+                        # carve door gap
+                        if door_xy is not None and (x, y) == door_xy:
+                            # optionally spawn a door entity at the gap
+                            if door_proto:
+                                eid = f"{parent_id}:door:{x},{y}"
+                                intents.append(
+                                    SpawnIntent(
+                                        eid=eid,
+                                        proto_id=door_proto,
+                                        abs_x=int(x),
+                                        abs_y=int(y),
+                                        zz=int(zz),
+                                        child_type="entity",
+                                        tags={"structure": True, "door": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                        lineage_id=eid,
+                                    )
+                                )
+                            else:
+                                # If no door entity, at least ensure a walkable floor tile here:
+                                eid = f"{parent_id}:floor:{x},{y}"
+                                intents.append(
+                                    SpawnIntent(
+                                        eid=eid,
+                                        proto_id="",
+                                        abs_x=int(x),
+                                        abs_y=int(y),
+                                        zz=int(zz),
+                                        child_type="staged",
+                                        staged={
+                                            "kind": "structure",
+                                            "glyph": floor_glyph,
+                                            "color": floor_color,
+                                            "base_size": 1.0,
+                                            "tags": {"structure": True, "floor": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                        },
+                                        lineage_id=eid,
+                                    )
+                                )
+                            continue 
+                        eid = f"{parent_id}:wall:{x},{y}"
+                        intents.append(
+                            SpawnIntent(
+                                eid=eid,
+                                proto_id=wall_proto,
+                                abs_x=int(x),
+                                abs_y=int(y),
+                                zz=int(zz),
+                                child_type="entity",
+                                tags={"structure": True, "wall": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                lineage_id=eid,
+                            )
+                        )
+                    else:
+                        eid = f"{parent_id}:floor:{x},{y}"
+                        intents.append(
+                            SpawnIntent(
+                                eid=eid,
+                                proto_id="",
+                                abs_x=int(x),
+                                abs_y=int(y),
+                                zz=int(zz),
+                                child_type="staged",
+                                staged={
+                                    "kind": "structure",
+                                    "glyph": floor_glyph,
+                                    "color": floor_color,
+                                    "base_size": 1.0,
+                                    "tags": {"structure": True, "floor": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                },
+                                lineage_id=eid,
+                            )
+                        )
+            continue
+
+        # -----------------
+        # children_fixed
+        # -----------------
+        if kind == "children_fixed":
+            children = rule.get("children") or []
+            if not isinstance(children, list):
+                continue
+            children = [str(c or "") for c in children if str(c or "").strip()]
+            if not children:
+                continue
+
+            placement = rule.get("placement") or {}
+            if not isinstance(placement, dict):
+                placement = {}
+            pattern = str(placement.get("pattern", "cluster") or "cluster").strip().lower()
+            salt = str(placement.get("salt", kind) or kind)
+
+            # Base ABS anchor (parent)
+            pax, pay = _abs_from_zone_local(zx, zy, zone_w, zone_h, ox0, oy0)
+
+            if pattern == "cluster":
+                radius = float(placement.get("radius", 8) or 8)
+                min_sep = float(placement.get("min_sep", 0) or 0)
+                min_sep2 = min_sep * min_sep
+
+                rng = random.Random(_seed_for(game, "resolve_cluster", parent_id, salt, pax, pay, int(round(radius * 1000)), len(children)))
+
+                pts: list[tuple[int, int]] = []
+                attempts = 0
+                while len(pts) < len(children) and attempts < 6000:
+                    attempts += 1
+
+                    dx = int(round(rng.gauss(0.0, radius / 2.5)))
+                    dy = int(round(rng.gauss(0.0, radius / 2.5)))
+                    if (dx * dx + dy * dy) > (radius * radius):
+                        continue
+
+                    x = pax + dx
+                    y = pay + dy
+
+                    # uniqueness
+                    if (x, y) in pts:
+                        continue
+
+                    # separation constraint
+                    if min_sep > 0:
+                        too_close = False
+                        for (px2, py2) in pts:
+                            ddx = (x - px2)
+                            ddy = (y - py2)
+                            if (ddx * ddx + ddy * ddy) < min_sep2:
+                                too_close = True
+                                break
+                        if too_close:
+                            continue
+
+                    pts.append((x, y))
+
+                for i, proto_id in enumerate(children):
+                    if i >= len(pts):
+                        break
+                    ax, ay = pts[i]
+                    eid = f"{parent_id}:child:{salt}:{proto_id}:{i}"
+                    intents.append(
+                        SpawnIntent(
+                            eid=eid,
+                            proto_id=proto_id,
+                            abs_x=int(ax),
+                            abs_y=int(ay),
+                            zz=int(zz),
+                            child_type="entity",
+                            tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
+                            lineage_id=eid,
+                        )
+                    )
+                continue
+
+
+                for i, proto_id in enumerate(children):
+                    if i >= len(pts):
+                        break
+                    ax, ay = pts[i]
+                    eid = f"{parent_id}:child:{salt}:{proto_id}:{i}"
+                    intents.append(
+                        SpawnIntent(
+                            eid=eid,
+                            proto_id=proto_id,
+                            abs_x=int(ax),
+                            abs_y=int(ay),
+                            zz=int(zz),
+                            child_type="entity",
+                            tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
+                            lineage_id=eid,
+                        )
+                    )
+                continue
+
+            if pattern == "scatter_interior":
+                # Requires a prior geom_rect to know interior
+                if not geom_rects:
+                    continue
+                ax0, ay0, ax1, ay1 = geom_rects[-1]
+                interior: list[tuple[int, int]] = []
+                for y in range(ay0 + 1, ay1 - 1):
+                    for x in range(ax0 + 1, ax1 - 1):
+                        interior.append((x, y))
+                if not interior:
+                    continue
+                rng = random.Random(_seed_for(game, "resolve_interior", parent_id, salt, ax0, ay0, ax1, ay1, len(children)))
+                rng.shuffle(interior)
+
+                for i, proto_id in enumerate(children):
+                    x, y = interior[i % len(interior)]
+                    eid = f"{parent_id}:child:{salt}:{proto_id}:{i}"
+                    # NPCs are actors today; everything else is entity.
+                    # We keep this heuristic only in aggregate_resolution (not attention):
+                    child_type = "actor" if proto_id in ("chakra_sage", "merchant", "local_guide", "lair_informant") else "entity"
+                    intents.append(
+                        SpawnIntent(
+                            eid=eid,
+                            proto_id=proto_id,
+                            abs_x=int(x),
+                            abs_y=int(y),
+                            zz=int(zz),
+                            child_type=child_type,
+                            tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
+                            lineage_id=eid,
+                        )
+                    )
+                continue
+
+        # -----------------
+        # children_pool  (Phase 1: deterministic item shelves / clutter)
+        # -----------------
+        if kind == "children_pool":
+            pool = rule.get("pool") or []
+            if not isinstance(pool, list):
+                continue
+            pool = [str(p or "") for p in pool if str(p or "").strip()]
+            if not pool:
+                continue
+
+            placement = rule.get("placement") or {}
+            if not isinstance(placement, dict):
+                placement = {}
+            pattern = str(placement.get("pattern", "scatter_interior") or "scatter_interior").strip().lower()
+            salt = str(placement.get("salt", kind) or kind)
+
+            # Requires a prior geom_rect to know interior
+            if pattern != "scatter_interior":
+                continue
+            if not geom_rects:
+                continue
+
+            ax0, ay0, ax1, ay1 = geom_rects[-1]
+            interior: list[tuple[int, int]] = []
+            for y in range(ay0 + 1, ay1 - 1):
+                for x in range(ax0 + 1, ax1 - 1):
+                    interior.append((x, y))
+            if not interior:
+                continue
+
+            # count can be:
+            #  - int
+            #  - "fill_interior" (string) to fill every interior tile
+            raw_count = rule.get("count", 0)
+            if isinstance(raw_count, str) and raw_count.strip().lower() == "fill_interior":
+                target_n = len(interior)
+            else:
+                try:
+                    target_n = int(raw_count or 0)
+                except Exception:
+                    target_n = 0
+                if target_n <= 0:
+                    continue
+                target_n = min(target_n, len(interior))
+
+            # Deterministic spawn order: shuffle pool, repeat as needed, and lay onto a shuffled interior list.
+            rng = random.Random(_seed_for(game, "resolve_pool", parent_id, salt, ax0, ay0, ax1, ay1, len(pool), target_n))
+
+            interior2 = list(interior)
+            rng.shuffle(interior2)
+
+            pool2 = list(pool)
+            rng.shuffle(pool2)
+
+            spawn_queue: list[str] = []
+            while len(spawn_queue) < target_n:
+                # repeat but reshuffle each cycle so repeats aren't identical blocks
+                batch = list(pool2)
+                rng.shuffle(batch)
+                spawn_queue.extend(batch)
+
+            for i in range(target_n):
+                proto_id = spawn_queue[i]
+                x, y = interior2[i % len(interior2)]
+                eid = f"{parent_id}:pool:{salt}:{proto_id}:{i}"
+                intents.append(
+                    SpawnIntent(
+                        eid=eid,
+                        proto_id=proto_id,
+                        abs_x=int(x),
+                        abs_y=int(y),
+                        zz=int(zz),
+                        child_type="entity",
+                        tags={"from_parent": parent_id, "_resolve_depth": depth + 1, "spawned_by": "children_pool"},
+                        lineage_id=eid,
+                    )
+                )
+            continue
+
+
+    return intents
+
+
+
 def resolve_detail_proxies(
     game: "Game",
     *,

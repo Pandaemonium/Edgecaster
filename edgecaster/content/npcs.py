@@ -41,7 +41,7 @@ NPC_DEFS = {
             "Let's draft on a spacious rectangular grid.",
         ],
     },
-    "guide_npc": {
+    "local_guide": {
         "name": "Local Guide",
         "factions": ["neutral"],
         "base_disposition": 10,
