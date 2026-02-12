@@ -236,7 +236,7 @@
   ai: none
   xp: 0
   parent: demon
-  size: 4
+  size: 2
   description: Disturbingly, it doesn't seem to mind its punishment.
   tags:
     training_dummy: true

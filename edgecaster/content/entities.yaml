@@ -947,6 +947,135 @@
       op: add
       value: 1.0
 
+
+
+- id: building
+  name: Building
+  parent: physical_object
+  glyph: "B"
+  color: [180, 170, 150]
+  kind: feature
+  render_layer: 0
+  blocks_movement: false
+  base_size: 18
+  tags:
+    building: true
+
+- id: building_bureau
+  name: Bureau
+  glyph: "Ƀ"
+  color: [200, 200, 255]
+  base_size: 12
+  tags:
+    abs_size: 12
+    resolve:
+      - kind: geom_rect
+        w: 13
+        h: 9
+        door:
+          enabled: true
+          side: "south"
+          proto: "door"         # "" = gap only; or "door" if you have a door proto
+        emit:
+          wall_proto: "wall"
+          floor:
+            glyph: "."
+            color: [90, 80, 70]
+      - kind: children_fixed
+        children:
+          - merchant
+          - local_guide
+          - lair_informant
+          - caged_demon
+        placement:
+          pattern: scatter_interior
+          salt: "bureau_npcs"
+
+- id: building_chakric_shrine
+  name: Chakric Shrine
+  glyph: "✶"
+  color: [210, 170, 255]
+  base_size: 12
+  tags:
+    abs_size: 12
+    resolve:
+      - kind: geom_rect
+        w: 11
+        h: 9
+        door:
+          enabled: true
+          side: "south"
+          proto: ""
+        emit:
+          wall_proto: "wall"
+          floor:
+            glyph: "."
+            color: [90, 80, 70]
+      - kind: children_fixed
+        children:
+          - chakra_sage
+        placement:
+          pattern: scatter_interior
+          salt: "shrine_npcs"
+
+- id: building_item_depot
+  name: Item Depot
+  glyph: "D"
+  color: [230, 210, 160]
+  base_size: 12
+  tags:
+    abs_size: 12
+    resolve:
+      - kind: geom_rect
+        w: 13
+        h: 9
+        door:
+          enabled: true
+          side: "south"
+          proto: "door"
+        emit:
+          wall_proto: "wall"
+          floor:
+            glyph: "."
+            color: [90, 80, 70]
+      - kind: children_pool
+        pool:
+          - blueberry
+          - raspberry
+          - strawberry
+          - healing_kit
+          - destabilizer
+          - debug_inventory
+          - koch_knife
+          - whip
+          - energy_flask
+          - resonant_ring
+          - coherence_crystal
+          - sage_cap
+          - fleet_boots
+          - vital_belt
+          - glowing_band
+          - heel_charm
+          - rootwrap_boot
+          - sun_palm_wrap
+          - mirror_knuckle_wire
+          - wrist_compass
+          - ring_of_echoes
+          - eye_sigil
+          - seer_pin
+          - silent_gait_strap
+          - wand_koch
+          - wand_branch
+          - wand_zigzag
+          - wand_activate_n
+          - wand_sparkle
+        count: "fill_interior"
+        placement:
+          pattern: scatter_interior
+          salt: "depot_items"
+
+
+
 - id: wall
   name: Wall
   glyph: '#'

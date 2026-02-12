@@ -212,6 +212,7 @@ DEFAULT_BUCKET_FILES: Tuple[str, ...] = (
     "biology.yaml",
     "enemies.yaml",
     "quests.yaml",
+    "site_types.yaml",
 )
 
 
