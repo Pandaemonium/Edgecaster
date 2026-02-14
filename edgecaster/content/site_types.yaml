@@ -1,22 +1,38 @@
 - id: site_bird_aerie
   name: Bird People Aerie
   parent: settlement
-  glyph: "A"
-  color: [180, 200, 255]
+  glyph: Æ
+  color:
+  - 180
+  - 200
+  - 255
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: "A high-altitude aerie of bird folk."
+  description: A high-altitude aerie of bird folk.
   tags:
     world_entity: true
     site: true
     site_kind: bird_aerie
-    structures: [cliff_tower, nest_platform, open_arena]
-    npc_pool: [bird_elder, bird_merchant, bird_scout]
-    enemy_pool: [bird_warrior, hunting_hawk]
-    primary_biomes: [SNOW, BARE, TUNDRA]
-    secondary_biomes: [TEMPERATE_GRASSLAND, SHRUBLAND]
+    structures:
+    - cliff_tower
+    - nest_platform
+    - open_arena
+    npc_pool:
+    - bird_elder
+    - bird_merchant
+    - bird_scout
+    enemy_pool:
+    - bird_warrior
+    - hunting_hawk
+    primary_biomes:
+    - SNOW
+    - BARE
+    - TUNDRA
+    secondary_biomes:
+    - TEMPERATE_GRASSLAND
+    - SHRUBLAND
     elevation_min: 0.65
     elevation_max: 1.0
     temperature_min: 0.0
@@ -28,26 +44,50 @@
     spacing: 18
     rarity: 0.4
     max_count: 8
-
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_aerie_roost
+      - building_feather_lecture
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: site_bird_aerie:buildings
 - id: site_fishing_village
   name: Fishing Village
   parent: settlement
-  glyph: "F"
-  color: [120, 180, 220]
+  glyph: F
+  color:
+  - 120
+  - 180
+  - 220
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: "A small fishing village near water."
+  description: A small fishing village near water.
   tags:
     world_entity: true
     site: true
     site_kind: fishing_village
-    structures: [dock, fish_market, net_hut]
-    npc_pool: [fishmonger, boat_captain, net_mender]
+    structures:
+    - dock
+    - fish_market
+    - net_hut
+    npc_pool:
+    - fishmonger
+    - boat_captain
+    - net_mender
     enemy_pool: []
-    primary_biomes: [TEMPERATE_FOREST, TEMPERATE_GRASSLAND, TEMPERATE_RAINFOREST]
-    secondary_biomes: [TROPICAL_FOREST, SAVANNA, SHRUBLAND]
+    primary_biomes:
+    - TEMPERATE_FOREST
+    - TEMPERATE_GRASSLAND
+    - TEMPERATE_RAINFOREST
+    secondary_biomes:
+    - TROPICAL_FOREST
+    - SAVANNA
+    - SHRUBLAND
     elevation_min: 0.15
     elevation_max: 0.4
     temperature_min: 0.25
@@ -59,26 +99,48 @@
     spacing: 14
     rarity: 0.6
     max_count: 12
-
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_fishmonger_shack
+      - building_tide_shrine
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: site_fishing_village:buildings
 - id: site_spriggan_grove
   name: Spriggan Grove
   parent: settlement
-  glyph: "G"
-  color: [80, 220, 120]
+  glyph: G
+  color:
+  - 80
+  - 220
+  - 120
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: "A hidden grove inhabited by spriggans."
+  description: A hidden grove inhabited by spriggans.
   tags:
     world_entity: true
     site: true
     site_kind: spriggan_grove
-    structures: [grove_circle, elder_tree, root_hollow]
-    npc_pool: [spriggan_elder, spriggan_trader, spriggan_scout]
+    structures:
+    - grove_circle
+    - elder_tree
+    - root_hollow
+    npc_pool:
+    - spriggan_elder
+    - spriggan_trader
+    - spriggan_scout
     enemy_pool: []
-    primary_biomes: [TEMPERATE_RAINFOREST, TROPICAL_FOREST]
-    secondary_biomes: [TEMPERATE_FOREST, SHRUBLAND]
+    primary_biomes:
+    - TEMPERATE_RAINFOREST
+    - TROPICAL_FOREST
+    secondary_biomes:
+    - TEMPERATE_FOREST
+    - SHRUBLAND
     elevation_min: 0.1
     elevation_max: 0.5
     temperature_min: 0.2
@@ -90,26 +152,50 @@
     spacing: 16
     rarity: 0.5
     max_count: 10
-
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_grove_hollow
+      - building_leaf_market
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: site_spriggan_grove:buildings
 - id: site_desert_camp
   name: Desert Camp
   parent: settlement
-  glyph: "C"
-  color: [240, 200, 120]
+  glyph: C
+  color:
+  - 240
+  - 200
+  - 120
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: "A temporary encampment in the desert."
+  description: A temporary encampment in the desert.
   tags:
     world_entity: true
     site: true
     site_kind: desert_camp
-    structures: [tent_cluster, fire_pit, water_cache]
-    npc_pool: [camp_leader, camel_handler, sand_scout]
-    enemy_pool: [bandit, sand_worm]
-    primary_biomes: [DESERT, BADLANDS]
-    secondary_biomes: [SHRUBLAND, SAVANNA]
+    structures:
+    - tent_cluster
+    - fire_pit
+    - water_cache
+    npc_pool:
+    - camp_leader
+    - camel_handler
+    - sand_scout
+    enemy_pool:
+    - bandit
+    - sand_worm
+    primary_biomes:
+    - DESERT
+    - BADLANDS
+    secondary_biomes:
+    - SHRUBLAND
+    - SAVANNA
     elevation_min: 0.1
     elevation_max: 0.8
     temperature_min: 0.6
@@ -121,26 +207,49 @@
     spacing: 12
     rarity: 0.65
     max_count: 14
-
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_desert_tent
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: site_desert_camp:buildings
 - id: site_hunter_lodge
   name: Hunter Lodge
   parent: settlement
-  glyph: "H"
-  color: [180, 140, 100]
+  glyph: H
+  color:
+  - 180
+  - 140
+  - 100
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: "A rustic lodge used by hunters."
+  description: A rustic lodge used by hunters.
   tags:
     world_entity: true
     site: true
     site_kind: hunter_lodge
-    structures: [lodge, drying_rack, trophy_pole]
-    npc_pool: [hunter, trapper, cook]
-    enemy_pool: [wolf, boar]
-    primary_biomes: [TEMPERATE_FOREST, BOREAL_FOREST]
-    secondary_biomes: [TEMPERATE_GRASSLAND, SHRUBLAND]
+    structures:
+    - lodge
+    - drying_rack
+    - trophy_pole
+    npc_pool:
+    - hunter
+    - trapper
+    - cook
+    enemy_pool:
+    - wolf
+    - boar
+    primary_biomes:
+    - TEMPERATE_FOREST
+    - BOREAL_FOREST
+    secondary_biomes:
+    - TEMPERATE_GRASSLAND
+    - SHRUBLAND
     elevation_min: 0.15
     elevation_max: 0.7
     temperature_min: 0.1
@@ -152,26 +261,47 @@
     spacing: 15
     rarity: 0.55
     max_count: 12
-
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_hunter_lodge
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: site_hunter_lodge:buildings
 - id: site_tropical_shrine
   name: Tropical Shrine
   parent: settlement
-  glyph: "S"
-  color: [200, 120, 240]
+  glyph: S
+  color:
+  - 200
+  - 120
+  - 240
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: "A small shrine in the tropics."
+  description: A small shrine in the tropics.
   tags:
     world_entity: true
     site: true
     site_kind: tropical_shrine
-    structures: [shrine, offering_table, stone_path]
-    npc_pool: [acolyte, pilgrim, caretaker]
+    structures:
+    - shrine
+    - offering_table
+    - stone_path
+    npc_pool:
+    - acolyte
+    - pilgrim
+    - caretaker
     enemy_pool: []
-    primary_biomes: [TROPICAL_FOREST, SAVANNA]
-    secondary_biomes: [TEMPERATE_RAINFOREST, TEMPERATE_GRASSLAND]
+    primary_biomes:
+    - TROPICAL_FOREST
+    - SAVANNA
+    secondary_biomes:
+    - TEMPERATE_RAINFOREST
+    - TEMPERATE_GRASSLAND
     elevation_min: 0.0
     elevation_max: 0.6
     temperature_min: 0.55
@@ -183,26 +313,49 @@
     spacing: 17
     rarity: 0.45
     max_count: 9
-
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_tropical_shrine
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: site_tropical_shrine:buildings
 - id: site_corruption_outpost
   name: Corruption Outpost
   parent: settlement
-  glyph: "X"
-  color: [220, 80, 160]
+  glyph: X
+  color:
+  - 220
+  - 80
+  - 160
   kind: feature
   render_layer: 1
   blocks_movement: false
   base_size: 64
-  description: "An outpost on the fringes of corruption."
+  description: An outpost on the fringes of corruption.
   tags:
     world_entity: true
     site: true
     site_kind: corruption_outpost
-    structures: [watchtower, barricade, sigil_stone]
-    npc_pool: [outpost_commander, ward_scribe, scavenger]
-    enemy_pool: [corrupted_thrall, bismuth_imp]
-    primary_biomes: [CORRUPTED]
-    secondary_biomes: [BADLANDS, SHRUBLAND, TEMPERATE_GRASSLAND]
+    structures:
+    - watchtower
+    - barricade
+    - sigil_stone
+    npc_pool:
+    - outpost_commander
+    - ward_scribe
+    - scavenger
+    enemy_pool:
+    - corrupted_thrall
+    - bismuth_imp
+    primary_biomes:
+    - CORRUPTED
+    secondary_biomes:
+    - BADLANDS
+    - SHRUBLAND
+    - TEMPERATE_GRASSLAND
     elevation_min: 0.0
     elevation_max: 1.0
     temperature_min: 0.0
@@ -214,58 +367,150 @@
     spacing: 20
     rarity: 0.35
     max_count: 6
-
-
-
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_corruption_outpost
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: site_corruption_outpost:buildings
 - id: site_starttsgard
-  name: "Starttsgard"
-  glyph: "⌂"
-  color: [255, 255, 255]
+  name: Starttsgard
+  glyph: ⌂
+  color:
+  - 255
+  - 255
+  - 255
   base_size: 64
-
   tags:
     world_entity: true
     site: true
-    site_kind: "starttsgard"
-
-    # Fixed placement
-    fixed_anchor_abs: [3030, 2039, 0]
+    site_kind: starttsgard
+    fixed_anchor_abs:
+    - 3030
+    - 2039
+    - 0
     abs_size: 64
-    # Generic resolution recipe list (no npc_fixed/buildings_fixed special tags)
     resolve:
-      - kind: children_fixed
-        children: ["building_item_depot", "building_bureau", "building_chakric_shrine"]
-        placement:
-          pattern: cluster
-          radius: 22          # more breathing room
-          min_sep: 14         # prevents overlap
-          # deterministic salt to keep layouts stable per parent
-          salt: "starttsgard_buildings"
-
-    # Keep for compatibility with any existing site UI
+    - kind: children_fixed
+      children:
+      - building_item_depot
+      - building_bureau
+      - building_chakric_shrine
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: starttsgard_buildings
     npc_pool: []
     structures: []
     enemy_pool: []
     max_count: 0
     rarity: 0
-
-
 - id: site_colosseum
-  name: "Ancient Colosseum"
-  glyph: "O"
-  color: [230, 190, 120]
-  kind: "feature"
+  name: Ancient Colosseum
+  glyph: O
+  color:
+  - 230
+  - 190
+  - 120
+  kind: feature
   base_size: 256
   tags:
     world_entity: true
     site: true
-    site_kind: "colosseum"
-
-    fixed_anchor_abs: [2117, 1223, 0]
-
+    site_kind: colosseum
+    fixed_anchor_abs:
+    - 2117
+    - 1223
+    - 0
     npc_pool: []
     structures: []
     enemy_pool: []
-
     max_count: 0
     rarity: 0
+- id: site_inventor_workshop
+  name: Inventor Workshop
+  glyph: ☼
+  color:
+  - 230
+  - 200
+  - 120
+  base_size: 64
+  tags:
+    world_entity: true
+    site: true
+    site_kind: inventor_workshop
+    fixed_near_site_kind: starttsgard
+    fixed_near_min_abs: 100
+    fixed_near_max_abs: 200
+    abs_size: 64
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_inventor_tower
+      placement:
+        pattern: cluster
+        radius: 0
+        salt: inventor_building
+    npc_pool: []
+    structures: []
+    enemy_pool: []
+    max_count: 0
+    rarity: 0
+- id: site_academy
+  name: Academy
+  glyph: A
+  color:
+  - 200
+  - 220
+  - 255
+  base_size: 64
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  description: A quiet academy of geometry.
+  tags:
+    world_entity: true
+    site: true
+    site_kind: academy
+    spacing: 10
+    rarity: 0.2
+    max_count: 1
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_academy_hall
+      placement:
+        pattern: cluster
+        radius: 0
+        salt: academy
+
+
+- id: site_academy
+  name: "Hexmage Academy"
+  glyph: "Δ"
+  color: [200, 160, 255]
+  base_size: 72
+
+  tags:
+    world_entity: true
+    site: true
+    site_kind: "academy"
+
+    # Place near Starttsgard (deterministic per seed)
+    fixed_near_site_kind: "starttsgard"
+    fixed_near_min_abs: 180
+    fixed_near_max_abs: 320
+
+    abs_size: 72
+
+    resolve:
+      - kind: children_fixed
+        children: ["building_academy_hall"]
+        placement:
+          pattern: cluster
+          radius: 0
+          salt: "academy_main"

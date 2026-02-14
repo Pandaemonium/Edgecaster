@@ -359,6 +359,7 @@ class Game:
             self.fractal_seed = self.rng.randint(0, 10**9)
         else:
             self.fractal_seed = getattr(self.character, "seed", None) or getattr(cfg, "seed", None)
+        self.seed = int(self.fractal_seed)
         self.fractal_field = mapgen.FractalField(seed=self.fractal_seed)
         # Corruption: Julia distortion intensity (phase 1: visuals-only in terrain generation).
         # Must be shared between world-map rendering and local zone generation.

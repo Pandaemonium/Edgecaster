@@ -68,8 +68,6 @@
     detail_child: blueberry
     radius: 6
     density: 0.04
-    # Worldgen knobs (opt-in). These restore "berry patches exist" under the new general rule.
-    # Tuned to approximate prior behavior (expected ~0.45 patches per bucket attempt).
     worldgen_chance: 0.03
     worldgen_min: 1
     worldgen_max: 2
@@ -477,15 +475,9 @@
     charges_min: 3
     charges_max: 5
     not_stackable: true
-
-# --- Chakra-linked equipment (temporary unlocks + hit modifiers) ----------
-# These items are intentionally data-driven through tags consumed by:
-# - systems/chakra_items.py
-# - systems/equip_rules.py
-
 - id: heel_charm
   name: Heel Charm
-  glyph: ')'
+  glyph: )
   color:
   - 130
   - 255
@@ -510,7 +502,6 @@
       descendants: true
       op: add
       value: 2.0
-
 - id: rootwrap_boot
   name: Rootwrap Boot
   glyph: ']'
@@ -535,7 +526,6 @@
     chakra_auto_activate_equipped_slot: true
     equip_mods:
       agi: 1
-
 - id: sun_palm_wrap
   name: Sun Palm Wrap
   glyph: '='
@@ -563,7 +553,6 @@
       descendants: true
       op: mul
       value: 1.25
-
 - id: mirror_knuckle_wire
   name: Mirror Knuckle Wire
   glyph: '{'
@@ -591,10 +580,9 @@
       descendants: true
       op: add
       value: 2.0
-
 - id: wrist_compass
   name: Wrist Compass
-  glyph: 'o'
+  glyph: o
   color:
   - 170
   - 220
@@ -621,10 +609,9 @@
       descendants: true
       op: add
       value: 1.0
-
 - id: ring_of_echoes
   name: Ring of Echoes
-  glyph: 'o'
+  glyph: o
   color:
   - 220
   - 200
@@ -651,7 +638,6 @@
       descendants: true
       op: add
       value: 1.0
-
 - id: eye_sigil
   name: Eye Sigil
   glyph: '*'
@@ -690,7 +676,6 @@
       descendants: true
       op: add
       value: 1.0
-
 - id: seer_pin
   name: Seer Pin
   glyph: '!'
@@ -712,10 +697,9 @@
     chakra_unlock_nodes:
     - head.skull.face.eye
     - head.skull.face.eye_m
-
 - id: silent_gait_strap
   name: Silent Gait Strap
-  glyph: '_'
+  glyph: _
   color:
   - 160
   - 200
@@ -734,15 +718,13 @@
     - knee
     equip_mods:
       agi: 1
-
-# ---------------------------------------------------------------------------
-# Chakra Items (passive unlocks, ability grants, hit modifiers)
-# ---------------------------------------------------------------------------
-
 - id: spinal_talisman
   name: Spinal Talisman
   glyph: '*'
-  color: [220, 200, 100]
+  color:
+  - 220
+  - 200
+  - 100
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -751,17 +733,21 @@
   tags:
     item_type: spinal_talisman
     value_bismuth: 30
-    allowed_slot_kinds: [back, chest]
+    allowed_slot_kinds:
+    - back
+    - chest
     chakra_unlock_equipped_slot: true
     chakra_auto_activate_equipped_slot: true
     equip_mods:
       con: 1
       res: 1
-
 - id: mindcrown
   name: Mindcrown
-  glyph: '^'
-  color: [80, 220, 255]
+  glyph: ^
+  color:
+  - 80
+  - 220
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -770,18 +756,22 @@
   tags:
     item_type: mindcrown
     value_bismuth: 42
-    allowed_slot_kinds: [skull, neck]
+    allowed_slot_kinds:
+    - skull
+    - neck
     chakra_unlock_nodes:
     - head.skull
     chakra_auto_activate_nodes:
     - head.skull
     equip_mods:
       int: 2
-
 - id: knuckle_studs
   name: Knuckle Studs
   glyph: '"'
-  color: [180, 180, 200]
+  color:
+  - 180
+  - 180
+  - 200
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -790,16 +780,20 @@
   tags:
     item_type: knuckle_studs
     value_bismuth: 24
-    allowed_slot_kinds: [hand, palm]
+    allowed_slot_kinds:
+    - hand
+    - palm
     chakra_unlock_equipped_slot: true
     chakra_auto_activate_equipped_slot: true
     equip_mods:
       str: 1
-
 - id: rootwood_anklet
   name: Rootwood Anklet
-  glyph: 'o'
-  color: [80, 180, 80]
+  glyph: o
+  color:
+  - 80
+  - 180
+  - 80
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -808,16 +802,20 @@
   tags:
     item_type: rootwood_anklet
     value_bismuth: 38
-    allowed_slot_kinds: [foot, ankle]
+    allowed_slot_kinds:
+    - foot
+    - ankle
     chakra_unlock_equipped_slot: true
     chakra_auto_activate_equipped_slot: true
     equip_grants_abilities:
     - root_grasp
-
 - id: third_eye_lens
   name: Third Eye Lens
-  glyph: 'o'
-  color: [180, 80, 255]
+  glyph: o
+  color:
+  - 180
+  - 80
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -826,18 +824,23 @@
   tags:
     item_type: third_eye_lens
     value_bismuth: 46
-    allowed_slot_kinds: [eye, face, skull]
+    allowed_slot_kinds:
+    - eye
+    - face
+    - skull
     chakra_unlock_nodes:
     - head.skull.face.eye
     chakra_auto_activate_nodes:
     - head.skull.face.eye
     equip_grants_abilities:
     - third_eye
-
 - id: phantom_gauntlet
   name: Phantom Gauntlet
   glyph: '['
-  color: [120, 160, 255]
+  color:
+  - 120
+  - 160
+  - 255
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -846,16 +849,20 @@
   tags:
     item_type: phantom_gauntlet
     value_bismuth: 40
-    allowed_slot_kinds: [hand, forearm]
+    allowed_slot_kinds:
+    - hand
+    - forearm
     chakra_unlock_equipped_slot: true
     chakra_auto_activate_equipped_slot: true
     equip_grants_abilities:
     - phantom_limb
-
 - id: iron_heart_plate
   name: Iron Heart Plate
   glyph: ']'
-  color: [160, 160, 160]
+  color:
+  - 160
+  - 160
+  - 160
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -864,18 +871,21 @@
   tags:
     item_type: iron_heart_plate
     value_bismuth: 50
-    allowed_slot_kinds: [chest]
+    allowed_slot_kinds:
+    - chest
     chakra_unlock_equipped_slot: true
     chakra_auto_activate_equipped_slot: true
     equip_grants_abilities:
     - iron_skin
     equip_mods:
       con: 1
-
 - id: resonant_elbow_guard
   name: Resonant Elbow Guard
   glyph: '>'
-  color: [220, 180, 80]
+  color:
+  - 220
+  - 180
+  - 80
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -884,7 +894,9 @@
   tags:
     item_type: resonant_elbow_guard
     value_bismuth: 34
-    allowed_slot_kinds: [elbow, forearm]
+    allowed_slot_kinds:
+    - elbow
+    - forearm
     chakra_unlock_equipped_slot: true
     chakra_auto_activate_equipped_slot: true
     chakra_hit_mods:
@@ -896,11 +908,13 @@
       descendants: true
       op: mul
       value: 1.15
-
 - id: burning_sole_wraps
   name: Burning Sole Wraps
-  glyph: '_'
-  color: [255, 160, 60]
+  glyph: _
+  color:
+  - 255
+  - 160
+  - 60
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -909,7 +923,8 @@
   tags:
     item_type: burning_sole_wraps
     value_bismuth: 30
-    allowed_slot_kinds: [foot]
+    allowed_slot_kinds:
+    - foot
     chakra_unlock_equipped_slot: true
     chakra_auto_activate_equipped_slot: true
     chakra_hit_mods:
@@ -920,11 +935,13 @@
       descendants: true
       op: add
       value: 3.0
-
 - id: skull_cage_helm
   name: Skull Cage Helm
-  glyph: 'n'
-  color: [240, 230, 220]
+  glyph: n
+  color:
+  - 240
+  - 230
+  - 220
   kind: item
   render_layer: 1
   blocks_movement: false
@@ -933,7 +950,9 @@
   tags:
     item_type: skull_cage_helm
     value_bismuth: 44
-    allowed_slot_kinds: [skull, neck]
+    allowed_slot_kinds:
+    - skull
+    - neck
     chakra_unlock_nodes:
     - head.skull
     chakra_auto_activate_nodes:
@@ -943,139 +962,152 @@
     chakra_hit_mods:
     - actions: '*'
       match: illuminated
-      tokens: [skull]
+      tokens:
+      - skull
       op: add
       value: 1.0
-
-
-
 - id: building
   name: Building
   parent: physical_object
-  glyph: "B"
-  color: [180, 170, 150]
+  glyph: B
+  color:
+  - 180
+  - 170
+  - 150
   kind: feature
   render_layer: 0
   blocks_movement: false
   base_size: 18
   tags:
     building: true
-
 - id: building_bureau
   name: Bureau
-  glyph: "Ƀ"
-  color: [200, 200, 255]
+  glyph: Ƀ
+  color:
+  - 200
+  - 200
+  - 255
   base_size: 12
   tags:
     abs_size: 12
     resolve:
-      - kind: geom_rect
-        w: 13
-        h: 9
-        door:
-          enabled: true
-          side: "south"
-          proto: "door"         # "" = gap only; or "door" if you have a door proto
-        emit:
-          wall_proto: "wall"
-          floor:
-            glyph: "."
-            color: [90, 80, 70]
-      - kind: children_fixed
-        children:
-          - merchant
-          - local_guide
-          - lair_informant
-          - caged_demon
-        placement:
-          pattern: scatter_interior
-          salt: "bureau_npcs"
-
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 90
+          - 80
+          - 70
+    - kind: children_fixed
+      children:
+      - merchant
+      - local_guide
+      - lair_informant
+      - caged_demon
+      placement:
+        pattern: scatter_interior
+        salt: bureau_npcs
 - id: building_chakric_shrine
   name: Chakric Shrine
-  glyph: "✶"
-  color: [210, 170, 255]
+  glyph: ✶
+  color:
+  - 210
+  - 170
+  - 255
   base_size: 12
   tags:
     abs_size: 12
     resolve:
-      - kind: geom_rect
-        w: 11
-        h: 9
-        door:
-          enabled: true
-          side: "south"
-          proto: ""
-        emit:
-          wall_proto: "wall"
-          floor:
-            glyph: "."
-            color: [90, 80, 70]
-      - kind: children_fixed
-        children:
-          - chakra_sage
-        placement:
-          pattern: scatter_interior
-          salt: "shrine_npcs"
-
+    - kind: geom_rect
+      w: 11
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: ''
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 90
+          - 80
+          - 70
+    - kind: children_fixed
+      children:
+      - chakra_sage
+      placement:
+        pattern: scatter_interior
+        salt: shrine_npcs
 - id: building_item_depot
   name: Item Depot
-  glyph: "D"
-  color: [230, 210, 160]
+  glyph: D
+  color:
+  - 230
+  - 210
+  - 160
   base_size: 12
   tags:
     abs_size: 12
     resolve:
-      - kind: geom_rect
-        w: 13
-        h: 9
-        door:
-          enabled: true
-          side: "south"
-          proto: "door"
-        emit:
-          wall_proto: "wall"
-          floor:
-            glyph: "."
-            color: [90, 80, 70]
-      - kind: children_pool
-        pool:
-          - blueberry
-          - raspberry
-          - strawberry
-          - healing_kit
-          - destabilizer
-          - debug_inventory
-          - koch_knife
-          - whip
-          - energy_flask
-          - resonant_ring
-          - coherence_crystal
-          - sage_cap
-          - fleet_boots
-          - vital_belt
-          - glowing_band
-          - heel_charm
-          - rootwrap_boot
-          - sun_palm_wrap
-          - mirror_knuckle_wire
-          - wrist_compass
-          - ring_of_echoes
-          - eye_sigil
-          - seer_pin
-          - silent_gait_strap
-          - wand_koch
-          - wand_branch
-          - wand_zigzag
-          - wand_activate_n
-          - wand_sparkle
-        count: "fill_interior"
-        placement:
-          pattern: scatter_interior
-          salt: "depot_items"
-
-
-
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 90
+          - 80
+          - 70
+    - kind: children_pool
+      pool:
+      - blueberry
+      - raspberry
+      - strawberry
+      - healing_kit
+      - destabilizer
+      - debug_inventory
+      - koch_knife
+      - whip
+      - energy_flask
+      - resonant_ring
+      - coherence_crystal
+      - sage_cap
+      - fleet_boots
+      - vital_belt
+      - glowing_band
+      - heel_charm
+      - rootwrap_boot
+      - sun_palm_wrap
+      - mirror_knuckle_wire
+      - wrist_compass
+      - ring_of_echoes
+      - eye_sigil
+      - seer_pin
+      - silent_gait_strap
+      - wand_koch
+      - wand_branch
+      - wand_zigzag
+      - wand_activate_n
+      - wand_sparkle
+      count: fill_interior
+      placement:
+        pattern: scatter_interior
+        salt: depot_items
 - id: wall
   name: Wall
   glyph: '#'
@@ -1136,3 +1168,835 @@
   description: A runic pylon that holds corruption at bay.
   tags:
     rune_anchor: true
+- id: local_guide
+  name: Local Guide
+  kind: actor
+  glyph: '@'
+  color:
+  - 230
+  - 230
+  - 230
+  base_size: 1
+  description: A friendly local who knows the area well.
+  tags:
+    actor: true
+    npc: true
+    npc_id: local_guide
+    factions:
+    - neutral
+    base_disposition: 10
+    dialogue:
+    - Welcome, traveler! I know these lands like the back of my hand.
+    - There's an inventor nearby who studies the corruption patterns. You should visit
+      her.
+    - You'll know her tower when you see it.
+    quest_trigger: find_the_inventor
+- id: lair_informant
+  name: Lair Informant
+  kind: actor
+  glyph: '@'
+  color:
+  - 220
+  - 200
+  - 170
+  base_size: 1
+  description: A nervous figure who claims to know where dangerous places lie.
+  tags:
+    actor: true
+    npc: true
+    npc_id: lair_informant
+    factions:
+    - neutral
+    base_disposition: 0
+- id: chakra_sage
+  name: Chakra Sage
+  kind: actor
+  glyph: '@'
+  color:
+  - 200
+  - 220
+  - 255
+  base_size: 1
+  description: A calm sage who listens to the humming of reality.
+  tags:
+    actor: true
+    npc: true
+    npc_id: chakra_sage
+    factions:
+    - neutral
+    base_disposition: 5
+- id: merchant
+  name: Merchant
+  kind: actor
+  glyph: '@'
+  color:
+  - 255
+  - 230
+  - 170
+  base_size: 1
+  description: A traveling merchant with a pack of goods.
+  tags:
+    actor: true
+    npc: true
+    npc_id: merchant
+    factions:
+    - npc
+    base_disposition: 0
+    merchant_id: general_store
+- id: caged_demon
+  name: Caged Demon
+  kind: actor
+  glyph: '&'
+  color:
+  - 255
+  - 120
+  - 120
+  base_size: 1
+  description: A demon trapped behind bars, snarling at the world.
+  tags:
+    actor: true
+    npc: true
+    npc_id: caged_demon
+    factions:
+    - neutral
+    base_disposition: -10
+- id: inventor_npc
+  name: The Inventor
+  kind: actor
+  glyph: '@'
+  color:
+  - 240
+  - 210
+  - 120
+  base_size: 1
+  description: A brash inventor in goggles and brass filigree.
+  tags:
+    actor: true
+    npc: true
+    npc_id: inventor_npc
+    factions:
+    - neutral
+    base_disposition: 5
+    dialogue:
+    - Ah, you made it. Try not to smudge anything important.
+    - Everything here is perfectly safe. Mostly.
+    - Bring me something that hums wrong, and I might help you.
+    quest_complete: find_the_inventor
+- id: contraption
+  name: Contraption
+  kind: feature
+  glyph: '☼'
+  color:
+  - 200
+  - 200
+  - 255
+  blocks_movement: false
+  description: You notice that tab A is inserted into slot B, is that intentional?
+  tags:
+    prop: true
+- id: doohickey
+  name: Doohickey
+  kind: feature
+  glyph: '☼'
+  color:
+  - 200
+  - 255
+  - 200
+  blocks_movement: false
+  description: There's a hopper of blueberries that feeds into one side.
+  tags:
+    prop: true
+- id: whatchamacallit
+  name: Whatchamacallit
+  kind: feature
+  glyph: '☼'
+  color:
+  - 255
+  - 200
+  - 200
+  blocks_movement: false
+  description: Eh, whaddya call this thing, it's on the tip of your tongue.
+  tags:
+    prop: true
+- id: thingamajig
+  name: Thingamajig
+  kind: feature
+  glyph: '☼'
+  color:
+  - 240
+  - 240
+  - 160
+  blocks_movement: false
+  description: You used to know what this thing does, back in your Academy days.
+  tags:
+    prop: true
+- id: doodad
+  name: Doodad
+  kind: feature
+  glyph: '☼'
+  color:
+  - 220
+  - 220
+  - 220
+  blocks_movement: false
+  description: Touching this makes your tongue feel weird.
+  tags:
+    prop: true
+- id: building_inventor_tower
+  name: Inventor Tower
+  glyph: ☼
+  color:
+  - 230
+  - 200
+  - 120
+  base_size: 14
+  tags:
+    abs_size: 14
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 11
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 90
+          - 80
+          - 70
+    - kind: children_fixed
+      children:
+      - inventor_npc
+      placement:
+        pattern: scatter_interior
+        salt: inventor_npc
+    - kind: children_pool
+      pool:
+      - contraption
+      - doohickey
+      - whatchamacallit
+      - thingamajig
+      - doodad
+      count: 10
+      placement:
+        pattern: scatter_interior
+        salt: inventor_clutter
+- id: building_academy_hall
+  name: Academy Hall
+  glyph: H
+  color:
+  - 190
+  - 210
+  - 230
+  base_size: 12
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 12
+    resolve:
+    - kind: geom_rect
+      w: 15
+      h: 11
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 80
+          - 80
+          - 90
+    - kind: children_fixed
+      children:
+      - mentor
+      - hexmage
+      - cartographer
+      placement:
+        pattern: scatter_interior
+        salt: academy_npcs
+- id: mentor
+  name: Mentor
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 200
+  - 255
+  - 200
+  description: Old, one-eyed, and syphilitic, yet unerringly optimistic.
+  tags:
+    dialogue:
+      - "The Mentor studies you with a single appraising eye."
+      - "Patterns are not learned. They are remembered."
+    actor: true
+    npc: true
+    npc_id: mentor
+    factions:
+    - neutral
+    base_disposition: 0
+- id: hexmage
+  name: Hexmage
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 255
+  - 200
+  - 255
+  description: This runecaster is swarming with bees.
+  tags:
+    dialogue:
+      - "The Hexmage taps a sticky finger on a hexagonal diagram."
+      - "Show me the edges you haven't dared to draw yet."
+    actor: true
+    npc: true
+    npc_id: hexmage
+    factions:
+    - neutral
+    base_disposition: 0
+- id: cartographer
+  name: Cartographer
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 200
+  - 255
+  - 255
+  description: This chick is WAY too hot to be a cartographer.
+  tags:
+    dialogue:
+      - "The Cartographer unrolls an absurdly large map with no scale bar."
+      - "The map is the territory, the medium is the message -- if you know what I mean."
+    actor: true
+    npc: true
+    npc_id: cartographer
+    factions:
+    - neutral
+    base_disposition: 0
+- id: building_fishmonger_shack
+  name: Fishmonger Shack
+  glyph: f
+  color:
+  - 160
+  - 200
+  - 220
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 70
+          - 80
+          - 90
+    - kind: children_fixed
+      children:
+      - fishmonger
+      placement:
+        pattern: scatter_interior
+        salt: fishmonger
+    - kind: children_pool
+      pool:
+      - contraption
+      - doohickey
+      - doodad
+      count: 4
+      placement:
+        pattern: scatter_interior
+        salt: fish_props
+- id: building_tide_shrine
+  name: Tide Shrine
+  glyph: ≈
+  color:
+  - 140
+  - 180
+  - 255
+  base_size: 9
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 9
+    resolve:
+    - kind: geom_rect
+      w: 11
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 70
+          - 75
+          - 85
+    - kind: children_fixed
+      children:
+      - tide_acolyte
+      placement:
+        pattern: scatter_interior
+        salt: tide_acolyte
+- id: fishmonger
+  name: Fishmonger
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 220
+  - 220
+  - 180
+  description: Smells faintly of salt and questionable bargains.
+  tags:
+    actor: true
+    npc: true
+    npc_id: fishmonger
+    factions:
+    - neutral
+    base_disposition: 0
+- id: tide_acolyte
+  name: Tide Acolyte
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 170
+  - 200
+  - 255
+  description: Murmurs hymns to the tide’s recursion.
+  tags:
+    actor: true
+    npc: true
+    npc_id: tide_acolyte
+    factions:
+    - neutral
+    base_disposition: 0
+- id: building_aerie_roost
+  name: Aerie Roost
+  glyph: ^
+  color:
+  - 210
+  - 200
+  - 150
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 85
+          - 80
+          - 70
+    - kind: children_fixed
+      children:
+      - bird_elder
+      placement:
+        pattern: scatter_interior
+        salt: bird_elder
+- id: building_feather_lecture
+  name: Feather Lecture Hut
+  glyph: '"'
+  color:
+  - 200
+  - 190
+  - 170
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 11
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 85
+          - 80
+          - 70
+    - kind: children_fixed
+      children:
+      - bird_scribe
+      placement:
+        pattern: scatter_interior
+        salt: bird_scribe
+- id: bird_elder
+  name: Bird Elder
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 230
+  - 220
+  - 180
+  description: An ancient avian matriarch with strict opinions about wind.
+  tags:
+    actor: true
+    npc: true
+    npc_id: bird_elder
+    factions:
+    - neutral
+    base_disposition: 0
+- id: bird_scribe
+  name: Bird Scribe
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 210
+  - 210
+  - 200
+  description: Records the sky’s punctuation marks.
+  tags:
+    actor: true
+    npc: true
+    npc_id: bird_scribe
+    factions:
+    - neutral
+    base_disposition: 0
+- id: building_grove_hollow
+  name: Grove Hollow
+  glyph: T
+  color:
+  - 120
+  - 200
+  - 140
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 60
+          - 80
+          - 60
+    - kind: children_fixed
+      children:
+      - spriggan_elder
+      placement:
+        pattern: scatter_interior
+        salt: spriggan_elder
+- id: building_leaf_market
+  name: Leaf Market
+  glyph: '%'
+  color:
+  - 150
+  - 220
+  - 150
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 11
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 60
+          - 80
+          - 60
+    - kind: children_fixed
+      children:
+      - spriggan_trader
+      placement:
+        pattern: scatter_interior
+        salt: spriggan_trader
+- id: spriggan_elder
+  name: Spriggan Elder
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 170
+  - 255
+  - 170
+  description: Speaks in nested metaphors.
+  tags:
+    actor: true
+    npc: true
+    npc_id: spriggan_elder
+    factions:
+    - neutral
+    base_disposition: 0
+- id: spriggan_trader
+  name: Spriggan Trader
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 160
+  - 230
+  - 160
+  description: Sells mushrooms with suspiciously precise prices.
+  tags:
+    actor: true
+    npc: true
+    npc_id: spriggan_trader
+    factions:
+    - neutral
+    base_disposition: 0
+- id: desert_chief
+  name: Desert Chief
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 240
+  - 200
+  - 120
+  description: Measures distance in mirages.
+  tags:
+    actor: true
+    npc: true
+    npc_id: desert_chief
+    factions:
+    - neutral
+    base_disposition: 0
+- id: building_desert_tent
+  name: Desert Tent
+  glyph: Δ
+  color:
+  - 230
+  - 190
+  - 110
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 90
+          - 80
+          - 60
+    - kind: children_fixed
+      children:
+      - desert_chief
+      placement:
+        pattern: scatter_interior
+        salt: desert_chief
+- id: hunter_warden
+  name: Hunter Warden
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 200
+  - 190
+  - 170
+  description: Tracks footprints across scales.
+  tags:
+    actor: true
+    npc: true
+    npc_id: hunter_warden
+    factions:
+    - neutral
+    base_disposition: 0
+- id: building_hunter_lodge
+  name: Hunter Lodge
+  glyph: L
+  color:
+  - 200
+  - 190
+  - 170
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 70
+          - 65
+          - 60
+    - kind: children_fixed
+      children:
+      - hunter_warden
+      placement:
+        pattern: scatter_interior
+        salt: hunter_warden
+- id: shrine_keeper
+  name: Shrine Keeper
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 180
+  - 230
+  - 255
+  description: Keeps the humidity balanced.
+  tags:
+    actor: true
+    npc: true
+    npc_id: shrine_keeper
+    factions:
+    - neutral
+    base_disposition: 0
+- id: building_tropical_shrine
+  name: Tropical Shrine
+  glyph: ✶
+  color:
+  - 180
+  - 230
+  - 255
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 70
+          - 75
+          - 80
+    - kind: children_fixed
+      children:
+      - shrine_keeper
+      placement:
+        pattern: scatter_interior
+        salt: shrine_keeper
+- id: corruption_watch
+  name: Corruption Watch
+  kind: actor
+  base_size: 1
+  glyph: '@'
+  color:
+  - 255
+  - 180
+  - 255
+  description: Counts rainbow fractures like sheep.
+  tags:
+    actor: true
+    npc: true
+    npc_id: corruption_watch
+    factions:
+    - neutral
+    base_disposition: 0
+- id: building_corruption_outpost
+  name: Corruption Outpost
+  glyph: ☣
+  color:
+  - 255
+  - 180
+  - 255
+  base_size: 10
+  kind: feature
+  blocks_movement: false
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 60
+          - 60
+          - 70
+    - kind: children_fixed
+      children:
+      - corruption_watch
+      placement:
+        pattern: scatter_interior
+        salt: corruption_watch
