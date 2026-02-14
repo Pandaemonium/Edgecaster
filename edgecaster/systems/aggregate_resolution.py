@@ -77,6 +77,21 @@ def _seed_for(game: "Game", *parts: object) -> int:
     return (base ^ _stable_int_hash(*parts)) & 0xFFFFFFFF
 
 
+def _proto_is_actor(proto_id: str) -> bool:
+    """Return True if the prototype is tagged as an actor in entities.yaml."""
+    try:
+        spec = prototypes.resolve_proto(str(proto_id))
+    except Exception:
+        spec = None
+    if not isinstance(spec, dict):
+        return False
+    tags = spec.get("tags", {}) or {}
+    return bool(isinstance(tags, dict) and tags.get("actor") is True)
+
+def _child_type_for_proto(proto_id: str) -> str:
+    return "actor" if _proto_is_actor(proto_id) else "entity"
+
+
 # -----------------------------
 # Aggregate discovery / worldgen
 # -----------------------------
@@ -764,7 +779,7 @@ def resolve_spawn_intents_from_recipe(
                             abs_x=int(ax),
                             abs_y=int(ay),
                             zz=int(zz),
-                            child_type="entity",
+                            child_type=_child_type_for_proto(proto_id),
                             tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
                             lineage_id=eid,
                         )
@@ -784,7 +799,7 @@ def resolve_spawn_intents_from_recipe(
                             abs_x=int(ax),
                             abs_y=int(ay),
                             zz=int(zz),
-                            child_type="entity",
+                            child_type=_child_type_for_proto(proto_id),
                             tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
                             lineage_id=eid,
                         )
@@ -810,7 +825,7 @@ def resolve_spawn_intents_from_recipe(
                     eid = f"{parent_id}:child:{salt}:{proto_id}:{i}"
                     # NPCs are actors today; everything else is entity.
                     # We keep this heuristic only in aggregate_resolution (not attention):
-                    child_type = "actor" if proto_id in ("chakra_sage", "merchant", "local_guide", "lair_informant") else "entity"
+                    child_type = _child_type_for_proto(proto_id)
                     intents.append(
                         SpawnIntent(
                             eid=eid,
@@ -898,7 +913,7 @@ def resolve_spawn_intents_from_recipe(
                         abs_x=int(x),
                         abs_y=int(y),
                         zz=int(zz),
-                        child_type="entity",
+                        child_type=_child_type_for_proto(proto_id),
                         tags={"from_parent": parent_id, "_resolve_depth": depth + 1, "spawned_by": "children_pool"},
                         lineage_id=eid,
                     )

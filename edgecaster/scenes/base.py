@@ -532,6 +532,11 @@ class MenuFrameWidget(Widget):
         max_body_width: int = 600,
         banner_is_background: bool = False,
 
+        # Optional art block (portrait, illustration, etc.) inserted between banner and body.
+        art: Widget | None = None,
+        gap_after_art: int = 10,
+        max_art_width: int = 520,
+
         # NEW: if True, the list expands to available width (up to max_list_width),
         # instead of sticking to its intrinsic text width.
         fill_list_width: bool = True,
@@ -551,10 +556,15 @@ class MenuFrameWidget(Widget):
         self.max_list_width = max_list_width
         self.max_body_width = max_body_width
         self.banner_is_background = banner_is_background
+        self.art = art
+        self.gap_after_art = int(gap_after_art)
+        self.max_art_width = int(max_art_width)
         self.fill_list_width = bool(fill_list_width)
 
         if self.banner is not None:
             self.add_child(self.banner)
+        if self.art is not None:
+            self.add_child(self.art)
         if self.body is not None:
             self.add_child(self.body)
         self.add_child(self.list_widget)
@@ -568,6 +578,8 @@ class MenuFrameWidget(Widget):
         # Pre-layout children so they have intrinsic sizes
         if self.banner:
             self.banner.layout(ctx)
+        if self.art is not None:
+            self.art.layout(ctx)
         if self.body:
             self.body.layout(ctx)
         self.list_widget.layout(ctx)
@@ -590,6 +602,17 @@ class MenuFrameWidget(Widget):
                 self.banner.rect.topleft = (bx, y)
                 y = self.banner.rect.bottom + self.gap_after_banner
 
+        # Art block (portrait) centered, clamped width
+        if self.art is not None and self.art.visible:
+            art_w = min(self.max_art_width, inner_w)
+            if art_w > 0:
+                self.art.rect.width = art_w
+            self.art.layout(ctx)
+
+            ax = self.rect.x + (self.rect.width - self.art.rect.width) // 2
+            self.art.rect.topleft = (ax, y)
+            y = self.art.rect.bottom + self.gap_after_art
+
         # Body (centered, clamped width)
         if self.body and self.body.visible:
             body_w = min(self.max_body_width, inner_w)
@@ -610,8 +633,15 @@ class MenuFrameWidget(Widget):
             self.footer.rect.topleft = (fx, fy)
 
         # List fills remaining height
+        # IMPORTANT: do not enforce min_list_height if there isn't room,
+        # or the list will overlap the footer and get clipped (esp. with big portraits).
         avail_h = (self.rect.bottom - self.bottom_pad - footer_h) - y
-        self.list_widget.rect.height = max(self.min_list_height, avail_h)
+        if avail_h <= 0:
+            self.list_widget.rect.height = 1
+        else:
+            # Treat min_list_height as a preference, not a hard minimum.
+            self.list_widget.rect.height = avail_h
+
 
         # Width policy
         if self.fill_list_width:
