@@ -590,7 +590,7 @@ class Game:
         player_tmpl_id = getattr(self.character, "template_id", None) or "human_base"
 
         # Build a base Actor from the data-driven factory
-        player = enemy_factory.spawn_enemy(player_tmpl_id, (px, py))
+        player = enemy_factory.spawn_enemy(player_tmpl_id, (px, py), game=self)
 
         # Override template defaults with run-specific data
         player.id = self._new_id()

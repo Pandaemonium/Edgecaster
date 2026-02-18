@@ -1686,3 +1686,171 @@ Highest-impact Phase 2 actions (enables fractal promise):
   4. BladeState -> chakra sub-graph conversion
 
 Owner: Claude audit (2026-02-13)
+
+===============================================================================
+CODEBASE AUDIT — REFRESH (2026-02-18)
+
+Full re-audit against `entity_chakra_unification_master_plan.txt` (v1.5) and
+`entity_chakra_unification_vision.txt` (v1.1). Focuses on issues that remain
+after the significant progress documented above.
+
+Reference: master plan v1.5 "Current Snapshot" section documents what is done.
+This audit covers what still needs fixing.
+
+-------------------------------------------------------------------------------
+(1) MASTER PLAN ALIGNMENT GAPS
+
+[CRITICAL][ENTITY_CHAKRA] factory.py global counter breaks determinism
+  - File: edgecaster/enemies/factory.py (line 22)
+  - `_enemy_counter` is a global mutable int, incremented on every spawn.
+  - Violates master plan decision #4: deterministic identity from seed+recipe.
+  - FIX: accept `game` parameter, derive ids from `game._new_id()`.
+    Delete the global counter.
+  - STATUS: FIXED (2026-02-18) — factory now uses `game._new_id()`.
+
+[CRITICAL][ENTITY_CHAKRA] entity_ops queries don't check removed/dead flags
+  - File: edgecaster/systems/entity_ops.py
+  - `actor_at()`, `entity_at()`, `items_at()`, `blocking_entity_at()` don't
+    consult `game.entity_state` for removed/dead status.
+  - Dead or removed entities are still "found" by game systems.
+  - FIX: add optional `game` parameter for entity_state checks, or check
+    `actor.alive` + entity tags for removal status.
+  - STATUS: FIXED (2026-02-18) — actor_at/entity_at/items_at now skip
+    entities marked removed in entity_state when game is provided.
+
+[HIGH][ENTITY_CHAKRA] toggle_door sets undefined `blocks_vision` attribute
+  - File: edgecaster/systems/entity_ops.py (line 176)
+  - `ent.blocks_vision = ent.blocks_movement` — Entity dataclass has no
+    `blocks_vision` field. This is a silent no-op or runtime error.
+  - FIX: remove the line (doors control vision via tile.walkable, not entity).
+  - STATUS: FIXED (2026-02-18) — removed undefined attribute write.
+
+[HIGH][ENTITY_CHAKRA] inventory.py duplicate player_pick_up functions
+  - File: edgecaster/systems/inventory.py
+  - `player_pick_up()` (line 138) and `player_pick_up_item()` (line 244)
+    share ~95% identical logic (currency, stacking, logging, grants, FOV).
+  - Two copies = two places for bugs to diverge.
+  - FIX: extract shared `_do_pickup()` helper, thin both functions to wrappers.
+  - STATUS: FIXED (2026-02-18) — shared `_do_pickup()` helper extracted.
+
+[MEDIUM][ENTITY_CHAKRA] Hardcoded NPC type checks violate Decision #6
+  - File: edgecaster/systems/attention.py (lines 745-821)
+  - Hardcoded "caged_demon" and "merchant" special-casing in attention staging.
+  - Decision #6: behavior should be data-driven, not type-switched.
+  - FIX: move NPC special behavior to prototype tags or spawn specs.
+
+[MEDIUM][ENTITY_CHAKRA] Hardcoded NPC ID switch in dialogues.py
+  - File: edgecaster/content/dialogues.py (lines 1395-1410)
+  - Hardcoded NPC ID dispatch for dialogue routing.
+  - FIX: move to data-driven dialogue lookup by prototype/semantic_id.
+
+[MEDIUM][ENTITY_CHAKRA] chakra_layouts.yaml and chakra_rules.yaml are stubs
+  - Files: edgecaster/content/chakra_layouts.yaml (21 lines),
+           edgecaster/content/chakra_rules.yaml (15 lines)
+  - Only contain defaults. Master plan envisions these as the data-driven
+    heart of the chakra system.
+  - FIX: populate as chakra substrate integration progresses.
+
+[MEDIUM][ENTITY_CHAKRA] Inventory list mutations bypass entity_graph_ops
+  - File: edgecaster/systems/inventory.py
+  - ~15 instances of direct `list.append()`/`list.remove()` on inventory lists
+    that bypass `attach_entity_to_parent` / `detach_entity_from_parent`.
+  - Entity graph doesn't know about these changes.
+  - FIX: audit and route all mutations through graph ops.
+
+-------------------------------------------------------------------------------
+(2) LEGACY CODE FOR DELETION
+
+Already tagged [LEGACY_DELETE]:
+  - poi_spawning.py (file header) — PHASE_8
+  - trade.py apply_proposal_with_qty() — PHASE_8
+  - footprints.py compatibility fallback — PHASE_8
+  - game.py (9 tagged locations) — various phases
+
+Should be tagged for future deletion:
+  - actors.py Human subclass (lines 66-71) — verify usage, then delete
+  - actors.py actor_id backwards-compat property (lines 56-62) — if no callers
+  - Duplicate geometry (_line_points, _point_segment_dist) in both
+    combat_actions.py and blade_runtime.py — consolidate
+  - phantom_limb duplication in blade_runtime.py — consolidate
+  - Dual vines systems in scheduling.py — unify
+  - poi_spawning.py ~50% duplicate of poi_worldgen.py — converge remaining
+
+-------------------------------------------------------------------------------
+(3) LEGIBILITY AND ORGANIZATION
+
+[CLEANUP] game.py is 4,594 lines with 22 act_* ability methods
+  - act_* methods belong in systems/combat_actions.py or similar.
+  - LevelState class definition should be in state/.
+  - Largest organizational issue in the codebase.
+
+[CLEANUP] chakra_items.py is 778 lines doing too much
+  - Item effect parsing, damage modifiers, ChakraState<->ChakraComponent sync,
+    global state caching all in one file.
+  - Split into: chakra_bridge.py (sync), chakra_effects.py (item effects),
+    chakra_damage.py (modifiers).
+
+[CLEANUP] ai.py uses 23 hardcoded if-chains for behavior dispatch
+  - Should be a registry/dict mapping behavior names to handler functions.
+
+[CLEANUP] Untyped tag schemas
+  - Tags like equipped_slot, equipped, base_attack, ai, no_xp, in_inventory
+    are all untyped dict entries.
+  - No central schema documents what tags exist or what types they should be.
+
+[CLEANUP] Global _LAST_EFFECTIVE_SIG in chakra_items.py
+  - Unbounded mutable dict used for caching, never cleared. Memory leak.
+
+[CLEANUP] Hardcoded blade formulas in blade_runtime.py
+  - Reach: 1.45+0.08*g, 2.2+0.25*g, 1.7+0.12*g
+  - Damage: 6+2g, 7+2g, 5+g
+  - Should be data-driven or named constants.
+
+[CLEANUP] NPCs defined in 3 places
+  - pois.yaml, npcs.py, and entities.yaml all define NPC data independently.
+
+-------------------------------------------------------------------------------
+(4) BUGS AND CORRECTNESS ISSUES
+
+[BUG] Counter-damage can trigger recursive death
+  - File: edgecaster/systems/combat.py
+  - 4+ paths to actor death. Counter-damage during death processing can
+    trigger recursive kill_actor() calls.
+
+[BUG] is_branch_root() known bug with resolved protos
+  - File: edgecaster/systems/chakras.py (lines 280-293)
+
+[PERF] O(n^2) entity search in inventory
+  - File: edgecaster/systems/inventory.py
+  - Linear scans through entity lists for operations that could use indices.
+
+[CLEANUP] Exception swallowing in entity_graph_ops.py
+  - Heavy try/except blocks silently catch and log errors.
+  - Hides bugs during development.
+
+[CLEANUP] Debug logging to hardcoded path in factory.py
+  - edgecaster/enemies/factory.py writes to hardcoded debug.log path.
+  - STATUS: FIXED (2026-02-18) — debug logger removed.
+
+-------------------------------------------------------------------------------
+(5) TEST GAPS
+
+  - No persistence validation tests (entity_state lifecycle round-trip)
+  - No parity testing between old and new code paths
+  - No chakra gating integration tests
+  - No expansion/collapse round-trip tests
+  - No deterministic identity collision tests
+  - No destruction persistence for structures
+
+-------------------------------------------------------------------------------
+(6) POSITIVE FINDINGS
+
+  - Renderer architecture (ascii.py) is sound — no anti-pattern #2 violations.
+  - No lineage_state references remain — migration complete.
+  - poi_worldgen.py has excellent deterministic ID infrastructure.
+  - entity_identity.py substrate is clean and well-designed.
+  - Footprint system is well-architected (dual local/absolute model).
+  - Dialogue chakra sage system shows deep understanding of chakra gating.
+  - Overall migration progress is substantial (see PROGRESS NOTES above).
+
+Owner: Claude audit (2026-02-18)

@@ -586,6 +586,7 @@ def realize_poi_npc_spec(
             "caged_demon",
             spawn_pos,
             abs_pos=game.abs_from_zone_local(coord, spawn_pos),
+            game=game,
         )
         actor.faction = "neutral"
         actor.actions = ()
@@ -604,6 +605,7 @@ def realize_poi_npc_spec(
             "merchant",
             spawn_pos,
             abs_pos=game.abs_from_zone_local(coord, spawn_pos),
+            game=game,
         )
         actor.faction = "npc"
         actor.actions = ()

@@ -819,7 +819,7 @@ def spawn_enemies(
 
         # YOGA: Compute ABS position for canonical storage
         abs_pos = game.abs_from_zone_local(level.coord, pos)
-        mob = enemy_factory.spawn_enemy(tmpl_id, pos, abs_pos=abs_pos)
+        mob = enemy_factory.spawn_enemy(tmpl_id, pos, abs_pos=abs_pos, game=game)
 
         # 20% bismuth imps
         if tmpl_id == "imp" and game.rng.random() < 0.2:
@@ -893,7 +893,7 @@ def _spawn_slaver_pack(
 
         # YOGA: Compute ABS position for canonical storage
         brute_abs_pos = game.abs_from_zone_local(level.coord, (tx, ty))
-        brute = enemy_factory.spawn_enemy("shackled_brute", (tx, ty), abs_pos=brute_abs_pos)
+        brute = enemy_factory.spawn_enemy("shackled_brute", (tx, ty), abs_pos=brute_abs_pos, game=game)
         brute.tags = getattr(brute, "tags", None) or {}
         brute.tags["slaver_master_id"] = slaver.id
         brute.tags["slaver_group_id"] = group_id
@@ -1022,7 +1022,7 @@ def _spawn_angry_circus(
         used_positions.add(spawn_xy)
 
         m_abs = game.abs_from_zone_local(level.coord, spawn_xy)
-        mate = enemy_factory.spawn_enemy(tmpl, spawn_xy, abs_pos=m_abs)
+        mate = enemy_factory.spawn_enemy(tmpl, spawn_xy, abs_pos=m_abs, game=game)
         mate.tags = getattr(mate, "tags", None) or {}
         mate.tags["circus_group_id"] = group_id
         mate.tags["circus_ringmaster_id"] = ringmaster.id
@@ -1066,7 +1066,7 @@ def spawn_enemy_with_pack(
     if zone_tier is None:
         zone_tier = int(getattr(level, "danger_tier", 1) or 1)
     abs_pos = game.abs_from_zone_local(level.coord, pos)
-    mob = enemy_factory.spawn_enemy(enemy_id, pos, abs_pos=abs_pos)
+    mob = enemy_factory.spawn_enemy(enemy_id, pos, abs_pos=abs_pos, game=game)
     _apply_enemy_zone_scaling(level, mob, zone_tier=zone_tier, enemy_bounds=enemy_bounds)
     register_actor(game, level, mob, schedule_ai=schedule_ai)
     if enemy_id == "slaver":
@@ -1088,7 +1088,7 @@ def spawn_imps_near(
     def place_imp(pos: Tuple[int, int]) -> None:
         # YOGA: Compute ABS position for canonical storage
         abs_pos = game.abs_from_zone_local(level.coord, pos)
-        imp = enemy_factory.spawn_enemy("imp", pos, abs_pos=abs_pos)
+        imp = enemy_factory.spawn_enemy("imp", pos, abs_pos=abs_pos, game=game)
 
         # 20% chance bismuth
         if game.rng.random() < 0.2:
@@ -1113,7 +1113,7 @@ def spawn_echoes_near(
     def place_echo(pos: Tuple[int, int]) -> None:
         # YOGA: Compute ABS position for canonical storage
         abs_pos = game.abs_from_zone_local(level.coord, pos)
-        echo = enemy_factory.spawn_enemy("fractal_echo", pos, abs_pos=abs_pos)
+        echo = enemy_factory.spawn_enemy("fractal_echo", pos, abs_pos=abs_pos, game=game)
         register_actor(game, level, echo, schedule_ai=True)
 
     return spawn_entities_near(game, level, center, count, place_echo, radius)

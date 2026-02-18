@@ -744,9 +744,9 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         # Special cases kept centralized for consistency with runtime NPC behavior.
         if npc_id == "caged_demon":
             try:
-                a = enemy_factory.spawn_enemy("caged_demon", local_pos, abs_pos=abs_pos)
+                a = enemy_factory.spawn_enemy("caged_demon", local_pos, abs_pos=abs_pos, game=game)
             except TypeError:
-                a = enemy_factory.spawn_enemy("caged_demon", local_pos)
+                a = enemy_factory.spawn_enemy("caged_demon", local_pos, game=game)
                 try:
                     a.abs_pos = abs_pos
                 except Exception:
@@ -786,9 +786,9 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
         if npc_id == "merchant":
             try:
-                a = enemy_factory.spawn_enemy("merchant", local_pos, abs_pos=abs_pos)
+                a = enemy_factory.spawn_enemy("merchant", local_pos, abs_pos=abs_pos, game=game)
             except TypeError:
-                a = enemy_factory.spawn_enemy("merchant", local_pos)
+                a = enemy_factory.spawn_enemy("merchant", local_pos, game=game)
                 try:
                     a.abs_pos = abs_pos
                 except Exception:

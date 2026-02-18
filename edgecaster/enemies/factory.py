@@ -1,45 +1,37 @@
 from __future__ import annotations
 
-from typing import Tuple
-from pathlib import Path
+from typing import Tuple, TYPE_CHECKING
 
 from edgecaster.state.actors import Actor
 from edgecaster import prototypes
 from edgecaster import spawn_factory
 
-# debug logger
-_DEBUG_PATH = Path(__file__).resolve().parent.parent / "debug.log"
+if TYPE_CHECKING:
+    from edgecaster.game import Game
 
 
-def _dbg(msg: str) -> None:
-    try:
-        with open(_DEBUG_PATH, "a", encoding="utf-8") as f:
-            f.write(f"[factory] {msg}\n")
-    except Exception:
-        pass
+def spawn_enemy(
+    tmpl_id: str,
+    pos: Tuple[int, int],
+    abs_pos: Tuple[int, int] | None = None,
+    *,
+    game: "Game | None" = None,
+) -> Actor:
+    """Create an Actor from a prototype id at the given position.
 
+    When *game* is provided, uses ``game._new_id()`` so the actor participates
+    in the session-wide sequential ID space (avoids determinism violations from
+    a module-level global counter).  Falls back to a simple sequential counter
+    only for legacy callers that do not pass *game*.
+    """
+    aid = game._new_id() if game is not None else _fallback_next_id()
 
-_enemy_counter = 1
-
-
-def _next_id(prefix: str = "enemy") -> str:
-    global _enemy_counter
-    eid = f"{prefix}_{_enemy_counter}"
-    _enemy_counter += 1
-    return eid
-
-
-def spawn_enemy(tmpl_id: str, pos: Tuple[int, int], abs_pos: Tuple[int, int] | None = None) -> Actor:
-    """Create an Actor from a prototype id at the given position."""
     try:
         spec = prototypes.resolve_proto(tmpl_id)
-    except Exception as e:
-        _dbg(f"resolve_proto({tmpl_id!r}) failed: {e!r}")
+    except Exception:
         spec = {}
 
     if not spec:
-        _dbg(f"Unknown enemy proto id '{tmpl_id}'. Falling back to placeholder Actor.")
-        # Placeholder enemy (same spirit as before)
         return spawn_factory.build_actor_from_spec(
             spec={
                 "id": "unknown_enemy",
@@ -55,15 +47,29 @@ def spawn_enemy(tmpl_id: str, pos: Tuple[int, int], abs_pos: Tuple[int, int] | N
                 "actions": ("move", "wait"),
                 "tags": ["placeholder"],
             },
-            aid=_next_id(),
+            aid=aid,
             pos=pos,
-            abs_pos=abs_pos
+            abs_pos=abs_pos,
         )
 
-    # Normal case: build actor from resolved proto
     return spawn_factory.build_actor_from_spec(
         spec=spec,
-        aid=_next_id(),
+        aid=aid,
         pos=pos,
-        abs_pos=abs_pos
+        abs_pos=abs_pos,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fallback counter — only for callers that cannot pass *game* yet.
+# Tagged for removal once all callers are updated.
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# ---------------------------------------------------------------------------
+_fallback_counter = 1
+
+
+def _fallback_next_id(prefix: str = "enemy") -> str:
+    global _fallback_counter
+    eid = f"{prefix}_{_fallback_counter}"
+    _fallback_counter += 1
+    return eid

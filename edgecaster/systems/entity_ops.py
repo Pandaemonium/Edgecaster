@@ -15,9 +15,28 @@ if TYPE_CHECKING:
     from edgecaster.state.entities import Entity
 
 
-def actor_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Actor"]:
+def _is_suppressed(game: "Game | None", entity: object) -> bool:
+    """Return True if *entity* is marked removed/dead in entity_state."""
+    if game is None:
+        return False
+    try:
+        return game.entity_is_suppressed(entity)
+    except Exception:
+        return False
+
+
+def actor_at(
+    level: "LevelState",
+    pos: Tuple[int, int],
+    *,
+    game: "Game | None" = None,
+) -> Optional["Actor"]:
     for actor in level.actors.values():
-        if actor.alive and footprints_system.entity_overlaps_tile(actor, pos):
+        if not actor.alive:
+            continue
+        if _is_suppressed(game, actor):
+            continue
+        if footprints_system.entity_overlaps_tile(actor, pos):
             return actor
     return None
 
@@ -104,7 +123,12 @@ def all_actors(level: "LevelState") -> List["Actor"]:
     return [a for a in level.actors.values() if a.alive]
 
 
-def entity_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Entity"]:
+def entity_at(
+    level: "LevelState",
+    pos: Tuple[int, int],
+    *,
+    game: "Game | None" = None,
+) -> Optional["Entity"]:
     """Return primary entity at tile, preferring non-actor items/features."""
     from edgecaster.state.actors import Actor
 
@@ -112,6 +136,8 @@ def entity_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Entity"]:
     actor_candidate: Optional["Entity"] = None
 
     for ent in level.entities.values():
+        if _is_suppressed(game, ent):
+            continue
         if not footprints_system.entity_overlaps_tile(ent, pos):
             continue
         if isinstance(ent, Actor):
@@ -123,11 +149,17 @@ def entity_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Entity"]:
     return item_candidate or actor_candidate
 
 
-def items_at(level: "LevelState", pos: Tuple[int, int]) -> List["Entity"]:
+def items_at(
+    level: "LevelState",
+    pos: Tuple[int, int],
+    *,
+    game: "Game | None" = None,
+) -> List["Entity"]:
     return [
         e for e in level.entities.values()
         if footprints_system.entity_overlaps_tile(e, pos)
         and getattr(e, "kind", None) == "item"
+        and not _is_suppressed(game, e)
     ]
 
 
@@ -135,8 +167,15 @@ def all_entities(level: "LevelState") -> List["Entity"]:
     return list(level.entities.values())
 
 
-def blocking_entity_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Entity"]:
+def blocking_entity_at(
+    level: "LevelState",
+    pos: Tuple[int, int],
+    *,
+    game: "Game | None" = None,
+) -> Optional["Entity"]:
     for ent in level.entities.values():
+        if _is_suppressed(game, ent):
+            continue
         if footprints_system.entity_blocks_movement_at(ent, pos):
             return ent
     return None
@@ -173,7 +212,6 @@ def toggle_door(game: "Game", ent: "Entity", level: "LevelState", notify: bool =
     if state == "closed":
         tags["door_state"] = "open"
         ent.blocks_movement = False
-        ent.blocks_vision = ent.blocks_movement
         ent.glyph = "/"
         ent.color = getattr(ent, "color", (180, 140, 80))
         if tile:

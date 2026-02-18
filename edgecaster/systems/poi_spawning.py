@@ -510,7 +510,7 @@ def spawn_poi_contents(game: "Game", level: "LevelState", coord: Tuple[int, int,
                     spawn_spec=_template_spec(base_proto),
                 )
                 if spot:
-                    actor = enemy_factory.spawn_enemy(base_proto, spot, abs_pos=game.abs_from_zone_local(coord, spot))
+                    actor = enemy_factory.spawn_enemy(base_proto, spot, abs_pos=game.abs_from_zone_local(coord, spot), game=game)
                     if legend_name:
                         actor.name = str(legend_name)
                     actor.tags = getattr(actor, "tags", {}) or {}
@@ -559,7 +559,8 @@ def spawn_poi_contents(game: "Game", level: "LevelState", coord: Tuple[int, int,
                         ):
                             continue
                         mob = enemy_factory.spawn_enemy(
-                            base_proto, (tx, ty), abs_pos=game.abs_from_zone_local(coord, (tx, ty))
+                            base_proto, (tx, ty), abs_pos=game.abs_from_zone_local(coord, (tx, ty)),
+                            game=game,
                         )
                         spawning_system.register_actor(game, level, mob, schedule_ai=True)
                         spawned += 1

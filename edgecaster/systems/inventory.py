@@ -135,158 +135,51 @@ def _mark_entity_removed(game: "Game", ent: Any, *, reason: str) -> None:
 # Pick Up / Drop
 # ---------------------------------------------------------------------------
 
-def player_pick_up(game: "Game") -> None:
-    """Attempt to pick up an item under the player's feet."""
-    level = game._level()
-    if game.player_id not in level.actors:
+def _remove_ent_from_level(level: "LevelState", ent: Any) -> None:
+    """Remove *ent* from the level entity dict by identity."""
+    ent_id = getattr(ent, "id", None)
+    if ent_id is not None and ent_id in level.entities:
+        del level.entities[ent_id]
         return
-    player = level.actors[game.player_id]
-    ent = game._entity_at(level, player.pos)
-    if ent is None:
-        game.log.add("There is nothing here to pick up.")
-        return
+    # Fallback: scan by identity (legacy path where id may not match key)
+    for eid, e in list(level.entities.items()):
+        if e is ent:
+            del level.entities[eid]
+            return
+
+
+def _do_pickup(game: "Game", level: "LevelState", ent: Any) -> bool:
+    """Shared pickup core — handles currency, stacking, logging, grants, FOV.
+
+    Returns True if the item was picked up (fully or partially), False if
+    the entity cannot be picked up.
+    """
+    tags = getattr(ent, "tags", {}) or {}
 
     # Currency piles are auto-absorbed.
-    tags = getattr(ent, "tags", {}) or {}
-    if tags.get("currency") == "bismuth":
-        amt = int(tags.get("amount", 0))
-        if amt > 0:
-            game.adjust_currency(amt, log=True)
-            # Play cash pickup sound (best-effort).
-            game._play_sfx("assets/sfx/chaching.mp3", volume=0.7)
-        # remove entity from world
-        for eid, e in list(level.entities.items()):
-            if e is ent:
-                _mark_entity_removed(game, ent, reason="pickup_currency")
-                del level.entities[eid]
-                break
-        return
-
-    # Don't allow picking up actors or non-item entities (for now).
-    if hasattr(ent, "faction") or getattr(ent, "kind", None) != "item":
-        game.log.add("You can't pick that up.")
-        return
-
-    # Get the item's quantity and name before potentially merging
-    pickup_qty = get_quantity(ent)
-    name = getattr(ent, "name", None) or "item"
-
-    # Check if this item can stack with an existing inventory item
-    inv = get_player_inventory(game)
-    stack_target = _find_stack_target(inv, ent)
-
-    if stack_target is not None:
-        # Try to merge into existing stack
-        overflow = _add_to_stack(stack_target, pickup_qty)
-        if overflow > 0:
-            # Partial pickup: keep remainder on ground
-            set_quantity(ent, overflow)
-            picked = pickup_qty - overflow
-            if picked > 1:
-                game.log.add(f"You pick up {picked} {name.lower()}s (stack full).")
-            else:
-                game.log.add(f"You pick up a {name.lower()} (stack full).")
-        else:
-            # Fully absorbed into stack - remove from world
-            for eid, e in list(level.entities.items()):
-                if e is ent:
-                    _mark_entity_removed(game, ent, reason="pickup")
-                    del level.entities[eid]
-                    break
-            if pickup_qty > 1:
-                game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
-            else:
-                article = "an" if name and name[0].lower() in "aeiou" else "a"
-                game.log.add(f"You pick up {article} {name.lower()}.")
-    else:
-        # No existing stack - add as new item
-        # Remove from the level's entity list.
-        for eid, e in list(level.entities.items()):
-            if e is ent:
-                _mark_entity_removed(game, ent, reason="pickup")
-                del level.entities[eid]
-                break
-
-        # Ensure quantity tag is set
-        set_quantity(ent, pickup_qty)
-        inv.append(ent)
-        entity_graph_ops_system.attach_entity_to_parent(game, ent, game.player_id, socket_id="inventory")
-
-        if pickup_qty > 1:
-            game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
-        else:
-            article = "an" if name and name[0].lower() in "aeiou" else "a"
-            game.log.add(f"You pick up {article} {name.lower()}.")
-
-    # Item-granted actions (held/equipped) are computed from inventory state,
-    # so they appear/disappear automatically when the item is moved.
-    try:
-        grants = item_grants.get_item_grants(ent)
-    except Exception:
-        grants = []
-    if grants:
-        game.refresh_actor_actions(game.player_id)
-        for action, mode in grants:
-            if mode != "held":
-                continue
-            # Held-grants are temporary, so avoid "learned" language here.
-            game.log.add(f"You can {action.replace('_', ' ')} while holding it.")
-
-    # Refresh FOV if picked up item was emitting light
-    if tags.get("light_radius", 0) > 0:
-        level.need_fov = True
-        try:
-            game._update_fov(level)
-        except Exception:
-            pass
-
-
-def player_pick_up_item(game: "Game", item: Any) -> bool:
-    """Pick up a specific item from the ground (not just the 'top' one).
-
-    Used by CacheItemsScene for multi-item pickup selection.
-    Returns True if the item was picked up, False otherwise.
-    """
-    level = game._level()
-    if game.player_id not in level.actors:
-        return False
-
-    # Verify item is still in level entities
-    item_id = getattr(item, "id", None)
-    if item_id is None or item_id not in level.entities:
-        return False
-
-    ent = level.entities[item_id]
-    tags = getattr(ent, "tags", {}) or {}
-
-    # Currency piles are auto-absorbed
     if tags.get("currency") == "bismuth":
         amt = int(tags.get("amount", 0))
         if amt > 0:
             game.adjust_currency(amt, log=True)
             game._play_sfx("assets/sfx/chaching.mp3", volume=0.7)
         _mark_entity_removed(game, ent, reason="pickup_currency")
-        del level.entities[item_id]
+        _remove_ent_from_level(level, ent)
         return True
 
-    # Don't allow picking up actors or non-item entities
+    # Don't allow picking up actors or non-item entities.
     if hasattr(ent, "faction") or getattr(ent, "kind", None) != "item":
         game.log.add("You can't pick that up.")
         return False
 
-    # Get the item's quantity and name before potentially merging
     pickup_qty = get_quantity(ent)
     name = getattr(ent, "name", None) or "item"
 
-    # Check if this item can stack with an existing inventory item
     inv = get_player_inventory(game)
     stack_target = _find_stack_target(inv, ent)
 
     if stack_target is not None:
-        # Try to merge into existing stack
         overflow = _add_to_stack(stack_target, pickup_qty)
         if overflow > 0:
-            # Partial pickup: keep remainder on ground
             set_quantity(ent, overflow)
             picked = pickup_qty - overflow
             if picked > 1:
@@ -294,18 +187,16 @@ def player_pick_up_item(game: "Game", item: Any) -> bool:
             else:
                 game.log.add(f"You pick up a {name.lower()} (stack full).")
         else:
-            # Fully absorbed into stack - remove from world
             _mark_entity_removed(game, ent, reason="pickup")
-            del level.entities[item_id]
+            _remove_ent_from_level(level, ent)
             if pickup_qty > 1:
                 game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
             else:
                 article = "an" if name and name[0].lower() in "aeiou" else "a"
                 game.log.add(f"You pick up {article} {name.lower()}.")
     else:
-        # No existing stack - add as new item
         _mark_entity_removed(game, ent, reason="pickup")
-        del level.entities[item_id]
+        _remove_ent_from_level(level, ent)
         set_quantity(ent, pickup_qty)
         inv.append(ent)
         entity_graph_ops_system.attach_entity_to_parent(game, ent, game.player_id, socket_id="inventory")
@@ -337,6 +228,37 @@ def player_pick_up_item(game: "Game", item: Any) -> bool:
             pass
 
     return True
+
+
+def player_pick_up(game: "Game") -> None:
+    """Attempt to pick up an item under the player's feet."""
+    level = game._level()
+    if game.player_id not in level.actors:
+        return
+    player = level.actors[game.player_id]
+    ent = game._entity_at(level, player.pos)
+    if ent is None:
+        game.log.add("There is nothing here to pick up.")
+        return
+    _do_pickup(game, level, ent)
+
+
+def player_pick_up_item(game: "Game", item: Any) -> bool:
+    """Pick up a specific item from the ground (not just the 'top' one).
+
+    Used by CacheItemsScene for multi-item pickup selection.
+    Returns True if the item was picked up, False otherwise.
+    """
+    level = game._level()
+    if game.player_id not in level.actors:
+        return False
+
+    item_id = getattr(item, "id", None)
+    if item_id is None or item_id not in level.entities:
+        return False
+
+    ent = level.entities[item_id]
+    return _do_pickup(game, level, ent)
 
 
 def drop_inventory_item(game: "Game", index: int) -> None:
