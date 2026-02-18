@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import random
 from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -104,7 +105,7 @@ def _place_fixed_sites(game: "Game", *, zone_w: int, zone_h: int, existing_coord
                     "site": True,
                     "site_id": f"{site_kind}_fixed_{zx}_{zy}",
                     "site_kind": site_kind,
-                    "site_seed": int(getattr(game, "seed", 1337) or 1337),
+                    "site_seed": int(_world_seed(game)),
                     **tags,
                 },
             },
@@ -358,6 +359,139 @@ def _derive_seed(world_seed: int, kind: str, coord: Tuple[int, int, int]) -> int
     return int(digest, 16)
 
 
+
+
+def _world_seed(game: "Game") -> int:
+    """
+    Canonical run seed. In your codebase, Game now sets self.seed = int(self.fractal_seed),
+    so this should be stable and correct.
+    """
+    try:
+        return int(getattr(game, "seed"))
+    except Exception:
+        return 1337
+
+
+def _stable_int_hash(*parts: object) -> int:
+    s = "|".join(str(p) for p in parts)
+    h = 2166136261
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return int(h)
+
+
+def _place_fixed_near_sites(
+    game: "Game",
+    *,
+    zone_w: int,
+    zone_h: int,
+    num_zones_x: int,
+    num_zones_y: int,
+    existing_coords: set[tuple[int, int]],
+    fixed_site_by_kind: dict[str, tuple[int, int, int, int, int]],
+) -> int:
+    """
+    Place any site_* prototypes tagged with:
+      tags.fixed_near_site_kind: "<kind>"
+      tags.fixed_near_min_abs / tags.fixed_near_max_abs: distance in ABS tiles
+    near a previously placed fixed site of that kind.
+
+    fixed_site_by_kind[kind] = (zx, zy, zz, ox, oy)
+    """
+    placed = 0
+    wie = getattr(game, "world_entity_index", None)
+    if wie is None:
+        return 0
+
+    bucket = prototypes.get_master_bucket()
+    base_seed = _world_seed(game)
+
+    for pid, proto in (bucket or {}).items():
+        if not str(pid).startswith("site_"):
+            continue
+
+        tags = (proto.get("tags") or {})
+        if not tags.get("site", False):
+            continue
+
+        near_kind = str(tags.get("fixed_near_site_kind") or "").strip()
+        if not near_kind:
+            continue
+        if near_kind not in fixed_site_by_kind:
+            continue
+
+        # Already placed by coord?
+        site_kind = str(tags.get("site_kind") or pid[len("site_"):])
+
+        # Reference anchor (ABS)
+        base_zx, base_zy, base_zz, base_ox, base_oy = fixed_site_by_kind[near_kind]
+        base_ax = int(base_zx) * int(zone_w) + int(base_ox)
+        base_ay = int(base_zy) * int(zone_h) + int(base_oy)
+
+        dmin = int(tags.get("fixed_near_min_abs", 100) or 100)
+        dmax = int(tags.get("fixed_near_max_abs", 200) or 200)
+        dmin = max(1, dmin)
+        dmax = max(dmin, dmax)
+
+        rng = random.Random((base_seed ^ _stable_int_hash("fixed_near", pid, near_kind, base_ax, base_ay)) & 0xFFFFFFFF)
+
+        zz = int(tags.get("fixed_near_site_z", base_zz) or base_zz)
+
+        zx = zy = ox = oy = None
+        for _attempt in range(120):
+            ang = rng.random() * (math.pi * 2.0)
+            dist = rng.uniform(float(dmin), float(dmax))
+            dx = int(round(math.cos(ang) * dist))
+            dy = int(round(math.sin(ang) * dist))
+
+            ax = base_ax + dx
+            ay = base_ay + dy
+
+            zxx = int(ax) // int(zone_w)
+            zyy = int(ay) // int(zone_h)
+            if zxx < 0 or zyy < 0 or zxx >= int(num_zones_x) or zyy >= int(num_zones_y):
+                continue
+            if (zxx, zyy) in existing_coords:
+                continue
+
+            lxx = int(ax) - zxx * int(zone_w)
+            lyy = int(ay) - zyy * int(zone_h)
+
+            zx, zy, ox, oy = zxx, zyy, lxx, lyy
+            break
+
+        if zx is None:
+            continue
+
+        existing_coords.add((int(zx), int(zy)))
+
+        eid = f"site:{site_kind}_near_{near_kind}_{zx}_{zy}"
+
+        ent = spawn_factory.build_entity_from_spec(
+            spec=proto,
+            eid=eid,
+            pos=(int(ox), int(oy)),
+            overrides={
+                "kind": "feature",
+                "base_size": int(proto.get("base_size", 64) or 64),
+                "tags": {
+                    "world_entity": True,
+                    "site": True,
+                    "site_id": f"{site_kind}_near_{near_kind}_{zx}_{zy}",
+                    "site_kind": site_kind,
+                    "site_seed": base_seed,
+                    **tags,
+                },
+            },
+        )
+
+        game.world_entity_index.add(ent, zone_coord=(int(zx), int(zy), int(zz)), local_pos=(int(ox), int(oy)))
+        placed += 1
+
+    return placed
+
+
 def place_sites_for_type(
     game: "Game",
     site_cfg: SiteTypeConfig,
@@ -406,7 +540,7 @@ def place_sites_for_type(
     num_zones_y = max(1, total_y // zone_h)
 
     biome_arr = climate.get("biome")
-    world_seed = getattr(game, "seed", 1337)
+    world_seed = _world_seed(game)
 
     placed: List[SiteSpec] = []
     placed_coords: Set[Tuple[int, int]] = set(existing_coords)
@@ -503,7 +637,7 @@ def place_all_sites(game: "Game") -> None:
             debug("[site_placement] No site types loaded from prototypes")
         return
 
-    world_seed = getattr(game, "seed", 1337)
+    world_seed = _world_seed(game)
     rng = np.random.default_rng(world_seed)
 
     cfg = getattr(game, "cfg", None)
@@ -520,6 +654,33 @@ def place_all_sites(game: "Game") -> None:
 
     total_placed += _place_fixed_sites(game, zone_w=zone_w, zone_h=zone_h, existing_coords=existing_coords)
 
+    # Build lookup of fixed sites by kind so we can place fixed-near sites (Inventor, Academy, etc.)
+    fixed_site_by_kind: dict[str, tuple[int, int, int, int, int]] = {}
+    try:
+        wie = getattr(game, "world_entity_index", None)
+        if wie is not None:
+            by_zone = getattr(wie, "_by_zone", {}) or {}
+            for zc, refs in by_zone.items():
+                for ref in refs:
+                    ent = getattr(ref, "ent", None)
+                    tags = getattr(ent, "tags", {}) or {}
+                    if tags.get("site") and tags.get("site_kind"):
+                        sk = str(tags.get("site_kind"))
+                        zx, zy, zz = map(int, getattr(ref, "zone_coord", zc))
+                        ox, oy = map(int, getattr(ref, "local_pos", (0, 0)))
+                        fixed_site_by_kind[sk] = (zx, zy, zz, ox, oy)
+    except Exception:
+        fixed_site_by_kind = {}
+
+    total_placed += _place_fixed_near_sites(
+        game,
+        zone_w=zone_w,
+        zone_h=zone_h,
+        num_zones_x=num_zones_x,
+        num_zones_y=num_zones_y,
+        existing_coords=existing_coords,
+        fixed_site_by_kind=fixed_site_by_kind,
+    )
 
     for kind, site_cfg in site_types.items():
 

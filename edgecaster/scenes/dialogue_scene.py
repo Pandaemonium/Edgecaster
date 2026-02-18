@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Optional, Any, Callable
 import pygame
 
-from edgecaster.ui.widgets import _wrap_text_px
-from .base import PopupMenuScene
+from edgecaster.ui.widgets import _wrap_text_px, PortraitWidget
+from .base import PopupMenuScene, MenuFrameWidget
 
 
 class DialoguePopupScene(PopupMenuScene):
@@ -16,6 +16,10 @@ class DialoguePopupScene(PopupMenuScene):
     recursion path.
     """
     FOOTER_TEXT = ""
+    PORTRAIT_SIZE_PX = 480 
+    PORTRAIT_PADDING = 12
+
+
 
     # Dialogue should not use logical-surface scaling.
     def get_logical_panel_size(self, manager):
@@ -110,6 +114,90 @@ class DialoguePopupScene(PopupMenuScene):
             choices = []
         return [self._choice_text(c) for c in choices] or ["(End)"]
 
+
+
+    # ------------------------------------------------------------------ #
+    # Speaker portrait (cosmetic)
+    # ------------------------------------------------------------------ #
+
+    def _get_portrait_entity(self) -> Any | None:
+        """Resolve a speaker entity for portrait purposes.
+
+        DialogueTree ids are typically "npc:<npc_id>" where <npc_id> matches
+        actor.tags["npc_id"]. We search the current level's actors for a match.
+
+        If no match is found, we simply omit the portrait (cosmetic only).
+        """
+        try:
+            tree_id = str(getattr(self.tree, "id", "") or "")
+            npc_id = ""
+            if tree_id.startswith("npc:"):
+                npc_id = tree_id.split("npc:", 1)[1].strip()
+
+            # Optional explicit hint set by a builder (not required).
+            ent = getattr(self.tree, "speaker", None)
+            if ent is not None:
+                return ent
+
+            lvl = getattr(self.game, "_level", lambda: None)()
+            actors = getattr(lvl, "actors", None)
+            if isinstance(actors, dict):
+                if not npc_id:
+                    return None
+                for a in actors.values():
+                    try:
+                        tags = getattr(a, "tags", None) or {}
+                        if str(tags.get("npc_id") or "") == npc_id:
+                            return a
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return None
+
+
+    def _build_widgets(self, items: list[str]) -> None:
+        """Build the standard popup UI, then inject an optional portrait.
+
+        Critical: this must never raise, or events.py may fall back into legacy
+        recursion paths. Any portrait failure should degrade to 'no portrait'.
+        """
+        try:
+            super()._build_widgets(items)
+        except Exception:
+            # If the base build fails, let the normal error handling happen.
+            raise
+
+        try:
+            root = getattr(self, "root", None)
+            if not isinstance(root, MenuFrameWidget):
+                return
+
+            ent = self._get_portrait_entity()
+            if ent is None:
+                root.art = None
+                return
+
+            g = "?"
+            try:
+                g = str(getattr(ent, "glyph", "?") or "?")[0]
+            except Exception:
+                pass
+
+            root.art = PortraitWidget(entity=ent, glyph=g, size_px=self.PORTRAIT_SIZE_PX, padding=self.PORTRAIT_PADDING, prefer_sprite=True)
+            # Ensure it is registered as a child so it draws/layouts.
+            try:
+                root.add_child(root.art)
+            except Exception:
+                pass
+        except Exception:
+            # Portrait must never crash dialogue opening.
+            try:
+                if isinstance(getattr(self, "root", None), MenuFrameWidget):
+                    self.root.art = None
+            except Exception:
+                pass
+            return
     # ------------------------------------------------------------------ #
     # Snug sizing (safe)
     # ------------------------------------------------------------------ #
@@ -139,6 +227,11 @@ class DialoguePopupScene(PopupMenuScene):
         border = 2
         gap_title_body = 10
         gap_body_choices = 14
+        gap_title_art = 10
+        gap_art_body = 10
+        art_size_px = self.PORTRAIT_SIZE_PX
+        art_padding = self.PORTRAIT_PADDING
+        art_h = art_size_px + 2 * art_padding
 
         font = getattr(r, "menu_font", getattr(r, "small_font", getattr(r, "font")))
         title_font = getattr(r, "menu_title_font", font)
@@ -155,6 +248,9 @@ class DialoguePopupScene(PopupMenuScene):
         t_w0, t_h0 = title_font.size(title or " ")
         title_w = t_w0 * title_scale
         title_h = t_h0 * title_scale
+
+        has_portrait = (self._get_portrait_entity() is not None)
+
 
         # Body (wrapped)
         body_lines = _wrap_text_px(font, body_text, max_text_w) if body_text else []
@@ -177,8 +273,19 @@ class DialoguePopupScene(PopupMenuScene):
         content_h = 0
         if title:
             content_h += title_h
-            if body_lines or choices:
+            if has_portrait:
+                content_h += gap_title_art
+                content_h += art_h
+                if body_lines or choices:
+                    content_h += gap_art_body
+            elif body_lines or choices:
                 content_h += gap_title_body
+        elif has_portrait:
+            # (Unlikely, but handle missing title gracefully)
+            content_h += art_h
+            if body_lines or choices:
+                content_h += gap_art_body
+
 
         if body_lines:
             content_h += body_h

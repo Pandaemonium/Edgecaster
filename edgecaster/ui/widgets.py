@@ -1337,6 +1337,89 @@ class SpacerWidget(Widget):
         return
 
 
+class PortraitWidget(Widget):
+    """
+    Draws a magnified portrait for an entity: sprite if renderer supports it,
+    else a big glyph fallback. This widget is intentionally exception-safe:
+    it must never be able to crash a dialogue/popup.
+    """
+
+    def __init__(
+        self,
+        *,
+        entity: object | None = None,
+        glyph: str = "?",
+        size_px: int = 96,
+        padding: int = 6,
+        prefer_sprite: bool = True,
+    ) -> None:
+        super().__init__()
+        self.entity = entity
+        self.glyph = (glyph or "?")[0]
+        self.size_px = max(8, int(size_px))
+        self.padding = max(0, int(padding))
+        self.prefer_sprite = bool(prefer_sprite)
+
+    def layout(self, ctx: WidgetContext) -> None:
+        # If parent doesn't size us, enforce a sensible square height.
+        if self.rect.height <= 0:
+            self.rect.height = self.size_px + 2 * self.padding
+        if self.rect.width <= 0:
+            self.rect.width = self.size_px + 2 * self.padding
+
+    def draw(self, ctx: WidgetContext) -> None:
+        if not self.visible:
+            return
+
+        try:
+            inner = self.rect.inflate(-2 * self.padding, -2 * self.padding)
+            side = max(1, min(inner.width, inner.height))
+            dst = pygame.Rect(0, 0, side, side)
+            dst.center = inner.center
+
+            surf = None
+            r = getattr(ctx, "renderer", None)
+
+            # Prefer sprites by default (if renderer supports them), but allow a hard override
+            # to force glyph portraits (useful for strict ASCII runs).
+            prefer_sprite = bool(self.prefer_sprite)
+            try:
+                if r is not None and bool(getattr(r, "force_glyph_portraits", False)):
+                    prefer_sprite = False
+            except Exception:
+                pass
+
+
+            # Preferred: ask renderer for an icon surface if supported.
+            if self.entity is not None and r is not None and hasattr(r, "get_entity_icon_surface"):
+                try:
+                    surf = r.get_entity_icon_surface(
+                        self.entity,
+                        size_px=side,
+                        prefer_sprite=prefer_sprite,
+                    )
+                except Exception:
+                    surf = None
+
+            # Fallback: render a large glyph.
+            if surf is None:
+                font = _menu_title_font(ctx)
+                fg = getattr(ctx.renderer, "fg", (255, 255, 255))
+                base = font.render(self.glyph, True, fg)
+                try:
+                    surf = pygame.transform.smoothscale(base, (side, side))
+                except Exception:
+                    surf = pygame.transform.scale(base, (side, side))
+
+            ctx.surface.blit(surf, dst.topleft)
+        except Exception:
+            # Portrait must never crash a popup open.
+            return
+
+        super().draw(ctx)
+
+
+
 class TextInputWidget(Widget):
     """
     A simple text input widget that allows clicking to edit a value.

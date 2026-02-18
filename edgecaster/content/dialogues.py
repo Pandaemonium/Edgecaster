@@ -3,8 +3,98 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from edgecaster.events import DialogueChoice, DialogueNode, DialogueTree
+from edgecaster import prototypes
 
 from . import npcs as npc_content
+
+
+def _npc_def_from_proto(npc_id: str) -> dict:
+    # Build an npc_def-like dict from entities.yaml prototypes so dialogue code stays stable.
+    npc_id = str(npc_id or "")
+    if not npc_id:
+        return {}
+    try:
+        spec = prototypes.resolve_proto(npc_id)
+    except Exception:
+        spec = None
+    if not isinstance(spec, dict):
+        spec = {}
+
+    tags = spec.get("tags", {}) or {}
+    if not isinstance(tags, dict):
+        tags = {}
+
+    out: dict = {}
+    if spec.get("name"):
+        out["name"] = spec.get("name")
+    if spec.get("glyph") is not None:
+        out["glyph"] = spec.get("glyph")
+    if spec.get("color") is not None:
+        out["color"] = spec.get("color")
+    if spec.get("description"):
+        out["description"] = spec.get("description")
+
+    if tags.get("dialogue") is not None:
+        out["dialogue"] = tags.get("dialogue")
+    if tags.get("quest_trigger"):
+        out["quest_trigger"] = tags.get("quest_trigger")
+    if tags.get("quest_complete"):
+        out["quest_complete"] = tags.get("quest_complete")
+    if tags.get("quest_location") is not None:
+        out["quest_location"] = tags.get("quest_location")
+    if tags.get("merchant_id"):
+        out["merchant_id"] = tags.get("merchant_id")
+    if tags.get("base_disposition") is not None:
+        out["base_disposition"] = tags.get("base_disposition")
+    if tags.get("factions") is not None:
+        out["factions"] = tags.get("factions")
+    return out
+
+
+def _find_site_zonecoord(game: Any, site_kind: str):
+    wie = getattr(game, "world_entity_index", None)
+    if wie is None:
+        return None
+    try:
+        zone_w = int(getattr(wie, "zone_w", 60) or 60)
+        zone_h = int(getattr(wie, "zone_h", 40) or 40)
+        by_zone = getattr(wie, "_by_zone", {}) or {}
+        for zc, lst in by_zone.items():
+            for ref in lst:
+                ent = getattr(ref, "ent", None)
+                tags = getattr(ent, "tags", None) or {}
+                if str(tags.get("site_kind") or "") == str(site_kind):
+                    zx, zy, zz = map(int, getattr(ref, "zone_coord", zc))
+                    lx, ly = map(int, getattr(ref, "local_pos", (zone_w // 2, zone_h // 2)))
+                    return (zx, zy, zz, lx, ly)
+    except Exception:
+        return None
+    return None
+
+
+def _zone_vector_text(dx_z: float, dy_z: float) -> str:
+    north = -dy_z
+    east = dx_z
+    dist = (north * north + east * east) ** 0.5
+    dist_txt = f"{dist:.1f} zones"
+
+    ns = ""
+    ew = ""
+    if abs(north) >= 0.25:
+        ns = "north" if north > 0 else "south"
+    if abs(east) >= 0.25:
+        ew = "east" if east > 0 else "west"
+
+    if ns and ew:
+        dir_txt = f"{ns}-{ew}"
+    elif ns:
+        dir_txt = ns
+    elif ew:
+        dir_txt = ew
+    else:
+        dir_txt = "nearby"
+
+    return f"about {dist_txt} {dir_txt}"
 
 
 def _npc_name(npc: Any, npc_def: dict) -> str:
@@ -232,7 +322,7 @@ def _build_cartographer(_game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dia
                 body=body,
                 choices=[
                     DialogueChoice(
-                        text="Let's draft.",
+                        text="Let's draft, baby.",
                         next_id=None,
                         effect=_effect_open_fractal_editor(state_builder, "The Cartographer unrolls a wide rectangular grid."),
                     ),
@@ -248,12 +338,32 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
     base_body = _npc_dialogue_body(npc, npc_def)
 
     quest_proto_id = str(npc_def.get("quest_trigger") or "")
+
+    # --- Yogic truth: derive nearby-site bearings from WIE ---
+    start = _find_site_zonecoord(game, "starttsgard")
+    inv = _find_site_zonecoord(game, "inventor_workshop")
+    academy = _find_site_zonecoord(game, "academy")
+
     quest_loc_t = None
-    if hasattr(game, "inventor_zone"):
-        try:
-            quest_loc_t = (int(game.inventor_zone[0]), int(game.inventor_zone[1]))  # type: ignore[attr-defined]
-        except Exception:
-            quest_loc_t = None
+    vec_txt = None
+    academy_vec_txt = None
+
+    if start and inv:
+        szx, szy, _szz, _slx, _sly = start
+        izx, izy, _izz, _ilx, _ily = inv
+        quest_loc_t = (int(izx), int(izy))
+        dx_z = float(izx - szx)
+        dy_z = float(izy - szy)
+        vec_txt = _zone_vector_text(dx_z, dy_z)
+
+    if start and academy:
+        szx, szy, _szz, _slx, _sly = start
+        azx, azy, _azz, _alx, _aly = academy
+        dx_z = float(azx - szx)
+        dy_z = float(azy - szy)
+        academy_vec_txt = _zone_vector_text(dx_z, dy_z)
+
+    # Back-compat fallback: old content sometimes shipped an explicit quest_location
     if quest_loc_t is None:
         quest_loc = npc_def.get("quest_location")
         if isinstance(quest_loc, (list, tuple)) and len(quest_loc) >= 2:
@@ -270,16 +380,19 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
             failing_loc_t = None
 
     if not quest_proto_id:
+        # Still give the academy hint even if this guide doesn't start a quest.
+        extra = ""
+        if academy_vec_txt:
+            extra = f"There's also an academy of hexmages {academy_vec_txt}. If you crave structured madness, try there."
         return DialogueTree(
             id=f"npc:{npc_id}",
             music_key="sergeant",
-
             start_id="start",
             nodes={
                 "start": DialogueNode(
                     id="start",
                     title=title,
-                    body=base_body,
+                    body=base_body + extra,
                     choices=[DialogueChoice(text="Continue...", next_id=None)],
                 )
             },
@@ -289,21 +402,26 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
     active = quest is not None
     completed = _has_completed_quest(game, quest_proto_id)
 
+    # Academy hint is "always-on" flavor; keep it short.
+    academy_hint = ""
+    if academy_vec_txt:
+        academy_hint = f"If you want a safer kind of trouble, the Hexmage Academy is {academy_vec_txt}."
+
     nodes: dict[str, DialogueNode] = {}
 
     if completed:
         nodes["start"] = DialogueNode(
             id="start",
             title=title,
-            body=base_body + "\n\nYou already found the inventor. Good luck out there.",
+            body=base_body + "You already found the inventor. Good luck out there." + academy_hint,
             choices=[DialogueChoice(text="Continue...", next_id=None)],
         )
-        return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant",nodes=nodes)
+        return DialogueTree(id=f"npc:{npc_id}", start_id="start", music_key="sergeant", nodes=nodes)
 
     if active:
         stage = int(getattr(quest, "stage", 0) or 0)
 
-        def reveal_failing_rune(game: Any) -> None:
+        def reveal_failing_rune(game_obj: Any) -> None:
             if quest is None or failing_loc_t is None:
                 return
             try:
@@ -319,40 +437,50 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
                 )
                 tags["failing_rune_revealed"] = True
                 quest.tags = tags
-                if hasattr(game, "add_poi_rumor"):
-                    game.add_poi_rumor("failing_rune", log=True)
+                if hasattr(game_obj, "add_poi_rumor"):
+                    game_obj.add_poi_rumor("failing_rune", log=True)
             except Exception:
                 pass
 
         if stage >= 2 and failing_loc_t is not None:
-            hint = f"\n\nThe failing rune is at ({failing_loc_t[0]}, {failing_loc_t[1]})."
+            hint = f"The failing rune is at ({failing_loc_t[0]}, {failing_loc_t[1]})."
             nodes["start"] = DialogueNode(
-                id="start",                
+                id="start",
                 title=title,
-                body=base_body + "\n\nYou have the crystal. Time to bind the seal." + hint,
+                body=base_body + "You have the crystal. Time to bind the seal." + hint + academy_hint,
                 choices=[DialogueChoice(text="Mark it for me.", next_id=None, effect=reveal_failing_rune)],
             )
-            return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant",nodes=nodes)
+            return DialogueTree(id=f"npc:{npc_id}", start_id="start", music_key="sergeant", nodes=nodes)
 
-        hint = ""
-        if quest_loc_t is not None:
-            hint = f"\n\nTheir workshop is marked near ({quest_loc_t[0]}, {quest_loc_t[1]})."
+        # Prefer vector hint; only show coordinates as a last resort.
+        inv_hint = ""
+        if vec_txt:
+            inv_hint = f"By my reckoning, the inventor is {vec_txt}."
+        elif quest_loc_t is not None:
+            inv_hint = f"Their workshop is marked near ({quest_loc_t[0]}, {quest_loc_t[1]})."
+
         nodes["start"] = DialogueNode(
             id="start",
-            
             title=title,
-            body=base_body + "\n\nYou're already on this trail." + hint,
+            body=base_body + "You're already on this trail." + inv_hint + academy_hint,
             choices=[DialogueChoice(text="Thanks.", next_id=None)],
         )
-        return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant", nodes=nodes)
+        return DialogueTree(id=f"npc:{npc_id}", start_id="start", music_key="sergeant", nodes=nodes)
 
     # Not active: offer a second screen before accepting.
     details = (
-        "The inventor is a recluse with a talent for measuring the land's distortions.\n"
-        "If you can reach them, they might help you understand what's happening.\n"
+        "The inventor is a recluse with a talent for measuring the land's distortions."
+        "If you can reach them, they might help you understand what's happening."
     )
-    if quest_loc_t is not None:
-        details += f"\nI can mark their workshop at ({quest_loc_t[0]}, {quest_loc_t[1]})."
+
+    if vec_txt:
+        details += f"By my reckoning, she's {vec_txt}."
+        details += "I can still mark the rough location on your map, if you insist."
+    elif quest_loc_t is not None:
+        details += f"I can mark their workshop at ({quest_loc_t[0]}, {quest_loc_t[1]})."
+
+    if academy_vec_txt:
+        details += f"And if you prefer chalkboards to chaos: the Hexmage Academy is {academy_vec_txt}."
 
     accept_effect = _effect_accept_quest(
         quest_proto_id,
@@ -364,7 +492,7 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
     nodes["start"] = DialogueNode(
         id="start",
         title=title,
-        body=base_body,
+        body=base_body + academy_hint,
         choices=[
             DialogueChoice(text="Tell me more.", next_id="details"),
             DialogueChoice(text="Not now.", next_id=None),
@@ -379,7 +507,7 @@ def _build_guide(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTre
             DialogueChoice(text="Not now.", next_id=None),
         ],
     )
-    return DialogueTree(id=f"npc:{npc_id}", start_id="start",music_key="sergeant", nodes=nodes)
+    return DialogueTree(id=f"npc:{npc_id}", start_id="start", music_key="sergeant", nodes=nodes)
 
 
 def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> DialogueTree:
@@ -1258,7 +1386,11 @@ def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
     """
     tags = getattr(npc, "tags", None) or {}
     npc_id = str(tags.get("npc_id") or "")
-    npc_def = npc_content.NPC_DEFS.get(npc_id, {}) if npc_id else {}
+    npc_def = _npc_def_from_proto(npc_id) if npc_id else {}
+
+    # Temporary fallback while migrating remaining NPCs
+    if (not npc_def) and npc_id:
+        npc_def = npc_content.NPC_DEFS.get(npc_id, {})
 
     if npc_id == "mentor":
         return _build_mentor(game, npc, npc_id, npc_def)

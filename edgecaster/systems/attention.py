@@ -738,7 +738,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         ns,
     ):
         """Build a real staged actor used by attention detail passes."""
-        npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
+        spec = ns if isinstance(ns, dict) else {}
+        spec_tags = (spec.get("tags") or {}) if isinstance(spec, dict) else {}
 
         # Special cases kept centralized for consistency with runtime NPC behavior.
         if npc_id == "caged_demon":
@@ -762,7 +763,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 a.show_exact_hp = True
             except Exception:
                 pass
-            desc = getattr(ns, "description", None) or npc_def.get("description") or getattr(a, "description", None)
+            desc = spec.get("description") or getattr(a, "description", None)
             if desc:
                 a.description = desc
             try:
@@ -799,14 +800,14 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             a.ai = "idle"
             a.tags = getattr(a, "tags", {}) or {}
             a.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
-            a.tags["merchant_id"] = npc_def.get("merchant_id", "general_store")
+            a.tags["merchant_id"] = spec_tags.get("merchant_id", "general_store")
             a.name = name
             try:
                 a.glyph = glyph
                 a.color = color  # type: ignore[assignment]
             except Exception:
                 pass
-            desc = getattr(ns, "description", None) or npc_def.get("description") or getattr(a, "description", None)
+            desc = spec.get("description") or getattr(a, "description", None)
             if desc:
                 a.description = desc
             try:
@@ -829,8 +830,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 faction="npc",
                 stats=Stats(hp=50, max_hp=50),
                 tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
-                disposition=int(npc_def.get("base_disposition", 0) or 0),
-                affiliations=tuple(npc_def.get("factions", [])),
+                disposition=int(spec_tags.get("base_disposition", 0) or 0),
+                affiliations=tuple(spec_tags.get("factions", [])),
                 glyph=glyph,
                 color=color,  # type: ignore[arg-type]
             )
@@ -842,8 +843,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 faction="npc",
                 stats=Stats(hp=50, max_hp=50),
                 tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
-                disposition=int(npc_def.get("base_disposition", 0) or 0),
-                affiliations=tuple(npc_def.get("factions", [])),
+                disposition=int(spec_tags.get("base_disposition", 0) or 0),
+                affiliations=tuple(spec_tags.get("factions", [])),
                 glyph=glyph,
                 color=color,  # type: ignore[arg-type]
             )
@@ -852,7 +853,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             except Exception:
                 pass
 
-        desc = getattr(ns, "description", None) or npc_def.get("description")
+        desc = spec.get("description")
         if desc:
             a.description = desc
         return a
@@ -1057,10 +1058,19 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                     # Actor child: use existing staged actor helper
                     if child_type == "actor":
                         npc_id = str(intent.proto_id)
-                        npc_def = npcs.NPC_DEFS.get(npc_id, {}) if "npcs" in globals() else {}
-                        glyph = npc_def.get("glyph", "@")
-                        color = npc_def.get("color", (255, 255, 255))
-                        name = npc_def.get("name", npc_id.title())
+
+                        # Pull actor presentation + metadata from the prototype (entities.yaml),
+                        # not from legacy npcs.NPC_DEFS.
+                        try:
+                            spec = prototypes.resolve_proto(str(npc_id))
+                        except Exception:
+                            spec = None
+                        if not isinstance(spec, dict):
+                            spec = {}
+
+                        glyph = (spec.get("glyph") or "@")
+                        name = (spec.get("name") or npc_id.replace("_", " ").title())
+                        color = (spec.get("color") or (255, 255, 255))
 
                         a = _build_staged_actor(
                             eid=eid,
@@ -1071,7 +1081,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             abs_pos=(int(ax), int(ay)),
                             local_pos=(int(lx), int(ly)),
                             owner_id=parent_id,
-                            ns=None,
+                            ns=spec,
                         )
                         # carry tags
                         try:
