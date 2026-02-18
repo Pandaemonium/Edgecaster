@@ -1854,3 +1854,82 @@ Should be tagged for future deletion:
   - Overall migration progress is substantial (see PROGRESS NOTES above).
 
 Owner: Claude audit (2026-02-18)
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_5][2026-02-18] attention-driven scale collapse/expand pass
+  - File: edgecaster/systems/attention.py
+  - Added LoD->resolve-depth policy helper (`_resolve_max_depth_for_lod`) with
+    configurable ladder defaults and per-parent caps/bias tags:
+      - `resolve_depth_ladder` (cfg override)
+      - `resolve_disable_above_lod` (cfg override)
+      - `resolve_depth_cap_default` (cfg override)
+      - `tags.resolve_max_depth`, `tags.resolve_lod_bias` (per parent)
+  - Resolver max depth is now passed per parent instead of hardcoded depth=2.
+  - Added recursive resolved-child eviction helper so zooming out cleanly
+    collapses deeper spawned trees (prevents stale descendants lingering).
+  - Resolver-spawned children now attach containment metadata via
+    `entity_graph_ops.attach_entity_to_parent(..., socket_id="resolve")` for:
+      - staged structural children
+      - actor children
+      - entity children
+  - Added unit tests for LoD depth policy in:
+      - tests/test_attention_suppression.py
+[PROGRESS][ENTITY_CHAKRA][PHASE_5][2026-02-18] hierarchical world/content scaffolding
+  - Files:
+      - edgecaster/content/entities.yaml
+      - edgecaster/content/site_types.yaml
+  - Added world-scale hierarchy prototypes:
+      - world_continent -> world_region -> world_state -> world_city -> world_neighborhood
+      - world_continent is worldgen aggregate (`world_entity+aggregate+worldgen_chance`).
+  - Added start-area hierarchy cutover:
+      - `site_starttsgard` now resolves into `city_starttsgard`.
+      - `city_starttsgard` resolves into `neighborhood_starttsgard_core`.
+      - `neighborhood_starttsgard_core` resolves into the start buildings.
+      - Starttsgard site/city tags now bias toward deeper detail (`resolve_lod_bias`)
+        and higher depth cap (`resolve_max_depth`) for initial play readability.
+  - Added room-layer cutover for starting buildings:
+      - `building_bureau -> room_bureau_main`
+      - `building_chakric_shrine -> room_chakric_shrine_main`
+      - `building_item_depot -> room_item_depot_main`
+      - Existing geom/NPC/item rules moved to room entities.
+  - Added content regression tests:
+      - tests/test_world_hierarchy_content.py
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_5][2026-02-18] continent-root + distance-depth + chakra hierarchy edges
+  - Files:
+      - edgecaster/content/entities.yaml
+      - edgecaster/systems/aggregate_resolution.py
+      - edgecaster/systems/attention.py
+      - tests/test_aggregate_resolution.py
+  - `world_continent` is now flagged as `unique_world_root: true`.
+  - Aggregate worldgen now supports unique roots:
+      - `_ensure_unique_world_root(...)` ensures one deterministic root entity per kind/depth.
+      - Added regression test `test_unique_world_root_continent_spawns_once`.
+  - Attention resolve depth now combines:
+      - LoD cap (`_resolve_max_depth_for_lod`)
+      - Distance-to-camera cap (`_resolve_max_depth_for_distance`)
+    so adjacent screens resolve deeper (rooms) while distant areas stay coarse.
+  - Resolver-spawned parent/child links now also create chakra hierarchy edges:
+      - parent root node -> child root node (`kind=contains`, `edge_scope=parent_child`)
+      - edge tags intentionally mark extensibility for future sibling edges.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_6][2026-02-18] lineage delta persistence for attention-resolved descendants
+  - Files:
+      - edgecaster/game.py
+      - edgecaster/systems/attention.py
+      - tests/test_attention_suppression.py
+  - Added lineage-aware persistence key handling in Game:
+      - `lineage_id_for_entity(...)`
+      - `_entity_state_keys(...)`
+      - `get_effective_entity_state(...)`
+      - `patch_entity_state(...)` now supports patching both lineage + entity keys
+        when object context is available.
+  - Suppression checks now respect lineage state, not just runtime entity id.
+  - Attention resolver now restores persisted runtime deltas on spawn/re-stage:
+      - HP/mana snapshots
+      - selected mutable tags (quantity/charges/door_state/etc.)
+      - glyph + movement blocking flags
+      - statuses/cooldowns
+  - Attention eviction now snapshots mutable runtime state before despawn, so
+    leaving and re-entering attention windows preserves damage/door/item state.
+  - Added unit tests for lineage-aware suppression + persisted state application:
+      - tests/test_attention_suppression.py

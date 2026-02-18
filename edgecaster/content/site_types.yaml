@@ -388,6 +388,9 @@
     world_entity: true
     site: true
     site_kind: starttsgard
+    lod_band: city
+    resolve_max_depth: 6
+    resolve_lod_bias: 1.8
     fixed_anchor_abs:
     - 3030
     - 2039
@@ -396,14 +399,11 @@
     resolve:
     - kind: children_fixed
       children:
-      - building_item_depot
-      - building_bureau
-      - building_chakric_shrine
+      - city_starttsgard
       placement:
         pattern: cluster
-        radius: 22
-        min_sep: 14
-        salt: starttsgard_buildings
+        radius: 0
+        salt: starttsgard_city
     npc_pool: []
     structures: []
     enemy_pool: []

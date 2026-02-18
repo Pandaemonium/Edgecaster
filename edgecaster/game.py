@@ -2336,6 +2336,55 @@ class Game:
                 return eid
         return None
 
+    def lineage_id_for_entity(self, obj: object) -> Optional[str]:
+        """Return deterministic lineage id for a runtime object, if present."""
+        if obj is None:
+            return None
+        try:
+            tags = getattr(obj, "tags", None) or {}
+        except Exception:
+            tags = {}
+        if isinstance(tags, dict):
+            lid = self._normalize_entity_id(tags.get("lineage_id"))
+            if lid:
+                return lid
+        return None
+
+    def _entity_state_keys(self, entity_or_id: Any, *, lineage_id: Any = None) -> List[str]:
+        """Return persistence keys for an entity, preferring lineage + entity id."""
+        keys: List[str] = []
+        if isinstance(entity_or_id, str):
+            eid = self._normalize_entity_id(entity_or_id)
+            if eid:
+                keys.append(eid)
+        else:
+            lid = self.lineage_id_for_entity(entity_or_id)
+            eid = self.entity_id_for_entity(entity_or_id)
+            if lid:
+                keys.append(lid)
+            if eid and eid not in keys:
+                keys.append(eid)
+
+        lid_kw = self._normalize_entity_id(lineage_id)
+        if lid_kw and lid_kw not in keys:
+            keys.insert(0, lid_kw)
+        return keys
+
+    def get_effective_entity_state(self, entity_or_id: Any, *, lineage_id: Any = None) -> Dict[str, Any]:
+        """Return merged state across lineage + entity keys without creating entries."""
+        out: Dict[str, Any] = {}
+        keys = self._entity_state_keys(entity_or_id, lineage_id=lineage_id)
+        if not keys:
+            return out
+        store = getattr(self, "entity_state", None)
+        if not isinstance(store, dict):
+            return out
+        for k in keys:
+            st = store.get(str(k))
+            if isinstance(st, dict):
+                out.update(st)
+        return out
+
     def get_entity_state(self, entity_or_id: Any) -> Dict[str, Any]:
         if isinstance(entity_or_id, str):
             eid = self._normalize_entity_id(entity_or_id)
@@ -2349,35 +2398,38 @@ class Game:
             self.entity_state[eid] = state
         return state
 
-    def patch_entity_state(self, entity_or_id: Any, patch: Optional[Dict[str, Any]] = None, **fields: Any) -> None:
-        if isinstance(entity_or_id, str):
-            eid = self._normalize_entity_id(entity_or_id)
-        else:
-            eid = self.entity_id_for_entity(entity_or_id) or ""
-        if not eid:
+    def patch_entity_state(
+        self,
+        entity_or_id: Any,
+        patch: Optional[Dict[str, Any]] = None,
+        *,
+        lineage_id: Any = None,
+        **fields: Any,
+    ) -> None:
+        keys = self._entity_state_keys(entity_or_id, lineage_id=lineage_id)
+        if not keys:
             return
-        st = self.get_entity_state(eid)
-        if not isinstance(st, dict):
-            return
-        if isinstance(patch, dict):
-            st.update(patch)
-        if fields:
-            st.update(fields)
         try:
             lvl = self._level()
-            st["updated_tick"] = int(getattr(lvl, "current_tick", 0) or 0)
+            updated_tick = int(getattr(lvl, "current_tick", 0) or 0)
         except Exception:
-            st["updated_tick"] = int(st.get("updated_tick", 0) or 0)
-        self.entity_state[eid] = st
+            updated_tick = 0
+        for key in keys:
+            st = self.get_entity_state(str(key))
+            if not isinstance(st, dict):
+                continue
+            if isinstance(patch, dict):
+                st.update(patch)
+            if fields:
+                st.update(fields)
+            if updated_tick:
+                st["updated_tick"] = int(updated_tick)
+            else:
+                st["updated_tick"] = int(st.get("updated_tick", 0) or 0)
+            self.entity_state[str(key)] = st
 
     def entity_is_suppressed(self, entity_or_id: Any) -> bool:
-        if isinstance(entity_or_id, str):
-            eid = self._normalize_entity_id(entity_or_id)
-        else:
-            eid = self.entity_id_for_entity(entity_or_id) or ""
-        if not eid:
-            return False
-        st = self.entity_state.get(eid)
+        st = self.get_effective_entity_state(entity_or_id)
         if not isinstance(st, dict):
             return False
         return bool(st.get("removed")) or bool(st.get("dead"))
@@ -2389,17 +2441,20 @@ class Game:
         reason: str = "removed",
     ) -> Optional[str]:
         eid = self.entity_id_for_entity(obj)
+        lid = self.lineage_id_for_entity(obj)
         if eid:
             self.patch_entity_state(
                 eid,
                 removed=True,
                 removed_reason=str(reason or "removed"),
+                lineage_id=lid,
             )
             return eid
         return None
 
     def mark_actor_dead(self, obj: object, *, reason: str = "killed") -> Optional[str]:
         eid = self.entity_id_for_entity(obj)
+        lid = self.lineage_id_for_entity(obj)
         hp = None
         try:
             hp = int(getattr(getattr(obj, "stats", None), "hp", 0))
@@ -2412,7 +2467,7 @@ class Game:
             }
             if hp is not None:
                 patch["last_known_hp"] = int(hp)
-            self.patch_entity_state(eid, patch)
+            self.patch_entity_state(eid, patch, lineage_id=lid)
             return eid
         return None
 

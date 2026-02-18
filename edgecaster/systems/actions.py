@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import time
-from typing import Any, Callable, Dict, Literal, Protocol
+from typing import Any, Callable, Dict, Literal, Protocol, Union
 
 # Optional: pattern colors (only imported when used to avoid extra deps elsewhere)
 try:
@@ -133,7 +133,7 @@ def describe_entity_for_look(ent: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 SpeedTag = Literal["instant", "fast", "slow"]
-SpeedType = SpeedTag | int
+SpeedType = Union[SpeedTag, int]
 
 
 class ActionFunc(Protocol):

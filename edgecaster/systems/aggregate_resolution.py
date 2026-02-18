@@ -22,7 +22,7 @@ Design invariants:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 import math
 import random
 
@@ -236,6 +236,118 @@ def _discover_worldgen_aggregate_kinds(game: "Game") -> tuple[str, ...]:
         pass
     return out
 
+
+def _world_dims_abs(game: "Game", *, zone_w: int, zone_h: int) -> tuple[int, int]:
+    cfg = getattr(game, "cfg", None)
+    try:
+        total_w = int(getattr(cfg, "world_map_screens", 0) * getattr(cfg, "world_width", 0))
+        total_h = int(getattr(cfg, "world_map_screens", 0) * getattr(cfg, "world_height", 0))
+    except Exception:
+        total_w = 0
+        total_h = 0
+    if total_w <= 0:
+        total_w = int(zone_w) * 256
+    if total_h <= 0:
+        total_h = int(zone_h) * 256
+    return (max(1, int(total_w)), max(1, int(total_h)))
+
+
+def _ensure_unique_world_root(
+    game: "Game",
+    *,
+    kind: str,
+    zz: int,
+    zone_w: int,
+    zone_h: int,
+) -> bool:
+    """Ensure a globally unique aggregate root (e.g. single continent) exists."""
+    unique_key = ("unique_root", str(kind), int(zz))
+    done = getattr(game, "_agg_worldgen_done", None)
+    if isinstance(done, set) and unique_key in done:
+        return True
+
+    try:
+        proto = prototypes.resolve_proto(str(kind))
+    except Exception:
+        if isinstance(done, set):
+            done.add(unique_key)
+        return True
+    if not isinstance(proto, dict):
+        if isinstance(done, set):
+            done.add(unique_key)
+        return True
+
+    tags = proto.get("tags", {}) or {}
+    if not isinstance(tags, dict):
+        return False
+    if tags.get("unique_world_root") is not True:
+        return False
+
+    rng = random.Random(_seed_for(game, "agg_world_unique_root", str(kind), int(zz)))
+    fixed = tags.get("fixed_anchor_abs")
+    if isinstance(fixed, (list, tuple)) and len(fixed) >= 2:
+        try:
+            ax = int(fixed[0])
+            ay = int(fixed[1])
+        except Exception:
+            ax = 0
+            ay = 0
+    else:
+        total_w, total_h = _world_dims_abs(game, zone_w=int(zone_w), zone_h=int(zone_h))
+        try:
+            jitter = int(tags.get("unique_root_jitter_abs", 0) or 0)
+        except Exception:
+            jitter = 0
+        if jitter > 0:
+            jx = int(rng.randint(-jitter, jitter))
+            jy = int(rng.randint(-jitter, jitter))
+        else:
+            jx = 0
+            jy = 0
+        ax = int(total_w // 2 + jx)
+        ay = int(total_h // 2 + jy)
+
+    zx = int(ax) // int(zone_w)
+    zy = int(ay) // int(zone_h)
+    ox = int(ax) - zx * int(zone_w)
+    oy = int(ay) - zy * int(zone_h)
+    eid = f"agg:{kind}:root:{int(zz)}"
+    base_tags = dict(tags)
+    overrides = {
+        "tags": {
+            **base_tags,
+            "world_entity": True,
+            "aggregate": True,
+            "aggregate_kind": str(base_tags.get("aggregate_kind") or kind),
+            "detail_mode": base_tags.get("detail_mode", "cluster"),
+            "lineage_id": eid,
+        }
+    }
+    try:
+        ent = spawn_factory.build_entity_from_spec(
+            spec=proto,
+            eid=eid,
+            pos=(int(ox), int(oy)),
+            abs_pos=(int(ax), int(ay)),
+            overrides=overrides,
+        )
+    except Exception:
+        if isinstance(done, set):
+            done.add(unique_key)
+        return True
+
+    try:
+        game.world_entity_index.add(
+            ent,
+            zone_coord=(int(zx), int(zy), int(zz)),
+            local_pos=(int(ox), int(oy)),
+        )
+    except Exception:
+        pass
+    if isinstance(done, set):
+        done.add(unique_key)
+    return True
+
 def ensure_world_aggregates(
     game: "Game",
     *,
@@ -270,9 +382,23 @@ def ensure_world_aggregates(
     else:
         kinds = tuple(str(k) for k in kinds if k)
 
+    normal_kinds: list[str] = []
+    for kind in kinds:
+        handled = _ensure_unique_world_root(
+            game,
+            kind=str(kind),
+            zz=int(zz),
+            zone_w=int(zone_w),
+            zone_h=int(zone_h),
+        )
+        if not handled:
+            normal_kinds.append(str(kind))
+    if not normal_kinds:
+        return
+
     for zx in range(int(zx0), int(zx1) + 1):
         for zy in range(int(zy0), int(zy1) + 1):
-            for kind in kinds:
+            for kind in normal_kinds:
                 key = (str(kind), int(zx), int(zy), int(zz))
                 if key in game._agg_worldgen_done:  # type: ignore[attr-defined]
                     continue
@@ -529,9 +655,6 @@ def compute_cluster_children_layout(
 # Generic resolver recipes (Phase 1: sites + buildings)
 # -----------------------------
 
-from dataclasses import dataclass
-from typing import Any, Optional
-
 @dataclass(frozen=True)
 class SpawnIntent:
     """A deterministic instruction to spawn/stage a child at an ABS position."""
@@ -610,6 +733,254 @@ def _spawn_kind_for_child(*, proto_id: str, placement: dict, default: str = "ent
     return _coerce_spawn_kind(default, default="entity")
 
 
+def _parent_abs_size(parent_ent: object, parent_tags: dict) -> float:
+    for raw in (
+        parent_tags.get("abs_size"),
+        getattr(parent_ent, "abs_size", None),
+        getattr(parent_ent, "base_size", None),
+    ):
+        if isinstance(raw, (int, float)):
+            try:
+                v = float(raw)
+            except Exception:
+                v = 0.0
+            if v > 0.0:
+                return v
+    return 1.0
+
+
+def _resolve_scaled_child_count(
+    game: "Game",
+    *,
+    parent_lineage: str,
+    count_spec: object,
+    default_count: int,
+    parent_abs_size: float,
+    salt: str,
+) -> int:
+    if isinstance(count_spec, (int, float)):
+        return max(0, int(round(float(count_spec))))
+
+    if not isinstance(count_spec, dict):
+        return max(0, int(default_count))
+
+    try:
+        base = int(count_spec.get("base", default_count) or default_count)
+    except Exception:
+        base = int(default_count)
+    try:
+        per_abs_size = float(count_spec.get("per_abs_size", 0.0) or 0.0)
+    except Exception:
+        per_abs_size = 0.0
+
+    n = int(base + round(per_abs_size * float(max(0.0, parent_abs_size))))
+
+    try:
+        jitter = int(count_spec.get("jitter", 0) or 0)
+    except Exception:
+        jitter = 0
+    if jitter > 0:
+        rng = random.Random(
+            _seed_for(
+                game,
+                "resolve_scaled_count",
+                str(parent_lineage),
+                str(salt),
+                int(round(float(parent_abs_size) * 1000.0)),
+                int(base),
+                float(per_abs_size),
+                int(jitter),
+            )
+        )
+        n += int(rng.randint(-int(jitter), int(jitter)))
+
+    if "min" in count_spec:
+        try:
+            n = max(int(count_spec.get("min", 0) or 0), int(n))
+        except Exception:
+            pass
+    if "max" in count_spec:
+        try:
+            n = min(int(count_spec.get("max", n) or n), int(n))
+        except Exception:
+            pass
+    return max(0, int(n))
+
+
+def _build_scaled_children_queue(
+    game: "Game",
+    *,
+    parent_lineage: str,
+    children_pool: list[str],
+    target_n: int,
+    salt: str,
+    parent_anchor_abs: tuple[int, int],
+    parent_abs_size: float,
+    select_mode: str,
+) -> list[str]:
+    if target_n <= 0 or not children_pool:
+        return []
+
+    pax, pay = map(int, parent_anchor_abs)
+    rng = random.Random(
+        _seed_for(
+            game,
+            "resolve_scaled_children",
+            str(parent_lineage),
+            str(salt),
+            int(pax),
+            int(pay),
+            int(round(float(parent_abs_size) * 1000.0)),
+            int(target_n),
+            int(len(children_pool)),
+            str(select_mode),
+        )
+    )
+
+    pool = [str(p) for p in children_pool if str(p).strip()]
+    if not pool:
+        return []
+
+    mode = str(select_mode or "cycle_shuffled").strip().lower()
+    if mode == "random":
+        return [str(pool[rng.randrange(0, len(pool))]) for _ in range(int(target_n))]
+
+    queue: list[str] = []
+    while len(queue) < int(target_n):
+        batch = list(pool)
+        rng.shuffle(batch)
+        queue.extend(batch)
+    return queue[: int(target_n)]
+
+
+def _emit_children_with_placement(
+    game: "Game",
+    *,
+    parent_lineage: str,
+    children: list[str],
+    placement: dict,
+    parent_anchor_abs: tuple[int, int],
+    geom_rects: list[tuple[int, int, int, int]],
+    zz: int,
+    depth: int,
+) -> list[SpawnIntent]:
+    out: list[SpawnIntent] = []
+    if not children:
+        return out
+
+    if not isinstance(placement, dict):
+        placement = {}
+    pattern = str(placement.get("pattern", "cluster") or "cluster").strip().lower()
+    salt = str(placement.get("salt", "children") or "children")
+    pax, pay = map(int, parent_anchor_abs)
+
+    if pattern == "cluster":
+        radius = float(placement.get("radius", 8) or 8)
+        min_sep = float(placement.get("min_sep", 0) or 0)
+        min_sep2 = min_sep * min_sep
+        rng = random.Random(
+            _seed_for(
+                game,
+                "resolve_cluster",
+                parent_lineage,
+                salt,
+                pax,
+                pay,
+                int(round(radius * 1000)),
+                len(children),
+            )
+        )
+
+        pts: list[tuple[int, int]] = []
+        attempts = 0
+        while len(pts) < len(children) and attempts < 6000:
+            attempts += 1
+            dx = int(round(rng.gauss(0.0, radius / 2.5)))
+            dy = int(round(rng.gauss(0.0, radius / 2.5)))
+            if (dx * dx + dy * dy) > (radius * radius):
+                continue
+            x = pax + dx
+            y = pay + dy
+            if (x, y) in pts:
+                continue
+            if min_sep > 0:
+                too_close = False
+                for px2, py2 in pts:
+                    ddx = (x - px2)
+                    ddy = (y - py2)
+                    if (ddx * ddx + ddy * ddy) < min_sep2:
+                        too_close = True
+                        break
+                if too_close:
+                    continue
+            pts.append((x, y))
+
+        for i, proto_id in enumerate(children):
+            if i >= len(pts):
+                break
+            ax, ay = pts[i]
+            eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+            child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
+            out.append(
+                SpawnIntent(
+                    eid=eid,
+                    proto_id=str(proto_id),
+                    abs_x=int(ax),
+                    abs_y=int(ay),
+                    zz=int(zz),
+                    child_type=child_type,
+                    tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
+                    lineage_id=eid,
+                )
+            )
+        return out
+
+    if pattern == "scatter_interior":
+        if not geom_rects:
+            return out
+        ax0, ay0, ax1, ay1 = geom_rects[-1]
+        interior: list[tuple[int, int]] = []
+        for y in range(ay0 + 1, ay1 - 1):
+            for x in range(ax0 + 1, ax1 - 1):
+                interior.append((x, y))
+        if not interior:
+            return out
+        rng = random.Random(
+            _seed_for(
+                game,
+                "resolve_interior",
+                parent_lineage,
+                salt,
+                ax0,
+                ay0,
+                ax1,
+                ay1,
+                len(children),
+            )
+        )
+        rng.shuffle(interior)
+
+        for i, proto_id in enumerate(children):
+            x, y = interior[i % len(interior)]
+            eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+            child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
+            out.append(
+                SpawnIntent(
+                    eid=eid,
+                    proto_id=str(proto_id),
+                    abs_x=int(x),
+                    abs_y=int(y),
+                    zz=int(zz),
+                    child_type=child_type,
+                    tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
+                    lineage_id=eid,
+                )
+            )
+        return out
+
+    return out
+
+
 def resolve_spawn_intents_from_recipe(
     game: "Game",
     *,
@@ -627,6 +998,7 @@ def resolve_spawn_intents_from_recipe(
     Phase 1 supports:
       - children_fixed + placement.pattern=cluster
       - children_fixed + placement.pattern=scatter_interior (requires a prior geom_rect)
+      - children_scaled (deterministic count + pooled child selection + standard placement)
       - geom_rect -> emits wall entities + staged floor tiles
     """
     tags = _tags(parent_ent)
@@ -793,105 +1165,81 @@ def resolve_spawn_intents_from_recipe(
             children = [str(c or "") for c in children if str(c or "").strip()]
             if not children:
                 continue
+            placement = rule.get("placement") or {}
+            if not isinstance(placement, dict):
+                placement = {}
+            pax, pay = _abs_from_zone_local(zx, zy, zone_w, zone_h, ox0, oy0)
+            intents.extend(
+                _emit_children_with_placement(
+                    game,
+                    parent_lineage=parent_lineage,
+                    children=children,
+                    placement=placement,
+                    parent_anchor_abs=(int(pax), int(pay)),
+                    geom_rects=geom_rects,
+                    zz=int(zz),
+                    depth=int(depth),
+                )
+            )
+            continue
+
+        # -----------------
+        # children_scaled (deterministic count + pooled child selection)
+        # -----------------
+        if kind == "children_scaled":
+            pool = rule.get("children") or []
+            if not isinstance(pool, list):
+                continue
+            pool = [str(c or "") for c in pool if str(c or "").strip()]
+            if not pool:
+                continue
 
             placement = rule.get("placement") or {}
             if not isinstance(placement, dict):
                 placement = {}
-            pattern = str(placement.get("pattern", "cluster") or "cluster").strip().lower()
             salt = str(placement.get("salt", kind) or kind)
 
-            # Base ABS anchor (parent)
+            parent_abs_size = _parent_abs_size(parent_ent, tags)
+            count_spec = rule.get("count", len(pool))
+            target_n = _resolve_scaled_child_count(
+                game,
+                parent_lineage=parent_lineage,
+                count_spec=count_spec,
+                default_count=len(pool),
+                parent_abs_size=parent_abs_size,
+                salt=salt,
+            )
+            if target_n <= 0:
+                continue
+
+            select_mode = str(rule.get("select", "cycle_shuffled") or "cycle_shuffled")
             pax, pay = _abs_from_zone_local(zx, zy, zone_w, zone_h, ox0, oy0)
-
-            if pattern == "cluster":
-                radius = float(placement.get("radius", 8) or 8)
-                min_sep = float(placement.get("min_sep", 0) or 0)
-                min_sep2 = min_sep * min_sep
-
-                rng = random.Random(_seed_for(game, "resolve_cluster", parent_lineage, salt, pax, pay, int(round(radius * 1000)), len(children)))
-
-                pts: list[tuple[int, int]] = []
-                attempts = 0
-                while len(pts) < len(children) and attempts < 6000:
-                    attempts += 1
-
-                    dx = int(round(rng.gauss(0.0, radius / 2.5)))
-                    dy = int(round(rng.gauss(0.0, radius / 2.5)))
-                    if (dx * dx + dy * dy) > (radius * radius):
-                        continue
-
-                    x = pax + dx
-                    y = pay + dy
-
-                    # uniqueness
-                    if (x, y) in pts:
-                        continue
-
-                    # separation constraint
-                    if min_sep > 0:
-                        too_close = False
-                        for (px2, py2) in pts:
-                            ddx = (x - px2)
-                            ddy = (y - py2)
-                            if (ddx * ddx + ddy * ddy) < min_sep2:
-                                too_close = True
-                                break
-                        if too_close:
-                            continue
-
-                    pts.append((x, y))
-
-                for i, proto_id in enumerate(children):
-                    if i >= len(pts):
-                        break
-                    ax, ay = pts[i]
-                    eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
-                    child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
-                    intents.append(
-                        SpawnIntent(
-                            eid=eid,
-                            proto_id=proto_id,
-                            abs_x=int(ax),
-                            abs_y=int(ay),
-                            zz=int(zz),
-                            child_type=child_type,
-                            tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
-                            lineage_id=eid,
-                        )
-                    )
+            children = _build_scaled_children_queue(
+                game,
+                parent_lineage=parent_lineage,
+                children_pool=pool,
+                target_n=int(target_n),
+                salt=salt,
+                parent_anchor_abs=(int(pax), int(pay)),
+                parent_abs_size=float(parent_abs_size),
+                select_mode=select_mode,
+            )
+            if not children:
                 continue
 
-            if pattern == "scatter_interior":
-                # Requires a prior geom_rect to know interior
-                if not geom_rects:
-                    continue
-                ax0, ay0, ax1, ay1 = geom_rects[-1]
-                interior: list[tuple[int, int]] = []
-                for y in range(ay0 + 1, ay1 - 1):
-                    for x in range(ax0 + 1, ax1 - 1):
-                        interior.append((x, y))
-                if not interior:
-                    continue
-                rng = random.Random(_seed_for(game, "resolve_interior", parent_lineage, salt, ax0, ay0, ax1, ay1, len(children)))
-                rng.shuffle(interior)
-
-                for i, proto_id in enumerate(children):
-                    x, y = interior[i % len(interior)]
-                    eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
-                    child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
-                    intents.append(
-                        SpawnIntent(
-                            eid=eid,
-                            proto_id=proto_id,
-                            abs_x=int(x),
-                            abs_y=int(y),
-                            zz=int(zz),
-                            child_type=child_type,
-                            tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
-                            lineage_id=eid,
-                        )
-                    )
-                continue
+            intents.extend(
+                _emit_children_with_placement(
+                    game,
+                    parent_lineage=parent_lineage,
+                    children=children,
+                    placement=placement,
+                    parent_anchor_abs=(int(pax), int(pay)),
+                    geom_rects=geom_rects,
+                    zz=int(zz),
+                    depth=int(depth),
+                )
+            )
+            continue
 
         # -----------------
         # children_pool  (Phase 1: deterministic item shelves / clutter)

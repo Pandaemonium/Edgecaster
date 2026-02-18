@@ -235,6 +235,29 @@ class TestEntityState:
         assert st.get("dead") is True
         assert st.get("dead_reason") == "unit_test"
 
+    def test_patch_entity_state_writes_lineage_key_for_object(self, game_instance):
+        obj = MagicMock()
+        obj.id = "runtime:item:1"
+        obj.entity_id = "runtime:item:1"
+        obj.tags = {"lineage_id": "lineage:item:1"}
+
+        game_instance.patch_entity_state(obj, removed=True, removed_reason="unit_test")
+
+        st_entity = game_instance.get_entity_state("runtime:item:1")
+        st_lineage = game_instance.get_entity_state("lineage:item:1")
+        assert st_entity.get("removed") is True
+        assert st_lineage.get("removed") is True
+        assert st_lineage.get("removed_reason") == "unit_test"
+
+    def test_entity_is_suppressed_checks_lineage_state_for_object(self, game_instance):
+        obj = MagicMock()
+        obj.id = "runtime:npc:1"
+        obj.entity_id = "runtime:npc:1"
+        obj.tags = {"lineage_id": "lineage:npc:1"}
+
+        game_instance.patch_entity_state("lineage:npc:1", removed=True)
+        assert game_instance.entity_is_suppressed(obj) is True
+
 
 # ---------------------------------------------------------------------------
 # PHASE 6: Pattern Operations Tests

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from edgecaster import prototypes
 from edgecaster.systems import aggregate_resolution as ar
+from edgecaster.systems.world_entity_index import WorldEntityIndex
 
 
 def _dummy_game(seed: int = 1234) -> object:
@@ -168,3 +170,129 @@ def test_children_fixed_actor_inference_without_hardcoded_id_list() -> None:
     inferred = [i for i in intents if i.proto_id == "caged_demon"]
     assert inferred
     assert inferred[0].child_type == "actor"
+
+
+def test_unique_world_root_continent_spawns_once() -> None:
+    prototypes.clear_proto_caches()
+    game = _dummy_game(4242)
+    game.world_entity_index = WorldEntityIndex(zone_w=64, zone_h=64)
+    game._agg_worldgen_done = set()
+    game.cfg = SimpleNamespace(
+        seed=4242,
+        world_map_screens=128,
+        world_width=64,
+        world_height=40,
+    )
+
+    ar.ensure_world_aggregates(
+        game,
+        zone_w=64,
+        zone_h=64,
+        zx0=0,
+        zx1=6,
+        zy0=0,
+        zy1=6,
+        zz=0,
+        kinds=("world_continent",),
+    )
+    ar.ensure_world_aggregates(
+        game,
+        zone_w=64,
+        zone_h=64,
+        zx0=80,
+        zx1=86,
+        zy0=80,
+        zy1=86,
+        zz=0,
+        kinds=("world_continent",),
+    )
+
+    refs = game.world_entity_index.query_abs_rect((0.0, 0.0, 20000.0, 20000.0), z=0)
+    continents = []
+    for r in refs:
+        ent = getattr(r, "ent", None)
+        if ent is None:
+            continue
+        tags = getattr(ent, "tags", {}) or {}
+        if isinstance(tags, dict) and str(tags.get("aggregate_kind", "")) == "world_continent":
+            continents.append(ent)
+    ids = {str(getattr(e, "id", "")) for e in continents}
+    assert ids == {"agg:world_continent:root:0"}
+
+
+def test_children_scaled_is_deterministic_and_honors_count_bounds() -> None:
+    game = _dummy_game(9090)
+    parent = SimpleNamespace(
+        id="runtime_parent_scaled",
+        tags={
+            "lineage_id": "world:region:alpha",
+            "abs_size": 220,
+            "resolve": [
+                {
+                    "kind": "children_scaled",
+                    "children": ["world_city", "world_neighborhood"],
+                    "count": {"base": 5, "min": 4, "max": 7, "jitter": 1},
+                    "placement": {"pattern": "cluster", "radius": 40, "salt": "scaled_test"},
+                }
+            ],
+        },
+    )
+
+    intents_a = ar.resolve_spawn_intents_from_recipe(
+        game,
+        parent_ent=parent,
+        zone_coord=(0, 0, 0),
+        local_pos=(32, 24),
+        zone_w=64,
+        zone_h=64,
+        zz=0,
+    )
+    intents_b = ar.resolve_spawn_intents_from_recipe(
+        game,
+        parent_ent=parent,
+        zone_coord=(0, 0, 0),
+        local_pos=(32, 24),
+        zone_w=64,
+        zone_h=64,
+        zz=0,
+    )
+
+    def _sig(xs):
+        return [(i.eid, i.proto_id, i.abs_x, i.abs_y, i.child_type, i.lineage_id) for i in xs]
+
+    assert _sig(intents_a) == _sig(intents_b)
+    assert 4 <= len(intents_a) <= 7
+    assert {i.proto_id for i in intents_a}.issubset({"world_city", "world_neighborhood"})
+
+
+def test_children_scaled_per_abs_size_influences_count() -> None:
+    game = _dummy_game(77)
+    parent = SimpleNamespace(
+        id="runtime_parent_scaled_abs",
+        tags={
+            "lineage_id": "world:city:beta",
+            "abs_size": 300,
+            "resolve": [
+                {
+                    "kind": "children_scaled",
+                    "children": ["world_neighborhood"],
+                    "count": {"base": 1, "per_abs_size": 0.01, "min": 1, "max": 8, "jitter": 0},
+                    "placement": {"pattern": "cluster", "radius": 50, "salt": "scaled_abs"},
+                }
+            ],
+        },
+    )
+
+    intents = ar.resolve_spawn_intents_from_recipe(
+        game,
+        parent_ent=parent,
+        zone_coord=(0, 0, 0),
+        local_pos=(30, 30),
+        zone_w=64,
+        zone_h=64,
+        zz=0,
+    )
+
+    # base + round(per_abs_size * abs_size) = 1 + round(0.01 * 300) = 4
+    assert len(intents) == 4
+    assert all(i.proto_id == "world_neighborhood" for i in intents)

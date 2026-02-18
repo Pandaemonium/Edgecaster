@@ -46,6 +46,230 @@
   tags:
     world_entity: true
     site: true
+- id: world_continent
+  name: Continent
+  parent: settlement
+  glyph: C
+  color:
+  - 200
+  - 190
+  - 150
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 4096
+  description: A continental-scale root entity.
+  tags:
+    world_entity: true
+    aggregate: true
+    aggregate_kind: world_continent
+    unique_world_root: true
+    worldgen_chance: 0.015
+    worldgen_min: 1
+    worldgen_max: 1
+    abs_size: 4096
+    lod_band: continental
+    resolve_max_depth: 6
+    resolve:
+    - kind: children_scaled
+      children:
+      - world_region
+      count:
+        base: 10
+        min: 8
+        max: 12
+        jitter: 2
+      placement:
+        pattern: cluster
+        radius: 1300
+        min_sep: 300
+        salt: world_continent_regions
+- id: world_region
+  name: Region
+  parent: settlement
+  glyph: R
+  color:
+  - 190
+  - 180
+  - 140
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 1536
+  description: A region within a continent.
+  tags:
+    abs_size: 1536
+    lod_band: regional
+    resolve_max_depth: 6
+    resolve:
+    - kind: children_scaled
+      children:
+      - world_state
+      count:
+        base: 8
+        min: 6
+        max: 10
+        jitter: 2
+      placement:
+        pattern: cluster
+        radius: 520
+        min_sep: 140
+        salt: world_region_states
+- id: world_state
+  name: State
+  parent: settlement
+  glyph: S
+  color:
+  - 170
+  - 170
+  - 140
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 640
+  description: A state-scale political unit.
+  tags:
+    abs_size: 640
+    lod_band: state
+    resolve_max_depth: 6
+    resolve:
+    - kind: children_scaled
+      children:
+      - world_city
+      count:
+        base: 6
+        min: 4
+        max: 8
+        jitter: 2
+      placement:
+        pattern: cluster
+        radius: 220
+        min_sep: 80
+        salt: world_state_cities
+- id: world_city
+  name: City
+  parent: settlement
+  glyph: Y
+  color:
+  - 180
+  - 210
+  - 190
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 220
+  description: A city-scale entity.
+  tags:
+    abs_size: 220
+    lod_band: city
+    resolve_max_depth: 6
+    resolve:
+    - kind: children_scaled
+      children:
+      - world_neighborhood
+      count:
+        base: 6
+        min: 4
+        max: 9
+        jitter: 2
+      placement:
+        pattern: cluster
+        radius: 95
+        min_sep: 28
+        salt: world_city_neighborhoods
+- id: world_neighborhood
+  name: Neighborhood
+  parent: settlement
+  glyph: N
+  color:
+  - 150
+  - 190
+  - 170
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 72
+  description: A neighborhood that resolves into concrete buildings.
+  tags:
+    abs_size: 72
+    lod_band: neighborhood
+    resolve_max_depth: 6
+    resolve:
+    - kind: children_scaled
+      children:
+      - building_fishmonger_shack
+      - building_leaf_market
+      - building_hunter_lodge
+      - building_tide_shrine
+      - building_grove_hollow
+      - building_desert_tent
+      - building_tropical_shrine
+      - building_corruption_outpost
+      count:
+        base: 6
+        min: 4
+        max: 10
+        jitter: 2
+      placement:
+        pattern: cluster
+        radius: 32
+        min_sep: 10
+        salt: world_neighborhood_buildings
+- id: city_starttsgard
+  name: Starttsgard City
+  parent: settlement
+  glyph: C
+  color:
+  - 230
+  - 230
+  - 250
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 96
+  description: The city shell around Starttsgard.
+  tags:
+    abs_size: 96
+    lod_band: city
+    resolve_max_depth: 6
+    resolve_lod_bias: 1.8
+    resolve:
+    - kind: children_fixed
+      children:
+      - neighborhood_starttsgard_core
+      placement:
+        pattern: cluster
+        radius: 0
+        salt: starttsgard_city_core
+- id: neighborhood_starttsgard_core
+  name: Starttsgard Core Neighborhood
+  parent: settlement
+  glyph: N
+  color:
+  - 210
+  - 220
+  - 250
+  kind: feature
+  render_layer: 1
+  blocks_movement: false
+  base_size: 72
+  description: Starttsgard central district.
+  tags:
+    abs_size: 72
+    lod_band: neighborhood
+    resolve_max_depth: 6
+    resolve_lod_bias: 1.6
+    resolve:
+    - kind: children_fixed
+      children:
+      - building_item_depot
+      - building_bureau
+      - building_chakric_shrine
+      placement:
+        pattern: cluster
+        radius: 22
+        min_sep: 14
+        salt: starttsgard_buildings
 - id: berry_patch
   name: Berry Patch
   parent: entity
@@ -980,9 +1204,23 @@
   base_size: 18
   tags:
     building: true
+- id: room
+  name: Room
+  parent: physical_object
+  glyph: r
+  color:
+  - 160
+  - 150
+  - 130
+  kind: feature
+  render_layer: 0
+  blocks_movement: false
+  base_size: 8
+  tags:
+    room: true
 - id: building_bureau
   name: Bureau
-  glyph: Ƀ
+  glyph: B
   color:
   - 200
   - 200
@@ -991,31 +1229,53 @@
   tags:
     abs_size: 12
     resolve:
-      - kind: geom_rect
-        w: 13
-        h: 9
-        door:
-          enabled: true
-          side: "south"
-          proto: "door"         # "" = gap only; or "door" if you have a door proto
-        emit:
-          wall_proto: "wall"
-          floor:
-            glyph: "."
-            color: [90, 80, 70]
-      - kind: children_fixed
-        children:
-          - merchant
-          - local_guide
-          - lair_informant
-          - caged_demon
-        placement:
-          pattern: scatter_interior
-          spawn_kind: actor
-          salt: "bureau_npcs"
+    - kind: children_fixed
+      children:
+      - room_bureau_main
+      placement:
+        pattern: cluster
+        radius: 0
+        salt: bureau_room
+- id: room_bureau_main
+  name: Bureau Main Room
+  parent: room
+  glyph: r
+  color:
+  - 180
+  - 180
+  - 210
+  base_size: 10
+  tags:
+    abs_size: 10
+    resolve:
+    - kind: geom_rect
+      w: 13
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: door
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 90
+          - 80
+          - 70
+    - kind: children_fixed
+      children:
+      - merchant
+      - local_guide
+      - lair_informant
+      - caged_demon
+      placement:
+        pattern: scatter_interior
+        spawn_kind: actor
+        salt: bureau_npcs
 - id: building_chakric_shrine
   name: Chakric Shrine
-  glyph: ✶
+  glyph: S
   color:
   - 210
   - 170
@@ -1024,25 +1284,47 @@
   tags:
     abs_size: 12
     resolve:
-      - kind: geom_rect
-        w: 11
-        h: 9
-        door:
-          enabled: true
-          side: "south"
-          proto: ""
-        emit:
-          wall_proto: "wall"
-          floor:
-            glyph: "."
-            color: [90, 80, 70]
-      - kind: children_fixed
-        children:
-          - chakra_sage
-        placement:
-          pattern: scatter_interior
-          spawn_kind: actor
-          salt: "shrine_npcs"
+    - kind: children_fixed
+      children:
+      - room_chakric_shrine_main
+      placement:
+        pattern: cluster
+        radius: 0
+        salt: shrine_room
+- id: room_chakric_shrine_main
+  name: Chakric Shrine Chamber
+  parent: room
+  glyph: r
+  color:
+  - 180
+  - 150
+  - 220
+  base_size: 9
+  tags:
+    abs_size: 9
+    resolve:
+    - kind: geom_rect
+      w: 11
+      h: 9
+      door:
+        enabled: true
+        side: south
+        proto: ''
+      emit:
+        wall_proto: wall
+        floor:
+          glyph: .
+          color:
+          - 90
+          - 80
+          - 70
+    - kind: children_fixed
+      children:
+      - chakra_sage
+      placement:
+        pattern: scatter_interior
+        spawn_kind: actor
+        salt: shrine_npcs
 - id: building_item_depot
   name: Item Depot
   glyph: D
@@ -1053,6 +1335,25 @@
   base_size: 12
   tags:
     abs_size: 12
+    resolve:
+    - kind: children_fixed
+      children:
+      - room_item_depot_main
+      placement:
+        pattern: cluster
+        radius: 0
+        salt: depot_room
+- id: room_item_depot_main
+  name: Item Depot Main Room
+  parent: room
+  glyph: r
+  color:
+  - 190
+  - 170
+  - 130
+  base_size: 10
+  tags:
+    abs_size: 10
     resolve:
     - kind: geom_rect
       w: 13

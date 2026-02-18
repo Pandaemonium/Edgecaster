@@ -53,3 +53,26 @@ class GameConfig:
     perf_profiler_flush_seconds: float = 2.0
     perf_profiler_top_n: int = 8
     perf_profiler_min_avg_ms: float = 0.05
+
+    # Attention-driven resolver controls (camera LoD + distance from camera center).
+    # Defaults target:
+    # - nearby screens can resolve deep (down to room-level for deep hierarchies),
+    # - distant entities stay coarse.
+    resolve_disable_above_lod: float = 2.0
+    resolve_depth_cap_default: int = 6
+    resolve_depth_ladder: tuple[tuple[float, int], ...] = (
+        (2.00, 1),
+        (1.20, 2),
+        (0.80, 3),
+        (0.50, 4),
+        (0.20, 5),
+        (0.00, 6),
+    )
+    resolve_distance_depth_ladder: tuple[tuple[float, int], ...] = (
+        (1.25, 6),
+        (2.50, 5),
+        (4.00, 4),
+        (7.00, 3),
+        (12.0, 2),
+        (9999.0, 1),
+    )
