@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable, Optional, Sequence, Set
 
+from edgecaster.state import chakra_component as chakra_component_state
 from edgecaster.systems import equipment as equipment_system
 
 # Debug throttle: actor_id -> last effective-state signature.
@@ -97,6 +98,390 @@ def _equipped_slot_node(item: Any) -> str:
     return _normalize_node_id(sid)
 
 
+def _baseline_chakra_root(actor: Any) -> str:
+    """Infer a stable default chakra root for actors missing legacy state."""
+    try:
+        body_schema = getattr(actor, "body_schema", None)
+    except Exception:
+        body_schema = None
+    if isinstance(body_schema, dict):
+        root = _normalize_node_id(str(body_schema.get("root", "") or ""))
+        if root:
+            return root
+
+    try:
+        comp = getattr(actor, "chakra_component", None)
+    except Exception:
+        comp = None
+    if comp is not None:
+        root = _normalize_node_id(str(getattr(comp, "root_node_id", "") or ""))
+        if root:
+            return root
+
+    return "body"
+
+
+def _component_node_sets(actor: Any) -> tuple[set[str], set[str]]:
+    """Extract normalized (unlocked, active) node ids from chakra_component."""
+    try:
+        comp = getattr(actor, "chakra_component", None)
+    except Exception:
+        comp = None
+    if comp is None:
+        return (set(), set())
+
+    if isinstance(comp, dict):
+        nodes_raw = comp.get("nodes")
+    else:
+        nodes_raw = getattr(comp, "nodes", None)
+    if not isinstance(nodes_raw, dict):
+        return (set(), set())
+
+    unlocked: set[str] = set()
+    active: set[str] = set()
+    for key, node in nodes_raw.items():
+        node_id = ""
+        is_active = True
+        if isinstance(node, dict):
+            node_id = str(node.get("node_id") or key or "")
+            is_active = bool(node.get("active", True))
+        else:
+            node_id = str(getattr(node, "node_id", "") or key or "")
+            is_active = bool(getattr(node, "active", True))
+        nid = _normalize_node_id(node_id)
+        if not nid:
+            continue
+        unlocked.add(nid)
+        if is_active:
+            active.add(nid)
+    return (unlocked, active)
+
+
+def _actor_entity_id(actor: Any) -> str:
+    try:
+        eid = str(getattr(actor, "entity_id", "") or "").strip()
+    except Exception:
+        eid = ""
+    if eid:
+        return eid
+    try:
+        aid = str(getattr(actor, "id", "") or "").strip()
+    except Exception:
+        aid = ""
+    return aid or "entity:unknown"
+
+
+def _actor_max_hp(actor: Any) -> Optional[float]:
+    try:
+        stats = getattr(actor, "stats", None)
+        if stats is not None:
+            return float(getattr(stats, "max_hp", None))
+    except Exception:
+        return None
+    return None
+
+
+def _coerce_actor_chakra_component(actor: Any) -> Any:
+    """Return actor.chakra_component as a typed ChakraComponent."""
+    raw = getattr(actor, "chakra_component", None)
+    if raw is not None and not isinstance(
+        raw,
+        (dict, chakra_component_state.ChakraComponent),
+    ):
+        return raw
+    try:
+        comp = chakra_component_state.coerce_chakra_component(
+            raw,
+            entity_id=_actor_entity_id(actor),
+            max_hp=_actor_max_hp(actor),
+            mass=1.0,
+        )
+    except Exception:
+        return None
+    try:
+        actor.chakra_component = comp
+    except Exception:
+        pass
+    return comp
+
+
+def _component_charge_map(comp: Any) -> dict[str, float]:
+    out: dict[str, float] = {}
+    if comp is None:
+        return out
+    nodes_raw = getattr(comp, "nodes", None)
+    if not isinstance(nodes_raw, dict):
+        return out
+    for key, node in nodes_raw.items():
+        if isinstance(node, dict):
+            node_id = str(node.get("node_id") or key or "")
+            channels = node.get("channels")
+        else:
+            node_id = str(getattr(node, "node_id", "") or key or "")
+            channels = getattr(node, "channels", None)
+        if not isinstance(channels, dict):
+            continue
+        nid = _normalize_node_id(node_id)
+        if not nid:
+            continue
+        raw = channels.get("charge", channels.get("chakra_charge"))
+        try:
+            out[nid] = float(raw)
+        except Exception:
+            continue
+    return out
+
+
+def _component_state_overrides(comp: Any) -> tuple[dict[str, tuple[float, float]], dict[str, str], Optional[str]]:
+    alignments: dict[str, tuple[float, float]] = {}
+    generators: dict[str, str] = {}
+    pattern_root: Optional[str] = None
+    if comp is None:
+        return (alignments, generators, pattern_root)
+    tags = getattr(comp, "tags", None)
+    if not isinstance(tags, dict):
+        return (alignments, generators, pattern_root)
+
+    raw_align = tags.get("compat_alignments")
+    if isinstance(raw_align, dict):
+        for key, value in raw_align.items():
+            if not isinstance(value, (list, tuple)) or len(value) < 2:
+                continue
+            nid = _normalize_node_id(str(key))
+            if not nid:
+                continue
+            try:
+                alignments[nid] = (float(value[0]), float(value[1]))
+            except Exception:
+                continue
+
+    raw_gens = tags.get("compat_generators")
+    if isinstance(raw_gens, dict):
+        for key, value in raw_gens.items():
+            nid = _normalize_node_id(str(key))
+            if not nid:
+                continue
+            try:
+                sval = str(value or "").strip()
+            except Exception:
+                sval = ""
+            if sval:
+                generators[nid] = sval
+
+    raw_root = tags.get("compat_pattern_root")
+    if raw_root is not None:
+        root = _normalize_node_id(str(raw_root))
+        if root:
+            pattern_root = root
+    return (alignments, generators, pattern_root)
+
+
+def ensure_actor_chakra_state(actor: Any) -> Any:
+    """Return legacy ChakraState, creating a baseline state when missing."""
+    state = getattr(actor, "chakra_state", None)
+    if state is not None:
+        return state
+
+    try:
+        from edgecaster.systems.chakras import ChakraState
+    except Exception:
+        return None
+
+    comp = _coerce_actor_chakra_component(actor)
+    root = _baseline_chakra_root(actor)
+    unlocked, active = _component_node_sets(actor)
+    charges = _component_charge_map(comp)
+    alignments, generators, pattern_root = _component_state_overrides(comp)
+    unlocked.add(root)
+    if not active:
+        active = {root}
+    else:
+        active.add(root)
+    if pattern_root and pattern_root not in active:
+        pattern_root = None
+    state = ChakraState(
+        unlocked=set(unlocked),
+        active=set(active),
+        alignments=dict(alignments),
+        generators=dict(generators),
+        charges=dict(charges),
+        pattern_root=pattern_root,
+    )
+    try:
+        actor.chakra_state = state
+    except Exception:
+        pass
+    sync_actor_chakra_state(actor)
+    return state
+
+
+def sync_actor_chakra_state(actor: Any) -> None:
+    """Mirror legacy ChakraState into ChakraComponent for migration cutover."""
+    state = getattr(actor, "chakra_state", None)
+    if state is None:
+        return
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
+        return
+    nodes = getattr(comp, "nodes", None)
+    if not isinstance(nodes, dict):
+        return
+
+    unlocked = _normalize_nodes(getattr(state, "unlocked", set()) or set())
+    active = _normalize_nodes(getattr(state, "active", set()) or set())
+    root = _baseline_chakra_root(actor)
+    if root:
+        unlocked.add(root)
+        active.add(root)
+    charges_raw = getattr(state, "charges", {}) or {}
+    charges: dict[str, float] = {}
+    if isinstance(charges_raw, dict):
+        for key, value in charges_raw.items():
+            nid = _normalize_node_id(str(key))
+            if not nid:
+                continue
+            try:
+                charges[nid] = float(value)
+            except Exception:
+                continue
+
+    key_by_node_id: dict[str, str] = {}
+    for key, node in nodes.items():
+        if isinstance(node, dict):
+            node_id = str(node.get("node_id") or key or "")
+        else:
+            node_id = str(getattr(node, "node_id", "") or key or "")
+        nid = _normalize_node_id(node_id)
+        if nid and nid not in key_by_node_id:
+            key_by_node_id[nid] = str(key)
+
+    for nid in sorted(unlocked | set(charges.keys())):
+        node_key = key_by_node_id.get(nid)
+        if node_key is None:
+            node_key = nid
+            nodes[node_key] = chakra_component_state.ChakraNode(
+                node_id=nid,
+                kind="compat",
+                active=(nid in active),
+                channels={},
+                tags={"compat_unlocked": True},
+            )
+            key_by_node_id[nid] = node_key
+
+        node = nodes[node_key]
+        if isinstance(node, dict):
+            channels = node.get("channels")
+            if not isinstance(channels, dict):
+                channels = {}
+                node["channels"] = channels
+            node["node_id"] = str(node.get("node_id") or nid)
+            node["active"] = bool(nid in active)
+            if nid in charges:
+                channels["charge"] = float(charges[nid])
+            else:
+                channels.pop("charge", None)
+                channels.pop("chakra_charge", None)
+        else:
+            node.node_id = str(getattr(node, "node_id", "") or nid)
+            node.active = bool(nid in active)
+            if not isinstance(getattr(node, "channels", None), dict):
+                node.channels = {}
+            if nid in charges:
+                node.channels["charge"] = float(charges[nid])
+            else:
+                node.channels.pop("charge", None)
+                node.channels.pop("chakra_charge", None)
+
+    tags = getattr(comp, "tags", None)
+    if not isinstance(tags, dict):
+        tags = {}
+        try:
+            comp.tags = tags
+        except Exception:
+            pass
+    tags["compat_unlocked_nodes"] = sorted(unlocked)
+    tags["compat_active_nodes"] = sorted(active)
+    root_choice = _normalize_node_id(str(getattr(state, "pattern_root", "") or ""))
+    tags["compat_pattern_root"] = root_choice if root_choice in active else None
+
+    alignments_raw = getattr(state, "alignments", {}) or {}
+    alignments_out: dict[str, list[float]] = {}
+    if isinstance(alignments_raw, dict):
+        for key, value in alignments_raw.items():
+            nid = _normalize_node_id(str(key))
+            if not nid:
+                continue
+            if not isinstance(value, (list, tuple)) or len(value) < 2:
+                continue
+            try:
+                alignments_out[nid] = [float(value[0]), float(value[1])]
+            except Exception:
+                continue
+    tags["compat_alignments"] = alignments_out
+
+    gens_raw = getattr(state, "generators", {}) or {}
+    gens_out: dict[str, str] = {}
+    if isinstance(gens_raw, dict):
+        for key, value in gens_raw.items():
+            nid = _normalize_node_id(str(key))
+            if not nid:
+                continue
+            sval = str(value or "").strip()
+            if sval:
+                gens_out[nid] = sval
+    tags["compat_generators"] = gens_out
+
+
+def set_actor_chakra_charge(actor: Any, node_id: str, amount: float) -> None:
+    """Set one chakra node charge in legacy+component state."""
+    state = ensure_actor_chakra_state(actor)
+    if state is None:
+        return
+    nid = _normalize_node_id(str(node_id))
+    if not nid:
+        return
+    try:
+        state.charges[nid] = float(amount)
+    except Exception:
+        return
+    sync_actor_chakra_state(actor)
+
+
+def unlock_actor_chakra(actor: Any, node_id: str, *, auto_activate: bool = True) -> bool:
+    """Unlock chakra node on actor state and mirror to ChakraComponent."""
+    state = ensure_actor_chakra_state(actor)
+    if state is None:
+        return False
+    try:
+        from edgecaster.systems import chakras as chakra_system
+    except Exception:
+        return False
+    try:
+        changed = bool(chakra_system.unlock_chakra(state, str(node_id), auto_activate=bool(auto_activate)))
+    except Exception:
+        return False
+    if changed:
+        sync_actor_chakra_state(actor)
+    return changed
+
+
+def toggle_actor_chakra(actor: Any, node_id: str, *, active: Optional[bool] = None) -> bool:
+    """Toggle/activate/deactivate chakra node and mirror to ChakraComponent."""
+    state = ensure_actor_chakra_state(actor)
+    if state is None:
+        return False
+    try:
+        from edgecaster.systems import chakras as chakra_system
+    except Exception:
+        return False
+    try:
+        now_active = bool(chakra_system.toggle_chakra_active(state, str(node_id), active=active))
+    except Exception:
+        return False
+    sync_actor_chakra_state(actor)
+    return now_active
+
+
 def equipped_items(game: Any, actor_id: str) -> list[Any]:
     """Return all equipped inventory items for actor."""
     try:
@@ -166,7 +551,7 @@ def auto_active_nodes(game: Any, actor_id: str) -> set[str]:
 
 def effective_unlocked_nodes(game: Any, actor: Any) -> set[str]:
     """Return actor unlocked chakras including temporary equipped unlocks."""
-    state = getattr(actor, "chakra_state", None)
+    state = ensure_actor_chakra_state(actor)
     base = _normalize_nodes(getattr(state, "unlocked", set()) or set())
     base.update(temporary_unlocked_nodes(game, str(getattr(actor, "id", ""))))
     return base
@@ -174,7 +559,7 @@ def effective_unlocked_nodes(game: Any, actor: Any) -> set[str]:
 
 def effective_active_nodes(game: Any, actor: Any) -> set[str]:
     """Return active chakras including explicit item auto-activations."""
-    state = getattr(actor, "chakra_state", None)
+    state = ensure_actor_chakra_state(actor)
     active = _normalize_nodes(getattr(state, "active", set()) or set())
     active.update(auto_active_nodes(game, str(getattr(actor, "id", ""))))
     return active
@@ -187,7 +572,7 @@ def effective_chakra_state(game: Any, actor: Any) -> Any:
     systems that need a coherent unlocked/active snapshot without mutating the
     actor's stored chakra state.
     """
-    state = getattr(actor, "chakra_state", None)
+    state = ensure_actor_chakra_state(actor)
     if state is None:
         return None
 

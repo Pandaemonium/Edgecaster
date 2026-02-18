@@ -177,6 +177,34 @@ def test_catastrophe_pulse_telegraph_and_resolve_hits_player():
     assert siege.pulse_count >= 1
 
 
+def test_catastrophe_pulse_hits_large_footprint_actor_overlap() -> None:
+    game, level, _player = _make_game_and_level()
+    rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
+    siege = level.rune_anchor_siege
+    assert siege is not None
+
+    tile = tuple(siege.anchor_pos)
+    enemy = SimpleNamespace(
+        id="enemy_big",
+        name="Large Demon",
+        pos=(tile[0] + 2, tile[1] + 2),
+        footprint_local=(float(tile[0]), float(tile[1]), float(tile[0] + 3), float(tile[1] + 3)),
+        actions=("move", "wait"),
+        tags={},
+        faction="hostile",
+        alive=True,
+        stats=DummyStats(18, 18),
+    )
+    level.actors[enemy.id] = enemy
+    level.entities[enemy.id] = enemy
+
+    siege.pulse_tiles = [tile]
+    hp_before = int(enemy.stats.hp)
+    rune_anchor_sieges._resolve_catastrophe_pulse(game, level, siege, tick=1)
+
+    assert int(enemy.stats.hp) < hp_before
+
+
 def test_sapper_reopens_repaired_fracture():
     game, level, _player = _make_game_and_level()
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")

@@ -1,0 +1,366 @@
+## POI / Entity Unification Master Plan
+Updated: 2026-02-13
+Status: v1.1 (In Progress)
+
+This document defines the migration plan from mixed legacy POI systems to a
+single entity-first, attention-driven world model with persistent state.
+
+It is intentionally opinionated and execution-focused.
+
+Progress snapshot (2026-02-13):
+- Phase 1B: core lineage persistence hooks are implemented for item pickup, actor death,
+  and destructible structure removal paths.
+- Phase 2: Starttsgard cutover guard is active in `systems/poi_spawning.py` so
+  legacy `starting_zone` runtime spawning is skipped when
+  `starttsgard_cutover_enabled = True`.
+- Next: finish Starttsgard parity validation and migrate quest-chain POIs
+  (`inventor_workshop`, `failing_rune`, `destabilizer_ruin`) into recipe/entity ownership.
+
+-------------------------------------------------------------------------------
+
+## Decisions Locked In
+
+1. Offscreen NPC simulation policy:
+   - Offscreen NPCs freeze.
+   - Only loaded/active simulation regions advance actor AI/time.
+
+2. Persistence policy:
+   - Loot and NPC state must persist exactly.
+   - "Observed once then forgotten" behavior is not acceptable for quest-critical content.
+
+3. Identity policy:
+   - Runtime content uses deterministic lineage IDs.
+   - Quest semantics may still use human-readable semantic IDs.
+
+4. Scale policy:
+   - Large POIs resolve per camera chunk, not all-at-once.
+
+5. Compatibility policy:
+   - No legacy save compatibility required.
+   - We can do clean schema changes.
+
+6. Actor typing policy:
+   - Resolver output should be data-driven via content tags (e.g. `spawn_kind: actor`).
+   - Hardcoded NPC id heuristics should be removed from orchestration paths.
+
+7. Starttsgard cutover policy:
+   - Once parity tests are green, disable Starttsgard legacy spawn path.
+   - Starttsgard should realize through entity+resolver path only.
+
+-------------------------------------------------------------------------------
+
+## Problem Statement
+
+The codebase currently has two overlapping content pipelines:
+
+1. Legacy POI pipeline:
+   - `content/pois.yaml`
+   - `mapgen.apply_pois(...)`
+   - `systems/poi_spawning.py` zone-time spawn logic
+
+2. Entity/attention pipeline:
+   - `site_*` prototypes and resolve recipes
+   - `systems/aggregate_resolution.py` for deterministic child intents
+   - `systems/attention.py` for staged realization by observation/LoD
+
+This duality creates duplicate truth, brittle quest behaviors, and regression risk.
+
+-------------------------------------------------------------------------------
+
+## North Star Architecture
+
+### A. One Spatial Content Ontology
+
+All world content that can be rendered, interacted with, or simulated exists as
+entities (macro/mezzo/micro) with deterministic IDs.
+
+No ad-hoc "pseudo-entity" pipelines should remain for POIs.
+
+### B. Two ID Layers (both required)
+
+1. Semantic ID:
+   - Human/gameplay concept key, e.g. `inventor_workshop`, `failing_rune`.
+   - Used by quests, rumors, map markers, narrative logic.
+
+2. Lineage ID:
+   - Deterministic runtime identity for each resolved child entity.
+   - Used for persistence and anti-respawn.
+
+Example shape:
+`site:starttsgard@3030,2039/building:bureau:0/npc:guide_npc:2`
+
+### C. Strict Responsibility Split
+
+1. `systems/attention.py`
+   - Decides when/where to resolve by camera/LoD/hotness.
+   - Owns staging/eviction orchestration only.
+   - Does not contain content semantics per POI/NPC type.
+
+2. `systems/aggregate_resolution.py`
+   - Decides what children to spawn and their deterministic lineage IDs.
+   - Owns resolve recipes, placement rules, child typing, deterministic intent generation.
+
+3. Quest/rumor systems
+   - Operate on semantic IDs.
+   - Bind semantic IDs to active root entities/lineage roots as needed.
+
+### D. Simulation Regime
+
+1. Observation can stage content.
+2. Time advance applies only where simulation is active.
+3. Offscreen content can be represented but not advanced.
+
+-------------------------------------------------------------------------------
+
+## Target Data Model
+
+Add a unified persistent state table keyed by lineage ID.
+
+Suggested logical schema:
+
+- `lineage_id: str` (PK)
+- `semantic_id: Optional[str]` (for query/join convenience)
+- `state_kind: str` (`actor`, `item`, `structure`, etc.)
+- `removed: bool` (picked up/destroyed)
+- `dead: bool` (for actors)
+- `last_known_hp: Optional[int]`
+- `last_known_tags_patch: dict` (small delta, not full clone)
+- `custom_payload: dict` (escape hatch for special systems)
+
+Rules:
+- Resolver checks this table before instantiating.
+- If removed/dead, do not respawn child.
+- On pickup/kill/destruction, write state immediately.
+
+-------------------------------------------------------------------------------
+
+## Migration Strategy (Phased)
+
+### Phase 0 - Freeze Architecture and Add Guardrails
+
+Goal:
+- Stop further divergence while migration happens.
+
+Actions:
+1. Declare legacy POI pipeline "maintenance only".
+2. Add comments/deprecation markers in:
+   - `systems/poi_spawning.py`
+   - `mapgen.apply_pois` call sites
+3. Add invariant tests for deterministic resolution and no duplicate IDs.
+
+Done criteria:
+- No new feature work lands in legacy POI spawn path.
+
+---
+
+### Phase 1 - Lineage and Persistence Substrate
+
+Goal:
+- Introduce deterministic identity + persistent state independent of legacy POIs.
+
+Subphase 1A (Completed):
+1. Implement lineage ID builder utilities in `aggregate_resolution.py`.
+2. Introduce persistent lineage-state store in game state.
+3. Hook write paths:
+   - item pickup/removal
+   - actor death
+4. Hook read paths:
+   - resolver intent filtering checks persisted state before spawn.
+
+Subphase 1B (In Progress):
+1. Hook destructible structure writes to lineage state.
+2. First-class targets:
+   - doors
+   - walls
+3. Validate no respawn after unload/reload for destroyed structures.
+
+Done criteria:
+- Killed NPCs and picked-up items do not respawn after unload/reload.
+- Destroyed doors/walls do not respawn after unload/reload.
+- Behavior is deterministic across runs with same seed.
+
+---
+
+### Phase 2 - Lock Starttsgard as Reference Vertical Slice
+
+Goal:
+- One fully migrated, stable example of macro -> mezzo -> micro.
+
+Actions:
+1. Keep Starttsgard root in `site_types.yaml`.
+2. Move remaining Starttsgard-specific hardcoding out of attention where possible.
+3. Ensure all child entities/NPCs in this slice use lineage persistence.
+4. Validate shop, guide, informant, pickup, and re-entry behavior.
+5. Cutover:
+   - disable Starttsgard legacy spawn path after parity tests pass.
+   - keep only entity+resolver ownership for Starttsgard.
+
+Done criteria:
+- Starttsgard no longer relies on legacy spawn behavior in `poi_spawning.py`.
+- Re-entering Starttsgard preserves all mutations exactly.
+
+---
+
+### Phase 3 - Quest POI Chain Migration
+
+Scope:
+- `inventor_workshop`
+- `failing_rune`
+- `destabilizer_ruin`
+
+Goal:
+- Keep quest semantics, move spatial realization to recipe/entity pipeline.
+
+Actions:
+1. Define roots as entity-backed sites with semantic IDs.
+2. Port existing structure/NPC/item logic from `pois.yaml`/`poi_spawning.py`
+   into resolve recipes and resolver helpers.
+3. Keep quests/dialogues using semantic IDs.
+4. Add semantic->lineage binding layer for runtime query convenience.
+
+Done criteria:
+- Guide -> Inventor -> Destabilizer -> Failing Rune quest chain works without legacy POI spawn.
+- Rumor/map marker flow still works and points to correct content.
+
+---
+
+### Phase 4 - Large POI Chunked Resolution (Colosseum)
+
+Goal:
+- Prove scalable per-camera-chunk resolution for multi-zone POIs.
+
+Actions:
+1. Make colosseum a recipe-driven root with chunk-safe deterministic IDs.
+2. Add chunk-window realization limits and eviction tuning.
+3. Persist chunk-local mutations (killed/looted/broken) via lineage IDs.
+
+Done criteria:
+- Panning/zooming through colosseum does not hitch catastrophically.
+- Mutation persistence remains exact.
+
+---
+
+### Phase 5 - Legacy Pipeline Removal
+
+Goal:
+- Remove duplicate truth and simplify maintenance.
+
+Actions:
+1. Remove or reduce `systems/poi_spawning.py` to bridge-only (or delete).
+2. Remove zone-time POI stamping dependency for migrated content.
+3. Remove old POI content definitions after parity.
+4. Consolidate docs and update architecture references.
+
+Done criteria:
+- One spatial content pipeline remains.
+- Inventor/lair informant/Starttsgard/colosseum all run through entity+resolver path.
+
+-------------------------------------------------------------------------------
+
+## File Ownership (End State)
+
+1. `edgecaster/systems/attention.py`
+   - Camera-window orchestration, staging lifecycle, eviction.
+   - No content-specific logic branches for named POIs/NPC IDs.
+
+2. `edgecaster/systems/aggregate_resolution.py`
+   - Resolve rule engine
+   - Deterministic placement and lineage derivation
+   - Child intent typing (`actor`, `entity`, `staged`)
+
+3. `edgecaster/content/site_types.yaml` + `edgecaster/content/entities.yaml`
+   - Spatial recipes and composition.
+
+4. Quest/dialogue systems
+   - Semantic quest rules and state progression.
+   - Never own spatial spawn implementation details.
+
+-------------------------------------------------------------------------------
+
+## Performance and Correctness Guardrails
+
+1. Resolution budgets:
+   - Hard cap max intents resolved per frame/chunk.
+   - Prioritize on-screen over warm-margin.
+
+2. Determinism:
+   - Resolver randomness seeded from world seed + parent lineage + rule salt.
+
+3. Duplication prevention:
+   - Lineage IDs must be unique and stable.
+   - Stage/loaded-zone mirroring must not create double ownership.
+
+4. Persistence-first:
+   - Any interactive removal/death writes lineage-state immediately.
+
+-------------------------------------------------------------------------------
+
+## Immediate Work Plan (Next Sprint)
+
+1. Finish Phase 1B:
+   - write lineage persistence on destroyed doors/walls.
+2. Remove hardcoded actor typing and move to data tags:
+   - add `spawn_kind` style tags in content
+   - remove NPC-id heuristics from orchestration paths.
+3. Finish Starttsgard parity test matrix and execute cutover:
+   - disable Starttsgard legacy spawn path.
+4. Start porting Inventor chain roots from `pois.yaml` to recipe-driven entities.
+
+-------------------------------------------------------------------------------
+
+## Test Matrix (Required)
+
+1. Deterministic IDs:
+   - Same seed/run => same lineage IDs for same camera chunk.
+
+2. Persistence:
+   - Kill NPC, unload/reload, confirm no respawn.
+   - Pick item, unload/reload, confirm no respawn.
+   - Destroy door/wall, unload/reload, confirm no respawn.
+
+3. Quest flow:
+   - Guide quest acceptance marks inventor location.
+   - Inventor progression marks destabilizer location.
+   - Failing rune reveal/marker still works.
+
+4. Lair informant:
+   - Rumor marking works and map markers appear.
+
+5. Performance:
+   - Large POI pan/zoom remains within acceptable frame-time budget.
+
+6. Ownership/cutover safety:
+   - No dual-spawn for Starttsgard entities after cutover.
+   - No duplicate ownership between staged and loaded-zone entities.
+
+-------------------------------------------------------------------------------
+
+## Risks and Mitigations
+
+1. Risk: Hybrid period causes regressions.
+   - Mitigation: explicit migration checklist per content slice, no mixed ownership.
+
+2. Risk: Attention becomes too complex.
+   - Mitigation: keep attention orchestration-only, move content rules out.
+
+3. Risk: Quest systems tightly coupled to old POI assumptions.
+   - Mitigation: semantic ID adapter layer and compatibility shims during migration.
+
+-------------------------------------------------------------------------------
+
+## Out of Scope For This Plan
+
+1. Offscreen ecosystem simulation.
+2. Save migration compatibility.
+3. Deep economy/faction simulation.
+
+-------------------------------------------------------------------------------
+
+## Success Criteria
+
+This effort is complete when:
+
+1. There is exactly one spatial content realization pipeline.
+2. Quest-critical content and loot/NPC mutations persist exactly.
+3. Large POIs resolve smoothly per camera chunk.
+4. Legacy POI spaghetti paths are removed or reduced to thin compatibility bridges.

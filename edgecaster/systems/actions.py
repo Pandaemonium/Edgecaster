@@ -14,6 +14,8 @@ except Exception:  # pragma: no cover - keep fail-soft for minimal envs/tests
 from edgecaster import prototypes
 from edgecaster.systems import reputation as reputation_system
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import footprints as footprints_system
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +679,6 @@ def _action_war_drum(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None:
         return
 
-    ax, ay = getattr(actor, "pos", (0, 0))
     tick_offset = -abs(reduction)
 
     affected = 0
@@ -693,8 +694,7 @@ def _action_war_drum(game: Any, actor_id: str, **kwargs: Any) -> None:
             if getattr(other, "faction", None) == getattr(player, "faction", None):
                 continue
 
-        ox, oy = getattr(other, "pos", (0, 0))
-        if abs(ox - ax) + abs(oy - ay) > radius:
+        if _entity_manhattan_distance_local(actor, other) > radius:
             continue
 
         otags = getattr(other, "tags", None) or {}
@@ -1405,7 +1405,10 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
                 pass
         elif int(getattr(stats, "hp", 0)) <= 0 and tid in getattr(level, "entities", {}):
             try:
-                del level.entities[tid]
+                if hasattr(game, "_remove_entity"):
+                    game._remove_entity(level, obj, reason="destroyed_sparkle")
+                else:
+                    del level.entities[tid]
             except Exception:
                 pass
 
@@ -2010,10 +2013,7 @@ def _action_ground_slam(game: Any, actor_id: str, **kwargs: Any) -> None:
             game, level, actor_id, policy,
             include_actors=True, include_entities=False,
         ):
-            t_pos = getattr(target, "pos", None)
-            if t_pos is None:
-                continue
-            if (int(t_pos[0]), int(t_pos[1])) not in tile_set:
+            if not _target_overlaps_tile_set(target, tile_set):
                 continue
             if not getattr(target, "alive", True):
                 continue
@@ -2072,6 +2072,76 @@ def _action_ground_slam(game: Any, actor_id: str, **kwargs: Any) -> None:
 # ---------------------------------------------------------------------------
 # Deferred action helper
 # ---------------------------------------------------------------------------
+
+def _target_overlaps_tile_set(target: Any, tile_set: set[tuple[int, int]]) -> bool:
+    """Return True when target footprint overlaps any tile in tile_set."""
+    if not tile_set:
+        return False
+    try:
+        rect = footprints_system.entity_footprint_local(target)
+        for tx, ty in footprints_system.iter_tiles_overlapped_by_rect(rect):
+            if (int(tx), int(ty)) in tile_set:
+                return True
+        return False
+    except Exception:
+        pass
+    t_pos = getattr(target, "pos", None)
+    if t_pos is None:
+        return False
+    return (int(t_pos[0]), int(t_pos[1])) in tile_set
+
+
+def _entity_tiles_local(ent: Any, *, max_tiles: int = 128) -> list[tuple[int, int]]:
+    try:
+        rect = footprints_system.entity_footprint_local(ent)
+        out: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for tx, ty in footprints_system.iter_tiles_overlapped_by_rect(rect):
+            key = (int(tx), int(ty))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+            if len(out) >= int(max_tiles):
+                break
+        if out:
+            return out
+    except Exception:
+        pass
+    pos = getattr(ent, "pos", None)
+    if pos is None:
+        return []
+    return [(int(pos[0]), int(pos[1]))]
+
+
+def _entity_center_tile_local(ent: Any) -> tuple[int, int] | None:
+    try:
+        x0, y0, x1, y1 = footprints_system.entity_footprint_local(ent)
+        cx = int((float(x0) + float(x1)) * 0.5)
+        cy = int((float(y0) + float(y1)) * 0.5)
+        return (cx, cy)
+    except Exception:
+        pos = getattr(ent, "pos", None)
+        if pos is None:
+            return None
+        return (int(pos[0]), int(pos[1]))
+
+
+def _entity_manhattan_distance_local(a: Any, b: Any) -> int:
+    at = _entity_tiles_local(a)
+    bt = _entity_tiles_local(b)
+    if not at or not bt:
+        return 10**9
+    best = 10**9
+    for ax, ay in at:
+        for bx, by in bt:
+            d = abs(int(bx) - int(ax)) + abs(int(by) - int(ay))
+            if d < best:
+                best = d
+                if best <= 0:
+                    return 0
+    return best
+
 
 def _setup_deferred_aoe(
     game: Any,
@@ -2133,10 +2203,7 @@ def _setup_deferred_aoe(
             game, level, actor_id, policy,
             include_actors=True, include_entities=include_entities,
         ):
-            t_pos = getattr(target, "pos", None)
-            if t_pos is None:
-                continue
-            if (int(t_pos[0]), int(t_pos[1])) not in tile_set:
+            if not _target_overlaps_tile_set(target, tile_set):
                 continue
             if not getattr(target, "alive", True):
                 continue
@@ -2161,7 +2228,10 @@ def _setup_deferred_aoe(
                             killer_is_player=caster_is_player,
                         )
                     elif tid in getattr(level, "entities", {}):
-                        del level.entities[tid]
+                        if hasattr(game, "_remove_entity"):
+                            game._remove_entity(level, target, reason=f"destroyed_{action_name}")
+                        else:
+                            del level.entities[tid]
                 except Exception:
                     pass
 
@@ -2763,6 +2833,10 @@ def _action_chakra_pulse(game: Any, actor_id: str, **kwargs: Any) -> None:
             continue
         ndx = dx / mag
         ndy = dy / mag
+        step_x = int(round(ndx))
+        step_y = int(round(ndy))
+        if step_x == 0 and step_y == 0:
+            continue
 
         # Apply knockback_resist from target.
         effective_push = push_dist
@@ -2776,21 +2850,76 @@ def _action_chakra_pulse(game: Any, actor_id: str, **kwargs: Any) -> None:
             pushed_any = True
             continue
 
-        # Push tile by tile, stopping at walls or occupied tiles.
+        # Push tile by tile, stopping at blocked footprint overlap.
+        base_rect = footprints_system.entity_footprint_local(target)
         cx, cy = tx, ty
         for _ in range(effective_push):
-            nx = cx + int(round(ndx))
-            ny = cy + int(round(ndy))
-            if not level.world.in_bounds(nx, ny):
+            nx = cx + step_x
+            ny = cy + step_y
+            candidate_rect = footprints_system.rect_translate(
+                base_rect,
+                float(nx - tx),
+                float(ny - ty),
+            )
+            try:
+                in_bounds = footprints_system.rect_within_bounds(
+                    candidate_rect,
+                    width=int(level.world.width),
+                    height=int(level.world.height),
+                )
+            except Exception:
+                in_bounds = bool(level.world.in_bounds(nx, ny))
+            if not in_bounds:
                 break
-            if not level.world.is_walkable(nx, ny):
+            if not footprints_system.world_walkable_for_rect(level.world, candidate_rect):
                 break
-            if game._actor_at(level, (nx, ny)):
+            if entity_ops_system.first_actor_overlapping_rect(
+                level,
+                candidate_rect,
+                exclude_id=tid,
+            ):
+                break
+            if entity_ops_system.blocking_entity_overlapping_rect(
+                level,
+                candidate_rect,
+                exclude_ids={tid},
+                ignore_actor_entities=True,
+            ):
                 break
             cx, cy = nx, ny
 
         if (cx, cy) != (tx, ty):
-            target.pos = (cx, cy)
+            moved = False
+            if hasattr(game, "_move_actor_to_abs") and hasattr(game, "abs_from_zone_local"):
+                try:
+                    dest_abs = game.abs_from_zone_local(level.coord, (cx, cy))
+                    game._move_actor_to_abs(target, dest_abs, from_level=level)
+                    moved = True
+                except Exception:
+                    moved = False
+            if not moved:
+                fn = getattr(target, "set_pos", None)
+                if callable(fn):
+                    try:
+                        fn((cx, cy))
+                    except Exception:
+                        target.pos = (cx, cy)
+                else:
+                    target.pos = (cx, cy)
+                try:
+                    if hasattr(game, "abs_from_zone_local"):
+                        abs_pos = game.abs_from_zone_local(level.coord, (cx, cy))
+                        afn = getattr(target, "set_abs_pos", None)
+                        if callable(afn):
+                            afn(abs_pos)
+                        else:
+                            setattr(target, "abs_pos", abs_pos)
+                except Exception:
+                    pass
+                try:
+                    level.spatial_dirty = True
+                except Exception:
+                    pass
             pushed_any = True
 
     _consume_charge(game, actor_id, 0.3)
@@ -2884,16 +3013,23 @@ def _action_root_grasp(game: Any, actor_id: str, **kwargs: Any) -> None:
                 continue
             if not game.is_hostile(actor, t):
                 continue
-            d = abs(t.pos[0] - actor.pos[0]) + abs(t.pos[1] - actor.pos[1])
+            d = _entity_manhattan_distance_local(actor, t)
             if d < best_dist:
                 best_dist = d
                 best_target = t
         if best_target is None or best_dist > 8:
             game.log.add("No enemy close enough for Root Grasp.")
             return
-        cx, cy = best_target.pos
+        center = _entity_center_tile_local(best_target)
+        if center is None:
+            game.log.add("No enemy close enough for Root Grasp.")
+            return
+        cx, cy = center
     else:
-        cx, cy = player.pos
+        center = _entity_center_tile_local(player)
+        if center is None:
+            return
+        cx, cy = center
 
     radius = 2
     tiles = [
@@ -2931,9 +3067,7 @@ def _action_root_grasp(game: Any, actor_id: str, **kwargs: Any) -> None:
                 continue
             if not getattr(target, "alive", True):
                 continue
-            if getattr(target, "pos", None) is None:
-                continue
-            if (int(target.pos[0]), int(target.pos[1])) not in tile_set:
+            if not _target_overlaps_tile_set(target, tile_set):
                 continue
             game._add_status(target, "rooted", 10)
             game.log.add(f"Roots ensnare {target.name}!")
@@ -3018,10 +3152,11 @@ def _action_spinal_surge(game: Any, actor_id: str, **kwargs: Any) -> None:
         return
 
     # Recharge all active chakras to full (1.0).
-    chakra_state = getattr(actor, "chakra_state", None)
+    chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
     if chakra_state is None:
         return
     for node_id in active:
-        chakra_state.charges[node_id] = 1.0
+        chakra_items_system.set_actor_chakra_charge(actor, node_id, 1.0)
+    chakra_items_system.sync_actor_chakra_state(actor)
 
     game.log.add("Energy surges up your spine, flooding every channel!")

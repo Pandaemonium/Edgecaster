@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from edgecaster.systems.actions import get_action, action_delay, ActionDef
 from edgecaster.systems import item_grants
 from edgecaster.systems import equipment as equipment_system
+from edgecaster.systems import inventory as inventory_system
 
 
 def _telemetry(game: "Game", event: str, **payload: Any) -> None:
@@ -35,6 +36,17 @@ def _telemetry(game: "Game", event: str, **payload: Any) -> None:
             emit(event, **payload)
     except Exception:
         return
+
+
+def _actor_inventory(game: "Game", actor_id: str) -> list[Any]:
+    """Read actor inventory via inventory system with legacy fallback."""
+    try:
+        return list(inventory_system.get_inventory(game, str(actor_id)))
+    except Exception:
+        try:
+            return list(getattr(game, "inventories", {}).get(str(actor_id), []) or [])
+        except Exception:
+            return []
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +101,7 @@ def find_action_origin(
         return actor, True
 
     # Look for item granting this action
-    inv = game.inventories.get(actor.id, [])
+    inv = _actor_inventory(game, str(getattr(actor, "id", "")))
     origin = item_grants.find_grant_origin(inv, action_name)
 
     if origin is not None:
@@ -184,14 +196,28 @@ def _apply_chakra_delay_modifiers(
 
 
 def calculate_final_delay(
-    game: "Game",
-    actor: "Actor",
-    actor_id: str,
-    action_name: str,
-    base_delay: int,
+    game: Any,
+    actor: Any,
+    actor_id: str | None = None,
+    action_name: str | None = None,
+    base_delay: int | None = None,
 ) -> int:
-    """Calculate final action delay after applying all modifiers."""
-    delay = base_delay
+    """Calculate final action delay after applying all modifiers.
+
+    Compatibility:
+    - Legacy call shape: ``calculate_final_delay(actor, base_delay)``
+    - Current call shape: ``calculate_final_delay(game, actor, actor_id, action_name, base_delay)``
+    """
+    # Legacy 2-arg API used by older tests/callers.
+    if base_delay is None and action_name is None and actor_id is None:
+        legacy_actor = game
+        delay = int(actor)
+        mult = slow_mult(legacy_actor)
+        if mult > 1.0:
+            delay = int(math.ceil(delay * mult))
+        return apply_tick_offset(legacy_actor, delay)
+
+    delay = int(base_delay or 0)
 
     # Apply slow multiplier
     mult = slow_mult(actor)
@@ -202,7 +228,12 @@ def calculate_final_delay(
     delay = apply_tick_offset(actor, delay)
 
     # Apply chakra passives (e.g., foot speed).
-    delay = _apply_chakra_delay_modifiers(game, actor_id, action_name, delay)
+    delay = _apply_chakra_delay_modifiers(
+        game,
+        str(actor_id or ""),
+        str(action_name or ""),
+        delay,
+    )
 
     return delay
 
@@ -220,12 +251,9 @@ def find_charge_item(
     if origin is None or origin is actor:
         return None
 
-    try:
-        inv = game.inventories.get(actor.id, [])
-        if origin in inv:
-            return origin
-    except Exception:
-        pass
+    inv = _actor_inventory(game, str(getattr(actor, "id", "")))
+    if origin in inv:
+        return origin
 
     return None
 

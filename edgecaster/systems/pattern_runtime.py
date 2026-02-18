@@ -135,7 +135,7 @@ def chakra_modifiers(self, actor_id: str):
     if actor is None:
         return None
 
-    chakra_state = getattr(actor, "chakra_state", None)
+    chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
     if chakra_state is None:
         return None
 
@@ -163,7 +163,7 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
         actor = None
     if actor is None:
         return
-    chakra_state = getattr(actor, "chakra_state", None)
+    chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
     if chakra_state is None:
         return
     try:
@@ -171,6 +171,7 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
     except Exception:
         return
     chakra_system.consume_chakra_charge(chakra_state, amount)
+    chakra_items_system.sync_actor_chakra_state(actor)
 
 
 def act_chakra(self, actor_id: str) -> None:
@@ -184,7 +185,7 @@ def act_chakra(self, actor_id: str) -> None:
         self.log.add("No pattern to modify. Place a terminus first.")
         return
 
-    stored_chakra_state = getattr(actor, "chakra_state", None)
+    stored_chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
     if stored_chakra_state is None:
         self.log.add("No chakra state found.")
         return
@@ -244,6 +245,13 @@ def act_chakra(self, actor_id: str) -> None:
     mods = self._chakra_modifiers(actor_id)
     if mods is not None:
         amp *= mods.chakra_amp_mult
+    # Finger finesse and similar passives can nudge chakra generator strength,
+    # but one Chakra action press should always apply exactly one generator pass.
+    try:
+        amp += float(self.chakra_effect_value("chakra_generator_amp_bonus", actor_id=actor_id))
+    except Exception:
+        pass
+    amp = max(0.01, float(amp))
 
     # Create a CustomGraphGenerator with the chakra shape
     gen = builder.CustomGraphGenerator(
@@ -257,20 +265,11 @@ def act_chakra(self, actor_id: str) -> None:
     segs = level.pattern.to_segments()
     level.pattern_motion = None  # Cancel any ongoing motion
 
-    # Determine total iteration passes (1 base + finger finesse bonus).
-    extra_iters = 0
-    try:
-        extra_iters = int(self.chakra_effect_value("generator_iteration_bonus", actor_id=actor_id))
-    except Exception:
-        pass
-    total_passes = 1 + max(0, min(3, extra_iters))  # Cap at 4 total passes.
-
-    for _ in range(total_passes):
-        segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
-        segs = builder.cleanup_duplicates(segs)
-        if len(segs) >= self.cfg.max_vertices:
-            segs = segs[: self.cfg.max_vertices]
-            break
+    # Exactly one generator application per action press.
+    segs = gen.apply_segments(segs, max_segments=self.cfg.max_vertices)
+    segs = builder.cleanup_duplicates(segs)
+    if len(segs) >= self.cfg.max_vertices:
+        segs = segs[: self.cfg.max_vertices]
 
     if len(segs) > self.cfg.max_vertices:
         segs = segs[: self.cfg.max_vertices]

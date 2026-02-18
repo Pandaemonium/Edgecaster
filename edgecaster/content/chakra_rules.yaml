@@ -1,0 +1,14 @@
+channels:
+  defaults:
+    clamp: none
+    combine: additive
+
+edges:
+  contains:
+    propagation: automatic
+  owns:
+    propagation: none
+  influences:
+    propagation: opt_in
+  routes:
+    propagation: opt_in

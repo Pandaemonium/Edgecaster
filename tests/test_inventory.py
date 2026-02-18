@@ -7,15 +7,18 @@ Tests container logic and item manipulation.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from edgecaster.state.entities import Entity
 from edgecaster.systems.inventory import (
     get_inventory,
     get_player_inventory,
     player_pick_up,
     drop_inventory_item,
+    drop_inventory_item_qty,
     eat_item_from_inventory,
     eat_inventory_item,
     take_from_container,
     move_item_between_inventories,
+    move_item_between_inventories_qty,
     get_equipped_in_slot,
     unequip_slot,
     unequip_item,
@@ -146,6 +149,52 @@ class TestPlayerPickUp:
         assert item in mock_game.inventories["player"]
         assert "sword_1" not in level.entities
 
+    def test_marks_entity_removed_on_pickup(self, mock_game):
+        """Should persist removal for deterministic items via entity state."""
+        item = MagicMock(spec=[])
+        item.id = "berry_1"
+        item.name = "Blueberry"
+        item.kind = "item"
+        item.tags = {"lineage_id": "agg:berries:1"}
+        mock_game.mark_entity_removed = MagicMock()
+
+        level = mock_game._level()
+        level.entities = {"berry_1": item}
+        mock_game._entity_at.return_value = item
+
+        with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
+            mock_grants.get_item_grants.return_value = []
+            player_pick_up(mock_game)
+
+        mock_game.mark_entity_removed.assert_called_once()
+        args, kwargs = mock_game.mark_entity_removed.call_args
+        assert args[0] is item
+        assert kwargs.get("reason") == "pickup"
+        assert "lineage_only" not in kwargs
+
+    def test_pickup_attaches_item_to_player_owner(self, mock_game):
+        """Picked items should retain identity and become inventory children."""
+        item = MagicMock(spec=[])
+        item.id = "dagger_1"
+        item.entity_id = "dagger_1"
+        item.name = "Dagger"
+        item.kind = "item"
+        item.tags = {}
+
+        level = mock_game._level()
+        level.entities = {"dagger_1": item}
+        mock_game._entity_at.return_value = item
+
+        with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
+            mock_grants.get_item_grants.return_value = []
+            player_pick_up(mock_game)
+
+        assert getattr(item, "parent_entity_id", None) == "player"
+        assert getattr(item, "socket_id", None) == "inventory"
+        assert item.tags.get("inventory_owner_id") == "player"
+        assert item.tags.get("in_inventory") is True
+        mock_game.patch_entity_state.assert_called()
+
     def test_rejects_actors(self, mock_game):
         """Should not pick up actors."""
         enemy = MagicMock()
@@ -194,6 +243,23 @@ class TestDropInventoryItem:
         assert item.pos == (5, 5)
         assert item.id in game._level().entities
         assert item not in game.inventories["player"]
+
+    def test_drop_detaches_item_owner_metadata(self, mock_game):
+        """Dropped items should no longer be marked as inventory children."""
+        game, item = mock_game
+        item.parent_entity_id = "player"
+        item.socket_id = "inventory"
+        item.tags = {"inventory_owner_id": "player", "in_inventory": True}
+
+        with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
+            mock_equip.is_equipped.return_value = False
+            drop_inventory_item(game, 0)
+
+        assert getattr(item, "parent_entity_id", None) is None
+        assert getattr(item, "socket_id", None) is None
+        assert "inventory_owner_id" not in item.tags
+        assert "in_inventory" not in item.tags
+        game.patch_entity_state.assert_called()
 
     def test_invalid_index_does_nothing(self, mock_game):
         """Should silently ignore invalid index."""
@@ -339,6 +405,10 @@ class TestMoveItemBetweenInventories:
 
         assert item in game.inventories["player"]
         assert item not in game.inventories["chest"]
+        assert getattr(item, "parent_entity_id", None) == "player"
+        assert getattr(item, "socket_id", None) == "inventory"
+        assert item.tags.get("inventory_owner_id") == "player"
+        assert item.tags.get("in_inventory") is True
 
     def test_same_inventory_noop(self, mock_game):
         """Should do nothing when source equals destination."""
@@ -373,6 +443,80 @@ class TestMoveItemBetweenInventories:
             move_item_between_inventories(game, "chest", 0, "player")
 
         assert "equipped_slot" not in item.tags
+
+
+class TestSplitIdentity:
+    """Tests for deterministic split identity tags/ids."""
+
+    def test_drop_qty_creates_split_identity(self):
+        game = MagicMock()
+        game.player_id = "player"
+        game.zone_coord = (1, 2, 0)
+        game.inventories = {}
+        game.log = MagicMock()
+
+        level = MagicMock()
+        level.entities = {}
+        player = MagicMock()
+        player.pos = (5, 7)
+        level.actors = {"player": player}
+        game._level.return_value = level
+
+        item = Entity(
+            id="stack_item",
+            entity_id="stack_item",
+            name="Pebble",
+            pos=(2, 3),
+            abs_pos=(102, 203),
+            glyph="*",
+            color=(255, 255, 255),
+            kind="item",
+        )
+        item.tags = {"quantity": 5}
+        game.inventories["player"] = [item]
+
+        drop_inventory_item_qty(game, 0, qty=2)
+
+        assert len(level.entities) == 1
+        dropped = next(iter(level.entities.values()))
+        assert str(getattr(dropped, "id", "")).startswith("split:")
+        assert dropped.tags.get("split_from_entity_id") == "stack_item"
+        assert dropped.tags.get("split_kind") == "drop"
+        assert dropped.tags.get("split_seq") == 1
+        assert dropped.tags.get("quantity") == 2
+        assert game.inventories["player"][0].tags.get("quantity") == 3
+
+    def test_transfer_qty_creates_split_identity(self):
+        game = MagicMock()
+        game.player_id = "player"
+        game.zone_coord = (0, 0, 0)
+        game.inventories = {}
+        game.log = MagicMock()
+
+        src = Entity(
+            id="bag_item",
+            entity_id="bag_item",
+            name="Shard",
+            pos=(1, 1),
+            abs_pos=(1, 1),
+            glyph="*",
+            color=(255, 255, 255),
+            kind="item",
+        )
+        src.tags = {"quantity": 4}
+        game.inventories["chest"] = [src]
+        game.inventories["player"] = []
+
+        move_item_between_inventories_qty(game, "chest", 0, "player", qty=1)
+
+        assert len(game.inventories["player"]) == 1
+        transferred = game.inventories["player"][0]
+        assert str(getattr(transferred, "id", "")).startswith("split:")
+        assert transferred.tags.get("split_from_entity_id") == "bag_item"
+        assert transferred.tags.get("split_kind") == "transfer"
+        assert transferred.tags.get("split_seq") == 1
+        assert transferred.tags.get("quantity") == 1
+        assert game.inventories["chest"][0].tags.get("quantity") == 3
 
 
 class TestGetEquippedInSlot:

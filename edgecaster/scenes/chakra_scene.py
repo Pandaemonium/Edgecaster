@@ -46,7 +46,6 @@ from edgecaster.ui.widgets import Widget, WidgetContext, ButtonWidget
 from edgecaster.math_utils import lerp, smoothstep, lerp_rgb
 from edgecaster.systems.chakras import (
     ChakraState,
-    toggle_chakra_active,
     check_resonance_bonuses,
     get_all_chakra_positions_recursive,
     get_chakra_connections_recursive,
@@ -188,6 +187,12 @@ def _get_body_schema(actor: Any) -> Dict[str, Any]:
 
 def _get_chakra_state(actor: Any) -> ChakraState:
     """Extract chakra state from an actor, creating default if missing."""
+    try:
+        state = chakra_items_system.ensure_actor_chakra_state(actor)
+        if state and isinstance(state, ChakraState):
+            return state
+    except Exception:
+        pass
     state = getattr(actor, "chakra_state", None)
     if state and isinstance(state, ChakraState):
         return state
@@ -1656,9 +1661,13 @@ class ChakraSelectionScene(PanelScene):
             except Exception:
                 pass
 
-        # Ensure chakra state exists so edits persist
-        if self._actor is not None and not isinstance(self._actor.chakra_state, ChakraState):
-            self._actor.chakra_state = ChakraState()
+        # Ensure chakra state exists so edits persist.
+        if self._actor is not None:
+            try:
+                chakra_items_system.ensure_actor_chakra_state(self._actor)
+            except Exception:
+                if not isinstance(getattr(self._actor, "chakra_state", None), ChakraState):
+                    self._actor.chakra_state = ChakraState()
 
         # Mode state: "activate" (toggle) or "realign" (drag/commit)
         self._mode: str = "activate"
@@ -1846,6 +1855,10 @@ class ChakraSelectionScene(PanelScene):
         state.charges = dict(snap.charges)
         if hasattr(state, "pattern_root"):
             state.pattern_root = getattr(snap, "pattern_root", None)
+        try:
+            chakra_items_system.sync_actor_chakra_state(self._actor)
+        except Exception:
+            pass
 
         self._silhouette.refresh_points()
         self._preview.mark_dirty()
@@ -1897,13 +1910,23 @@ class ChakraSelectionScene(PanelScene):
                 continue
             was_active = node_id in state.active
             if action == "activate":
-                toggle_chakra_active(state, node_id, active=True)
-                now_active = True
+                now_active = chakra_items_system.toggle_actor_chakra(
+                    self._actor,
+                    node_id,
+                    active=True,
+                )
             elif action == "deactivate":
-                toggle_chakra_active(state, node_id, active=False)
-                now_active = False
+                now_active = chakra_items_system.toggle_actor_chakra(
+                    self._actor,
+                    node_id,
+                    active=False,
+                )
             else:
-                now_active = toggle_chakra_active(state, node_id, active=None)
+                now_active = chakra_items_system.toggle_actor_chakra(
+                    self._actor,
+                    node_id,
+                    active=None,
+                )
 
             # Visual burst at the chakra location
             point = self._silhouette.get_chakra_point(node_id)
@@ -1913,7 +1936,6 @@ class ChakraSelectionScene(PanelScene):
                     point.pos_px[1],
                     activating=(now_active and not was_active),
                 )
-
         self._silhouette.refresh_points()
         self._preview.mark_dirty()
         primary = self._silhouette.get_selected_chakra()
@@ -1946,6 +1968,10 @@ class ChakraSelectionScene(PanelScene):
 
         self._push_undo()
         state.pattern_root = primary
+        try:
+            chakra_items_system.sync_actor_chakra_state(self._actor)
+        except Exception:
+            pass
         self._preview.mark_dirty()
         self._refresh_list_items()
         self._update_info_for_chakra(primary)
@@ -2198,6 +2224,10 @@ class ChakraSelectionScene(PanelScene):
             if changed:
                 self._push_undo()
             state.alignments = dict(self._pending_alignments)
+            try:
+                chakra_items_system.sync_actor_chakra_state(self._actor)
+            except Exception:
+                pass
             if changed:
                 self._apply_realign_time_cost()
 
@@ -2399,7 +2429,7 @@ class ChakraSelectionScene(PanelScene):
         was_active = node_id in chakra_state.active
 
         # Toggle
-        toggle_chakra_active(chakra_state, node_id)
+        chakra_items_system.toggle_actor_chakra(self._actor, node_id, active=None)
 
         # Spawn particle burst
         point = self._silhouette._chakra_points.get(node_id)

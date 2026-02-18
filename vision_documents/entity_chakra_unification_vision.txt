@@ -1,0 +1,471 @@
+## Edgecaster Vision: Everything Is an Entity, and All Entities Have Chakras
+Updated: 2026-02-13
+Status: North Star (Design Lock v1.1)
+
+This document defines the target architecture where:
+
+1. Everything that exists in the world is an entity.
+2. Every entity has chakras (explicitly modeled, not implied).
+3. Chakra state at every scale composes upward to drive behavior.
+4. Fractal recursion is first-class and deterministic.
+
+This is intended as the canonical guide for future content, systems, and refactors.
+
+-------------------------------------------------------------------------------
+
+## Core Thesis
+
+Edgecaster should be modeled as a recursive chakra ecology:
+
+- World -> region -> city -> district -> block -> building -> room -> object -> actor
+- Every level is "entity with chakras"
+- Parent behavior is derived from child chakra state
+- Observation selects fidelity, not truth
+
+This unifies content, simulation, rendering, and quest logic under one ontology.
+
+-------------------------------------------------------------------------------
+
+## Non-Negotiable Principles
+
+1. Everything is an entity.
+   - Forests, cities, weather cells, lairs, rune anchors, NPCs, dropped loot, walls.
+   - No pseudo-entity side pipelines for "special" world things.
+
+2. Every entity has chakra state.
+   - Some entities have simple chakras, some complex recursive graphs.
+   - "No chakra component" is not a valid end-state concept.
+
+3. Absolute space is truth.
+   - Coordinates are canonical in world/absolute space.
+   - Zone/chunk structures are caches for performance only.
+
+4. Identity is triple-layered.
+   - `entity_id` (immutable PK) for persistence and graph membership.
+   - `semantic_id` for gameplay meaning (quest/rumor/map marker).
+   - `lineage_path` for contextual position in the containment tree (changes
+     on reparent; not a persistence key).
+
+5. Observed = real.
+   - If it is observed and simulated, outcomes are canonical.
+   - No fake preview entities that disagree with gameplay truth.
+
+6. Determinism by seed.
+   - Same world seed + same lineage + same choices => same outcomes.
+
+-------------------------------------------------------------------------------
+
+## Canonical Entity Model
+
+Every runtime thing conforms to one conceptual model:
+
+- `entity_id: str` (immutable PK, deterministic for world content, sequential for transient)
+- `semantic_id: Optional[str]`
+- `proto_id: str`
+- `kind: str` (site, actor, item, structure, effect, ecology, etc.)
+- `abs_position / abs_footprint`
+- `tags: dict`
+- `chakra_component: ChakraComponent`
+
+`chakra_component` (minimum shape):
+
+- `layout_id: str` (which chakra topology this entity uses)
+- `rule_id: str` (how child state is reduced to parent state)
+- `depth: int` (recursion depth)
+- `channels: dict[str, float]`
+- `active_nodes: list[str]`
+- `child_links: list[entity_id]`
+- `derived_tags: dict` (cached behavior outputs)
+
+### Identity Generation
+
+Two ID spaces, one bright line:
+
+- World-generated content: deterministic from seed + recipe.
+  Format: `world:{seed_hash}:{recipe_path}:{ordinal}`.
+  Regenerating the same chunk with the same seed produces identical IDs.
+  Persistence stores diffs (patches) on top of the deterministic base.
+
+- Transient entities (projectiles, VFX, summons): runtime-only sequential
+  IDs (`act{N}`). No persistence entry. If something needs to survive
+  save/load, it must use a deterministic ID instead.
+
+### Default Chakra Layout
+
+The system is trivially cheap to opt into and progressively richer:
+
+- Every entity gets at minimum one core chakra node:
+  `{chakra_id: "{entity_id}:core", channels: {hp: max_hp, mass: 1.0}, active: true}`
+- A potion has one chakra. A sword might have 3. An actor has the full
+  body schema. A city has neighborhoods.
+- Unrealized entities have collapsed chakras. A building you have never
+  entered is one node. Walking in triggers deterministic expansion from
+  its recipe. This is how the graph stays bounded.
+
+-------------------------------------------------------------------------------
+
+## Chakra Channels
+
+Use a hybrid channel strategy:
+
+Core channels (engine-level, standardized):
+
+- `coherence`
+- `resonance`
+- `corruption`
+- `stability`
+- `flow`
+
+Extension channels (content-level, optional):
+
+- Arbitrary keys per faction/site/system (example: `fear`, `trade_flux`, `ritual_heat`)
+
+Channel value policy:
+
+- Channels are floats. Negatives are allowed.
+- Clamping is a rule applied per-channel, not a substrate property.
+  Some channels are naturally negative (temperature delta, debt, corruption
+  reduction). The substrate stores what the rules produce.
+- Stack quantities use `channels["quantity"]` (one entity, not N children).
+
+Rationale:
+
+- Core channels keep cross-system behavior consistent.
+- Extension channels preserve design freedom.
+- Unclamped substrate prevents rules from fighting the storage layer.
+
+-------------------------------------------------------------------------------
+
+## Fractal Chakra Recursion
+
+Recursion is explicit and bounded.
+
+Rules:
+
+1. Max recursion depth is 7.
+2. Child generation is deterministic:
+   - seed = hash(world_seed, lineage_id, rule_id, depth, slot)
+3. Child lineage IDs are deterministic paths from parent lineage.
+4. Cycles are forbidden in generated lineage graphs.
+
+If a rule attempts to recurse beyond depth 7, it must clamp gracefully and
+emit terminal nodes only.
+
+-------------------------------------------------------------------------------
+
+## Parent-From-Children Behavior
+
+Parents do not own "magic hidden behavior."
+Parents derive behavior from child chakra state through rule reducers.
+
+Reducer pipeline:
+
+1. Gather child channel vectors.
+2. Apply weighted transforms by child role and geometry.
+3. Apply rule-specific transforms (amplify, dampen, invert, threshold).
+4. Produce parent channel vector.
+5. Map parent channel bands to `derived_tags`.
+
+Example outcomes:
+
+- High `corruption` + low `stability` -> increased spawn pressure.
+- High `coherence` + high `resonance` -> stronger anchor dampening.
+- High `flow` in district graph -> NPC commerce routing bonus.
+
+-------------------------------------------------------------------------------
+
+## Universal Mutation Model (Most General)
+
+All gameplay effects mutate chakra state through one mutation envelope:
+
+- `mutation_id`
+- `source_lineage_id`
+- `target_selector`
+- `delta_channels: dict[str, float]`
+- `duration_policy` (instant, decay, timed)
+- `propagation_policy`
+- `determinism_salt`
+
+Target selector options:
+
+- Direct lineage id
+- Semantic id query
+- Spatial query (radius/shape)
+- Rule query (all nodes with tag X)
+
+Propagation policies:
+
+- `local` (target only)
+- `upward` (toward ancestors)
+- `downward` (toward descendants)
+- `radial` (spatial neighbors)
+- `fractal_echo` (depth-linked resonance hops)
+
+This model is the most general because local-only behavior is a strict subset.
+
+-------------------------------------------------------------------------------
+
+## Expansion and Collapse Lifecycle
+
+The central runtime question: when does a collapsed entity expand into
+its full chakra subtree?
+
+Policy: expand on attention, persist mutations, collapse on de-attention,
+re-expand deterministically + apply patches.
+
+Lifecycle:
+
+1. A city exists as one collapsed core node in the entity graph.
+2. Player approaches. Attention system triggers realization.
+3. System deterministically expands the city's recipe into
+   districts -> buildings -> rooms -> contents using seed + recipe.
+4. All generated child entities get deterministic IDs.
+5. Persistence layer applies stored `chakra_patch` / `tags_patch`
+   (player-caused mutations) on top of the deterministic base.
+6. Player leaves. Attention de-realizes the subtree.
+7. Only mutations (diffs from deterministic base) are persisted.
+   The base graph is always regenerable.
+
+This keeps save files small, the runtime graph bounded, and
+determinism intact.
+
+The fractal blade is the same pattern: blade generators ARE the
+expansion recipe. Subdividing the blade expands chakra node children.
+The pattern builder becomes a chakra expansion engine. When the blade
+and the city use the same substrate, the unification is real.
+
+-------------------------------------------------------------------------------
+
+## Simulation and Attention
+
+Attention and chakra composition must cooperate:
+
+1. Attention controls realization fidelity per camera chunk.
+2. Offscreen entities freeze. No deferred offscreen propagation.
+3. Persistent chakra state never disappears when entities unload.
+4. Re-entry restores exact prior state from entity persistence.
+5. Dirty-flag propagation: leaf mutation marks ancestors dirty.
+   Only dirty subtrees are re-reduced. Clean subtrees cost zero.
+
+No renderer-driven spawning logic.
+Resolver/staging may instantiate based on attention, but simulation deltas are
+committed only via action/time systems.
+
+Performance target: 2ms per tick for graph/chakra processing.
+~2000 active chakra nodes in attention window at any time.
+Collapsed entities (the vast majority of the world) cost zero ticks.
+
+-------------------------------------------------------------------------------
+
+## Persistence Contract
+
+`entity_id`-keyed persistence is source of truth for mutation durability.
+`lineage_state` remains as a compatibility adapter during migration but
+all new writes target `entity_id`.
+
+Required fields (conceptual):
+
+- `entity_id` (primary key)
+- `semantic_id`
+- `removed`
+- `dead`
+- `last_known_hp`
+- `tags_patch`
+- `chakra_patch` (channels + node state diffs from deterministic base)
+- `custom_payload`
+
+Rules:
+
+1. Writes happen immediately on meaningful state changes.
+2. Resolver checks persistence before spawn/realization.
+3. Removed/dead/destroyed entities never respawn unless explicitly resurrected.
+4. Only diffs from the deterministic base are stored.
+   The base is always regenerable from seed + recipe.
+
+-------------------------------------------------------------------------------
+
+## System Responsibilities
+
+`systems/aggregate_resolution.py`
+
+- Deterministic child intent generation.
+- Chakra child graph generation and lineage construction.
+- Parent reducer evaluation (or reducer dispatch).
+
+`systems/attention.py`
+
+- Chunk-window realization/eviction orchestration.
+- No content-specific chakra semantics.
+
+`systems/chakras.py`
+
+- Chakra graph math utilities and reusable reducer primitives.
+- Channel operations, merge rules, decay helpers.
+
+`systems/scheduling.py`
+
+- Time-step application for chakra decay, pulses, and staged propagation.
+
+Quest/dialogue systems:
+
+- Bind to semantic IDs and read derived chakra outcomes.
+- Never bypass lineage persistence.
+
+-------------------------------------------------------------------------------
+
+## Content Authoring Model
+
+Add two content assets:
+
+1. `content/chakra_layouts.yaml`
+   - Defines node graphs/topologies per entity family or site family.
+
+2. `content/chakra_rules.yaml`
+   - Defines reducers, thresholds, propagation defaults, recursion behavior.
+
+Entity/site prototypes reference:
+
+- `chakra.layout_id`
+- `chakra.rule_id`
+- Optional channel defaults and role tags.
+
+-------------------------------------------------------------------------------
+
+## Migration Plan (Pragmatic)
+
+Phase 0: Schema introduction
+
+- Add chakra component schema and loader validation.
+- No behavior change yet.
+
+Phase 1: Vertical slice (Starttsgard)
+
+- City -> building -> room/object chakra chain.
+- Validate deterministic lineage + exact restoration on unload/reload.
+
+Phase 2: Quest chain adoption
+
+- Inventor workshop, destabilizer ruin, failing rune migrated to chakra-backed entities.
+- Semantic quest flow unchanged.
+
+Phase 3: Rune anchor deepening
+
+- Rune anchors use full parent-from-children channel behavior.
+- Coherence and resonance crystal effects become explicit mutation packets.
+
+Phase 4: Large POI stress test
+
+- Colosseum or equivalent multi-zone site with per-chunk chakra realization.
+- Validate performance and deterministic persistence.
+
+Phase 5: Legacy deletion
+
+- Remove obsolete POI special-case pipelines.
+- Enforce one entity+chakra path.
+
+-------------------------------------------------------------------------------
+
+## Guardrails and Test Requirements
+
+Determinism tests:
+
+- Same seed + same inputs => identical lineage graph and chakra channels.
+
+Persistence tests:
+
+- Destroyed/looted/dead state persists across unload/reload.
+- Chakra mutations persist exactly.
+
+Recursion tests:
+
+- Depth never exceeds 7.
+- No cyclic lineage generation.
+
+Attention tests:
+
+- Realization and eviction do not alter canonical chakra state unexpectedly.
+
+-------------------------------------------------------------------------------
+
+## Graph Edge Semantics
+
+Containment edges form a strict tree. All other edge types are a graph overlay.
+
+| Edge Kind   | Propagation | Tick Cost | Notes                          |
+|-------------|-------------|-----------|--------------------------------|
+| contains    | automatic   | per dirty | strict tree, single parent     |
+| owns        | none        | zero      | metadata only until Phase 5+   |
+| influences  | opt-in      | per rule  | explicit channel list required  |
+| routes      | opt-in      | per rule  | commerce, travel, flow         |
+| linked_to   | opt-in      | per rule  | rune anchors, resonance links  |
+
+Non-containment edges never propagate unless a rule explicitly opts in.
+This prevents the graph from becoming a performance bomb.
+
+-------------------------------------------------------------------------------
+
+## Detachability Policy
+
+Not all entities can be detached from their containment parent.
+
+| Kind       | Detach Policy | Notes                              |
+|------------|---------------|------------------------------------|
+| world      | never         | structural scaffolding             |
+| continent  | never         | structural scaffolding             |
+| region     | never         | structural scaffolding             |
+| city       | admin_only    | quest/event can, player cannot     |
+| district   | event_only    | destruction, conquest              |
+| building   | gameplay      | demolish, relocate                 |
+| room       | gameplay      |                                    |
+| item       | free          |                                    |
+| actor      | free          | can reparent between locations     |
+
+Enforced via `detach_policy` on entity kind schema.
+
+-------------------------------------------------------------------------------
+
+## Anti-Patterns to Ban
+
+1. Hardcoded behavior branches by specific POI/NPC IDs in orchestration layers.
+2. Renderer inventing gameplay entities.
+3. Separate "special simulation paths" that bypass entity+chakra model.
+4. State changes without lineage persistence writes.
+5. Recursive generation without deterministic seeds and depth checks.
+
+-------------------------------------------------------------------------------
+
+## Definition of Done (Vision Complete)
+
+Edgecaster satisfies this vision when:
+
+1. All world content is entity-backed.
+2. All entities carry chakra components (simple or complex).
+3. Parent behavior at all scales is derived from child chakra state.
+4. Recursive chakra generation is deterministic and depth-bounded to 7.
+5. Persistence and attention preserve exact state with no ontology split.
+6. Legacy POI special-case systems are removed or reduced to compatibility stubs.
+
+At that point, "fractal rogue-like" is not just theme. It is the engine.
+
+-------------------------------------------------------------------------------
+
+## Why This Matters: One Mechanic at Every Scale
+
+When the unification is complete, the player's existing interactions
+generalize to every scale:
+
+- "Activate a body chakra" (unlock hand -> unlock fingers) is the same
+  mechanic as "activate a building's chakra" (unlock the sealed basement).
+- "Subdivide a blade segment" (fractal generator expands geometry) is the
+  same mechanic as "a city district spawning new buildings" (recipe expands
+  containment tree).
+- "Resonance bonus from bilateral arms" (two active siblings boost parent)
+  is the same mechanic as "two allied districts strengthen a city wall"
+  (sibling chakra channels reduce into shared parent).
+- "Corrupt a rune anchor" (mutate channels, propagate upward) is the same
+  mechanic as "corrupt a neighborhood" (mutate channels, derived tags shift
+  NPC behavior and spawn pressure).
+
+The player learns one interaction language and discovers it works everywhere.
+That is the fractal promise.
+

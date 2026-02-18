@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """AI behaviors and dispatcher.
 
 Current behaviors are thin stubs documenting intent. They all fall back to a simple
@@ -7,6 +9,7 @@ Current behaviors are thin stubs documenting intent. They all fall back to a sim
 from typing import Any, Dict, Tuple
 
 from edgecaster.systems import reputation as reputation_system
+from edgecaster.systems import footprints as footprints_system
 
 
 def _get_player_actor(game: Any):
@@ -29,6 +32,104 @@ def _abs_pos(game: Any, level: Any, actor: Any) -> tuple[int, int] | None:
         return game.abs_from_zone_local(coord, actor.pos)
     except Exception:
         return None
+
+
+def _entity_tiles_local(ent: Any, *, max_tiles: int = 96) -> list[tuple[int, int]]:
+    try:
+        rect = footprints_system.entity_footprint_local(ent)
+        out: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for tx, ty in footprints_system.iter_tiles_overlapped_by_rect(rect):
+            key = (int(tx), int(ty))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+            if len(out) >= int(max_tiles):
+                break
+        if out:
+            return out
+    except Exception:
+        pass
+    pos = getattr(ent, "pos", None)
+    if pos is None:
+        return []
+    return [(int(pos[0]), int(pos[1]))]
+
+
+def _nearest_local_tile_pair(a: Any, b: Any) -> tuple[tuple[int, int], tuple[int, int], int] | None:
+    at = _entity_tiles_local(a)
+    bt = _entity_tiles_local(b)
+    if not at or not bt:
+        return None
+    best: tuple[tuple[int, int], tuple[int, int], int] | None = None
+    for ap in at:
+        for bp in bt:
+            d = abs(int(bp[0]) - int(ap[0])) + abs(int(bp[1]) - int(ap[1]))
+            if best is None or d < best[2]:
+                best = (ap, bp, d)
+                if d <= 0:
+                    return best
+    return best
+
+
+def _nearest_local_tile_to_point(
+    ent: Any, target_tile: tuple[int, int], *, max_tiles: int = 96
+) -> tuple[tuple[int, int], tuple[int, int], int] | None:
+    tx, ty = int(target_tile[0]), int(target_tile[1])
+    et = _entity_tiles_local(ent, max_tiles=max_tiles)
+    if not et:
+        return None
+    best: tuple[tuple[int, int], tuple[int, int], int] | None = None
+    for ep in et:
+        d = abs(tx - int(ep[0])) + abs(ty - int(ep[1]))
+        if best is None or d < best[2]:
+            best = ((int(ep[0]), int(ep[1])), (tx, ty), d)
+            if d <= 0:
+                return best
+    return best
+
+
+def _entity_manhattan_and_delta(
+    game: Any,
+    level: Any,
+    actor: Any,
+    target: Any,
+) -> tuple[int, int, int] | None:
+    pair = _nearest_local_tile_pair(actor, target)
+    if pair is not None:
+        src, dst, dist = pair
+        return (int(dist), int(dst[0]) - int(src[0]), int(dst[1]) - int(src[1]))
+
+    a_abs = _abs_pos(game, level, actor)
+    t_abs = _abs_pos(game, level, target)
+    if a_abs is None or t_abs is None:
+        return None
+    dx = int(t_abs[0]) - int(a_abs[0])
+    dy = int(t_abs[1]) - int(a_abs[1])
+    return (abs(dx) + abs(dy), dx, dy)
+
+
+def _entity_chebyshev_and_delta(
+    game: Any,
+    level: Any,
+    actor: Any,
+    target: Any,
+) -> tuple[int, int, int] | None:
+    pair = _nearest_local_tile_pair(actor, target)
+    if pair is not None:
+        src, dst, _dist = pair
+        dx = int(dst[0]) - int(src[0])
+        dy = int(dst[1]) - int(src[1])
+        return (max(abs(dx), abs(dy)), dx, dy)
+
+    a_abs = _abs_pos(game, level, actor)
+    t_abs = _abs_pos(game, level, target)
+    if a_abs is None or t_abs is None:
+        return None
+    dx = int(t_abs[0]) - int(a_abs[0])
+    dy = int(t_abs[1]) - int(a_abs[1])
+    return (max(abs(dx), abs(dy)), dx, dy)
 
 
 def choose_action(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
@@ -129,16 +230,12 @@ def _generic_walk_toward(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     except Exception:
         pass
 
-    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-    a_abs = _abs_pos(game, level, actor)
-    if p_abs is None or a_abs is None:
+    rel = _entity_manhattan_and_delta(game, level, actor, player)
+    if rel is None:
         return ("wait", {})
-    px, py = p_abs
-    ax, ay = a_abs
-    dx = px - ax
-    dy = py - ay
+    dist, dx, dy = rel
 
-    if abs(dx) + abs(dy) == 1 and "move" in available:
+    if dist == 1 and "move" in available:
         return ("move", {"dx": dx, "dy": dy})
 
     rng = getattr(game, "rng", None)
@@ -207,16 +304,12 @@ def _shackled_brute(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if move_action is None:
         return ("wait", {}) if "wait" in available else (available[0], {})
 
-    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-    a_abs = _abs_pos(game, level, actor)
-    if p_abs is None or a_abs is None:
+    rel = _entity_manhattan_and_delta(game, level, actor, player)
+    if rel is None:
         return ("wait", {})
-    px, py = p_abs
-    ax, ay = a_abs
-    dx = px - ax
-    dy = py - ay
+    dist, dx, dy = rel
 
-    if abs(dx) + abs(dy) == 1:
+    if dist == 1:
         return (move_action, {"dx": dx, "dy": dy})
 
     rng = getattr(game, "rng", None)
@@ -260,13 +353,10 @@ def _gory_ascetic(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     except Exception:
         pass
 
-    a_abs = _abs_pos(game, level, actor)
-    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-    if a_abs is None or p_abs is None:
+    rel = _entity_manhattan_and_delta(game, level, actor, player)
+    if rel is None:
         return ("wait", {})
-    ax, ay = a_abs
-    px, py = p_abs
-    dist = abs(px - ax) + abs(py - ay)
+    dist, _dx, _dy = rel
 
     # Only flagellate when close.
     if dist <= 2 and "flagellate_self" in available:
@@ -306,13 +396,10 @@ def _lunatic(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     player = _get_player_actor(game)
     if player is None:
         return ("wait", {})
-    a_abs = _abs_pos(game, level, actor)
-    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-    if a_abs is None or p_abs is None:
+    rel = _entity_manhattan_and_delta(game, level, actor, player)
+    if rel is None:
         return ("wait", {})
-    ax, ay = a_abs
-    px, py = p_abs
-    dist = abs(px - ax) + abs(py - ay)
+    dist, _dx, _dy = rel
     if dist <= 1:
         return _generic_walk_toward(game, level, actor)
     # ambient chatter chance
@@ -433,13 +520,10 @@ def _war_drummer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         except Exception:
             cd = 0
         if cd <= 0:
-            a_abs = _abs_pos(game, level, actor)
-            p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-            if a_abs is None or p_abs is None:
+            rel = _entity_manhattan_and_delta(game, level, actor, player)
+            if rel is None:
                 return ("wait", {}) if "wait" in available else (available[0], {})
-            ax, ay = a_abs
-            px, py = p_abs
-            dist = abs(px - ax) + abs(py - ay)
+            dist, _dx, _dy = rel
             if dist <= trigger_range:
                 # If there are other hostiles nearby, this is especially valuable.
                 nearby_hostiles = 0
@@ -451,8 +535,8 @@ def _war_drummer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
                             continue
                     except Exception:
                         continue
-                    ox, oy = other.pos
-                    if abs(ox - ax) + abs(oy - ay) <= radius:
+                    pair = _nearest_local_tile_pair(actor, other)
+                    if pair is not None and int(pair[2]) <= radius:
                         nearby_hostiles += 1
                         if nearby_hostiles >= 2:
                             break
@@ -483,13 +567,10 @@ def _ground_slammer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     except Exception:
         pass
 
-    a_abs = _abs_pos(game, level, actor)
-    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-    if a_abs is None or p_abs is None:
+    rel = _entity_manhattan_and_delta(game, level, actor, player)
+    if rel is None:
         return ("wait", {})
-    ax, ay = a_abs
-    px, py = p_abs
-    dist = abs(px - ax) + abs(py - ay)
+    dist, dx, dy = rel
 
     # Read slam range from tags (default slightly > radius so slam can catch player).
     tags = getattr(actor, "tags", None) or {}
@@ -505,7 +586,7 @@ def _ground_slammer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
             return ("ground_slam", {})
 
     # Otherwise walk toward player using brute_move (slow) or regular move.
-    return _walk_toward(game, level, actor, available, px - ax, py - ay)
+    return _walk_toward(game, level, actor, available, dx, dy)
 
 
 def _deferred_attacker(
@@ -531,13 +612,10 @@ def _deferred_attacker(
     except Exception:
         pass
 
-    a_abs = _abs_pos(game, level, actor)
-    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-    if a_abs is None or p_abs is None:
+    rel = _entity_manhattan_and_delta(game, level, actor, player)
+    if rel is None:
         return ("wait", {})
-    ax, ay = a_abs
-    px, py = p_abs
-    dist = abs(px - ax) + abs(py - ay)
+    dist, dx, dy = rel
 
     tags = getattr(actor, "tags", None) or {}
     attack_range = int(tags.get(range_tag, default_range))
@@ -551,7 +629,7 @@ def _deferred_attacker(
             return (attack_action, {})
 
     # Fall back to movement.
-    return _walk_toward(game, level, actor, available, px - ax, py - ay)
+    return _walk_toward(game, level, actor, available, dx, dy)
 
 
 def _circus_member(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
@@ -570,15 +648,12 @@ def _circus_member(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
 
     master = level.actors.get(str(master_id)) if master_id else None
     if master is not None and getattr(master, "alive", True):
-        a_abs = _abs_pos(game, level, actor)
-        m_abs = _abs_pos(game, level, master)
-        if a_abs is not None and m_abs is not None:
-            ax, ay = a_abs
-            mx, my = m_abs
-            dist = max(abs(mx - ax), abs(my - ay))
+        rel = _entity_chebyshev_and_delta(game, level, actor, master)
+        if rel is not None:
+            dist, dx, dy = rel
             # If too far, prioritize regrouping over attacking.
             if dist > leash:
-                return _walk_toward(game, level, actor, available, mx - ax, my - ay)
+                return _walk_toward(game, level, actor, available, dx, dy)
 
     # If in cohesion, use any configured deferred attack.
     deferred_order = [
@@ -617,9 +692,7 @@ def _furious_ringmaster(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     leash = int(tags.get("circus_leash_range", 15) or 15)
     member_ids = list(tags.get("circus_member_ids", []) or [])
 
-    r_abs = _abs_pos(game, level, actor)
-    if r_abs is not None and member_ids:
-        rx, ry = r_abs
+    if member_ids:
         farthest_dx = 0
         farthest_dy = 0
         farthest_dist = 0
@@ -627,15 +700,14 @@ def _furious_ringmaster(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
             mate = level.actors.get(str(mid))
             if mate is None or not getattr(mate, "alive", True):
                 continue
-            m_abs = _abs_pos(game, level, mate)
-            if m_abs is None:
+            rel = _entity_chebyshev_and_delta(game, level, actor, mate)
+            if rel is None:
                 continue
-            mx, my = m_abs
-            d = max(abs(mx - rx), abs(my - ry))
+            d, dx, dy = rel
             if d > farthest_dist:
                 farthest_dist = d
-                farthest_dx = mx - rx
-                farthest_dy = my - ry
+                farthest_dx = dx
+                farthest_dy = dy
         # If someone drifted too far, step toward them to re-center the troupe.
         if farthest_dist > leash:
             return _walk_toward(game, level, actor, available, farthest_dx, farthest_dy)
@@ -663,44 +735,54 @@ def _rune_sapper(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     except Exception:
         pass
 
-    a_abs = _abs_pos(game, level, actor)
-    p_abs = _abs_pos(game, getattr(game, "_level", lambda: level)(), player)
-    if a_abs is None or p_abs is None:
+    rel_to_player = _entity_manhattan_and_delta(game, level, actor, player)
+    if rel_to_player is None:
         return ("wait", {}) if "wait" in available else (available[0], {})
 
     # If adjacent to player, still take the attack.
-    px, py = p_abs
-    ax, ay = a_abs
-    if abs(px - ax) + abs(py - ay) == 1 and "move" in available:
-        return ("move", {"dx": px - ax, "dy": py - ay})
+    player_dist, player_dx, player_dy = rel_to_player
+    if player_dist == 1 and "move" in available:
+        return ("move", {"dx": player_dx, "dy": player_dy})
 
     siege = getattr(level, "rune_anchor_siege", None)
     if siege is None or getattr(siege, "phase", "") == "stabilized":
         return _generic_walk_toward(game, level, actor)
 
     target = None
+    target_dx = 0
+    target_dy = 0
     best_dist = None
     # Repaired fractures are the highest-value sabotage targets.
     for fracture in getattr(siege, "fractures", []):
         if not getattr(fracture, "repaired", False):
             continue
         fx, fy = int(fracture.pos[0]), int(fracture.pos[1])
-        dist = abs(fx - ax) + abs(fy - ay)
+        pair = _nearest_local_tile_to_point(actor, (fx, fy))
+        dist = int(pair[2]) if pair is not None else None
+        dx = int(pair[1][0]) - int(pair[0][0]) if pair is not None else 0
+        dy = int(pair[1][1]) - int(pair[0][1]) if pair is not None else 0
+        if dist is None:
+            continue
         if best_dist is None or dist < best_dist:
             best_dist = dist
             target = (fx, fy)
+            target_dx = dx
+            target_dy = dy
 
     # If no repaired fractures exist, pressure the anchor core.
     if target is None:
         ap = getattr(siege, "anchor_pos", None)
         if ap is not None:
             target = (int(ap[0]), int(ap[1]))
+            pair = _nearest_local_tile_to_point(actor, target)
+            if pair is not None:
+                target_dx = int(pair[1][0]) - int(pair[0][0])
+                target_dy = int(pair[1][1]) - int(pair[0][1])
 
     if target is None:
         return _generic_walk_toward(game, level, actor)
 
-    tx, ty = target
-    return _walk_toward(game, level, actor, available, tx - ax, ty - ay)
+    return _walk_toward(game, level, actor, available, target_dx, target_dy)
 
 
 def _walk_toward(
@@ -759,13 +841,9 @@ def _mirror_blade_clone(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if not available:
         return ("wait", {})
 
-    # Find nearest hostile actor
-    a_abs = _abs_pos(game, level, actor)
-    if a_abs is None:
-        return ("wait", {})
-
+    # Find nearest hostile actor by footprint distance.
     best_target = None
-    best_dist = 1e9
+    best_dist = 10**9
     for aid, other in list(level.actors.items()):
         if aid == actor.id:
             continue
@@ -798,24 +876,33 @@ def _mirror_blade_clone(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
                     pass
         if not hostile:
             continue
-        t_abs = _abs_pos(game, level, other)
-        if t_abs is None:
+        pair = _nearest_local_tile_pair(actor, other)
+        if pair is None:
+            # Fallback on ABS point-distance if tiles are unavailable.
+            a_abs = _abs_pos(game, level, actor)
+            t_abs = _abs_pos(game, level, other)
+            if a_abs is None or t_abs is None:
+                continue
+            d = abs(t_abs[0] - a_abs[0]) + abs(t_abs[1] - a_abs[1])
+            pair = ((int(actor.pos[0]), int(actor.pos[1])), (int(other.pos[0]), int(other.pos[1])), int(d))
+        if pair is None:
             continue
-        dist = abs(t_abs[0] - a_abs[0]) + abs(t_abs[1] - a_abs[1])
+        dist = int(pair[2])
         if dist < best_dist:
             best_dist = dist
-            best_target = (other, t_abs)
+            best_target = (other, pair)
 
     if best_target is None:
         return ("wait", {}) if "wait" in available else (available[0], {})
 
-    target, t_abs = best_target
-    dx = t_abs[0] - a_abs[0]
-    dy = t_abs[1] - a_abs[1]
+    target, pair = best_target
+    src_tile, dst_tile, dist = pair
+    dx = int(dst_tile[0]) - int(src_tile[0])
+    dy = int(dst_tile[1]) - int(src_tile[1])
 
     # If adjacent, use slash for blade melee damage
-    if abs(dx) + abs(dy) == 1 and "slash" in available:
-        return ("slash", {"target_tile": target.pos})
+    if dist <= 1 and "slash" in available:
+        return ("slash", {"target_tile": (int(dst_tile[0]), int(dst_tile[1]))})
 
     # Otherwise walk toward the target
     return _walk_toward(game, level, actor, available, dx, dy)

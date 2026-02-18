@@ -36,6 +36,17 @@ class ProposalSummary:
     reason: str = ""
 
 
+def _append_inventory_item(game: Any, inv: Any, owner_id: str, ent: Any) -> None:
+    """Append item to list-backed inventory and sync containment metadata."""
+    inv.append(ent)
+    try:
+        from edgecaster.systems.entity_graph_ops import attach_entity_to_parent
+
+        attach_entity_to_parent(game, ent, owner_id, socket_id="inventory")
+    except Exception:
+        pass
+
+
 def _safe_int(x: Any, default: int = 0) -> int:
     try:
         return int(x)
@@ -250,6 +261,8 @@ def apply_proposal(
     buy_item_ids: list[str] | set[str] | tuple[str, ...],
     sell_item_ids: list[str] | set[str] | tuple[str, ...],
 ) -> tuple[bool, str]:
+    from edgecaster.systems.entity_graph_ops import transfer_inventory_entity
+
     summary = proposal_summary(game, merchant_actor_id, buy_item_ids, sell_item_ids)
     if not (buy_item_ids or sell_item_ids):
         return True, ""
@@ -272,14 +285,22 @@ def apply_proposal(
     buy_items = [ent for ent in list(minv) if getattr(ent, "id", None) in buy_ids]
     sell_items = [ent for ent in list(pinv) if getattr(ent, "id", None) in sell_ids]
 
-    # Move items atomically: remove from each side, then append to the other.
-    minv[:] = [ent for ent in list(minv) if getattr(ent, "id", None) not in buy_ids]
-    pinv[:] = [ent for ent in list(pinv) if getattr(ent, "id", None) not in sell_ids]
-
     for ent in buy_items:
-        pinv.append(ent)
+        transfer_inventory_entity(
+            game,
+            ent,
+            src_inventory=minv,
+            dst_inventory=pinv,
+            dst_owner_id=str(getattr(game, "player_id", "player")),
+        )
     for ent in sell_items:
-        minv.append(ent)
+        transfer_inventory_entity(
+            game,
+            ent,
+            src_inventory=pinv,
+            dst_inventory=minv,
+            dst_owner_id=str(merchant_actor_id),
+        )
 
     # Transfer funds
     try:
@@ -379,7 +400,7 @@ def restock_merchant(game: Any, level: Any, merchant_actor: Any, *, force: bool)
                 )
             except Exception:
                 continue
-            inv.append(item)
+            _append_inventory_item(game, inv, str(getattr(merchant_actor, "id", "")), item)
 
 
 def _restock_merchant_all_items(game: Any, merchant_actor: Any, inv: Any) -> None:
@@ -425,10 +446,12 @@ def _restock_merchant_all_items(game: Any, merchant_actor: Any, inv: Any) -> Non
             )
         except Exception:
             continue
-        inv.append(item)
+        _append_inventory_item(game, inv, str(getattr(merchant_actor, "id", "")), item)
 
 
 def try_buy(game: Any, merchant_actor_id: str, item_index: int) -> bool:
+    from edgecaster.systems.entity_graph_ops import transfer_inventory_entity
+
     level = game._level()  # type: ignore[attr-defined]
     merchant = getattr(level, "actors", {}).get(merchant_actor_id)
     if merchant is None:
@@ -461,9 +484,15 @@ def try_buy(game: Any, merchant_actor_id: str, item_index: int) -> bool:
             pass
         return False
 
-    # Move item
-    ent = minv.pop(int(item_index))
-    game.player_inventory.append(ent)  # type: ignore[attr-defined]
+    # Move item with graph-op ownership updates.
+    ent = minv[int(item_index)]
+    transfer_inventory_entity(
+        game,
+        ent,
+        src_inventory=minv,
+        dst_inventory=game.player_inventory,  # type: ignore[attr-defined]
+        dst_owner_id=str(getattr(game, "player_id", "player")),
+    )
     # Item-granted actions can appear/disappear when inventory contents change.
     try:
         if hasattr(game, "refresh_actor_actions"):
@@ -609,7 +638,17 @@ def apply_proposal_with_qty(
     sell_items: dict[str, int],  # entity_id -> quantity
 ) -> tuple[bool, str]:
     """Execute a trade proposal with quantity support for stacked items."""
-    from edgecaster.systems.inventory import get_quantity, set_quantity, _clone_item_for_drop
+    from edgecaster.systems.inventory import (
+        get_quantity,
+        set_quantity,
+    )
+    from edgecaster.systems.entity_graph_ops import (
+        transfer_inventory_entity,
+        transfer_split_quantity,
+    )
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    # Trade still targets list-backed inventory stores; final cutover should
+    # target graph-authoritative inventory storage directly.
 
     summary = proposal_summary_with_qty(game, merchant_actor_id, buy_items, sell_items)
     if not (buy_items or sell_items):
@@ -641,8 +680,13 @@ def apply_proposal_with_qty(
 
         if qty >= available:
             # Take entire stack
-            minv.remove(ent)
-            pinv.append(ent)
+            transfer_inventory_entity(
+                game,
+                ent,
+                src_inventory=minv,
+                dst_inventory=pinv,
+                dst_owner_id=str(getattr(game, "player_id", "player")),
+            )
             try:
                 game.log.add(f"You buy {ent.name} x{available} for {price * available} bismuth.")
             except Exception:
@@ -650,8 +694,16 @@ def apply_proposal_with_qty(
         else:
             # Split stack: reduce merchant's, create new for player
             set_quantity(ent, available - qty)
-            bought = _clone_item_for_drop(game, ent, qty)
-            pinv.append(bought)
+            bought = transfer_split_quantity(
+                game,
+                ent,
+                qty=qty,
+                split_kind="trade",
+                dst_inventory=pinv,
+                dst_owner_id=str(getattr(game, "player_id", "player")),
+                spawn_pos=getattr(ent, "pos", (0, 0)),
+                clear_equipped_tags=True,
+            )
             try:
                 game.log.add(f"You buy {ent.name} x{qty} for {price * qty} bismuth.")
             except Exception:
@@ -668,8 +720,13 @@ def apply_proposal_with_qty(
 
         if qty >= available:
             # Sell entire stack
-            pinv.remove(ent)
-            minv.append(ent)
+            transfer_inventory_entity(
+                game,
+                ent,
+                src_inventory=pinv,
+                dst_inventory=minv,
+                dst_owner_id=str(merchant_actor_id),
+            )
             try:
                 game.log.add(f"You sell {ent.name} x{available} for {payout * available} bismuth.")
             except Exception:
@@ -677,8 +734,16 @@ def apply_proposal_with_qty(
         else:
             # Split stack: reduce player's, create new for merchant
             set_quantity(ent, available - qty)
-            sold = _clone_item_for_drop(game, ent, qty)
-            minv.append(sold)
+            sold = transfer_split_quantity(
+                game,
+                ent,
+                qty=qty,
+                split_kind="trade",
+                dst_inventory=minv,
+                dst_owner_id=str(merchant_actor_id),
+                spawn_pos=getattr(ent, "pos", (0, 0)),
+                clear_equipped_tags=True,
+            )
             try:
                 game.log.add(f"You sell {ent.name} x{qty} for {payout * qty} bismuth.")
             except Exception:
@@ -699,6 +764,8 @@ def apply_proposal_with_qty(
 
 
 def try_sell(game: Any, merchant_actor_id: str, item_index: int) -> bool:
+    from edgecaster.systems.entity_graph_ops import transfer_inventory_entity
+
     level = game._level()  # type: ignore[attr-defined]
     merchant = getattr(level, "actors", {}).get(merchant_actor_id)
     if merchant is None:
@@ -737,9 +804,15 @@ def try_sell(game: Any, merchant_actor_id: str, item_index: int) -> bool:
             pass
         return False
 
-    # Move item
-    ent = pinv.pop(int(item_index))
-    game.get_inventory(merchant_actor_id).append(ent)  # type: ignore[attr-defined]
+    # Move item with graph-op ownership updates.
+    ent = pinv[int(item_index)]
+    transfer_inventory_entity(
+        game,
+        ent,
+        src_inventory=pinv,
+        dst_inventory=game.get_inventory(merchant_actor_id),  # type: ignore[attr-defined]
+        dst_owner_id=str(merchant_actor_id),
+    )
     # Item-granted actions can appear/disappear when inventory contents change.
     try:
         if hasattr(game, "refresh_actor_actions"):

@@ -693,7 +693,17 @@ def add_corruption_anchor(
 
             if spawn_pos is not None:
                 try:
-                    ent = game._spawn_entity_from_template("rune_anchor", spawn_pos)
+                    try:
+                        ent = game._spawn_entity_from_template(
+                            "rune_anchor",
+                            spawn_pos,
+                            deterministic=True,
+                            deterministic_recipe=f"dynamic_rune_anchor:{int(coord[0])},{int(coord[1])},{int(coord[2])}:{int(spawn_pos[0])},{int(spawn_pos[1])}",
+                            deterministic_namespace="overmap",
+                            zone_coord=coord,
+                        )
+                    except TypeError:
+                        ent = game._spawn_entity_from_template("rune_anchor", spawn_pos)
                     lvl.entities[ent.id] = ent
                 except Exception:
                     pass

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 import math
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from edgecaster import prototypes
 from edgecaster import spawn_factory
@@ -13,6 +13,46 @@ from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems import site_placement as site_placement_system
 from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.state.actors import Human, Stats
+
+
+def _entity_is_suppressed(game: object, entity_id: str) -> bool:
+    try:
+        fn = getattr(game, "entity_is_suppressed", None)
+        if callable(fn):
+            return bool(fn(entity_id))
+    except Exception:
+        pass
+    return False
+
+
+def _mark_entity_removed(game: object, entity_id: str, *, reason: str) -> None:
+    try:
+        fn = getattr(game, "patch_entity_state", None)
+        if callable(fn):
+            fn(str(entity_id), removed=True, removed_reason=str(reason or "removed"))
+    except Exception:
+        pass
+
+
+def _mark_removed(game: object, *, entity_id: str, reason: str) -> None:
+    if entity_id:
+        _mark_entity_removed(game, str(entity_id), reason=reason)
+
+
+def _mark_entity_live(game: object, entity_id: str) -> None:
+    try:
+        fn = getattr(game, "patch_entity_state", None)
+        if callable(fn):
+            fn(str(entity_id), removed=False, dead=False)
+    except Exception:
+        pass
+
+
+def _is_suppressed(game: object, *, entity_id: str | None = None) -> bool:
+    if entity_id and _entity_is_suppressed(game, str(entity_id)):
+        return True
+    return False
+
 
 @dataclass
 class _YogaStagedEntity:
@@ -51,23 +91,15 @@ class AttentionCellStore:
         self.entities: Dict[str, object] = {}
         self.eid_to_bin: Dict[str, Tuple[int, int, int]] = {}
         self.bins: Dict[Tuple[int, int, int], List[str]] = {}
-        self.lineage_to_eid: Dict[str, str] = {}
 
     def _bin_for_abs(self, ax: float, ay: float, zz: int) -> Tuple[int, int, int]:
         bs = self.bin_size
         return (int(math.floor(float(ax) / bs)), int(math.floor(float(ay) / bs)), int(zz))
 
-    def stage(self, obj: object, *, abs_x: float, abs_y: float, zz: int, lineage_id: str | None = None) -> str:
+    def stage(self, obj: object, *, abs_x: float, abs_y: float, zz: int) -> str:
         eid = str(getattr(obj, "id", "") or "")
         if not eid:
             raise ValueError("staged object missing id")
-
-        if lineage_id:
-            prev = self.lineage_to_eid.get(lineage_id)
-            if prev and prev != eid:
-                # Prefer stable lineage mapping; remove old eid if present.
-                self.despawn(prev)
-            self.lineage_to_eid[lineage_id] = eid
 
         b = self._bin_for_abs(abs_x, abs_y, zz)
 
@@ -97,14 +129,6 @@ class AttentionCellStore:
             except Exception:
                 pass
         self.entities.pop(eid, None)
-
-        # Remove from lineage mapping if present
-        try:
-            for k, v in list(self.lineage_to_eid.items()):
-                if v == eid:
-                    del self.lineage_to_eid[k]
-        except Exception:
-            pass
 
     def query_abs_rect(self, abs_rect: Tuple[float, float, float, float], *, zz: int) -> List[Tuple[object, float, float]]:
         ax0, ay0, ax1, ay1 = map(float, abs_rect)
@@ -431,6 +455,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 for s, eid in list(slot_to_eid.items()):
                     if (eid in mirrored) and (eid not in level.entities) and (eid in attn_store.entities):
                         harvested.add(int(s))
+                        _mark_removed(game, entity_id=str(eid), reason="pickup")
                         attn_store.despawn(eid)
                         del slot_to_eid[s]
             except Exception:
@@ -460,6 +485,29 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         zx, zy, _z = map(int, zc)
 
         for slot, (lx, ly) in enumerate(pts):
+            lineage_id = aggregate_system.aggregate_slot_lineage_id(agg_id, child_id, int(slot))
+            eid = lineage_id
+            if _is_suppressed(game, entity_id=eid):
+                # Keep slot locally marked harvested to avoid churn this frame.
+                harvested.add(int(slot))
+                existing_eid = slot_to_eid.get(int(slot))
+                if existing_eid:
+                    try:
+                        attn_store.despawn(existing_eid)
+                    except Exception:
+                        pass
+                    try:
+                        if level is not None:
+                            level.entities.pop(existing_eid, None)
+                            level.actors.pop(existing_eid, None)
+                            level.spatial_dirty = True
+                    except Exception:
+                        pass
+                    try:
+                        del slot_to_eid[int(slot)]
+                    except Exception:
+                        pass
+                continue
             if slot in harvested:
                 continue
 
@@ -469,8 +517,6 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             # Keep within warm rect (prevents weird edge-instantiation)
             if ax < wx0 or ax >= wx1 or ay < wy0 or ay >= wy1:
                 continue
-
-            eid = f"{agg_id}:{child_id}:{slot}"
 
             # If this is an actor slot and the zone is loaded, the loaded level is authoritative.
             # This prevents re-staging "graduated" actors and avoids invisible/ghost desync.
@@ -571,6 +617,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                                 "from_aggregate": agg_id,
                                 "aggregate_slot": int(slot),
                                 "aggregate_kind": str(kind),
+                                "lineage_id": lineage_id,
                             }
                         },
                     )
@@ -584,8 +631,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                         abs_x=ax,
                         abs_y=ay,
                         zz=zz,
-                        lineage_id=f"{agg_id}:{child_id}:{slot}",
                     )
+                    _mark_entity_live(game, str(eid))
                 except Exception:
                     continue
 
@@ -622,6 +669,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                                 "from_aggregate": agg_id,
                                 "aggregate_slot": int(slot),
                                 "aggregate_kind": str(kind),
+                                "lineage_id": lineage_id,
                             }
                         },
                     )
@@ -630,7 +678,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
                 # Stage into attention store (primary)
                 try:
-                    attn_store.stage(bent, abs_x=ax, abs_y=ay, zz=zz, lineage_id=f"{agg_id}:{child_id}:{slot}")
+                    attn_store.stage(bent, abs_x=ax, abs_y=ay, zz=zz)
+                    _mark_entity_live(game, str(eid))
                 except Exception:
                     continue
 
@@ -919,6 +968,23 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                         continue
 
                     eid = str(intent.eid)
+                    lineage_id = str(intent.lineage_id or eid or "")
+                    if _is_suppressed(game, entity_id=eid):
+                        try:
+                            if eid in attn_store.entities:
+                                attn_store.despawn(eid)
+                        except Exception:
+                            pass
+                        try:
+                            zc2 = (ax // int(zone_w), ay // int(zone_h), int(zz))
+                            level = game.get_zone_for_render(zc2)
+                            if level is not None:
+                                level.entities.pop(eid, None)
+                                level.actors.pop(eid, None)
+                                level.spatial_dirty = True
+                        except Exception:
+                            pass
+                        continue
                     desired.add(eid)
 
                     # Already staged?
@@ -966,6 +1032,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
                     if child_type == "staged" and intent.staged:
                         sd = intent.staged
+                        sd_tags = dict(sd.get("tags", {}) or {})
+                        sd_tags["lineage_id"] = lineage_id
                         obj = _YogaStagedEntity(
                             id=eid,
                             pos=(int(lx), int(ly)),
@@ -974,15 +1042,15 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             glyph=str(sd.get("glyph", "#") or "#")[0],
                             color=tuple(sd.get("color", (140, 120, 100))),
                             base_size=float(sd.get("base_size", 1.0) or 1.0),
-                            tags=dict(sd.get("tags", {}) or {}),
+                            tags=sd_tags,
                         )
                         attn_store.stage(
                             obj,
                             abs_x=ax,
                             abs_y=ay,
                             zz=zz,
-                            lineage_id=str(intent.lineage_id or eid),
                         )
+                        _mark_entity_live(game, str(eid))
                         # staged geometry is not a resolver-parent in Phase 1
                         continue
 
@@ -1010,6 +1078,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             a.tags = getattr(a, "tags", {}) or {}
                             if intent.tags:
                                 a.tags.update(dict(intent.tags))
+                            a.tags["lineage_id"] = lineage_id
                         except Exception:
                             pass
 
@@ -1019,8 +1088,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             abs_x=ax,
                             abs_y=ay,
                             zz=zz,
-                            lineage_id=str(intent.lineage_id or eid),
                         )
+                        _mark_entity_live(game, str(eid))
 
                         # Promote if loaded
                         level = game.get_zone_for_render((zxx, zyy, int(zz)))
@@ -1045,7 +1114,12 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             eid=eid,
                             pos=(int(lx), int(ly)),
                             abs_pos=(int(ax), int(ay)),
-                            overrides={"tags": dict(intent.tags or {})},
+                            overrides={
+                                "tags": {
+                                    **dict(intent.tags or {}),
+                                    "lineage_id": lineage_id,
+                                }
+                            },
                         )
                         spawned_obj = obj
                         attn_store.stage(
@@ -1053,8 +1127,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             abs_x=ax,
                             abs_y=ay,
                             zz=zz,
-                            lineage_id=str(intent.lineage_id or eid),
                         )
+                        _mark_entity_live(game, str(eid))
 
                         # Mirror if loaded
                         level = game.get_zone_for_render((zxx, zyy, int(zz)))

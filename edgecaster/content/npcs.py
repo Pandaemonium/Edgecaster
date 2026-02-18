@@ -357,3 +357,9 @@ NPC_DEFS = {
         "merchant_id": "corrupted_merchant",
     },
 }
+
+# Backward-compat alias: both ids are used in content files/history.
+if "guide_npc" not in NPC_DEFS and "local_guide" in NPC_DEFS:
+    NPC_DEFS["guide_npc"] = dict(NPC_DEFS["local_guide"])
+if "local_guide" not in NPC_DEFS and "guide_npc" in NPC_DEFS:
+    NPC_DEFS["local_guide"] = dict(NPC_DEFS["guide_npc"])

@@ -32,6 +32,46 @@ if TYPE_CHECKING:
     from edgecaster.state.actors import Actor
 
 
+def _set_local_pos(ent: object, pos: Tuple[int, int]) -> None:
+    target = (int(pos[0]), int(pos[1]))
+    fn = getattr(ent, "set_pos", None)
+    if callable(fn):
+        try:
+            fn(target)
+        except Exception:
+            pass
+    cur = getattr(ent, "pos", None)
+    try:
+        cur_t = (int(cur[0]), int(cur[1])) if cur is not None else None
+    except Exception:
+        cur_t = None
+    if cur_t != target:
+        try:
+            setattr(ent, "pos", target)
+        except Exception:
+            pass
+
+
+def _set_abs_pos(ent: object, abs_pos: Tuple[int, int]) -> None:
+    target = (int(abs_pos[0]), int(abs_pos[1]))
+    fn = getattr(ent, "set_abs_pos", None)
+    if callable(fn):
+        try:
+            fn(target)
+        except Exception:
+            pass
+    cur = getattr(ent, "abs_pos", None)
+    try:
+        cur_t = (int(cur[0]), int(cur[1])) if cur is not None else None
+    except Exception:
+        cur_t = None
+    if cur_t != target:
+        try:
+            setattr(ent, "abs_pos", target)
+        except Exception:
+            pass
+
+
 def _sync_zone_runtime(game: "Game", level: "LevelState", coord: Tuple[int, int, int]) -> None:
     """Apply zone-entry runtime systems that depend on current player zone."""
     try:
@@ -117,9 +157,9 @@ def use_stairs_down(game: "Game") -> None:
         # Move player between LevelStates
         del lvl.actors[game.player_id]
         dest_pos = dest_level.up_stairs or dest_level.world.entry
-        player.pos = dest_pos
+        _set_local_pos(player, dest_pos)
         # YOGA: Update abs_pos to maintain canonical position
-        player.abs_pos = game.abs_from_zone_local(target_coord, dest_pos)
+        _set_abs_pos(player, game.abs_from_zone_local(target_coord, dest_pos))
         dest_level.actors[game.player_id] = player
         game.zone_coord = target_coord
         game.log.add(f"You descend to depth {game.zone_coord[2]}.")
@@ -160,9 +200,9 @@ def use_stairs_up(game: "Game") -> None:
 
         del lvl.actors[game.player_id]
         dest_pos = dest_level.down_stairs or dest_level.world.entry
-        player.pos = dest_pos
+        _set_local_pos(player, dest_pos)
         # YOGA: Update abs_pos to maintain canonical position
-        player.abs_pos = game.abs_from_zone_local(target_coord, dest_pos)
+        _set_abs_pos(player, game.abs_from_zone_local(target_coord, dest_pos))
         dest_level.actors[game.player_id] = player
         game.zone_coord = target_coord
         game.log.add(f"You ascend to depth {game.zone_coord[2]}.")
@@ -217,9 +257,9 @@ def transition_edge(game: "Game", actor: "Actor", dx: int, dy: int) -> None:
     # Move actor between levels
     if game.player_id in level.actors:
         del level.actors[game.player_id]
-    actor.pos = (dest_x, dest_y)
+    _set_local_pos(actor, (dest_x, dest_y))
     # YOGA: Update abs_pos to maintain canonical position
-    actor.abs_pos = game.abs_from_zone_local(dest_coord, (dest_x, dest_y))
+    _set_abs_pos(actor, game.abs_from_zone_local(dest_coord, (dest_x, dest_y)))
     dest_level.actors[game.player_id] = actor
     game.zone_coord = dest_coord
     _sync_zone_runtime(game, dest_level, dest_coord)
@@ -257,9 +297,9 @@ def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
     # Move actor between levels
     if game.player_id in level.actors:
         del level.actors[game.player_id]
-    actor.pos = dest_level.world.entry
+    _set_local_pos(actor, dest_level.world.entry)
     # YOGA: Update abs_pos to maintain canonical position
-    actor.abs_pos = game.abs_from_zone_local(dest_coord, dest_level.world.entry)
+    _set_abs_pos(actor, game.abs_from_zone_local(dest_coord, dest_level.world.entry))
     dest_level.actors[game.player_id] = actor
     game.zone_coord = dest_coord
     _sync_zone_runtime(game, dest_level, dest_coord)

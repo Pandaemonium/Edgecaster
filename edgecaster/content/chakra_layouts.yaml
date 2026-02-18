@@ -1,0 +1,20 @@
+layouts:
+  default_core:
+    component:
+      nodes:
+        core:
+          node_id: core
+          kind: core
+          active: true
+          channels:
+            mass: 1.0
+
+  actor_body_seed:
+    component:
+      nodes:
+        body:
+          node_id: body
+          kind: body_root
+          active: true
+          channels:
+            mass: 1.0

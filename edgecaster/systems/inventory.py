@@ -14,7 +14,7 @@ See vision_documents/spring_cleaning.txt for details.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     from edgecaster.game import Game, LevelState
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import item_grants
 from edgecaster.systems import equip_rules
+from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +109,8 @@ def get_inventory(game: "Game", owner_id: str) -> List["Entity"]:
     This keeps all inventories in a single registry on the Game object,
     while still conceptually treating them as per-entity state.
     """
-    return game.inventories.setdefault(owner_id, [])
+    oid = str(owner_id)
+    return game.inventories.setdefault(oid, [])
 
 
 def get_player_inventory(game: "Game") -> List["Entity"]:
@@ -117,6 +119,16 @@ def get_player_inventory(game: "Game") -> List["Entity"]:
     This automatically follows body-swaps by using the current player_id.
     """
     return get_inventory(game, game.player_id)
+
+
+def _mark_entity_removed(game: "Game", ent: Any, *, reason: str) -> None:
+    """Best-effort persistence write keyed by entity id."""
+    try:
+        mark = getattr(game, "mark_entity_removed", None)
+        if callable(mark):
+            mark(ent, reason=reason)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +157,7 @@ def player_pick_up(game: "Game") -> None:
         # remove entity from world
         for eid, e in list(level.entities.items()):
             if e is ent:
+                _mark_entity_removed(game, ent, reason="pickup_currency")
                 del level.entities[eid]
                 break
         return
@@ -177,6 +190,7 @@ def player_pick_up(game: "Game") -> None:
             # Fully absorbed into stack - remove from world
             for eid, e in list(level.entities.items()):
                 if e is ent:
+                    _mark_entity_removed(game, ent, reason="pickup")
                     del level.entities[eid]
                     break
             if pickup_qty > 1:
@@ -189,12 +203,14 @@ def player_pick_up(game: "Game") -> None:
         # Remove from the level's entity list.
         for eid, e in list(level.entities.items()):
             if e is ent:
+                _mark_entity_removed(game, ent, reason="pickup")
                 del level.entities[eid]
                 break
 
         # Ensure quantity tag is set
         set_quantity(ent, pickup_qty)
         inv.append(ent)
+        entity_graph_ops_system.attach_entity_to_parent(game, ent, game.player_id, socket_id="inventory")
 
         if pickup_qty > 1:
             game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
@@ -249,6 +265,7 @@ def player_pick_up_item(game: "Game", item: Any) -> bool:
         if amt > 0:
             game.adjust_currency(amt, log=True)
             game._play_sfx("assets/sfx/chaching.mp3", volume=0.7)
+        _mark_entity_removed(game, ent, reason="pickup_currency")
         del level.entities[item_id]
         return True
 
@@ -278,6 +295,7 @@ def player_pick_up_item(game: "Game", item: Any) -> bool:
                 game.log.add(f"You pick up a {name.lower()} (stack full).")
         else:
             # Fully absorbed into stack - remove from world
+            _mark_entity_removed(game, ent, reason="pickup")
             del level.entities[item_id]
             if pickup_qty > 1:
                 game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
@@ -286,9 +304,11 @@ def player_pick_up_item(game: "Game", item: Any) -> bool:
                 game.log.add(f"You pick up {article} {name.lower()}.")
     else:
         # No existing stack - add as new item
+        _mark_entity_removed(game, ent, reason="pickup")
         del level.entities[item_id]
         set_quantity(ent, pickup_qty)
         inv.append(ent)
+        entity_graph_ops_system.attach_entity_to_parent(game, ent, game.player_id, socket_id="inventory")
 
         if pickup_qty > 1:
             game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
@@ -338,6 +358,7 @@ def drop_inventory_item(game: "Game", index: int) -> None:
     except Exception:
         pass
     ent = inv.pop(index)
+    entity_graph_ops_system.detach_entity_from_parent(game, ent)
 
     # Place the entity at the player's current position in the world.
     ent.pos = player.pos
@@ -392,7 +413,15 @@ def drop_inventory_item_qty(game: "Game", index: int, qty: Optional[int] = None)
     set_quantity(ent, current_qty - qty)
 
     # Create a clone for the ground
-    dropped = _clone_item_for_drop(game, ent, qty)
+    dropped = entity_graph_ops_system.split_stack_entity(
+        game,
+        ent,
+        qty,
+        split_kind="drop",
+        spawn_pos=player.pos,
+        clear_equipped_tags=False,
+    )
+    entity_graph_ops_system.detach_entity_from_parent(game, dropped)
     dropped.pos = player.pos
     level.entities[dropped.id] = dropped
 
@@ -410,127 +439,6 @@ def drop_inventory_item_qty(game: "Game", index: int, qty: Optional[int] = None)
             game._update_fov(level)
         except Exception:
             pass
-
-
-def _clone_item_for_drop(game: "Game", item: Any, qty: int) -> Any:
-    """Create a copy of an item with a new ID and specified quantity.
-
-    Used when splitting a stack (dropping part of it).
-    """
-    from edgecaster.systems.spawning import spawn_entity_from_template
-
-    proto_id = getattr(item, "proto_id", None)
-    if proto_id is None:
-        tags = getattr(item, "tags", {}) or {}
-        proto_id = tags.get("item_type")
-
-    if proto_id:
-        # Spawn fresh from template
-        pos = getattr(item, "pos", (0, 0))
-        clone = spawn_entity_from_template(game, str(proto_id), pos)
-    else:
-        # Fallback: manual clone (shouldn't happen often)
-        from edgecaster.state.entities import Entity
-        clone = Entity(
-            id=game._new_id(),
-            name=getattr(item, "name", "item"),
-            pos=getattr(item, "pos", (0, 0)),
-            glyph=getattr(item, "glyph", "?"),
-            color=getattr(item, "color", (255, 255, 255)),
-            kind=getattr(item, "kind", "item"),
-        )
-        clone.tags = dict(getattr(item, "tags", {}) or {})
-
-    # Set the quantity on the clone
-    set_quantity(clone, qty)
-    return clone
-
-
-def _clone_item_for_equip(game: "Game", item: Any, qty: int) -> Any:
-    """Create a copy of an item for equipping (when splitting stacks).
-
-    Similar to _clone_item_for_drop but doesn't place on ground.
-    """
-    from edgecaster.systems.spawning import spawn_entity_from_template
-
-    proto_id = getattr(item, "proto_id", None)
-    if proto_id is None:
-        tags = getattr(item, "tags", {}) or {}
-        proto_id = tags.get("item_type")
-
-    if proto_id:
-        # Spawn fresh from template
-        pos = getattr(item, "pos", (0, 0))
-        clone = spawn_entity_from_template(game, str(proto_id), pos)
-    else:
-        # Fallback: manual clone
-        from edgecaster.state.entities import Entity
-        clone = Entity(
-            id=game._new_id(),
-            name=getattr(item, "name", "item"),
-            pos=getattr(item, "pos", (0, 0)),
-            glyph=getattr(item, "glyph", "?"),
-            color=getattr(item, "color", (255, 255, 255)),
-            kind=getattr(item, "kind", "item"),
-        )
-        clone.tags = dict(getattr(item, "tags", {}) or {})
-
-    # Set the quantity on the clone
-    set_quantity(clone, qty)
-
-    # Copy any relevant runtime state (charges, etc.)
-    src_tags = getattr(item, "tags", {}) or {}
-    clone_tags = getattr(clone, "tags", {}) or {}
-
-    # Copy charges for wands, etc.
-    if "charges" in src_tags:
-        clone_tags["charges"] = src_tags["charges"]
-
-    clone.tags = clone_tags
-    return clone
-
-
-def _clone_item_for_transfer(game: "Game", item: Any, qty: int) -> Any:
-    """Create a copy of an item for inventory transfer (when splitting stacks).
-
-    Similar to _clone_item_for_drop but for transfers.
-    """
-    from edgecaster.systems.spawning import spawn_entity_from_template
-
-    proto_id = getattr(item, "proto_id", None)
-    if proto_id is None:
-        tags = getattr(item, "tags", {}) or {}
-        proto_id = tags.get("item_type")
-
-    if proto_id:
-        # Spawn fresh from template
-        pos = getattr(item, "pos", (0, 0))
-        clone = spawn_entity_from_template(game, str(proto_id), pos)
-    else:
-        # Fallback: manual clone
-        from edgecaster.state.entities import Entity
-        clone = Entity(
-            id=game._new_id(),
-            name=getattr(item, "name", "item"),
-            pos=getattr(item, "pos", (0, 0)),
-            glyph=getattr(item, "glyph", "?"),
-            color=getattr(item, "color", (255, 255, 255)),
-            kind=getattr(item, "kind", "item"),
-        )
-        clone.tags = dict(getattr(item, "tags", {}) or {})
-
-    # Set the quantity on the clone
-    set_quantity(clone, qty)
-
-    # Copy runtime state
-    src_tags = getattr(item, "tags", {}) or {}
-    clone_tags = getattr(clone, "tags", {}) or {}
-
-    if "charges" in src_tags:
-        clone_tags["charges"] = src_tags["charges"]
-
-    clone.tags = clone_tags
-    return clone
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +484,14 @@ def eat_item_from_inventory(game: "Game", owner_id: str, index: int) -> None:
         set_quantity(ent, qty - 1)
     else:
         # Last one - remove from inventory
-        inv.pop(index)
+        consumed = inv.pop(index)
+        entity_graph_ops_system.detach_entity_from_parent(game, consumed)
+        try:
+            mark = getattr(game, "mark_entity_removed", None)
+            if callable(mark):
+                mark(consumed, reason="consumed")
+        except Exception:
+            pass
 
     # Heal the player a bit for eating a berry.
     player = game._player()
@@ -654,9 +569,15 @@ def move_item_between_inventories(
         pass
 
     # Normal case: actually move the item.
-    ent = src_inv.pop(index)
     dst_inv = get_inventory(game, dest_owner_id)
-    dst_inv.append(ent)
+    entity_graph_ops_system.transfer_inventory_entity(
+        game,
+        ent,
+        src_inventory=src_inv,
+        dst_inventory=dst_inv,
+        dst_owner_id=dest_owner_id,
+        socket_id="inventory",
+    )
 
     name = getattr(ent, "name", None) or "item"
     article = "an" if name and name[0].lower() in "aeiou" else "a"
@@ -749,11 +670,17 @@ def move_item_between_inventories_qty(
     set_quantity(ent, current_qty - qty)
 
     # Clone for destination
-    transferred = _clone_item_for_transfer(game, ent, qty)
-
-    # Add to destination inventory
-    dest_inv = get_inventory(game, dest_owner_id)
-    dest_inv.append(transferred)
+    transferred = entity_graph_ops_system.transfer_split_quantity(
+        game,
+        ent,
+        qty=qty,
+        split_kind="transfer",
+        dst_inventory=get_inventory(game, dest_owner_id),
+        dst_owner_id=dest_owner_id,
+        spawn_pos=getattr(ent, "pos", (0, 0)),
+        clear_equipped_tags=True,
+        socket_id="inventory",
+    )
 
     # Logging
     name = getattr(ent, "name", None) or "item"
@@ -764,6 +691,7 @@ def move_item_between_inventories_qty(
     if dest_owner_id == game.player_id:
         dest_label = "your inventory"
     else:
+        dest_label = dest_owner_id
         # Find destination entity for friendly name
         level = game._level()
         dest_ent = level.entities.get(dest_owner_id) or level.actors.get(dest_owner_id)
@@ -954,10 +882,18 @@ def equip_item_to_slot_qty(
         set_quantity(item, qty_remaining)
 
         # Clone for the equipped item
-        equipped_item = _clone_item_for_equip(game, item, qty_to_equip)
+        equipped_item = entity_graph_ops_system.split_stack_entity(
+            game,
+            item,
+            qty_to_equip,
+            split_kind="equip",
+            spawn_pos=getattr(item, "pos", (0, 0)),
+            clear_equipped_tags=True,
+        )
 
         # Add to inventory
         inv.append(equipped_item)
+        entity_graph_ops_system.attach_entity_to_parent(game, equipped_item, oid, socket_id="inventory")
 
         # Equip the new single item
         equip_item_to_slot(game, oid, str(equipped_item.id), sid)

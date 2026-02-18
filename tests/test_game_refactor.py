@@ -198,6 +198,44 @@ class TestInventory:
         assert isinstance(game_instance.inventories, dict)
 
 
+class TestEntityState:
+    """Tests for Phase 1 entity_state bridge."""
+
+    def test_entity_state_dict_exists(self, game_instance):
+        """entity_state dict should exist."""
+        assert hasattr(game_instance, "entity_state")
+        assert isinstance(game_instance.entity_state, dict)
+
+    def test_patch_entity_state_by_object(self, game_instance):
+        """patch_entity_state should write through using entity_id fallback."""
+        player = game_instance._player()
+        game_instance.patch_entity_state(player, owner_id=game_instance.player_id, in_inventory=False)
+        eid = game_instance.entity_id_for_entity(player)
+        assert isinstance(eid, str) and eid
+        st = game_instance.get_entity_state(eid)
+        assert st.get("owner_id") == game_instance.player_id
+        assert st.get("in_inventory") is False
+        assert "updated_tick" in st
+
+    def test_mark_entity_removed_writes_entity_state(self, game_instance):
+        """mark_entity_removed should write removal flags into entity_state."""
+        player = game_instance._player()
+        game_instance.patch_entity_state(player, removed=False)
+        game_instance.mark_entity_removed(player, reason="pickup")
+        eid = game_instance.entity_id_for_entity(player)
+        st = game_instance.get_entity_state(str(eid))
+        assert st.get("removed") is True
+
+    def test_mark_actor_dead_writes_entity_state(self, game_instance):
+        """mark_actor_dead should write dead flags into entity_state."""
+        player = game_instance._player()
+        game_instance.mark_actor_dead(player, reason="unit_test")
+        eid = game_instance.entity_id_for_entity(player)
+        st = game_instance.get_entity_state(str(eid))
+        assert st.get("dead") is True
+        assert st.get("dead_reason") == "unit_test"
+
+
 # ---------------------------------------------------------------------------
 # PHASE 6: Pattern Operations Tests
 # Target: systems/pattern_ops.py

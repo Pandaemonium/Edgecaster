@@ -1,0 +1,812 @@
+## Entity + Chakra Unification Master Plan
+Updated: 2026-02-18
+Status: v1.5 (Execution Queue + Legacy Deletion Priorities)
+
+This is the execution plan for:
+
+1. Everything is an entity.
+2. All entities have chakras.
+3. Chakra relationships and entity relationships can both evolve over time.
+4. Rules are scale-invariant by default.
+
+This plan is intentionally implementation-first and aligned with
+`vision_documents/poi_entity_unification_master_plan.txt`.
+
+-------------------------------------------------------------------------------
+
+## Current Snapshot (2026-02-18)
+
+Implemented and stable:
+
+1. Identity substrate:
+   - `Entity` has Phase-1 fields (`entity_id`, `semantic_id`, `proto_id`,
+     `lod_band`, `parent_entity_id`, `socket_id`, `chakra_component`).
+   - Deterministic runtime IDs from seed + recipe + location are in use.
+
+2. Persistence bridge:
+   - `game.entity_state` exists and receives lifecycle writes.
+   - Runtime removal/death/suppression now use `entity_id` only.
+   - Legacy lineage write/read bridge methods were deleted from runtime codepaths.
+   - Spawn and attention-stage paths initialize lifecycle flags in `entity_state`.
+
+3. Footprint substrate:
+   - Canonical footprint helpers exist and core occupancy/blocking checks are
+     footprint-aware in spawn/AI/combat paths.
+
+4. Inventory bridge:
+   - Pickup/drop/transfer attach/detach parent/socket metadata.
+   - Shared graph ops now exist for attach/detach/reparent operations.
+   - Shared graph-op split now exists (`split_stack_entity`) with deterministic
+     split identity + provenance tags.
+   - Inventory/trade split callsites now use shared graph-op split directly.
+   - Trade item moves (single + proposal flow) now route through shared
+     graph transfer operations.
+
+5. Chakra substrate kickoff:
+   - Typed chakra dataclasses now exist:
+     `ChakraNode`, `ChakraEdge`, `ChakraComponent`.
+   - Spawn factory now coerces YAML chakra payloads to typed components and
+     guarantees a default `{entity_id}:core` node.
+   - Runtime bridge now lazily initializes legacy actor chakra state via
+     `ensure_actor_chakra_state(...)` in core chakra consumers.
+   - Runtime state mutations now mirror back into `ChakraComponent` via
+     `sync_actor_chakra_state(...)` in charge/use/edit paths.
+   - Actor-scoped chakra mutation wrappers now exist:
+     `unlock_actor_chakra(...)`, `toggle_actor_chakra(...)`.
+   - Monk unlock flow, Chakra Sage dialogue unlock flow, and Chakra Scene toggle
+     interactions now route through wrapper mutations.
+   - Spawn-time actor `ChakraState` bootstrap has been removed.
+
+6. Test posture:
+   - Migration-focused suites are green (inventory, spawning, POI cutover,
+     attention suppression, combat/action runner, rune siege, footprints,
+     chakra component bootstrap, graph ops).
+
+Not yet complete:
+
+1. Unified graph storage is not authoritative yet.
+   - Parallel stores still exist (`LevelState.actors/entities`, `attn_store`,
+     `world_entity_index`, `poi_registry`, `inventories`).
+2. Chakra substrate integration is not complete.
+   - Legacy `ChakraState` still drives gameplay/runtime abilities through
+     compatibility adapter paths.
+   - `chakra_layouts.yaml` + `chakra_rules.yaml` now exist, but reducer/runtime
+     semantics are not yet sourced from these rules.
+3. POI realization still has dual pathways.
+   - `poi_spawning.py` and `poi_worldgen.py` both remain active.
+   - Runtime NPC/wall realization now shares helper paths and game delegates
+     through `poi_worldgen.spawn_poi_contents(...)`, but orchestration logic
+     is still split across both modules.
+4. Split-stack operations still create child entities in list-backed inventories.
+   - Shared graph-op split is in place, but final graph-authoritative stack
+     storage is not complete.
+
+Execution priority (next refactor batches):
+
+1. POI pipeline convergence:
+   - Migrate quest-critical POIs to resolver-driven realization and remove
+     hardcoded dual-path behavior.
+2. Graph operation cutover finish:
+   - Replace remaining direct inventory-list mutation in equipment/restock flows
+     with graph-authoritative operations once unified entity store is ready.
+3. Chakra substrate integration:
+   - Route chakra gameplay reads/writes through typed `ChakraComponent`.
+   - Replace compatibility adapter with full typed channel/edge evaluation path.
+4. Legacy removal wave:
+   - Remove tagged bridges in dependency-safe order (see below).
+
+Legacy deletion priority order:
+
+1. Point-query fallback bridges (`_legacy_query`, `_legacy_rect_probe`, etc.).
+2. Remaining list-backed inventory mutation paths.
+3. Duplicate POI orchestration path (`poi_spawning` vs `poi_worldgen`).
+4. Parallel stores (`inventories`, `attn_store`, `world_entity_index`,
+   `poi_registry`, `LevelState.actors/entities`) once unified graph is ready.
+5. Legacy actor-only chakra bootstrap (`ChakraState`) after ChakraComponent is live.
+
+Rule for all new work:
+- If a bridge cannot be removed immediately, tag it with
+  `# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_N]` and log it in
+  `vision_documents/spring_cleaning.txt`.
+
+-------------------------------------------------------------------------------
+
+## Why This Matters
+
+1. Edgecaster's promise is fractal scale, not cosmetic zoom.
+   - A tiny actor can alter city-, regional-, and world-scale outcomes.
+   - Zooming should reveal true simulation layers, not visual tricks.
+
+2. Inventory scene, map scene, anatomy, runecasting, and resolution rules
+   are the same substrate viewed at different scales.
+   - Arm -> hand -> finger and city -> district -> building follow one model.
+
+3. Legacy rectangular zone metaphysics is now a blocker.
+   - It breaks multi-size entities, cross-boundary interactions, and attention-driven
+     simulation.
+
+4. We want a clean base for growth and eventual save/load.
+   - Modern subsystems exist, but must plug into one consistent world contract.
+
+-------------------------------------------------------------------------------
+
+## Decisions Locked In
+
+1. Identity and persistence:
+   - `entity_id` is immutable and is the primary persistence key.
+   - `semantic_id` remains for quest and narrative meaning.
+   - `lineage_path` is contextual and may change when graph links change.
+
+2. Spatial truth:
+   - Every chakra has absolute physical coordinates in float64 world space.
+   - Chakra physical location does not change automatically when graph edges change.
+   - Game effects can move chakra coordinates.
+
+3. Graph model:
+   - One strict containment tree (single containment parent).
+   - Additional typed graph edges allowed (`owns`, `influences`, `linked_to`, etc.).
+   - "Owning a forest" means legal/control ownership edge, not inventory containment.
+
+4. Chakra recursion and determinism:
+   - Recursion depth cap is 7.
+   - Deterministic generation from world seed + stable IDs + rule salts.
+
+5. Modifier precedence:
+   - Closest generation parent can override, add to, or transform ancestor modifiers.
+   - Grandparent modifiers are advisory unless nearest-parent rule says otherwise.
+
+6. Attention and time:
+   - Offscreen entities freeze.
+   - No deferred offscreen chakra propagation for now.
+
+7. Scale policy:
+   - Behavior should be scale-invariant unless a rule explicitly opts out.
+
+8. Detach/reattach policy:
+   - Subtrees can detach and reattach while preserving full internal hierarchy/state.
+   - Reattach changes graph links, not immutable identities.
+
+9. Identity generation strategy:
+    - World-generated content: deterministic from seed + recipe.
+      ID format: `world:{seed_hash}:{recipe_path}:{ordinal}`.
+      The ID is derived, never minted. Regenerating the same chunk with the
+      same seed produces the same IDs. Extends the existing POI pattern
+      (`poi:tavern_01:npc:bartender:0`).
+    - Transient entities (projectiles, VFX, mirror blade clones) are still
+      full entities in the same system.
+      - They receive valid `entity_id` values and lifecycle state.
+      - They are removed via normal entity expiry/removal rules when effect TTL,
+        range, or condition ends.
+      - No ad-hoc special simulation path is allowed.
+    - Persistence key: `entity_id` is primary for all new writes starting now.
+
+10. Lineage state migration (completed 2026-02-17):
+    - Runtime persistence and suppression are now `entity_id` keyed only.
+    - Legacy `lineage_state` bridge APIs and suppression fallbacks were removed
+      from active runtime paths.
+
+11. Item stacks:
+    - One entity with `quantity` scalar. Not N child entities.
+    - Stacks are a rendering/UI concern, not ontological.
+    - Splitting a stack creates a new entity with a new `entity_id`.
+
+12. Equipment slots:
+    - Not in Phase 1. Current flat inventory list stays.
+    - Phase 1 proves attach/detach/reparent with map pickup/drop.
+    - Equipment slots become socket-typed containment edges in Phase 4
+      (inventory-map unification vertical slice).
+
+13. Default chakra layouts:
+    - Single core node by default. Every entity gets at minimum:
+      `{chakra_id: "{entity_id}:core", channels: {hp: max_hp, mass: 1.0}, active: true}`
+    - Type-specific templates available but never required.
+    - Progression by entity kind:
+      Simple item:  1 core node (gets slots if enchantable)
+      Weapon:       1 core node (Blade weapons get segment chakras)
+      Actor:        full body schema from prototype
+      Building:     1 core node (expands to room chakras when entered)
+      City district: 1 core node (expands to building chakras on attention)
+
+14. Chakra channels:
+    - Channels allow negatives. Floats, not clamped by the substrate.
+    - Clamping to [0, max] is a rule applied per-channel, not a system property.
+    - Some channels are naturally negative (temperature delta, debt, corruption).
+
+15. Rule precedence split:
+    - Content rules in `chakra_rules.yaml`: which channels propagate, attenuation
+      values, reducer weights, threshold bands.
+    - Engine rules in code: containment invariants, recursion depth cap,
+      determinism guarantees, cycle prevention. Not overridable by data.
+    - Analogy: CSS cascade rules are in the engine; stylesheets are in data.
+
+16. Non-containment edge propagation:
+    - Opt-in per edge kind with explicit defaults. Schema:
+      `contains`:   propagation=automatic (child channels reduce into parent)
+      `owns`:       propagation=none (metadata only, no tick cost)
+      `influences`: propagation=opt_in (only listed channels, per rule)
+      `routes`:     propagation=opt_in
+    - `owns` edges carry no gameplay effects until Phase 5+. Metadata first.
+
+17. Detachability constraints (v1):
+    - Keep the system general: any entity is theoretically detachable.
+    - Gameplay permissions are policy/data decisions, not hard engine bans.
+    - Detachability is enforced by `detach_policy` data and caller authority.
+
+18. Performance budget:
+    - Target: 2ms per tick for graph/chakra processing.
+    - Onscreen entities (attention budget ~2000): full chakra tick if dirty,
+      skip if clean.
+    - Dirty propagation only: leaf change marks ancestors dirty up to root.
+      Only re-reduce dirty subtrees.
+    - Collapsed entities: zero cost (one dict lookup to confirm clean).
+    - Worst case math: depth 7 x branching ~10 = 10M theoretical nodes.
+      Attention means ~200 entities expanded at once, average depth 3-4,
+      ~2000 chakra nodes to reduce. At 1us per reduction = 2ms. Fits.
+
+19. Spatial substrate:
+    - Legacy rectangular zones are deprecated as world truth.
+    - Canonical cache geometry is quadtree/attention-grid by LoD band.
+    - Quadtree radix is configurable (default radix=2, not hardcoded).
+    - Rectangular legacy zones may exist temporarily as compatibility caches only.
+
+20. Multi-size entities and footprints:
+    - Every entity has an absolute footprint, not just a point.
+    - Runtime entity records carry explicit `footprint_local` and `footprint_abs`.
+      Tag-based footprint inference is migration fallback only.
+    - Footprint is a first-class input to containment, collision, interaction,
+      and rendering.
+    - Movement blocking is rule-driven per entity kind (data-defined), not
+      hardcoded by size or band.
+    - LoD bands (micro, local, regional, continental, etc.) are simulation/render
+      bands, not separate ontologies.
+
+21. Attention field and observer sources:
+    - Player/camera fovea is the primary attention source.
+    - Additional observer anchors (scry points, remote eyes, special entities)
+      can request high-fidelity realization in distant regions.
+    - "Observed = real" applies to all active observers, not only the player body.
+    - If multiple foveas disagree on temperature/fidelity, take the hottest tier.
+
+22. Global energy queue:
+    - Simulation temperature model is mandatory:
+      hot (full fidelity), warm (reduced cadence), cold (stochastic/lazy).
+    - Important entities (kings, artifacts, quest anchors) may be promoted
+      in priority even when distant.
+
+23. Legacy cleanup protocol:
+    - During migration, mark temporary bridges with
+      `# [LEGACY_DELETE][ENTITY_CHAKRA]`.
+    - Each such tag must be recorded in `vision_documents/spring_cleaning.txt`
+      with owner and removal phase.
+
+-------------------------------------------------------------------------------
+
+## Expansion and Collapse Model
+
+The most important runtime behavior: when does a collapsed entity expand
+into its full chakra subtree?
+
+Policy: expand on attention, persist mutations, collapse on de-attention,
+re-expand deterministically + apply patches.
+
+1. A city exists as one collapsed core node in the entity graph.
+2. The player approaches. The attention system triggers realization.
+3. The system deterministically expands the city's recipe into
+   districts -> buildings -> rooms -> contents using seed + recipe.
+4. All generated child entities get deterministic IDs.
+5. The persistence layer applies any stored `chakra_patch` / `tags_patch`
+   entries on top of the deterministic base (player-caused mutations).
+6. The player leaves. Attention de-realizes the subtree.
+7. Only mutations (diffs from deterministic base) are persisted.
+   The base graph is always regenerable.
+
+This keeps:
+- Save files small (only diffs stored).
+- Runtime graph bounded (most of the world is collapsed).
+- Determinism intact (base is always reproducible).
+
+The fractal blade is the same pattern: blade generators ARE the expansion
+recipe. Subdividing the blade expands chakra node children. The pattern
+builder becomes a chakra expansion engine. The blade and the city use the
+same substrate.
+
+-------------------------------------------------------------------------------
+
+## Edge Kind Schema
+
+Reference table for all typed relation edges and their runtime behavior.
+
+| Edge Kind   | Propagation | Tick Cost | Gameplay Effects | Notes                    |
+|-------------|-------------|-----------|------------------|--------------------------|
+| contains    | automatic   | per dirty | always           | strict tree, one parent  |
+| owns        | none        | zero      | deferred (Ph5+)  | legal/control metadata   |
+| influences  | opt-in      | per rule  | per rule         | explicit channel list    |
+| routes      | opt-in      | per rule  | per rule         | commerce/travel/flow     |
+| linked_to   | opt-in      | per rule  | per rule         | rune anchors, resonance  |
+| resonance   | opt-in      | per rule  | per rule         | cross-entity harmonics   |
+
+Default attenuation for `influences` edges: 0.5 weight.
+All non-containment edges require explicit `rule_id` to propagate anything.
+
+-------------------------------------------------------------------------------
+
+## Spatial Geometry and Attention Model
+
+1. Canonical geometry:
+   - World terrain and entity realization use a scale-dependent quadtree grid.
+   - Legacy zone rectangles are transitional caches only.
+
+2. Attention fovea:
+   - The camera frame + nearby player context defines the primary fovea.
+   - Entities in fovea are resolved to appropriate LoD and become tangible.
+
+3. Secondary observers:
+   - Scrying anchors, remote eyes, and other observer entities can create
+     additional foveas.
+   - Multiple active foveas must merge deterministically.
+
+4. Realization boundary:
+   - `attention.py` chooses what resolves/coarsens.
+   - `aggregate_resolution.py` defines how each entity resolves/coarsens.
+
+5. LoD bands:
+   - Entities have native LoD bands with explicit render/simulation ranges.
+   - Large entities can span many cache cells; tiny entities can live in very
+     fine cells. Both are first-class and coexisting.
+
+-------------------------------------------------------------------------------
+
+## Multi-Size Footprint Interaction Contract
+
+1. Every entity has a 2D absolute footprint (potentially degenerate for tiny items).
+2. Fundamental checks use footprint overlap:
+   - containment
+   - blocking
+   - collision
+   - interaction reach
+3. Cross-band interactions are allowed by default.
+   - A smaller entity can affect a larger one if interaction rules permit.
+   - A larger entity can affect many smaller entities via area/overlap rules.
+4. Band mismatch does not prohibit interaction.
+   - Rules may scale force/effect by relative size and footprint overlap.
+5. Point-only checks are legacy behavior and must be tagged for deletion.
+
+-------------------------------------------------------------------------------
+
+## Global Energy Queue (Simulation Temperature)
+
+1. Hot regions:
+   - Full simulation cadence and detailed AI.
+   - Typically within active attention fovea.
+
+2. Warm regions:
+   - Reduced cadence and simplified updates.
+   - Deterministic batched steps.
+
+3. Cold regions:
+   - Stochastic/lazy updates with long intervals.
+   - Still deterministic under seed + time index.
+
+4. Priority overrides:
+   - Important entities can receive higher simulation budget even if distant.
+   - Priority classes are data-driven tags (`quest_critical`, `artifact`, `ruler`).
+
+5. Queue contract:
+   - Temperature affects update cadence, not ontology.
+   - All updates still mutate canonical entity/chakra state.
+
+-------------------------------------------------------------------------------
+
+## World State Components
+
+The minimal canonical world state is:
+
+1. Quadtree terrain field (or equivalent cached representation).
+2. World Entity Index (high-level roots, not every micro child).
+3. Chakra resolution rules (data + resolver code).
+4. Persistent deltas (entity and chakra mutations over deterministic base).
+5. Attention field state (active foveas and LoD requirements).
+6. Global energy queue state (hot/warm/cold scheduling metadata).
+
+-------------------------------------------------------------------------------
+
+## Delta Lifecycle
+
+1. Resolve deterministic base from seed + recipe.
+2. Apply persisted deltas.
+3. Simulate and add/refine/erase deltas over time.
+4. Allow delta erosion policies (for long horizons), data-driven by kind:
+   - recent dropped item: low erosion
+   - ambient ecology traces: higher erosion
+5. Default policy: no erosion unless an entity/effect is explicitly tagged for erosion.
+6. Delta erosion must be deterministic and auditable.
+
+-------------------------------------------------------------------------------
+
+## Save/Load Direction
+
+1. Prototype save/load should begin once Phase 2 substrate is stable.
+2. Save canonical state and deltas, not fully expanded world graphs.
+3. Precompute/cache expensive terrain fields where beneficial for CPU budget.
+4. Remove hacky parallel bootstrap paths as deterministic load paths mature.
+
+-------------------------------------------------------------------------------
+
+## Problem Statement
+
+Current systems still split logic across:
+
+- map entities vs inventory entities
+- legacy POI content vs entity resolver content
+- actor/item logic vs site/region logic
+
+This causes duplicate truth and blocks true fractal gameplay.
+
+Goal: one ontology where all content is represented, simulated, and mutated
+through entity graphs plus chakra graphs.
+
+-------------------------------------------------------------------------------
+
+## Target Data Contracts
+
+### A. Entity record
+
+- `entity_id: str` (immutable PK)
+- `semantic_id: Optional[str]`
+- `proto_id: str`
+- `kind: str`
+- `abs_x: float64`
+- `abs_y: float64`
+- `abs_z: float64` (optional or default 0.0)
+- `footprint: {x0, y0, x1, y1}` (float64 rectangle in absolute space)
+- `lod_band: str` (micro/local/regional/continental/etc.)
+- `tags: dict`
+
+### B. Entity relationships
+
+Containment edge (strict tree):
+- `child_entity_id`
+- `parent_entity_id`
+- `socket_id` (optional)
+- `ordinal` (optional deterministic order)
+
+Typed relation edges (graph):
+- `src_entity_id`
+- `dst_entity_id`
+- `relation_kind` (`owns`, `influences`, `routes`, etc.)
+- `weight`
+- `rule_id`
+
+### C. Chakra model
+
+Chakra node:
+- `chakra_id` (stable within entity, e.g. `entity_id:node_id`)
+- `entity_id`
+- `node_id`
+- `x: float64`
+- `y: float64`
+- `z: float64`
+- `channels: dict[str, float]`
+- `active: bool`
+- `tags: dict`
+
+Chakra edge:
+- `src_chakra_id`
+- `dst_chakra_id`
+- `edge_kind` (`generation`, `influence`, `resonance`, etc.)
+- `rule_id`
+- `weight`
+- `priority`
+
+### D. Persistence state
+
+- `entity_id`
+- `removed`
+- `dead`
+- `last_known_hp`
+- `tags_patch`
+- `chakra_patch`
+- `custom_payload`
+
+Lineage state remains read-compat only during migration. `entity_id` is the
+authoritative persistence key.
+
+-------------------------------------------------------------------------------
+
+## Runtime Rule Contracts
+
+1. Containment operations:
+   - `attach_entity(child, parent, socket)`
+   - `detach_entity(child)`
+   - `reparent_entity(child, new_parent, socket)`
+   - Must preserve `entity_id`.
+
+2. Chakra operations:
+   - `move_chakra(chakra_id, dx, dy, dz)`
+   - `set_chakra_position(chakra_id, x, y, z)`
+   - `mutate_chakra(chakra_id, delta_channels, policy)`
+   - `rewire_chakra_edge(src, dst, edge_kind, rule)`
+
+3. Reduction:
+   - Parent chakra/entity behavior derives from child chakra states.
+   - Nearest-parent precedence applies before ancestor aggregation.
+
+4. Determinism:
+   - Any generated subtree/edge set must be reproducible with same seed and IDs.
+
+5. Footprint and interaction contracts:
+   - `overlaps(a, b)` and `contains(a, b)` are canonical interaction primitives.
+   - Cross-band interaction uses same primitives plus rule multipliers.
+   - Point-only interaction helpers are compatibility wrappers and must be tagged.
+
+-------------------------------------------------------------------------------
+
+## Migration Phases
+
+### Phase 0 - Guardrails and Scaffolding
+
+Goal:
+- Freeze architecture direction and prevent new divergent systems.
+
+Actions:
+1. Add this plan and link it from active architecture docs.
+2. Mark map/inventory split points as migration targets.
+3. Add invariant tests for immutable IDs, deterministic graph generation, and no cycles.
+4. Start legacy bridge tagging:
+   - Add `# [LEGACY_DELETE][ENTITY_CHAKRA]` markers in code.
+   - Add matching cleanup rows in `vision_documents/spring_cleaning.txt`.
+5. Mark rectangular zone authority paths as deprecated.
+
+Done criteria:
+- Team uses this model for new features.
+- All new temporary bridges are tagged and tracked in spring_cleaning.
+
+---
+
+### Phase 1 - Core Identity and Graph Substrate
+
+Goal:
+- Introduce immutable entity IDs and graph primitives without major gameplay rewrites.
+
+Actions:
+1. Add entity graph storage (containment + typed relations) to runtime state.
+2. Add attach/detach/reparent operations and validations.
+3. Add compatibility adapters from current structures to new graph view.
+4. All new persistence writes use `entity_id` as primary key.
+5. Existing `lineage_state` becomes a read-compat adapter only (no new-source writes).
+6. Prove attach/detach with map pickup/drop (item on ground -> inventory).
+   Equipment slots are NOT in scope yet.
+7. Convert all new transient effects to unified entity lifecycle paths.
+8. Footprint primitives kickoff:
+   - Introduce canonical footprint overlap/containment helpers.
+   - Route entity occupancy and blocking queries through footprint checks.
+   - Keep per-kind movement blocking rule-driven through entity/tag data.
+
+Done criteria:
+- Existing entities can be represented in graph storage with stable IDs.
+- New entities persist via `entity_id`, not `lineage_id`.
+- No newly introduced ad-hoc transient object systems.
+- Core occupancy queries are footprint-aware.
+
+---
+
+### Phase 2 - Chakra Node/Edge Substrate
+
+Goal:
+- Give every entity a chakra component, even if minimal.
+
+Actions:
+1. Add chakra node/edge storage with float64 absolute positions.
+2. Implement default single-core-node layout: every entity gets
+   `{entity_id}:core` with basic channels. Zero-cost opt-in.
+3. Add type-specific templates for actors (body schema), weapons
+   (segment layout), buildings (room layout).
+4. Add load/save hooks for chakra patches.
+5. Implement expansion/collapse lifecycle:
+   - `expand_entity(entity_id)`: deterministic recipe -> subtree
+   - `collapse_entity(entity_id)`: subtree -> core node + patches
+   - Triggered by attention system, not by content code.
+6. Begin quadtree attention migration:
+   - Add quadtree cell addressing for realization windows.
+   - Keep rectangular zone hooks only as compatibility wrappers.
+
+Done criteria:
+- All instantiated entities can expose chakra state through one API.
+- Collapsed entities cost zero ticks. Expanded entities tick only when dirty.
+- Attention-window realization can run from quadtree coordinates.
+
+---
+
+### Phase 3 - Rule Engine and Precedence
+
+Goal:
+- Implement deterministic chakra reduction and mutation processing.
+
+Actions:
+1. Add channel reducer pipeline with nearest-parent override support.
+2. Add universal mutation envelope with propagation policies.
+3. Clamp recursion depth to 7 with explicit terminal behavior.
+4. Implement dirty-flag propagation: leaf mutation marks ancestors dirty.
+   Only re-reduce dirty subtrees. Clean subtrees skip entirely.
+5. Content rules in `chakra_rules.yaml`; engine invariants in code.
+
+Done criteria:
+- Reducer outputs are deterministic and testable.
+- Tick budget for graph/chakra processing stays under 2ms.
+
+---
+
+### Phase 4 - Vertical Slice 1: Inventory <-> Map Unification
+
+Goal:
+- Prove detach/reattach hierarchy behavior in a player-facing loop.
+
+Scope:
+- Room container, chest/container, backpack, equipped slots, carried items.
+- Equipment slots as socket-typed containment edges (this is when slots
+  enter the model, not Phase 1).
+
+Actions:
+1. Represent inventory containers as containment entities.
+2. Pickup/drop/equip become attach/detach/reparent operations.
+3. Equipment slots are sockets on the actor's body-schema containment edges.
+4. Preserve subtree chakra states while moving between contexts.
+5. Item stacks remain single entities with `quantity`.
+
+Done criteria:
+- Same entity can move map <-> inventory without identity loss or state reset.
+- Equipment is modeled as containment, not a separate system.
+
+---
+
+### Phase 5 - Vertical Slice 2: Starttsgard Hierarchy
+
+Goal:
+- Prove city-scale containment and chakra reductions.
+
+Scope:
+- Starttsgard root -> neighborhoods -> buildings -> rooms -> interactables.
+
+Actions:
+1. Define minimal hierarchy and chakra rule sets.
+2. Realize per chunk via attention system.
+3. Validate re-entry persistence with exact restoration.
+
+Done criteria:
+- Starttsgard behavior derives from hierarchy, not special-case code.
+
+---
+
+### Phase 6 - Vertical Slice 3: Rune Anchors and Quest Chain
+
+Goal:
+- Move major quest systems to chakra mutation semantics.
+
+Scope:
+- `inventor_workshop`, `destabilizer_ruin`, `failing_rune`, rune anchor sieges.
+
+Actions:
+1. Convert crystal usage to explicit chakra mutation packets.
+2. Express dampening/instability as reducer outcomes.
+3. Keep quest logic bound to `semantic_id` while runtime tracks `entity_id`.
+
+Done criteria:
+- Quest chain works on unified entity+chakra infrastructure.
+
+---
+
+### Phase 7 - Scale-Invariance and Performance Hardening
+
+Goal:
+- Ensure rules remain consistent across scales while staying performant.
+
+Actions:
+1. Enforce shared rule interfaces at all scales.
+2. Add chunk-window budgeting for reducer/mutation work.
+3. Implement global energy queue (hot/warm/cold) with deterministic cadence.
+4. Support multiple observer foveas (player + remote anchors).
+5. Keep offscreen freeze semantics with deterministic resume.
+
+Done criteria:
+- No scale-specific forks unless explicitly declared.
+- Global energy queue drives far-field simulation budgets.
+
+---
+
+### Phase 8 - Legacy Removal
+
+Goal:
+- Remove old split pipelines and make unified model authoritative.
+
+Actions:
+1. Delete or stub obsolete map/inventory split logic.
+2. Remove duplicate POI pathways that bypass unified model.
+3. Consolidate docs and test suites around one architecture.
+
+Done criteria:
+- One entity ontology and one chakra ontology remain.
+
+-------------------------------------------------------------------------------
+
+## Testing Strategy
+
+1. Identity tests:
+   - `entity_id` never changes on detach/reattach/reparent.
+
+2. Graph tests:
+   - Containment stays acyclic.
+   - Typed edges respect schema and do not alter containment invariants.
+
+3. Chakra tests:
+   - Chakra coordinates remain stable across graph rewires unless explicitly moved.
+   - Nearest-parent precedence wins over ancestor defaults when configured.
+
+4. Determinism tests:
+   - Same seed and inputs produce identical generated graphs/reducer outputs.
+
+5. Persistence tests:
+   - Moved entities and mutated chakras restore exactly after unload/reload.
+
+6. Scale tests:
+   - Same rule behavior at multiple scales for equivalent structures.
+
+7. Geometry tests:
+   - Footprint overlap/containment invariants hold across LoD bands.
+   - Quadtree realization window selection is deterministic and camera-stable.
+
+8. Observer tests:
+   - Secondary observer anchors create deterministic remote foveas.
+   - Multiple foveas merge without duplicate realization or double simulation.
+
+9. Energy queue tests:
+   - Hot/warm/cold cadence is deterministic for same seed and ticks.
+   - Priority entities receive promoted cadence without violating budgets.
+
+-------------------------------------------------------------------------------
+
+## Risks and Mitigations
+
+1. Risk: Graph complexity causes hard-to-debug behavior.
+   - Mitigation: strict containment invariants + debug graph inspectors.
+
+2. Risk: Performance issues from deep recursive evaluation.
+   - Mitigation: depth cap 7 + chunk budgets + cached reducer outputs.
+   - Mitigation: dirty-flag propagation (only re-reduce dirty subtrees).
+   - Mitigation: expansion/collapse lifecycle (most entities collapsed).
+   - Budget: 2ms per tick, ~2000 active chakra nodes max.
+
+3. Risk: Migration churn breaks quest logic.
+   - Mitigation: keep semantic IDs stable and bridge to immutable entity IDs.
+
+4. Risk: Ambiguous precedence semantics.
+   - Mitigation: explicit reducer order and per-edge priority values.
+   - Mitigation: engine rules (invariants) in code, content rules in data.
+
+5. Risk: Universal system imposes too much ceremony on simple cases.
+   - Mitigation: single-core-node default. A potion has one chakra node.
+     Cost of opt-in is one dict entry. Complexity is progressive.
+
+6. Risk: Non-containment edges become a surprise performance bomb.
+   - Mitigation: all non-containment propagation is opt-in.
+     `owns` edges have zero tick cost by default.
+
+7. Risk: Zone-to-quadtree transition causes duplicate caches or stale entities.
+   - Mitigation: keep one authoritative realization index keyed by entity_id +
+     quadtree cell and enforce de-duplication checks in attention staging.
+
+-------------------------------------------------------------------------------
+
+## Definition of Done
+
+This plan is complete when:
+
+1. All world and inventory content uses the same entity graph.
+2. All entities expose chakra state through one model.
+3. Detach/reattach works without identity or state loss.
+4. Parent behavior is derived from child chakra state with nearest-parent precedence.
+5. Recursion is deterministic and capped at 7.
+6. Scale-invariant behavior is the default across systems.
+7. Legacy split pipelines are removed.
+8. Quadtree attention geometry replaces legacy zone authority.
+9. Global energy queue controls far-field simulation cadence.
+10. Legacy bridge tags are resolved and removed.

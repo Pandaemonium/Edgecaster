@@ -8,17 +8,23 @@ import os
 
 from edgecaster.state.entities import Entity
 from edgecaster.state.actors import Actor, Stats
+from edgecaster.state import chakra_component as chakra_component_state
 from edgecaster.prototypes import bake_instance_body_schema
-from edgecaster.systems.chakras import ChakraState
+from edgecaster.systems import chakra_content as chakra_content_system
+from edgecaster.systems import footprints as footprints_system
 
 
 # Keys that are handled explicitly by build_entity_from_spec/build_actor_from_spec
 # or should never be blindly copied onto the runtime instance.
 _ENTITY_RESERVED_KEYS = {
     # identity / placement
-    "id", "eid", "aid", "pos",
+    "id", "eid", "aid", "pos", "abs_pos",
+    "entity_id", "semantic_id", "proto_id",
+    "lod_band", "parent_entity_id", "socket_id",
     # presentation core (handled)
     "name", "glyph", "color", "render_layer", "kind",
+    # runtime core fields (handled)
+    "chakra_component",
     # structured blobs (handled/merged)
     "tags", "statuses",
     # prototype / inheritance metadata
@@ -87,6 +93,17 @@ def _merge_entity_tags(base_tags: Any, override_tags: Any) -> Dict[str, Any]:
     return out
 
 
+def _coerce_tile_pos(raw: Any) -> Optional[Tuple[int, int]]:
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, (tuple, list)) and len(raw) >= 2:
+            return (int(raw[0]), int(raw[1]))
+        return (int(raw[0]), int(raw[1]))
+    except Exception:
+        return None
+
+
 def _maybe_attach_default_icon_path(tags: Dict[str, Any], proto_id: Optional[str]) -> None:
     """If no explicit icon is specified in tags, try to auto-attach one based on proto_id."""
     if not proto_id:
@@ -145,6 +162,61 @@ def _init_entity_size(ent: Any, spec: Dict[str, Any]) -> None:
             pass
 
 
+def _init_entity_stats(ent: Any, spec: Dict[str, Any]) -> None:
+    """Optionally attach HP stats to plain entities (doors/walls/destructibles)."""
+    try:
+        existing = getattr(ent, "stats", None)
+        if existing is not None and hasattr(existing, "hp"):
+            return
+    except Exception:
+        pass
+
+    hp = None
+    max_hp = None
+
+    # Explicit stats object in spec takes priority.
+    raw_stats = spec.get("stats", None)
+    if isinstance(raw_stats, dict):
+        hp = raw_stats.get("hp", None)
+        max_hp = raw_stats.get("max_hp", None)
+
+    # Top-level shorthand.
+    if hp is None:
+        hp = spec.get("hp", None)
+    if max_hp is None:
+        max_hp = spec.get("max_hp", None)
+
+    # Tag-based fallback for content authors.
+    tags = spec.get("tags", None)
+    if isinstance(tags, dict):
+        if hp is None:
+            hp = tags.get("hp", None)
+        if max_hp is None:
+            max_hp = tags.get("max_hp", None)
+        if hp is None and max_hp is None:
+            sh = tags.get("structure_hp", None)
+            if sh is not None:
+                hp = sh
+                max_hp = sh
+
+    if hp is None and max_hp is None:
+        return
+
+    try:
+        hp_i = int(hp if hp is not None else max_hp)
+        max_hp_i = int(max_hp if max_hp is not None else hp_i)
+    except Exception:
+        return
+
+    hp_i = max(1, int(hp_i))
+    max_hp_i = max(hp_i, int(max_hp_i))
+
+    try:
+        ent.stats = Stats(hp=hp_i, max_hp=max_hp_i)
+    except Exception:
+        pass
+
+
 def build_entity_from_spec(
     *,
     spec: Dict[str, Any],
@@ -181,28 +253,55 @@ def build_entity_from_spec(
     tags = _merge_entity_tags(s.get("tags"), None)
     _maybe_attach_default_icon_path(tags, str(s.get("id") or ""))
     statuses = dict(s.get("statuses", {}) or {})
+    local_pos = (int(pos[0]), int(pos[1]))
+    canonical_abs = _coerce_tile_pos(abs_pos)
+    try:
+        core_hp = float(s.get("max_hp", s.get("base_hp", 1)) or 1)
+    except Exception:
+        core_hp = 1.0
+    raw_component = s.get("chakra_component")
+    if raw_component is None:
+        raw_component = chakra_content_system.resolve_layout_component(
+            s.get("chakra_layout_id") or "default_core"
+        )
+    chakra_component = chakra_component_state.coerce_chakra_component(
+        raw_component,
+        entity_id=str(s.get("entity_id") or eid),
+        max_hp=core_hp,
+        mass=1.0,
+    )
 
     # Build kwargs, then filter against Entity.__init__ so we never crash on
     # new YAML fields (e.g. blocks_vision) or older Entity signatures.
     desired_kwargs: Dict[str, Any] = {
         "id": eid,
+        "entity_id": str(s.get("entity_id") or eid),
+        "semantic_id": s.get("semantic_id"),
         "name": name,
-        "pos": pos,
+        "pos": local_pos,
         "glyph": glyph,
         "color": color,
         "render_layer": render_layer,
         "kind": kind,
+        "lod_band": str(s.get("lod_band", "micro") or "micro"),
+        "parent_entity_id": s.get("parent_entity_id"),
+        "socket_id": s.get("socket_id"),
+        "chakra_component": chakra_component,
         "tags": tags,
         "statuses": statuses,
         # Common optional ctor args (only used if Entity accepts them):
         "blocks_movement": bool(s.get("blocks_movement", False)),
         "blocks_vision": bool(s.get("blocks_vision", False)),
-        "pos": tuple(pos),
-        "abs_pos": (tuple(abs_pos) if abs_pos is not None else None),
+        "abs_pos": canonical_abs,
 
     }
 
     ent = Entity(**_ctor_kwargs_for(Entity, desired_kwargs))
+    try:
+        if not getattr(ent, "entity_id", None):
+            ent.entity_id = str(eid)
+    except Exception:
+        pass
 
     # Keep a reference to the originating prototype id (critical for body schemas,
     # save/load, introspection). IMPORTANT: this must be the prototype id.
@@ -231,8 +330,19 @@ def build_entity_from_spec(
     # Finally, hydrate any remaining YAML keys onto the instance.
     _hydrate_entity_extras(ent, s)
 
+    # Optional HP model for destructible structures/items.
+    _init_entity_stats(ent, s)
+
     # Coherent size fields (render/LoD). Keeps legacy 'size' working.
     _init_entity_size(ent, s)
+
+    # Canonical runtime footprint fields (Option A).
+    footprints_system.initialize_entity_footprints(
+        ent,
+        spec=s,
+        local_pos=local_pos,
+        abs_pos=canonical_abs,
+    )
 
     return ent
 
@@ -275,6 +385,19 @@ def build_actor_from_spec(
     speed = float(s.get("speed", 1.0) or 1.0)
     ai_name = s.get("ai", "idle")
     xp = int(s.get("xp", 0) or 0)
+    local_pos = (int(pos[0]), int(pos[1]))
+    canonical_abs = _coerce_tile_pos(abs_pos)
+    raw_component = s.get("chakra_component")
+    if raw_component is None:
+        raw_component = chakra_content_system.resolve_layout_component(
+            s.get("chakra_layout_id") or "actor_body_seed"
+        )
+    chakra_component = chakra_component_state.coerce_chakra_component(
+        raw_component,
+        entity_id=str(s.get("entity_id") or aid),
+        max_hp=float(base_hp),
+        mass=1.0,
+    )
 
     actor_tags: Dict[str, Any] = {
         "template_id": s.get("id"),
@@ -285,12 +408,18 @@ def build_actor_from_spec(
 
     desired_kwargs: Dict[str, Any] = {
         "id": aid,
+        "entity_id": str(s.get("entity_id") or aid),
+        "semantic_id": s.get("semantic_id"),
         "name": name,
-        "pos": pos,
+        "pos": local_pos,
         "glyph": glyph,
         "color": color,
         "render_layer": 2,
         "kind": "enemy",
+        "lod_band": str(s.get("lod_band", "micro") or "micro"),
+        "parent_entity_id": s.get("parent_entity_id"),
+        "socket_id": s.get("socket_id"),
+        "chakra_component": chakra_component,
         "blocks_movement": True,
         "tags": actor_tags,
         "statuses": {},
@@ -298,12 +427,16 @@ def build_actor_from_spec(
         "actions": actions,
         # Some projects put these directly on Actor.__init__ as well:
         "blocks_vision": bool(s.get("blocks_vision", False)),
-        "pos": tuple(pos),
-        "abs_pos": (tuple(abs_pos) if abs_pos is not None else None),
+        "abs_pos": canonical_abs,
 
     }
 
     actor = Actor(**_ctor_kwargs_for(Actor, desired_kwargs))
+    try:
+        if not getattr(actor, "entity_id", None):
+            actor.entity_id = str(aid)
+    except Exception:
+        pass
 
     # Keep a reference to the originating prototype id.
     src_pid = s.get("id")
@@ -367,23 +500,18 @@ def build_actor_from_spec(
     except Exception:
         pass
 
-    # Initialize chakra state for pattern generation.
-    # All actors start with "body" (torso/core) chakra unlocked and active (if they have a body schema).
-    # Note: "body" is the root node ID in the human body schema.
-    # Player characters may have additional chakras unlocked via progression.
-    try:
-        if hasattr(actor, "body_schema") and actor.body_schema:
-            actor.chakra_state = ChakraState(
-                unlocked={"body"},
-                active={"body"},
-            )
-    except Exception:
-        pass
-
     # Hydrate remaining YAML keys onto the instance.
     _hydrate_entity_extras(actor, s)
 
     # Coherent size fields (render/LoD). Keeps legacy 'size' working.
     _init_entity_size(actor, s)
+
+    # Canonical runtime footprint fields (Option A).
+    footprints_system.initialize_entity_footprints(
+        actor,
+        spec=s,
+        local_pos=local_pos,
+        abs_pos=canonical_abs,
+    )
 
     return actor

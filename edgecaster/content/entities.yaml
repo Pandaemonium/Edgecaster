@@ -989,6 +989,7 @@
           - caged_demon
         placement:
           pattern: scatter_interior
+          spawn_kind: actor
           salt: "bureau_npcs"
 
 - id: building_chakric_shrine
@@ -1016,6 +1017,7 @@
           - chakra_sage
         placement:
           pattern: scatter_interior
+          spawn_kind: actor
           salt: "shrine_npcs"
 
 - id: building_item_depot
@@ -1085,6 +1087,8 @@
   - 80
   kind: feature
   render_layer: 0
+  hp: 20
+  max_hp: 20
   blocks_movement: true
   blocks_vision: true
   parent: entity
@@ -1115,6 +1119,8 @@
   - 80
   kind: feature
   render_layer: 0
+  hp: 12
+  max_hp: 12
   blocks_movement: true
   blocks_vision: true
   parent: entity

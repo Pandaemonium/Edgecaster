@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from edgecaster.content.rune_anchor_sieges import RuneAnchorSiegeDef, get_rune_anchor_siege
 from edgecaster.systems import inventory as inventory_system
 from edgecaster.systems import spawning as spawning_system
+from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import footprints as footprints_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game, LevelState
@@ -92,6 +94,89 @@ class RuneAnchorSiegeState:
     granted_actions: List[str] = field(default_factory=lambda: ["anchor_channel", "anchor_stabilize", "anchor_purge"])
 
 
+def _is_tile_open(
+    game: "Game",
+    level: "LevelState",
+    pos: Tuple[int, int],
+    *,
+    avoid_actors: bool = False,
+    avoid_entities: bool = False,
+    avoid_blocking: bool = False,
+) -> bool:
+    x, y = int(pos[0]), int(pos[1])
+    rect = footprints_system.tile_rect((x, y))
+
+    try:
+        if not footprints_system.world_walkable_for_rect(level.world, rect):
+            return False
+    except Exception:
+        try:
+            if not level.world.in_bounds(x, y):
+                return False
+            if not level.world.is_walkable(x, y):
+                return False
+        except Exception:
+            return False
+
+    if avoid_actors:
+        actor = entity_ops_system.actor_at(level, (x, y))
+        if actor is not None:
+            return False
+
+    if avoid_blocking:
+        blocker = entity_ops_system.blocking_entity_at(level, (x, y))
+        if blocker is not None:
+            return False
+
+    if avoid_entities:
+        ent = entity_ops_system.entity_at(level, (x, y))
+        if ent is not None:
+            return False
+
+    return True
+
+
+def _target_overlaps_tile_set(target: object, tile_set: set[Tuple[int, int]]) -> bool:
+    if not tile_set:
+        return False
+    try:
+        rect = footprints_system.entity_footprint_local(target)
+        for tx, ty in footprints_system.iter_tiles_overlapped_by_rect(rect):
+            if (int(tx), int(ty)) in tile_set:
+                return True
+        return False
+    except Exception:
+        pass
+    pos = getattr(target, "pos", None)
+    if pos is None:
+        return False
+    return (int(pos[0]), int(pos[1])) in tile_set
+
+
+def _distance_sq_point_to_rect(px: float, py: float, rect: Tuple[float, float, float, float]) -> float:
+    x0, y0, x1, y1 = footprints_system.normalize_rect(rect)
+    cx = min(max(float(px), x0), x1)
+    cy = min(max(float(py), y0), y1)
+    dx = float(px) - cx
+    dy = float(py) - cy
+    return dx * dx + dy * dy
+
+
+def _target_within_radius_sq(target: object, center: Tuple[int, int], radius_sq: float) -> bool:
+    cx = float(int(center[0])) + 0.5
+    cy = float(int(center[1])) + 0.5
+    try:
+        rect = footprints_system.entity_footprint_local(target)
+        return _distance_sq_point_to_rect(cx, cy, rect) <= float(radius_sq)
+    except Exception:
+        pos = getattr(target, "pos", None)
+        if pos is None:
+            return False
+        dx = float(int(pos[0])) + 0.5 - cx
+        dy = float(int(pos[1])) + 0.5 - cy
+        return (dx * dx + dy * dy) <= float(radius_sq)
+
+
 def attach_siege_to_level(game: "Game", level: "LevelState", siege_id: str) -> None:
     """Attach a rune-anchor siege to a level."""
     if getattr(level, "rune_anchor_siege", None) is not None:
@@ -103,15 +188,15 @@ def attach_siege_to_level(game: "Game", level: "LevelState", siege_id: str) -> N
             game._debug(f"[rune_siege] Unknown siege id {siege_id!r}")
         return
 
-    anchor_pos = _resolve_anchor_pos(level, siege_def.anchor_offset)
+    anchor_pos = _resolve_anchor_pos(game, level, siege_def.anchor_offset)
     fractures: List[RuneFractureState] = []
     for idx, off in enumerate(siege_def.fracture_offsets):
         fx = anchor_pos[0] + int(off[0])
         fy = anchor_pos[1] + int(off[1])
         fx = max(0, min(level.world.width - 1, fx))
         fy = max(0, min(level.world.height - 1, fy))
-        if not level.world.is_walkable(fx, fy):
-            repl = _nearest_walkable(level, (fx, fy), max_radius=6)
+        if not _is_tile_open(game, level, (fx, fy), avoid_actors=False, avoid_entities=False, avoid_blocking=False):
+            repl = _nearest_walkable(game, level, (fx, fy), max_radius=6, avoid_actors=False, avoid_entities=False)
             if repl is not None:
                 fx, fy = repl
         fractures.append(RuneFractureState(idx=idx, pos=(fx, fy)))
@@ -391,9 +476,7 @@ def purge_anchor(game: "Game", actor_id: str) -> None:
         game.log.add("There is no active anchor to purge.")
         return
 
-    dx = int(actor.pos[0]) - int(siege.anchor_pos[0])
-    dy = int(actor.pos[1]) - int(siege.anchor_pos[1])
-    if dx * dx + dy * dy > 2 * 2:
+    if not _target_within_radius_sq(actor, siege.anchor_pos, 2.0 * 2.0):
         game.log.add("Stand at the anchor core to fire a purge.")
         return
 
@@ -413,10 +496,7 @@ def purge_anchor(game: "Game", actor_id: str) -> None:
             continue
         if not _is_hostile(actor, target, game):
             continue
-        tx, ty = int(target.pos[0]), int(target.pos[1])
-        ddx = tx - int(siege.anchor_pos[0])
-        ddy = ty - int(siege.anchor_pos[1])
-        if ddx * ddx + ddy * ddy > radius2:
+        if not _target_within_radius_sq(target, siege.anchor_pos, float(radius2)):
             continue
 
         damage = base_damage + min(4, int(siege.backlash_count))
@@ -696,7 +776,14 @@ def _award_completion_loot(game: "Game", level: "LevelState", siege: RuneAnchorS
         except Exception:
             amount = siege.reward_bismuth_min
 
-    drop_pos = _nearest_walkable(level, siege.anchor_pos, max_radius=4) or siege.anchor_pos
+    drop_pos = _nearest_walkable(
+        game,
+        level,
+        siege.anchor_pos,
+        max_radius=4,
+        avoid_actors=True,
+        avoid_entities=True,
+    ) or siege.anchor_pos
     try:
         ent = game._spawn_entity_from_template(
             "bismuth_pile",
@@ -832,10 +919,7 @@ def _resolve_catastrophe_pulse(game: "Game", level: "LevelState", siege: RuneAnc
     for actor in list(level.actors.values()):
         if actor is None or not getattr(actor, "alive", True):
             continue
-        pos = getattr(actor, "pos", None)
-        if pos is None:
-            continue
-        if (int(pos[0]), int(pos[1])) not in tile_set:
+        if not _target_overlaps_tile_set(actor, tile_set):
             continue
         if _apply_actor_damage(game, level, actor, damage, source_label="Catastrophe Pulse"):
             hits += 1
@@ -1060,28 +1144,48 @@ def _is_hostile(attacker: object, target: object, game: "Game") -> bool:
     return af == "hostile" or tf == "hostile"
 
 
-def _resolve_anchor_pos(level: "LevelState", offset: Tuple[int, int]) -> Tuple[int, int]:
+def _resolve_anchor_pos(game: "Game", level: "LevelState", offset: Tuple[int, int]) -> Tuple[int, int]:
     entry = level.world.entry or (level.world.width // 2, level.world.height // 2)
     x = int(entry[0]) + int(offset[0])
     y = int(entry[1]) + int(offset[1])
     x = max(0, min(level.world.width - 1, x))
     y = max(0, min(level.world.height - 1, y))
-    if level.world.is_walkable(x, y):
+    if _is_tile_open(game, level, (x, y), avoid_actors=False, avoid_entities=False, avoid_blocking=False):
         return (x, y)
-    return _nearest_walkable(level, (x, y), max_radius=8) or (x, y)
+    return _nearest_walkable(game, level, (x, y), max_radius=8, avoid_actors=False, avoid_entities=False) or (x, y)
 
 
-def _nearest_walkable(level: "LevelState", origin: Tuple[int, int], max_radius: int = 8) -> Optional[Tuple[int, int]]:
+def _nearest_walkable(
+    game: "Game",
+    level: "LevelState",
+    origin: Tuple[int, int],
+    max_radius: int = 8,
+    *,
+    avoid_actors: bool = False,
+    avoid_entities: bool = False,
+) -> Optional[Tuple[int, int]]:
     ox, oy = int(origin[0]), int(origin[1])
-    if level.world.in_bounds(ox, oy) and level.world.is_walkable(ox, oy):
+    if _is_tile_open(
+        game,
+        level,
+        (ox, oy),
+        avoid_actors=avoid_actors,
+        avoid_entities=avoid_entities,
+        avoid_blocking=False,
+    ):
         return (ox, oy)
     for r in range(1, max(1, int(max_radius)) + 1):
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
                 tx, ty = ox + dx, oy + dy
-                if not level.world.in_bounds(tx, ty):
-                    continue
-                if not level.world.is_walkable(tx, ty):
+                if not _is_tile_open(
+                    game,
+                    level,
+                    (tx, ty),
+                    avoid_actors=avoid_actors,
+                    avoid_entities=avoid_entities,
+                    avoid_blocking=False,
+                ):
                     continue
                 return (tx, ty)
     return None
@@ -1185,13 +1289,14 @@ def _find_spawn_tile(game: "Game", level: "LevelState", siege: RuneAnchorSiegeSt
 
         x = int(round(cx + math.cos(angle) * radius))
         y = int(round(cy + math.sin(angle) * radius))
-        if not level.world.in_bounds(x, y):
-            continue
-        if not level.world.is_walkable(x, y):
-            continue
-        if game._actor_at(level, (x, y)):
-            continue
-        if game._entity_at(level, (x, y)):
+        if not _is_tile_open(
+            game,
+            level,
+            (x, y),
+            avoid_actors=True,
+            avoid_entities=True,
+            avoid_blocking=True,
+        ):
             continue
         return (x, y)
 
@@ -1212,7 +1317,7 @@ def _spawn_anchor_entity(game: "Game", level: "LevelState", pos: Tuple[int, int]
         if tags.get("rune_anchor_siege_id") == siege_id:
             return
 
-    if game._entity_at(level, pos):
+    if entity_ops_system.entity_at(level, pos):
         return
     try:
         ent = game._spawn_entity_from_template(
@@ -1241,13 +1346,14 @@ def _seed_coherence_crystals(
             py = int(center[1]) + int(game.rng.randint(-6, 6))
         except Exception:
             px, py = center
-        if not level.world.in_bounds(px, py):
-            continue
-        if not level.world.is_walkable(px, py):
-            continue
-        if game._actor_at(level, (px, py)):
-            continue
-        if game._entity_at(level, (px, py)):
+        if not _is_tile_open(
+            game,
+            level,
+            (px, py),
+            avoid_actors=True,
+            avoid_entities=True,
+            avoid_blocking=False,
+        ):
             continue
         try:
             ent = game._spawn_entity_from_template("coherence_crystal", (px, py))

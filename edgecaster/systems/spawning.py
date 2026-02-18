@@ -35,6 +35,9 @@ from edgecaster.enemies import factory as enemy_factory
 from edgecaster.state.actors import Human, Stats
 from edgecaster.content import npcs
 from edgecaster.systems import difficulty as difficulty_system
+from edgecaster.systems import entity_identity as entity_identity_system
+from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import footprints as footprints_system
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +158,87 @@ def clear_template_caches() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Placement Helpers (footprint-aware)
+# ---------------------------------------------------------------------------
+
+
+def _spawn_rect_from_spec(
+    spec: Optional[Dict[str, object]],
+    pos: Tuple[int, int],
+) -> tuple[float, float, float, float]:
+    return footprints_system.footprint_local_rect_from_spec(spec, (int(pos[0]), int(pos[1])))
+
+
+def _spawn_rect_from_template_id(
+    template_id: str,
+    pos: Tuple[int, int],
+) -> tuple[float, float, float, float]:
+    try:
+        spec = prototypes.resolve_proto(template_id)
+    except Exception:
+        spec = None
+    return _spawn_rect_from_spec(spec, pos)
+
+
+def _is_tile_spawnable(
+    game: "Game",
+    level: "LevelState",
+    pos: Tuple[int, int],
+    *,
+    avoid_actors: bool = True,
+    avoid_entities: bool = True,
+    avoid_blocking: bool = False,
+    footprint_rect: Optional[tuple[float, float, float, float]] = None,
+) -> bool:
+    x, y = int(pos[0]), int(pos[1])
+    world = level.world
+    rect = footprints_system.normalize_rect(footprint_rect) if footprint_rect is not None else footprints_system.tile_rect((x, y))
+
+    # Point tile + footprint path are equivalent for 1x1 spawns, but this keeps
+    # one geometry-aware path for future non-point placement policies.
+    try:
+        if not footprints_system.world_walkable_for_rect(world, rect):
+            return False
+    except Exception:
+        try:
+            if not world.in_bounds(x, y):
+                return False
+            if not world.is_walkable(x, y):
+                return False
+        except Exception:
+            return False
+
+    if avoid_actors:
+        actor = None
+        try:
+            actor = entity_ops_system.first_actor_overlapping_rect(level, rect)
+        except Exception:
+            actor = None
+        if actor is not None:
+            return False
+
+    if avoid_blocking:
+        blocker = None
+        try:
+            blocker = entity_ops_system.blocking_entity_overlapping_rect(level, rect)
+        except Exception:
+            blocker = None
+        if blocker is not None:
+            return False
+
+    if avoid_entities:
+        ent = None
+        try:
+            ent = entity_ops_system.first_entity_overlapping_rect(level, rect)
+        except Exception:
+            ent = None
+        if ent is not None:
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Position Finding
 # ---------------------------------------------------------------------------
 
@@ -169,6 +253,7 @@ def find_spawn_position(
     avoid_near: Optional[Tuple[int, int]] = None,
     avoid_distance: int = 0,
     max_attempts: int = 100,
+    spawn_spec: Optional[Dict[str, object]] = None,
 ) -> Optional[Tuple[int, int]]:
     """Find a valid spawn position in the level.
 
@@ -197,13 +282,16 @@ def find_spawn_position(
             x = game.rng.randint(1, world.width - 2)
             y = game.rng.randint(1, world.height - 2)
 
-        if not world.in_bounds(x, y):
-            continue
-        if not world.is_walkable(x, y):
-            continue
-        if avoid_actors and game._actor_at(level, (x, y)):
-            continue
-        if avoid_entities and game._entity_at(level, (x, y)):
+        candidate_rect = _spawn_rect_from_spec(spawn_spec, (x, y)) if spawn_spec is not None else None
+        if not _is_tile_spawnable(
+            game,
+            level,
+            (x, y),
+            avoid_actors=avoid_actors,
+            avoid_entities=avoid_entities,
+            avoid_blocking=False,
+            footprint_rect=candidate_rect,
+        ):
             continue
         if avoid_near is not None and avoid_distance > 0:
             dx = int(x) - int(avoid_near[0])
@@ -221,18 +309,25 @@ def find_nearest_walkable(
     level: "LevelState",
     origin: Tuple[int, int],
     max_radius: int = 12,
+    spawn_spec: Optional[Dict[str, object]] = None,
 ) -> Optional[Tuple[int, int]]:
     """Find the nearest walkable, unoccupied tile to origin.
 
     Searches in expanding rings from origin.
     """
     ox, oy = origin
-    world = level.world
 
     # Check origin first
-    if (world.in_bounds(ox, oy) and
-        world.is_walkable(ox, oy) and
-        not game._actor_at(level, (ox, oy))):
+    origin_rect = _spawn_rect_from_spec(spawn_spec, (ox, oy)) if spawn_spec is not None else None
+    if _is_tile_spawnable(
+        game,
+        level,
+        (ox, oy),
+        avoid_actors=True,
+        avoid_entities=False,
+        avoid_blocking=False,
+        footprint_rect=origin_rect,
+    ):
         return origin
 
     # Search expanding rings
@@ -240,11 +335,16 @@ def find_nearest_walkable(
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
                 tx, ty = ox + dx, oy + dy
-                if not world.in_bounds(tx, ty):
-                    continue
-                if not world.is_walkable(tx, ty):
-                    continue
-                if game._actor_at(level, (tx, ty)):
+                candidate_rect = _spawn_rect_from_spec(spawn_spec, (tx, ty)) if spawn_spec is not None else None
+                if not _is_tile_spawnable(
+                    game,
+                    level,
+                    (tx, ty),
+                    avoid_actors=True,
+                    avoid_entities=False,
+                    avoid_blocking=False,
+                    footprint_rect=candidate_rect,
+                ):
                     continue
                 return (tx, ty)
 
@@ -260,31 +360,48 @@ def spawn_entity_from_template(
     template_id: str,
     pos: Tuple[int, int],
     overrides: Optional[Dict[str, object]] = None,
+    *,
+    deterministic: bool = False,
+    deterministic_recipe: Optional[str] = None,
+    deterministic_namespace: str = "ent",
+    deterministic_salt: Optional[str] = None,
+    zone_coord: Optional[Tuple[int, int, int]] = None,
 ) -> "Entity":
     """Instantiate a plain Entity from the unified prototype bucket.
 
     Uses prototypes.resolve_proto() so inheritance works across entities.yaml/enemies.yaml/etc.
     `overrides` merges on top; `tags` merge dict-wise (entity-style).
     """
-    from edgecaster.prototypes import resolve_proto
-    from edgecaster import spawn_factory
-
     # resolve_proto uses the global master bucket (loaded lazily from content/*.yaml)
-    spec = resolve_proto(template_id)
+    spec = prototypes.resolve_proto(template_id)
     if not spec:
         raise KeyError(f"Unknown prototype id {template_id!r}")
 
-    eid = game._new_id()
+    spawn_zone = tuple(zone_coord) if zone_coord is not None else tuple(getattr(game, "zone_coord", (0, 0, 0)))
+    abs_pos = game.abs_from_zone_local(spawn_zone, pos)
+    if deterministic:
+        rid = str(deterministic_recipe or template_id)
+        eid = entity_identity_system.deterministic_runtime_id(
+            game,
+            recipe_id=rid,
+            abs_pos=abs_pos,
+            namespace=str(deterministic_namespace or "ent"),
+            salt=deterministic_salt,
+        )
+    else:
+        eid = game._new_id()
+
     ent = spawn_factory.build_entity_from_spec(
         spec=spec,
         eid=eid,
         pos=pos,
-        abs_pos=game.abs_from_zone_local(game.zone_coord, pos),
+        abs_pos=abs_pos,
         overrides=overrides,
     )
 
     # Initialize per-instance item charges
     _init_entity_charges(game, ent)
+    _patch_spawned_entity_state(game, ent, owner_id=None, in_inventory=False)
 
     return ent
 
@@ -319,6 +436,31 @@ def _init_entity_charges(game: "Game", ent: "Entity") -> None:
         pass
 
 
+def _patch_spawned_entity_state(
+    game: "Game",
+    ent: object,
+    *,
+    owner_id: Optional[str] = None,
+    in_inventory: bool = False,
+) -> None:
+    """Best-effort entity_state initialization for new runtime entities."""
+    try:
+        patch = getattr(game, "patch_entity_state", None)
+        if not callable(patch):
+            return
+        patch(
+            ent,
+            removed=False,
+            dead=False,
+            owner_id=owner_id,
+            parent_entity_id=owner_id if in_inventory else None,
+            socket_id="inventory" if in_inventory else None,
+            in_inventory=bool(in_inventory),
+        )
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Actor Registration Helpers
 # ---------------------------------------------------------------------------
@@ -348,6 +490,7 @@ def register_actor(
 
     level.actors[actor.id] = actor
     level.entities[actor.id] = actor
+    _patch_spawned_entity_state(game, actor, owner_id=None, in_inventory=False)
 
     if schedule_ai:
         game._schedule(
@@ -392,13 +535,14 @@ def spawn_entities_near(
         x = cx + game.rng.randint(-radius, radius)
         y = cy + game.rng.randint(-radius, radius)
 
-        if not level.world.in_bounds(x, y):
-            continue
-        if not level.world.is_walkable(x, y):
-            continue
-        if game._actor_at(level, (x, y)):
-            continue
-        if game._entity_at(level, (x, y)):
+        if not _is_tile_spawnable(
+            game,
+            level,
+            (x, y),
+            avoid_actors=True,
+            avoid_entities=True,
+            avoid_blocking=False,
+        ):
             continue
 
         place_entity((x, y))
@@ -423,7 +567,7 @@ def _get_biome_at_position(level: "LevelState", pos: Tuple[int, int]) -> Optiona
         tile = world.get_tile(x, y)
         if tile is not None:
             biome_id = getattr(tile, "biome_id", None)
-            if biome_id is not None:
+            if isinstance(biome_id, (int, float)):
                 return int(biome_id)
     except Exception:
         pass
@@ -589,7 +733,12 @@ def spawn_enemies(
             enemy_ids = ["imp"]
 
         # Filter by zone difficulty tier (10-tier system).
-        zone_tier = getattr(level, "danger_tier", 1) or 1
+        raw_zone_tier = getattr(level, "danger_tier", 1)
+        try:
+            zone_tier = int(raw_zone_tier)
+        except Exception:
+            zone_tier = 1
+        zone_tier = max(1, zone_tier)
         filtered_pool, bounds = difficulty_system.filter_enemy_pool(game, enemy_ids, zone_tier)
         if filtered_pool:
             enemy_ids = filtered_pool
@@ -597,7 +746,76 @@ def spawn_enemies(
             # Prefer nearest-tier matches over a hard "imp only" fallback.
             enemy_ids = _nearest_tier_fallback_pool(enemy_ids, bounds, zone_tier)
 
-        tmpl_id = game.rng.choice(enemy_ids)
+        selected_id = None
+        selected_pos = None
+        sampled_ids: List[str] = []
+        if enemy_ids:
+            sampled_ids.append(str(game.rng.choice(enemy_ids)))
+        while len(sampled_ids) < min(len(enemy_ids), 6):
+            candidate_id = str(game.rng.choice(enemy_ids))
+            if candidate_id in sampled_ids:
+                continue
+            sampled_ids.append(candidate_id)
+
+        for candidate_id in sampled_ids:
+            try:
+                candidate_spec = prototypes.resolve_proto(candidate_id)
+            except Exception:
+                candidate_spec = None
+
+            if _is_tile_spawnable(
+                game,
+                level,
+                pos,
+                avoid_actors=True,
+                avoid_entities=True,
+                avoid_blocking=True,
+                footprint_rect=_spawn_rect_from_spec(candidate_spec, pos),
+            ):
+                selected_id = candidate_id
+                selected_pos = pos
+                break
+
+            probe = find_spawn_position(
+                game,
+                level,
+                avoid_entities=False,
+                avoid_near=avoid_near,
+                avoid_distance=avoid_distance,
+                max_attempts=36,
+                spawn_spec=candidate_spec,
+            )
+            if probe is None and (avoid_near is not None and avoid_distance > 0):
+                probe = find_spawn_position(
+                    game,
+                    level,
+                    avoid_entities=False,
+                    avoid_near=avoid_near,
+                    avoid_distance=0,
+                    max_attempts=24,
+                    spawn_spec=candidate_spec,
+                )
+            if probe is None:
+                continue
+            if not _is_tile_spawnable(
+                game,
+                level,
+                probe,
+                avoid_actors=True,
+                avoid_entities=True,
+                avoid_blocking=True,
+                footprint_rect=_spawn_rect_from_spec(candidate_spec, probe),
+            ):
+                continue
+
+            selected_id = candidate_id
+            selected_pos = probe
+            break
+
+        if selected_id is None or selected_pos is None:
+            continue
+        tmpl_id = selected_id
+        pos = selected_pos
 
         # YOGA: Compute ABS position for canonical storage
         abs_pos = game.abs_from_zone_local(level.coord, pos)
@@ -660,16 +878,17 @@ def _spawn_slaver_pack(
         if len(brute_ids) >= 2:
             break
         tx, ty = x + dx, y + dy
+        brute_rect = _spawn_rect_from_template_id("shackled_brute", (tx, ty))
 
-        if not level.world.in_bounds(tx, ty):
-            continue
-        if not level.world.is_walkable(tx, ty):
-            continue
-        if game._actor_at(level, (tx, ty)):
-            continue
-        if game._blocking_entity_at(level, (tx, ty)):
-            continue
-        if game._entity_at(level, (tx, ty)):
+        if not _is_tile_spawnable(
+            game,
+            level,
+            (tx, ty),
+            avoid_actors=True,
+            avoid_entities=True,
+            avoid_blocking=True,
+            footprint_rect=brute_rect,
+        ):
             continue
 
         # YOGA: Compute ABS position for canonical storage
@@ -734,26 +953,31 @@ def _spawn_angry_circus(
     member_ids: List[str] = []
     used_positions: set[tuple[int, int]] = {pos}
 
-    def _find_member_spawn() -> Optional[Tuple[int, int]]:
+    def _find_member_spawn(template_id: str) -> Optional[Tuple[int, int]]:
         # Pass 1: try curated offsets so the group appears "together".
         for dx, dy in offsets:
             tx, ty = x + dx, y + dy
             if (tx, ty) in used_positions:
                 continue
-            if not level.world.in_bounds(tx, ty):
-                continue
-            if not level.world.is_walkable(tx, ty):
-                continue
-            if game._actor_at(level, (tx, ty)):
-                continue
-            if game._blocking_entity_at(level, (tx, ty)):
-                continue
-            if game._entity_at(level, (tx, ty)):
+            spawn_rect = _spawn_rect_from_template_id(template_id, (tx, ty))
+            if not _is_tile_spawnable(
+                game,
+                level,
+                (tx, ty),
+                avoid_actors=True,
+                avoid_entities=True,
+                avoid_blocking=True,
+                footprint_rect=spawn_rect,
+            ):
                 continue
             return (tx, ty)
 
         # Pass 2: if local offsets are blocked, expand search radius so
         # ringmaster still gets a troupe in dense/ruined zones.
+        try:
+            spawn_spec = prototypes.resolve_proto(template_id)
+        except Exception:
+            spawn_spec = None
         for radius in (4, 6, 8, 10, 12, 15):
             probe = find_spawn_position(
                 game,
@@ -763,6 +987,7 @@ def _spawn_angry_circus(
                 avoid_actors=True,
                 avoid_entities=True,
                 max_attempts=60,
+                spawn_spec=spawn_spec,
             )
             if probe is None:
                 continue
@@ -781,6 +1006,7 @@ def _spawn_angry_circus(
                 avoid_actors=True,
                 avoid_entities=True,
                 max_attempts=120,
+                spawn_spec=spawn_spec,
             )
             if probe is None:
                 continue
@@ -790,7 +1016,7 @@ def _spawn_angry_circus(
         return None
 
     for tmpl in member_templates:
-        spawn_xy = _find_member_spawn()
+        spawn_xy = _find_member_spawn(tmpl)
         if spawn_xy is None:
             continue
         used_positions.add(spawn_xy)
@@ -953,13 +1179,14 @@ def scatter_test_berries(
         x = game.rng.randint(0, world.width - 1)
         y = game.rng.randint(0, world.height - 1)
 
-        if not world.in_bounds(x, y):
-            continue
-        if not world.is_walkable(x, y):
-            continue
-        if game._actor_at(level, (x, y)):
-            continue
-        if game._entity_at(level, (x, y)):
+        if not _is_tile_spawnable(
+            game,
+            level,
+            (x, y),
+            avoid_actors=True,
+            avoid_entities=True,
+            avoid_blocking=False,
+        ):
             continue
 
         template_id = game.rng.choice(berry_ids)
@@ -976,13 +1203,14 @@ def scatter_test_berries(
             x = game.rng.randint(0, world.width - 1)
             y = game.rng.randint(0, world.height - 1)
 
-            if not world.in_bounds(x, y):
-                continue
-            if not world.is_walkable(x, y):
-                continue
-            if game._actor_at(level, (x, y)):
-                continue
-            if game._entity_at(level, (x, y)):
+            if not _is_tile_spawnable(
+                game,
+                level,
+                (x, y),
+                avoid_actors=True,
+                avoid_entities=True,
+                avoid_blocking=False,
+            ):
                 continue
 
             try:
@@ -1099,13 +1327,14 @@ def debug_spawn_inventory_near_player(
         for _ in range(max_attempts):
             x = cx + game.rng.randint(-r, r)
             y = cy + game.rng.randint(-r, r)
-            if not level.world.in_bounds(x, y):
-                continue
-            if not level.world.is_walkable(x, y):
-                continue
-            if game._actor_at(level, (x, y)):
-                continue
-            if game._entity_at(level, (x, y)):
+            if not _is_tile_spawnable(
+                game,
+                level,
+                (x, y),
+                avoid_actors=True,
+                avoid_entities=True,
+                avoid_blocking=False,
+            ):
                 continue
             return (x, y)
         return None
@@ -1172,11 +1401,14 @@ def spawn_mentor(game: "Game", level: "LevelState") -> Optional["Actor"]:
 
     for dx, dy in offsets:
         tx, ty = x + dx, y + dy
-        if not level.world.in_bounds(tx, ty):
-            continue
-        if not level.world.is_walkable(tx, ty):
-            continue
-        if game._actor_at(level, (tx, ty)):
+        if not _is_tile_spawnable(
+            game,
+            level,
+            (tx, ty),
+            avoid_actors=True,
+            avoid_entities=False,
+            avoid_blocking=False,
+        ):
             continue
 
         aid = game._new_id()
@@ -1219,11 +1451,14 @@ def spawn_intro_npcs(game: "Game", level: "LevelState") -> int:
     for npc_id, name, description in npc_specs:
         for dx, dy in offsets:
             tx, ty = x + dx + placed, y + dy
-            if not level.world.in_bounds(tx, ty):
-                continue
-            if not level.world.is_walkable(tx, ty):
-                continue
-            if game._actor_at(level, (tx, ty)):
+            if not _is_tile_spawnable(
+                game,
+                level,
+                (tx, ty),
+                avoid_actors=True,
+                avoid_entities=False,
+                avoid_blocking=False,
+            ):
                 continue
 
             aid = game._new_id()
@@ -1272,7 +1507,14 @@ def spawn_npcs(
         x = max(1, min(level.world.width - 2, ex + (placed * 2)))
         y = max(1, min(level.world.height - 2, ey + 1))
 
-        if not level.world.is_walkable(x, y) or game._actor_at(level, (x, y)):
+        if not _is_tile_spawnable(
+            game,
+            level,
+            (x, y),
+            avoid_actors=True,
+            avoid_entities=False,
+            avoid_blocking=False,
+        ):
             continue
 
         aid = game._new_id()
@@ -1441,11 +1683,15 @@ def spawn_enemies_for_biome(
 
     while spawned < count and attempts < 200:
         attempts += 1
-        pos = find_spawn_position(game, level, avoid_entities=False)
+        tmpl_id = game.rng.choice(pool)
+        try:
+            spawn_spec = prototypes.resolve_proto(tmpl_id)
+        except Exception:
+            spawn_spec = None
+
+        pos = find_spawn_position(game, level, avoid_entities=False, spawn_spec=spawn_spec)
         if pos is None:
             continue
-
-        tmpl_id = game.rng.choice(pool)
 
         try:
             # Use the sidecar-aware path so special leaders (e.g. ringmaster,

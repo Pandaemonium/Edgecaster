@@ -77,6 +77,50 @@ def _seed_for(game: "Game", *parts: object) -> int:
     return (base ^ _stable_int_hash(*parts)) & 0xFFFFFFFF
 
 
+def lineage_root_for_entity(ent: object) -> str:
+    """Return stable lineage root for an entity-like object.
+
+    Preference order:
+      1) tags["lineage_id"] when present (explicit stable identity)
+      2) runtime entity id fallback
+    """
+    tags = _tags(ent)
+    if isinstance(tags, dict):
+        try:
+            lid = str(tags.get("lineage_id", "") or "").strip()
+        except Exception:
+            lid = ""
+        if lid:
+            return lid
+    return _ent_id(ent)
+
+
+def build_lineage_id(root: object, *parts: object) -> str:
+    """Compose deterministic lineage id segments with ':' separators."""
+    out: list[str] = []
+    try:
+        base = str(root or "").strip()
+    except Exception:
+        base = ""
+    if base:
+        out.append(base)
+    for p in parts:
+        if p is None:
+            continue
+        try:
+            s = str(p).strip()
+        except Exception:
+            s = ""
+        if s:
+            out.append(s)
+    return ":".join(out)
+
+
+def aggregate_slot_lineage_id(aggregate_id: object, child_id: object, slot: int) -> str:
+    """Stable lineage id for an aggregate slot child."""
+    return build_lineage_id(aggregate_id, child_id, int(slot))
+
+
 # -----------------------------
 # Aggregate discovery / worldgen
 # -----------------------------
@@ -521,6 +565,51 @@ def _zone_local_from_abs(ax: int, ay: int, zone_w: int, zone_h: int) -> tuple[tu
     return (zxx, zyy), (lx, ly)
 
 
+def _coerce_spawn_kind(raw: object, *, default: str = "entity") -> str:
+    s = str(raw or "").strip().lower()
+    if s in ("actor", "entity", "staged"):
+        return s
+    return str(default or "entity")
+
+
+def _spawn_kind_for_child(*, proto_id: str, placement: dict, default: str = "entity") -> str:
+    """Resolve child spawn kind from data (no hardcoded NPC id lists).
+
+    Priority:
+      1) placement.spawn_kind
+      2) prototype field `spawn_kind`
+      3) prototype tags.spawn_kind
+      4) light inference for actor-like prototypes
+    """
+    try:
+        explicit = placement.get("spawn_kind")
+    except Exception:
+        explicit = None
+    if explicit is not None:
+        return _coerce_spawn_kind(explicit, default=default)
+
+    spec: dict = {}
+    try:
+        resolved = prototypes.resolve_proto(str(proto_id))
+        if isinstance(resolved, dict):
+            spec = resolved
+    except Exception:
+        spec = {}
+
+    if spec:
+        if "spawn_kind" in spec:
+            return _coerce_spawn_kind(spec.get("spawn_kind"), default=default)
+        tags = spec.get("tags", {}) or {}
+        if isinstance(tags, dict) and "spawn_kind" in tags:
+            return _coerce_spawn_kind(tags.get("spawn_kind"), default=default)
+
+        # Fallback inference: actor-like prototype schemas usually have combat/AI fields.
+        if any(k in spec for k in ("base_hp", "base_attack", "ai", "faction", "actions")):
+            return "actor"
+
+    return _coerce_spawn_kind(default, default="entity")
+
+
 def resolve_spawn_intents_from_recipe(
     game: "Game",
     *,
@@ -553,7 +642,7 @@ def resolve_spawn_intents_from_recipe(
     if not recipes:
         return []
 
-    parent_id = _ent_id(parent_ent)
+    parent_lineage = lineage_root_for_entity(parent_ent)
     zx, zy, _ = map(int, zone_coord)
     ox0, oy0 = map(int, local_pos)
 
@@ -604,7 +693,7 @@ def resolve_spawn_intents_from_recipe(
 
             door_xy = None
             if door_enabled:
-                rng_door = random.Random(_seed_for(game, "resolve_door", parent_id, ax0, ay0, ax1, ay1))
+                rng_door = random.Random(_seed_for(game, "resolve_door", parent_lineage, ax0, ay0, ax1, ay1))
                 if door_side in ("north", "south"):
                     y = ay0 if door_side == "north" else (ay1 - 1)
                     x = rng_door.randint(ax0 + 1, ax1 - 2)
@@ -624,7 +713,7 @@ def resolve_spawn_intents_from_recipe(
                         if door_xy is not None and (x, y) == door_xy:
                             # optionally spawn a door entity at the gap
                             if door_proto:
-                                eid = f"{parent_id}:door:{x},{y}"
+                                eid = build_lineage_id(parent_lineage, "door", f"{x},{y}")
                                 intents.append(
                                     SpawnIntent(
                                         eid=eid,
@@ -633,13 +722,13 @@ def resolve_spawn_intents_from_recipe(
                                         abs_y=int(y),
                                         zz=int(zz),
                                         child_type="entity",
-                                        tags={"structure": True, "door": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                        tags={"structure": True, "door": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
                                         lineage_id=eid,
                                     )
                                 )
                             else:
                                 # If no door entity, at least ensure a walkable floor tile here:
-                                eid = f"{parent_id}:floor:{x},{y}"
+                                eid = build_lineage_id(parent_lineage, "floor", f"{x},{y}")
                                 intents.append(
                                     SpawnIntent(
                                         eid=eid,
@@ -653,13 +742,13 @@ def resolve_spawn_intents_from_recipe(
                                             "glyph": floor_glyph,
                                             "color": floor_color,
                                             "base_size": 1.0,
-                                            "tags": {"structure": True, "floor": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                            "tags": {"structure": True, "floor": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
                                         },
                                         lineage_id=eid,
                                     )
                                 )
                             continue 
-                        eid = f"{parent_id}:wall:{x},{y}"
+                        eid = build_lineage_id(parent_lineage, "wall", f"{x},{y}")
                         intents.append(
                             SpawnIntent(
                                 eid=eid,
@@ -668,12 +757,12 @@ def resolve_spawn_intents_from_recipe(
                                 abs_y=int(y),
                                 zz=int(zz),
                                 child_type="entity",
-                                tags={"structure": True, "wall": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                tags={"structure": True, "wall": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
                                 lineage_id=eid,
                             )
                         )
                     else:
-                        eid = f"{parent_id}:floor:{x},{y}"
+                        eid = build_lineage_id(parent_lineage, "floor", f"{x},{y}")
                         intents.append(
                             SpawnIntent(
                                 eid=eid,
@@ -687,7 +776,7 @@ def resolve_spawn_intents_from_recipe(
                                     "glyph": floor_glyph,
                                     "color": floor_color,
                                     "base_size": 1.0,
-                                    "tags": {"structure": True, "floor": True, "owner": parent_id, "_resolve_depth": depth + 1},
+                                    "tags": {"structure": True, "floor": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
                                 },
                                 lineage_id=eid,
                             )
@@ -719,7 +808,7 @@ def resolve_spawn_intents_from_recipe(
                 min_sep = float(placement.get("min_sep", 0) or 0)
                 min_sep2 = min_sep * min_sep
 
-                rng = random.Random(_seed_for(game, "resolve_cluster", parent_id, salt, pax, pay, int(round(radius * 1000)), len(children)))
+                rng = random.Random(_seed_for(game, "resolve_cluster", parent_lineage, salt, pax, pay, int(round(radius * 1000)), len(children)))
 
                 pts: list[tuple[int, int]] = []
                 attempts = 0
@@ -756,7 +845,8 @@ def resolve_spawn_intents_from_recipe(
                     if i >= len(pts):
                         break
                     ax, ay = pts[i]
-                    eid = f"{parent_id}:child:{salt}:{proto_id}:{i}"
+                    eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+                    child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
                     intents.append(
                         SpawnIntent(
                             eid=eid,
@@ -764,28 +854,8 @@ def resolve_spawn_intents_from_recipe(
                             abs_x=int(ax),
                             abs_y=int(ay),
                             zz=int(zz),
-                            child_type="entity",
-                            tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
-                            lineage_id=eid,
-                        )
-                    )
-                continue
-
-
-                for i, proto_id in enumerate(children):
-                    if i >= len(pts):
-                        break
-                    ax, ay = pts[i]
-                    eid = f"{parent_id}:child:{salt}:{proto_id}:{i}"
-                    intents.append(
-                        SpawnIntent(
-                            eid=eid,
-                            proto_id=proto_id,
-                            abs_x=int(ax),
-                            abs_y=int(ay),
-                            zz=int(zz),
-                            child_type="entity",
-                            tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
+                            child_type=child_type,
+                            tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
                             lineage_id=eid,
                         )
                     )
@@ -802,15 +872,13 @@ def resolve_spawn_intents_from_recipe(
                         interior.append((x, y))
                 if not interior:
                     continue
-                rng = random.Random(_seed_for(game, "resolve_interior", parent_id, salt, ax0, ay0, ax1, ay1, len(children)))
+                rng = random.Random(_seed_for(game, "resolve_interior", parent_lineage, salt, ax0, ay0, ax1, ay1, len(children)))
                 rng.shuffle(interior)
 
                 for i, proto_id in enumerate(children):
                     x, y = interior[i % len(interior)]
-                    eid = f"{parent_id}:child:{salt}:{proto_id}:{i}"
-                    # NPCs are actors today; everything else is entity.
-                    # We keep this heuristic only in aggregate_resolution (not attention):
-                    child_type = "actor" if proto_id in ("chakra_sage", "merchant", "local_guide", "lair_informant") else "entity"
+                    eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+                    child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
                     intents.append(
                         SpawnIntent(
                             eid=eid,
@@ -819,7 +887,7 @@ def resolve_spawn_intents_from_recipe(
                             abs_y=int(y),
                             zz=int(zz),
                             child_type=child_type,
-                            tags={"from_parent": parent_id, "_resolve_depth": depth + 1},
+                            tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
                             lineage_id=eid,
                         )
                     )
@@ -872,7 +940,7 @@ def resolve_spawn_intents_from_recipe(
                 target_n = min(target_n, len(interior))
 
             # Deterministic spawn order: shuffle pool, repeat as needed, and lay onto a shuffled interior list.
-            rng = random.Random(_seed_for(game, "resolve_pool", parent_id, salt, ax0, ay0, ax1, ay1, len(pool), target_n))
+            rng = random.Random(_seed_for(game, "resolve_pool", parent_lineage, salt, ax0, ay0, ax1, ay1, len(pool), target_n))
 
             interior2 = list(interior)
             rng.shuffle(interior2)
@@ -890,7 +958,8 @@ def resolve_spawn_intents_from_recipe(
             for i in range(target_n):
                 proto_id = spawn_queue[i]
                 x, y = interior2[i % len(interior2)]
-                eid = f"{parent_id}:pool:{salt}:{proto_id}:{i}"
+                eid = build_lineage_id(parent_lineage, "pool", salt, proto_id, i)
+                child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
                 intents.append(
                     SpawnIntent(
                         eid=eid,
@@ -898,8 +967,8 @@ def resolve_spawn_intents_from_recipe(
                         abs_x=int(x),
                         abs_y=int(y),
                         zz=int(zz),
-                        child_type="entity",
-                        tags={"from_parent": parent_id, "_resolve_depth": depth + 1, "spawned_by": "children_pool"},
+                        child_type=child_type,
+                        tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1, "spawned_by": "children_pool"},
                         lineage_id=eid,
                     )
                 )
@@ -1033,4 +1102,3 @@ def realize_details_for_loaded_zone(
         0 (no entities placed).
     """
     return 0
-

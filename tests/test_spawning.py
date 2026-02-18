@@ -7,6 +7,7 @@ Tests entity and actor spawning, template loading, and position finding.
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 import random
+from types import SimpleNamespace
 
 from edgecaster.systems.spawning import (
     get_enemy_template_ids,
@@ -25,6 +26,7 @@ from edgecaster.systems.spawning import (
     spawn_intro_npcs,
     spawn_npcs,
 )
+from edgecaster.systems import spawning as spawning_system
 
 
 @pytest.fixture(autouse=True)
@@ -158,6 +160,8 @@ class TestFindSpawnPosition:
         level.world.height = 20
         level.world.in_bounds.return_value = True
         level.world.is_walkable.return_value = True
+        level.actors = {}
+        level.entities = {}
         return level
 
     def test_returns_position(self, mock_game, mock_level):
@@ -179,7 +183,14 @@ class TestFindSpawnPosition:
 
     def test_avoids_actors(self, mock_game, mock_level):
         """Should skip tiles with actors."""
-        mock_game._actor_at.return_value = MagicMock()  # Actor present
+        blocker = SimpleNamespace(
+            id="blocker",
+            alive=True,
+            pos=(0, 0),
+            tags={},
+            footprint_local=(0.0, 0.0, 1000.0, 1000.0),
+        )
+        mock_level.actors["blocker"] = blocker
 
         result = find_spawn_position(mock_game, mock_level, max_attempts=5)
 
@@ -192,6 +203,59 @@ class TestFindSpawnPosition:
         result = find_spawn_position(mock_game, mock_level, max_attempts=5)
 
         assert result is None
+
+    def test_spawn_spec_footprint_checks_all_tiles(self, mock_game, mock_level):
+        """Large spawn footprints should fail if any overlapped tile is blocked."""
+        def walkable(x, y):
+            return not (int(x) == 2 and int(y) == 2)
+
+        mock_level.world.is_walkable.side_effect = walkable
+        spec = {"id": "big_test", "tags": {"footprint_w": 2, "footprint_h": 2}}
+
+        result = find_spawn_position(
+            mock_game,
+            mock_level,
+            near=(1, 1),
+            radius=0,
+            max_attempts=1,
+            spawn_spec=spec,
+        )
+        assert result is None
+
+
+class TestFootprintSpawnChecks:
+    def test_is_tile_spawnable_rejects_actor_overlap_in_rect(self):
+        game = MagicMock()
+        world = MagicMock()
+        world.in_bounds.return_value = True
+        world.is_walkable.return_value = True
+        level = SimpleNamespace(
+            world=world,
+            actors={},
+            entities={},
+        )
+
+        actor = SimpleNamespace(
+            id="a1",
+            alive=True,
+            pos=(2, 2),
+            tags={},
+            footprint_local=(2.0, 2.0, 3.0, 3.0),
+            blocks_movement=False,
+        )
+        level.actors[actor.id] = actor
+        level.entities[actor.id] = actor
+
+        ok = spawning_system._is_tile_spawnable(
+            game,
+            level,
+            (1, 1),
+            avoid_actors=True,
+            avoid_entities=False,
+            avoid_blocking=False,
+            footprint_rect=(1.0, 1.0, 3.0, 3.0),
+        )
+        assert ok is False
 
 
 class TestFindNearestWalkable:
@@ -289,6 +353,120 @@ class TestSpawnEntityFromTemplate:
 
         assert mock_ent.tags["charges"] == 5
 
+    def test_deterministic_id_uses_seed_recipe_and_location(self):
+        """Deterministic mode should derive id from seed+recipe+abs location."""
+        game = MagicMock()
+        game._new_id.return_value = "ent_random"
+        game.fractal_seed = 12345
+        game.zone_coord = (0, 0, 0)
+        game.abs_from_zone_local.side_effect = lambda zc, p: (
+            int(zc[0]) * 100 + int(p[0]),
+            int(zc[1]) * 100 + int(p[1]),
+        )
+        game.rng = random.Random(42)
+
+        with patch('edgecaster.systems.spawning.prototypes') as mock_proto:
+            mock_proto.resolve_proto.return_value = {"id": "berry", "name": "Berry"}
+            with patch('edgecaster.systems.spawning.spawn_factory') as mock_factory:
+                mock_ent_a = MagicMock()
+                mock_ent_a.tags = {}
+                mock_ent_b = MagicMock()
+                mock_ent_b.tags = {}
+                mock_factory.build_entity_from_spec.side_effect = [mock_ent_a, mock_ent_b]
+
+                spawn_entity_from_template(
+                    game,
+                    "berry",
+                    (5, 7),
+                    deterministic=True,
+                    deterministic_recipe="poi:test:berry_slot",
+                    zone_coord=(2, 3, 0),
+                )
+                first_eid = mock_factory.build_entity_from_spec.call_args_list[0].kwargs["eid"]
+
+                spawn_entity_from_template(
+                    game,
+                    "berry",
+                    (5, 7),
+                    deterministic=True,
+                    deterministic_recipe="poi:test:berry_slot",
+                    zone_coord=(2, 3, 0),
+                )
+                second_eid = mock_factory.build_entity_from_spec.call_args_list[1].kwargs["eid"]
+
+        assert first_eid == second_eid
+        assert first_eid != "ent_random"
+
+    def test_deterministic_id_changes_with_recipe_or_location(self):
+        """Different recipe/location should produce different deterministic ids."""
+        game = MagicMock()
+        game._new_id.return_value = "ent_random"
+        game.fractal_seed = 999
+        game.zone_coord = (0, 0, 0)
+        game.abs_from_zone_local.side_effect = lambda zc, p: (
+            int(zc[0]) * 100 + int(p[0]),
+            int(zc[1]) * 100 + int(p[1]),
+        )
+        game.rng = random.Random(42)
+
+        with patch('edgecaster.systems.spawning.prototypes') as mock_proto:
+            mock_proto.resolve_proto.return_value = {"id": "wall", "name": "Wall"}
+            with patch('edgecaster.systems.spawning.spawn_factory') as mock_factory:
+                ents = [MagicMock(), MagicMock(), MagicMock()]
+                for e in ents:
+                    e.tags = {}
+                mock_factory.build_entity_from_spec.side_effect = ents
+
+                spawn_entity_from_template(
+                    game,
+                    "wall",
+                    (1, 1),
+                    deterministic=True,
+                    deterministic_recipe="poi:a:wall",
+                    zone_coord=(1, 1, 0),
+                )
+                eid_a = mock_factory.build_entity_from_spec.call_args_list[0].kwargs["eid"]
+
+                spawn_entity_from_template(
+                    game,
+                    "wall",
+                    (2, 1),
+                    deterministic=True,
+                    deterministic_recipe="poi:a:wall",
+                    zone_coord=(1, 1, 0),
+                )
+                eid_b = mock_factory.build_entity_from_spec.call_args_list[1].kwargs["eid"]
+
+                spawn_entity_from_template(
+                    game,
+                    "wall",
+                    (1, 1),
+                    deterministic=True,
+                    deterministic_recipe="poi:b:wall",
+                    zone_coord=(1, 1, 0),
+                )
+                eid_c = mock_factory.build_entity_from_spec.call_args_list[2].kwargs["eid"]
+
+        assert eid_a != eid_b
+        assert eid_a != eid_c
+
+    def test_spawn_entity_patches_entity_state(self):
+        """Spawned entities should initialize entity_state defaults."""
+        game = MagicMock()
+        game._new_id.return_value = "ent_1"
+        game.rng = random.Random(42)
+        game.abs_from_zone_local.side_effect = lambda _zc, p: (int(p[0]), int(p[1]))
+
+        with patch('edgecaster.systems.spawning.prototypes') as mock_proto:
+            mock_proto.resolve_proto.return_value = {"id": "berry", "name": "Berry"}
+            with patch('edgecaster.systems.spawning.spawn_factory') as mock_factory:
+                ent = MagicMock()
+                ent.tags = {}
+                mock_factory.build_entity_from_spec.return_value = ent
+                spawn_entity_from_template(game, "berry", (5, 5))
+
+        game.patch_entity_state.assert_called()
+
 
 class TestRegisterActor:
     """Tests for actor registration."""
@@ -321,6 +499,22 @@ class TestRegisterActor:
         register_actor(game, level, actor, schedule_ai=True)
 
         game._schedule.assert_called_once()
+
+    def test_register_actor_patches_entity_state(self):
+        """Registered actors should initialize entity_state defaults."""
+        game = MagicMock()
+        level = MagicMock()
+        level.actors = {}
+        level.entities = {}
+        level.coord = (0, 0, 0)
+
+        actor = MagicMock()
+        actor.id = "actor_2"
+        actor.pos = (1, 1)
+        actor.abs_pos = (1, 1)
+
+        register_actor(game, level, actor, schedule_ai=False)
+        game.patch_entity_state.assert_called()
 
 
 class TestSpawnEntitiesNear:
@@ -423,12 +617,21 @@ class TestSpawnMentor:
     def test_returns_none_if_no_space(self):
         """Should return None if no valid position."""
         game = MagicMock()
-        game._actor_at.return_value = MagicMock()  # Always blocked
 
         level = MagicMock()
         level.world.entry = (10, 10)
         level.world.in_bounds.return_value = True
         level.world.is_walkable.return_value = True
+        level.actors = {
+            "blocker": SimpleNamespace(
+                id="blocker",
+                alive=True,
+                pos=(0, 0),
+                tags={},
+                footprint_local=(0.0, 0.0, 1000.0, 1000.0),
+            )
+        }
+        level.entities = {}
 
         result = spawn_mentor(game, level)
 

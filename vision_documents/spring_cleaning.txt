@@ -842,3 +842,847 @@ ANTI-BLOAT RULES FOR ALL EXTRACTIONS
     - ability execution policy
   [YOGA] ABS is authoritative; zone-local is a projection/cache.
   [YOGA] Render path is read-only; realization path is explicit and centralized.
+
+===============================================================================
+ENTITY + CHAKRA CUTOVER TRACKER (2026-02-17)
+
+Context:
+- Master plan: `vision_documents/entity_chakra_unification_master_plan.txt`
+- Migration policy: begin `entity_id` cutover immediately and remove legacy paths.
+
+Tagging protocol (required):
+- Any temporary bridge or compatibility path must be marked:
+  `# [LEGACY_DELETE][ENTITY_CHAKRA]`
+- Each tag must include:
+  - removal phase (for example `PHASE_8`)
+  - short reason
+  - owner initials/date
+
+Current required cleanup tracks:
+
+1) [CLEANUP][ENTITY_CHAKRA] Rectangular zone authority removal
+   - Deprecate zone-owned ontology assumptions.
+   - Replace with quadtree/attention-grid authority.
+   - Keep zone wrappers only as temporary cache adapters.
+
+2) [CLEANUP][ENTITY_CHAKRA] Persistence key cutover
+   - New writes must use `entity_id` keyspace.
+   - `lineage_state` becomes read-compat bridge only, then delete.
+
+3) [CLEANUP][ENTITY_CHAKRA] Unified transient lifecycle
+   - Projectiles/VFX/temporary effects stay in the same entity system.
+   - Remove ad-hoc transient handling paths not using entity lifecycle rules.
+
+4) [CLEANUP][ENTITY_CHAKRA] Point-based interaction debt
+   - Migrate interaction checks to footprint overlap/containment primitives.
+   - Tag remaining point-only helpers for deletion.
+
+5) [YOGA][ENTITY_CHAKRA] Multi-fovea attention support
+   - Support player camera plus remote observer anchors without special-case forks.
+
+6) [CLEANUP][ENTITY_CHAKRA] Legacy POI bypasses
+   - Remove remaining POI realization paths that bypass entity+chakra substrate.
+
+7) [CLEANUP][ENTITY_CHAKRA] Footprint primitive rollout (started 2026-02-17)
+   - Added canonical helper module: `edgecaster/systems/footprints.py`.
+   - Core entity queries now footprint-aware via `edgecaster/systems/entity_ops.py`.
+   - Added explicit runtime footprint fields on entities (`footprint_local`,
+     `footprint_abs`, follow flags/anchors) with spawn-time initialization.
+   - Movement dispatcher now uses footprint-overlap checks for:
+     - actor-vs-actor bump/attack
+     - blocking entity collision
+     - terrain walkability (all overlapped tiles must be walkable)
+   - `Game._handle_move_or_attack` now updates positions through
+     `_set_entity_local_pos/_set_entity_abs_pos` helpers.
+   - `systems/actions.py::_action_chakra_pulse` now pushes via footprint-aware
+     overlap checks and updates moved targets through ABS-safe movement helpers.
+   - `systems/combat_actions.py::act_destabilize` now samples teleport
+     destinations using footprint overlap/terrain checks and commits movement
+     through ABS-safe helpers.
+   - Spawn placement migration completed for:
+     - `edgecaster/systems/spawning.py`
+     - `edgecaster/systems/poi_spawning.py`
+     - `edgecaster/systems/rune_anchor_sieges.py`
+     using footprint-aware tile occupancy checks with legacy mock-safe fallbacks.
+   - AoE tile-hit migration completed for footprint overlap:
+     - `edgecaster/systems/rune_anchor_sieges.py` catastrophe pulse + purge radius checks
+     - `edgecaster/systems/actions.py` deferred AoE + ground slam + root grasp
+     - `edgecaster/systems/combat_actions.py` wind rush, flask splash, chakra strike pulses,
+       and ignite/regrow tile effects now evaluate target footprint probes/tiles instead of
+       only `target.pos`.
+   - Targeting heuristic migration (footprint-aware):
+     - `edgecaster/systems/actions.py`
+       - war-drum range checks now use footprint Manhattan distance
+       - root-grasp nearest-target selection + centering now uses footprint distance/center
+     - `edgecaster/systems/ai.py`
+       - mirror-blade clone nearest hostile and slash adjacency now use footprint tile distance
+       - generic chase/range/leash targeting now routes through footprint helpers for:
+         `_generic_walk_toward`, `_shackled_brute`, `_gory_ascetic`, `_lunatic`,
+         `_war_drummer`, `_ground_slammer`, `_deferred_attacker`,
+         `_circus_member`, `_furious_ringmaster`, and `_rune_sapper`.
+     - `edgecaster/systems/combat_actions.py`
+       - aggressive/choking vines hostile acquisition uses footprint probe centroids
+         instead of point `target.pos`.
+   - Added focused regression tests:
+     - `tests/test_ai_footprints.py`
+       - deferred attacker fires by footprint range (not origin-point distance)
+       - rune sapper moves by footprint-edge direction for sabotage targets
+   - Spawn placement migration (non-point validation):
+     - `edgecaster/systems/footprints.py`
+       - added `footprint_local_rect_from_spec(...)` for pre-spawn geometry resolution.
+     - `edgecaster/systems/entity_ops.py`
+       - added `entities_overlapping_rect(...)` + `first_entity_overlapping_rect(...)`.
+     - `edgecaster/systems/spawning.py`
+       - `_is_tile_spawnable(...)` now accepts `footprint_rect` and checks full-rect overlap for
+         walkability, actor collision, entity occupancy, and blocking.
+       - `find_spawn_position(...)` / `find_nearest_walkable(...)` now accept `spawn_spec`.
+       - enemy and sidecar pack spawns now validate candidate positions against template footprints
+         (including circus/slaver sidecar members).
+     - `edgecaster/systems/poi_spawning.py`
+       - POI-local placement wrappers now route through footprint-aware spawn checks.
+       - template-specific spawn specs now drive non-point placement for:
+         item depot drops, rune anchors, destabilizers, lair bosses/minions,
+         caged-demon/merchant-style NPC placement, and starting-zone bismuth drops.
+     - `tests/test_spawning.py` + `tests/test_footprints.py`
+       - added footprint placement tests for non-point spawn checks.
+     - `tests/test_poi_spawning_cutover.py`
+       - added assertions for spawn-spec footprint usage in POI placement paths.
+   - Deterministic identity substrate (Phase 1 start):
+     - `edgecaster/systems/entity_identity.py`
+       - added deterministic runtime id derivation from `seed + recipe + abs_location`.
+     - `edgecaster/state/entities.py`
+       - added Phase-1-compatible identity/graph fields with defaults:
+         `entity_id`, `semantic_id`, `proto_id`, `lod_band`,
+         `parent_entity_id`, `socket_id`, `chakra_component`.
+     - `edgecaster/spawn_factory.py`
+       - entity/actor builders now seed `entity_id` at creation.
+     - `edgecaster/systems/spawning.py`
+       - `spawn_entity_from_template(...)` supports deterministic id mode
+         (`deterministic`, `deterministic_recipe`, `zone_coord`, namespace/salt).
+     - `edgecaster/systems/poi_spawning.py`
+       - POI content spawns now request deterministic ids with backward-compatible
+         fallback for legacy `_spawn_entity_from_template` signatures.
+     - `tests/test_spawning.py`
+       - added deterministic id regression tests (stable for same seed/recipe/location;
+         changes when recipe or location changes).
+   - Remaining footprint query compatibility fallback tag:
+     - `edgecaster/systems/footprints.py`:
+       `# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`
+   - Next migration targets:
+      - remaining point-centric interaction helpers in systems outside AI/combat
+        (keep removing `target.pos` assumptions where footprint overlap is required)
+     - audit `mapgen_sites.py` and other worldgen placement entry points to pass
+       non-point spawn specs where template footprints are >1 tile.
+   - Owner: Codex (2026-02-17)
+
+===============================================================================
+ENTITY + CHAKRA CODEBASE AUDIT (2026-02-13)
+
+Full audit of the codebase against `entity_chakra_unification_master_plan.txt`
+(v1.2) and `entity_chakra_unification_vision.txt` (v1.1). Findings organized
+by migration phase. Each item identifies the file, the gap, and the target fix.
+
+Reference: master plan phases 0-8 define the execution sequence.
+Tagging protocol: `# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_N]` in code.
+
+-------------------------------------------------------------------------------
+PHASE 0 — GUARDRAILS AND SCAFFOLDING
+
+[CLEANUP][ENTITY_CHAKRA] LevelState lives in game.py, not state/
+  - File: edgecaster/game.py (line ~223)
+  - LevelState is a large dataclass defined inside game.py.
+  - Should live in edgecaster/state/level.py alongside Entity and Actor.
+  - Blocks clean import of state types without importing game.py.
+  - Move in Phase 0 as a prerequisite for further decomposition.
+
+[CLEANUP][ENTITY_CHAKRA] Six parallel entity stores on Game
+  - Files: edgecaster/game.py (lines ~436-508)
+  - Current stores:
+    1. game.levels[coord].actors — actors by zone membership
+    2. game.levels[coord].entities — non-actor entities by zone membership
+    3. game.inventories — carried items by owner_id
+    4. game.attn_store — attention-staged entities (Route 2)
+    5. game.world_entity_index — macro-scale world renderables
+    6. game.poi_registry — POI-specific store
+  - Each uses different ID schemes, query APIs, and lifecycle rules.
+  - Phase 0 action: document all six and their ID spaces.
+  - Phase 1 action: introduce unified entity graph that subsumes them.
+
+[CLEANUP][ENTITY_CHAKRA] Blade state stored as parallel dict on Game
+  - File: edgecaster/game.py (line ~508)
+  - `game.blade_states: Dict[str, BladeState]` is a 7th parallel store.
+  - BladeState holds fractal generators as flat string lists.
+  - Target: blade generators become chakra sub-graph nodes on the entity.
+  - Phase 2 action: BladeState becomes part of entity's chakra component.
+
+[CLEANUP][ENTITY_CHAKRA] Pattern state stored as parallel dict on Game
+  - File: edgecaster/game.py (line ~459)
+  - `game._pattern_state_by_depth` is a plain dict, disconnected from entities.
+  - Pattern state should be an entity anchored to the caster.
+  - Phase 2 action: pattern becomes entity with chakra nodes for vertices.
+
+[CLEANUP][ENTITY_CHAKRA] LevelState special-case fields
+  - File: edgecaster/game.py (lines ~247-262)
+  - choking_vines_state, rune_choking_vines_state, thrown_knives_state,
+    seal_trial, rune_anchor_siege, deferred_actions — all special dicts.
+  - Each is a mini entity system that should become proper entities with
+    chakra components and standard lifecycle rules.
+  - Phase 1 action: convert transient effects to unified entity lifecycle.
+
+[CLEANUP][ENTITY_CHAKRA] Invariant test scaffolding needed
+  - No tests currently validate:
+    - entity_id immutability on detach/reattach
+    - deterministic graph generation from seed
+    - no cycles in containment tree
+    - recursion depth cap at 7
+  - Phase 0 action: add skeleton test files for these invariants.
+
+-------------------------------------------------------------------------------
+PHASE 1 — CORE IDENTITY AND GRAPH SUBSTRATE
+
+[CLEANUP][ENTITY_CHAKRA] Entity class missing required fields
+  - File: edgecaster/state/entities.py
+  - Currently missing from Entity dataclass:
+    - entity_id (immutable PK) — currently uses runtime-generated string id
+    - semantic_id — no concept of stable narrative ID
+    - proto_id — not stored on entity after creation
+    - lod_band — no LoD classification
+    - chakra_component — not present on Entity (only Actor has chakra_state)
+    - parent_entity_id — no containment tree
+    - socket_id — no socket concept
+  - Target: match data contract in master plan section "Target Data Contracts".
+
+[CLEANUP][ENTITY_CHAKRA] Actor.chakra_state is Optional[Any]
+  - File: edgecaster/state/actors.py
+  - ChakraState is actor-only and untyped (Optional[Any]).
+  - No non-actor entity can have chakras.
+  - Target: chakra_component on base Entity with typed ChakraComponent.
+
+[CLEANUP][ENTITY_CHAKRA] ChakraState shadows body schema instead of IS body schema
+  - File: edgecaster/systems/chakras.py
+  - ChakraState stores a set of active node name strings (e.g., {"body", "arm_l"}).
+  - The actual topology lives in body_schema (dict tree from anatomy.yaml).
+  - Two separate data structures representing overlapping truth.
+  - Target: eliminate ChakraState. Chakra nodes ARE the body schema nodes.
+  - Active/inactive is a flag on each chakra node, not a separate set.
+
+[CLEANUP][ENTITY_CHAKRA] No containment tree model
+  - No parent_entity_id/socket_id on entities.
+  - No attach/detach/reparent operations.
+  - Inventory is a flat list (game.inventories[owner_id] = [Entity, ...]).
+  - Room contents, building contents, district contents — all implicit.
+  - Phase 1 action: add containment edge storage + operations.
+
+[CLEANUP][ENTITY_CHAKRA] No entity graph storage
+  - No typed relation edges (owns, influences, routes, linked_to, resonance).
+  - Rune anchor links, faction affiliations, trade routes are all ad-hoc.
+  - Phase 1 action: add graph edge storage with schema from master plan.
+
+[CLEANUP][ENTITY_CHAKRA] lineage_state needs migration to entity_id
+  - File: edgecaster/game.py (line ~444)
+  - game.lineage_state stores persistence keyed by lineage path strings.
+  - Master plan decision #10: all new writes must use entity_id key.
+  - lineage_state becomes read-compat bridge only.
+  - Phase 1 action: add entity_id-keyed persistence store, bridge reads.
+  - Phase 8 action: delete lineage_state entirely.
+
+[CLEANUP][ENTITY_CHAKRA] Split actors/entities dicts in LevelState
+  - File: edgecaster/game.py (lines ~225-226)
+  - LevelState.actors and LevelState.entities are separate dicts.
+  - Creates ontology split: "is it an actor or an entity?"
+  - Target: single unified entity dict/graph. Actor is an entity with AI tag.
+
+[CLEANUP][ENTITY_CHAKRA] Transient effects bypass entity system
+  - Thrown knives: LevelState.thrown_knives_state (list of dicts)
+  - Choking vines: LevelState.choking_vines_state (dict)
+  - Seal trials: LevelState.seal_trial (custom state object)
+  - Rune sieges: LevelState.rune_anchor_siege (custom state object)
+  - Master plan decision #9: transient entities are still full entities.
+  - Phase 1 action: each becomes a proper entity with lifecycle TTL.
+
+[CLEANUP][ENTITY_CHAKRA] Inventory is flat list outside containment tree
+  - File: edgecaster/systems/inventory.py
+  - Items stored as List[Entity] on game.inventories[owner_id].
+  - No parent_entity_id set on items. No containment edges.
+  - 3 duplicate item-clone helpers (clone_entity, _clone_entity_for_drop,
+    _clone_entity_for_trade).
+  - Phase 1 action: pickup = attach, drop = detach. Items keep entity_id.
+  - Phase 4 action: equipment slots become socket-typed containment edges.
+
+-------------------------------------------------------------------------------
+PHASE 2 — CHAKRA NODE/EDGE SUBSTRATE
+
+[CLEANUP][ENTITY_CHAKRA] No ChakraNode/ChakraEdge dataclasses
+  - File: edgecaster/state/patterns.py
+  - No formal ChakraNode, ChakraEdge, or ChakraComponent dataclasses exist.
+  - Pattern is geometry-only (vertices/edges for visual rendering).
+  - Target: add dataclasses matching master plan section "Chakra model".
+  - ChakraNode: chakra_id, entity_id, node_id, x, y, z, channels, active, tags
+  - ChakraEdge: src_chakra_id, dst_chakra_id, edge_kind, rule_id, weight, priority
+
+[CLEANUP][ENTITY_CHAKRA] ChakraState only created for actors with hardcoded defaults
+  - File: edgecaster/spawn_factory.py
+  - ChakraState initialized only for Actor spawns, always as `{"body"}`.
+  - No entity-kind-specific chakra profiles.
+  - No items, buildings, or world entities ever get chakra state.
+  - Target: every entity gets at minimum one core chakra node per decision #13.
+
+[CLEANUP][ENTITY_CHAKRA] No chakra-specific prototype fields
+  - File: edgecaster/prototypes.py
+  - Prototypes have no chakra layout_id, rule_id, or channel defaults.
+  - Target: prototypes specify chakra topology reference.
+
+[CLEANUP][ENTITY_CHAKRA] Body schema in anatomy.yaml has no chakra metadata
+  - File: edgecaster/content/anatomy.yaml
+  - Only humanoid anatomy defined. No non-humanoid body schemas.
+  - Body nodes carry no channel defaults, no layout_id, no rule_id.
+  - Target: anatomy nodes become chakra node templates with channels.
+
+[CLEANUP][ENTITY_CHAKRA] BladeState should become chakra sub-graph
+  - File: edgecaster/systems/blade_runtime.py
+  - BladeState stores generators as flat string list ["Z", "F+F--F+F", ...].
+  - Hardcoded reach/damage formulas by generator depth.
+  - Thrown knives are not entities (visual-only dicts on LevelState).
+  - Target: blade segments = chakra nodes on weapon entity. Generator rules
+    become expansion recipes. Subdividing = expanding chakra children.
+  - Phase 2 action: blade segments as chakra nodes with channels.
+
+[CLEANUP][ENTITY_CHAKRA] Pattern disconnected from chakra nodes
+  - File: edgecaster/systems/pattern_runtime.py
+  - Pattern state in dict on Game._pattern_state_by_depth.
+  - Per-level flags sync between two truth stores.
+  - Pattern vertices/edges have no chakra identity.
+  - Target: pattern is an entity. Vertices are chakra nodes. Edges are
+    chakra edges. Activation mutates channels.
+
+[CLEANUP][ENTITY_CHAKRA] No expansion/collapse lifecycle
+  - No expand_entity() or collapse_entity() operations exist.
+  - No recipe-driven deterministic subtree generation.
+  - No chakra_patch / tags_patch persistence on top of deterministic base.
+  - Target: implement expansion/collapse per master plan section
+    "Expansion and Collapse Model".
+
+[CLEANUP][ENTITY_CHAKRA] No content rules YAML
+  - Files needed: content/chakra_layouts.yaml, content/chakra_rules.yaml
+  - Currently no data-driven chakra topology or reducer definitions.
+  - Master plan decision #15: content rules in YAML, engine rules in code.
+
+-------------------------------------------------------------------------------
+PHASE 3 — RULE ENGINE AND PRECEDENCE
+
+[CLEANUP][ENTITY_CHAKRA] No channel reducer pipeline
+  - No parent-from-children behavior derivation exists.
+  - No weighted transforms, threshold bands, or dirty-flag propagation.
+  - No nearest-parent precedence system.
+  - Target: reducer pipeline per master plan section "Runtime Rule Contracts".
+
+[CLEANUP][ENTITY_CHAKRA] No universal mutation envelope
+  - No mutation_id, source_lineage_id, target_selector, delta_channels,
+    duration_policy, propagation_policy model exists.
+  - Combat damage, chakra activation, corruption spread — all ad-hoc.
+  - Target: all gameplay effects mutate chakra state through one envelope.
+
+[CLEANUP][ENTITY_CHAKRA] No dirty-flag propagation
+  - No mechanism to mark ancestors dirty on leaf mutation.
+  - All chakra nodes would be re-evaluated every tick (performance bomb).
+  - Target: dirty-flag propagation per master plan decision #18.
+  - Only dirty subtrees re-reduce. Clean subtrees cost zero.
+
+-------------------------------------------------------------------------------
+PHASE 4 — INVENTORY <-> MAP UNIFICATION
+
+[CLEANUP][ENTITY_CHAKRA] Equipment is tag-based, not containment-based
+  - File: edgecaster/systems/equipment.py (46 lines)
+  - Purely tag-based equipment with hardcoded stat keys.
+  - No socket-typed containment edges.
+  - Target: equipment slots become sockets on actor body-schema edges.
+
+[CLEANUP][ENTITY_CHAKRA] Item clone helpers should become reparent operations
+  - File: edgecaster/systems/inventory.py
+  - clone_entity, _clone_entity_for_drop, _clone_entity_for_trade all
+    create new Entity instances instead of reparenting existing ones.
+  - Item identity lost on every transfer.
+  - Target: pickup = attach(item, player), drop = detach(item) + place in world.
+  - Entity_id preserved throughout. No cloning.
+
+-------------------------------------------------------------------------------
+PHASE 5 — STARTTSGARD HIERARCHY
+
+[CLEANUP][ENTITY_CHAKRA] POIs exist in separate ontology from entities
+  - File: edgecaster/state/pois.py
+  - POISpec is a separate dataclass from Entity. ABSRect siloed in pois.py.
+  - POIs are not entities. They don't have entity_id, chakra_component, or
+    containment edges.
+  - Target: POIs become entities with chakra components.
+    city POI -> city entity with district children.
+    POIRegistry queries become entity graph queries.
+
+[CLEANUP][ENTITY_CHAKRA] Two incompatible POI formats
+  - File: edgecaster/content/pois.yaml
+  - Legacy format (coord-based) and V2 format (footprint-based) coexist.
+  - Neither format produces entities with chakra components.
+  - Target: V2 format evolves to produce entity hierarchies with containment.
+
+[CLEANUP][ENTITY_CHAKRA] POI spawning hardcoded NPC dispatch
+  - File: edgecaster/systems/poi_spawning.py
+  - Hardcoded NPC creation per POI type. No lineage IDs for spawned content.
+  - Content entities not linked to parent POI via containment edges.
+  - Target: POI content spawning produces child entities with parent linkage
+    and deterministic IDs from seed + recipe.
+
+[CLEANUP][ENTITY_CHAKRA] Duplicate POI worldgen systems
+  - Files: edgecaster/systems/poi_spawning.py, edgecaster/systems/poi_worldgen.py
+  - poi_worldgen.py has POIWorldEntity as another parallel entity-like type.
+  - Duplicate NPC dispatch logic across both files.
+  - Target: merge into single entity-based POI realization pipeline.
+
+[CLEANUP][ENTITY_CHAKRA] No containment recipes in prototypes
+  - File: edgecaster/content/entities.yaml
+  - Aggregate/containment pattern is ad-hoc tag-based.
+  - No recipe fields for deterministic child generation.
+  - Target: entity prototypes include containment recipes for expansion.
+
+-------------------------------------------------------------------------------
+PHASE 6 — RUNE ANCHORS AND QUEST CHAIN
+
+[CLEANUP][ENTITY_CHAKRA] Rune anchor effects are ad-hoc, not mutation packets
+  - Crystal usage, dampening, instability are hardcoded combat/quest logic.
+  - No explicit chakra mutation envelopes with propagation policies.
+  - Target: rune anchor interactions become chakra mutations that propagate
+    via the standard rule engine.
+
+[CLEANUP][ENTITY_CHAKRA] Quest logic binds to zone coords, not semantic_id
+  - Some quest triggers check zone coordinates rather than entity identity.
+  - Target: quest logic binds to semantic_id, runtime tracks entity_id.
+
+-------------------------------------------------------------------------------
+PHASE 7 — SCALE-INVARIANCE AND PERFORMANCE HARDENING
+
+[CLEANUP][ENTITY_CHAKRA] No global energy queue
+  - No hot/warm/cold simulation temperature model.
+  - All loaded zones simulate at full fidelity regardless of distance.
+  - Target: global energy queue with attention-dependent tick cadence.
+
+[CLEANUP][ENTITY_CHAKRA] No multi-fovea attention support
+  - Only player camera drives realization.
+  - No scrying anchors, remote eyes, or secondary observer support.
+  - Target: multiple observer sources with hottest-tier merge policy.
+
+[CLEANUP][ENTITY_CHAKRA] Reputation system uses untyped faction data
+  - File: edgecaster/systems/reputation.py
+  - Affiliations stored as tuple. faction_standings as untyped dict in tags.
+  - No hierarchy (faction -> sub-faction -> lodge/church).
+  - Target: factions become entities with containment hierarchy and chakras.
+
+[CLEANUP][ENTITY_CHAKRA] Factions outside entity/prototype pipeline
+  - File: edgecaster/content/factions.yaml
+  - Flat key-value mapping. Not loaded through prototype system.
+  - No parent/child faction hierarchy.
+  - Target: faction = entity. Faction hierarchy = containment tree.
+
+-------------------------------------------------------------------------------
+PHASE 8 — LEGACY REMOVAL
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] ChakraState class elimination
+  - File: edgecaster/systems/chakras.py
+  - ChakraState (set of active node strings) replaced by entity chakra graph.
+  - body_schema dict tree replaced by chakra node hierarchy.
+  - O(n) parent lookups eliminated by graph edge traversal.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] lineage_state dict removal
+  - File: edgecaster/game.py (line ~444)
+  - After entity_id persistence is complete, remove lineage_state entirely.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Separate actors/entities dicts removal
+  - File: edgecaster/game.py (LevelState lines ~225-226)
+  - Unified entity graph replaces both dicts.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Flat inventory list removal
+  - File: edgecaster/systems/inventory.py
+  - game.inventories dict replaced by containment tree queries.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] BladeState parallel storage removal
+  - File: edgecaster/game.py (line ~508), edgecaster/systems/blade_runtime.py
+  - game.blade_states dict replaced by chakra sub-graph on weapon entity.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] AttentionCellStore parallel storage removal
+  - File: edgecaster/game.py (line ~438), edgecaster/systems/attention.py
+  - attn_store replaced by unified entity graph with quadtree indexing.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] POIRegistry parallel storage removal
+  - File: edgecaster/game.py (line ~482), edgecaster/systems/poi_registry.py
+  - POIs become entities. Registry queries become entity graph queries.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] WorldEntityIndex parallel storage removal
+  - File: edgecaster/game.py (line ~472), edgecaster/systems/world_entity_index.py
+  - World entities become part of unified entity graph.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Pattern state parallel storage removal
+  - File: edgecaster/game.py (line ~459), edgecaster/systems/pattern_runtime.py
+  - Pattern becomes entity. Vertex/edge state is chakra graph.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Item clone helpers removal
+  - File: edgecaster/systems/inventory.py
+  - clone_entity, _clone_entity_for_drop, _clone_entity_for_trade deleted.
+  - Replaced by reparent operations that preserve entity_id.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] POI special-case spawn paths removal
+  - Files: edgecaster/systems/poi_spawning.py, edgecaster/systems/poi_worldgen.py
+  - Merged into single entity-based realization pipeline.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Zone-owned entity storage removal
+  - File: edgecaster/game.py (LevelState)
+  - Zones become pure render/cache caches. Entity storage moves to graph.
+  - Zone loading/unloading no longer creates/destroys entity identity.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Hardcoded body schema removal
+  - File: edgecaster/spawn_factory.py
+  - ChakraState({"body"}) hardcoded default replaced by prototype-driven
+    chakra component initialization.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Tag-based equipment system removal
+  - File: edgecaster/systems/equipment.py
+  - Flat tag-based equipment replaced by socket-typed containment edges.
+
+-------------------------------------------------------------------------------
+PROGRESS NOTES (2026-02-17)
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_1] entity_state bridge added in Game
+  - File: edgecaster/game.py
+  - Added game.entity_state dict keyed by stable entity_id.
+  - Added helper surface:
+      _normalize_entity_id()
+      entity_id_for_entity()
+      get_entity_state()
+      patch_entity_state()
+      entity_is_suppressed()
+  - mark_entity_removed()/mark_actor_dead() now write through to entity_state.
+  - _remove_entity() now patches entity_state when only a string id is available.
+  - lineage_state kept for compatibility (bridged mode, not deleted yet).
+  - Added [LEGACY_DELETE] tag near lineage_state bridge field.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] inventory attach/detach identity bridge
+  - File: edgecaster/systems/inventory.py
+  - Added attach/detach helpers to preserve item identity across containment moves:
+      _attach_item_to_owner()
+      _detach_item_from_owner()
+  - pickup/drop/consume/transfer/equip-split now update:
+      item.parent_entity_id
+      item.socket_id
+      item.tags.inventory_owner_id
+      item.tags.in_inventory
+    and patch game.entity_state(owner_id, in_inventory, removed flags).
+  - pickup/currency removals now call entity-id keyed removal writes only
+    (no lineage-write branch).
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] split-clone fidelity improved
+  - File: edgecaster/systems/inventory.py
+  - Split clones now copy source runtime tags by default (not only charges).
+  - Equipped relationship tags are stripped on split clones and reapplied explicitly.
+  - Added [LEGACY_DELETE] tags on split-clone helpers for later removal.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] deterministic split identities
+  - File: edgecaster/systems/inventory.py
+  - Stack splits now derive deterministic runtime ids from:
+      seed + split recipe + absolute location + split_seq salt.
+  - Split clones now carry provenance tags:
+      split_from_entity_id, split_kind, split_seq.
+  - Added compatibility fallback for older spawn signatures.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] split helper cleanup pass
+  - File: edgecaster/systems/inventory.py
+  - Refactored duplicate split clone code into shared `split_item_stack()`.
+  - Deleted legacy wrapper functions:
+      `_clone_item_for_drop`, `_clone_item_for_equip`,
+      `_clone_item_for_transfer`, `_clone_item_for_trade`.
+  - Remaining split helper is tagged [LEGACY_DELETE] until graph-native
+    split/reparent operations replace compatibility behavior.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_1] attention suppression bridge
+  - File: edgecaster/systems/attention.py
+  - Attention resolver suppression checks now consult:
+      entity_state (entity_id) OR lineage_state (lineage_id bridge).
+  - Removal persistence prefers entity_state; lineage writes are now fallback-only
+    when no entity_id is available.
+  - Added [LEGACY_DELETE] tags on lineage bridge helpers in attention.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_0] legacy bridge tagging expansion
+  - Added [LEGACY_DELETE] tags in active bridge points:
+      - `edgecaster/systems/poi_spawning.py` (`_legacy_query`)
+      - `edgecaster/systems/spawning.py` (`_legacy_call`, `_legacy_rect_probe`)
+      - `edgecaster/spawn_factory.py` (actor-only `ChakraState` bootstrap)
+      - `edgecaster/game.py` parallel stores and transient level-state sidecars
+      - `edgecaster/systems/poi_worldgen.py` module overlap marker
+      - `edgecaster/systems/trade.py` direct inventory mutation bridge marker
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] trade bridge ownership sync
+  - File: edgecaster/systems/trade.py
+  - Trade flows now call inventory ownership attach bridge so moved/split items
+    update parent/socket metadata and `entity_state` ownership patches.
+  - Added deterministic split kind for trade splits (`split_kind=trade`).
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_5] POI runtime bridge reduction
+  - File: edgecaster/systems/poi_spawning.py
+  - Removed `_legacy_query()` fallback in POI runtime spawns.
+  - POI occupancy checks now use `entity_ops_system.entity_at(...)` only.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_0] spawning fallback bridge deletion
+  - File: edgecaster/systems/spawning.py
+  - Deleted legacy fallback probe helpers:
+      `_legacy_call`, `_legacy_rect_probe`.
+  - `_is_tile_spawnable(...)` now uses footprint/entity_ops queries only.
+  - Updated spawning tests to use actor/entity footprint fixtures instead of
+    `game._actor_at` compatibility behavior.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_1] lineage-write cutover in runtime paths
+  - Files:
+      - `edgecaster/game.py`
+      - `edgecaster/systems/inventory.py`
+      - `edgecaster/systems/attention.py`
+  - Runtime removal/death writes now persist by entity_id first:
+      - `mark_entity_removed()` writes `entity_state` only.
+      - `mark_actor_dead()` no longer writes `lineage_state`.
+      - `_remove_entity()` no longer writes lineage fallback on string ids.
+      - Inventory pickup currency/item removal now calls entity-id removal only.
+      - Attention harvest removal now persists to entity state only when entity id
+        exists.
+  - Tests updated to match cutover:
+      - `tests/test_inventory.py`
+      - `tests/test_attention_suppression.py`
+      - `tests/test_game_refactor.py`
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_1] lineage write API deletion
+  - Files:
+      - `edgecaster/game.py`
+      - `edgecaster/systems/attention.py`
+  - Deleted legacy lineage write surface in `Game`:
+      - `get_lineage_state()`
+      - `patch_lineage_state()`
+      - `mark_lineage_removed()`
+      - `mark_lineage_dead()`
+      - `mark_entity_removed(..., lineage_only=...)`
+  - Attention removal helper now requires `entity_id` and no longer emits
+    lineage write fallbacks.
+  - Removed lineage read fallback bridge (`lineage_is_suppressed`) and
+    `lineage_state` usage from runtime suppression logic.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_5] POI realization convergence pass
+  - Files:
+      - `edgecaster/systems/poi_worldgen.py`
+      - `edgecaster/systems/poi_spawning.py`
+  - Added shared POI NPC realization helper:
+      - `realize_poi_npc_spec(...)`
+  - `poi_spawning.spawn_poi_contents(...)` now routes NPC realization through
+    the shared helper (deleted duplicate NPC actor-construction branch in
+    poi_spawning).
+  - Added shared wall realization helper:
+      - `realize_poi_wall_at(...)`
+  - Colosseum wall spawning in `poi_spawning` now uses the shared wall helper
+    rather than direct inline wall construction logic.
+  - Removed unused duplicate world-entity realization entrypoints from
+    `poi_worldgen.py` (`realize_poi_npc`, `realize_poi_wall`) after cutover.
+  - Added unified runtime POI spawn entrypoint:
+      - `poi_worldgen.spawn_poi_contents(...)`
+    and switched `Game._spawn_poi_contents(...)` to delegate through this
+    single module-level interface.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_3] shared graph operation substrate
+  - Files:
+      - `edgecaster/systems/entity_graph_ops.py`
+      - `edgecaster/systems/inventory.py`
+      - `edgecaster/systems/trade.py`
+  - Added explicit runtime graph ops:
+      - `attach_entity_to_parent(...)`
+      - `detach_entity_from_parent(...)`
+      - `reparent_entity(...)`
+  - Inventory and trade containment paths now use shared graph ops instead of
+    module-local attach/detach wrappers.
+  - Trade now uses transfer helpers (`transfer_inventory_entity`,
+    `transfer_split_quantity`) rather than inline remove/append choreography.
+  - Deleted inventory-local attach/detach wrapper functions.
+  - Added tests:
+      - `tests/test_entity_graph_ops.py`
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] split operation moved to graph ops
+  - Files:
+      - `edgecaster/systems/entity_graph_ops.py`
+      - `edgecaster/systems/inventory.py`
+      - `edgecaster/systems/trade.py`
+  - Added shared deterministic split operation:
+      - `split_stack_entity(...)`
+  - Inventory/trade split paths now call `split_stack_entity(...)` directly.
+  - Deleted `inventory.split_item_stack(...)` compatibility wrapper.
+  - Deleted duplicate split-identity helper code from `inventory.py`.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2] typed chakra component substrate kickoff
+  - Files:
+      - `edgecaster/state/chakra_component.py`
+      - `edgecaster/state/entities.py`
+      - `edgecaster/spawn_factory.py`
+  - Added typed chakra dataclasses:
+      - `ChakraNode`
+      - `ChakraEdge`
+      - `ChakraComponent`
+  - Added coercion/default builders:
+      - `coerce_chakra_component(...)`
+      - default core-node initialization (`{entity_id}:core`)
+  - Spawn factory now coerces YAML chakra component payloads to typed runtime
+    components and guarantees a default core node with baseline channels.
+  - Entity state typing updated so `Entity.chakra_component` references the
+    typed chakra component substrate.
+  - Added tests:
+      - `tests/test_chakra_component.py`
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2] chakra runtime bridge off spawn bootstrap
+  - Files:
+      - `edgecaster/systems/chakra_items.py`
+      - `edgecaster/systems/scheduling.py`
+      - `edgecaster/systems/pattern_runtime.py`
+      - `edgecaster/systems/actions.py`
+      - `edgecaster/spawn_factory.py`
+  - Added lazy compatibility initializer:
+      - `ensure_actor_chakra_state(...)`
+    which derives a baseline legacy state from body-schema root (or chakra
+    component root) when actor state is missing.
+  - Core runtime chakra consumers now call the lazy initializer instead of
+    requiring spawn-time `actor.chakra_state` bootstrap.
+  - Removed spawn-time actor `ChakraState` bootstrap from `spawn_factory.py`.
+  - Added tests:
+      - `tests/test_chakra_items_state_bridge.py`
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_1] spawn lifecycle state initialization
+  - File: `edgecaster/systems/spawning.py`
+  - New entities/actors now initialize entity_state defaults on spawn/register:
+      - `removed=False`
+      - `dead=False`
+      - owner/socket/inventory defaults
+  - Added spawning tests to assert `patch_entity_state` is called at spawn/register.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_1] attention staged-entity lifecycle init
+  - File: `edgecaster/systems/attention.py`
+  - Attention-staged entities now initialize lifecycle state via entity_id on stage
+    (`removed=False`, `dead=False`) to keep suppression/removal semantics uniform
+    across resolver-born and spawn-born entities.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2] chakra component/state sync bridge
+  - Files:
+      - `edgecaster/systems/chakra_items.py`
+      - `edgecaster/systems/scheduling.py`
+      - `edgecaster/systems/pattern_runtime.py`
+      - `edgecaster/systems/actions.py`
+      - `edgecaster/game.py`
+      - `edgecaster/scenes/chakra_scene.py`
+  - Added component sync APIs:
+      - `sync_actor_chakra_state(...)`
+      - `set_actor_chakra_charge(...)`
+  - `ensure_actor_chakra_state(...)` now hydrates charges/compat metadata from
+    `ChakraComponent` when available.
+  - Chakra mutation callsites now mirror runtime changes into component state:
+      - charge ticks
+      - charge consumption
+      - spinal surge recharge
+      - monk unlock flow
+      - Chakra Scene edits (toggle/root/undo/realign commit)
+  - Added/expanded tests:
+      - `tests/test_chakra_items_state_bridge.py`
+      - `tests/test_chakra_component.py`
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_6] rune siege legacy query bridge deletion
+  - File: `edgecaster/systems/rune_anchor_sieges.py`
+  - Deleted `_legacy_query(...)` fallback surface.
+  - Siege tile-open / anchor-spawn checks now use `entity_ops_system` only.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] trade single-item transfer graph-op cutover
+  - File: `edgecaster/systems/trade.py`
+  - `try_buy(...)` and `try_sell(...)` now use
+    `entity_graph_ops.transfer_inventory_entity(...)` instead of direct
+    `pop/append` list choreography.
+  - `apply_proposal(...)` now routes both buy/sell legs through
+    `transfer_inventory_entity(...)` as well.
+  - Merchant restock append paths now attach containment metadata via
+    `attach_entity_to_parent(...)` on stocked items.
+  - Preserves ownership/socket metadata and `entity_state` patches for
+    non-batch trade flows.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] action-runner inventory reads centralized
+  - File: `edgecaster/systems/action_runner.py`
+  - Action origin and charge-item lookup now resolve inventory through
+    `inventory_system.get_inventory(...)` with compatibility fallback.
+  - Removes direct dependency on `game.inventories` in action execution paths.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2] chakra mutation wrappers and callsite cutover
+  - Files:
+      - `edgecaster/systems/chakra_items.py`
+      - `edgecaster/game.py`
+      - `edgecaster/content/dialogues.py`
+      - `edgecaster/scenes/chakra_scene.py`
+  - Added actor-scoped mutation helpers:
+      - `unlock_actor_chakra(...)`
+      - `toggle_actor_chakra(...)`
+  - Monk level-up unlock and Chakra Sage dialogue unlock paths now route through
+    chakra-items wrappers (which sync into `ChakraComponent`).
+  - Chakra Scene activation toggles now route through wrapper mutations instead
+    of direct `chakras.toggle_chakra_active(...)` calls.
+  - Chakra Scene initialization now uses `ensure_actor_chakra_state(...)`.
+  - Added wrapper-sync tests in:
+      - `tests/test_chakra_items_state_bridge.py`
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_4] player bootstrap inventory metadata sync
+  - File: `edgecaster/game.py`
+  - Player-start injected inventory entities (recursive inventory test bag and
+    starting wands) now attach through `entity_graph_ops.attach_entity_to_parent(...)`.
+  - Startup inventory items now receive parent/socket/entity_state metadata on
+    first insertion, matching runtime pickup/trade paths.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2] chakra action single-pass fix
+  - Files:
+      - `edgecaster/systems/pattern_runtime.py`
+      - `edgecaster/systems/chakra_effects.py`
+      - `tests/test_pattern_runtime.py`
+  - Fixed Chakra action behavior so one button press applies exactly one
+    generator pass (removed passive-driven repeat-pass behavior).
+  - Re-mapped finger finesse passive from iteration depth bonus to a small
+    chakra generator amplitude bonus (`chakra_generator_amp_bonus`).
+  - Added regression tests to guard:
+      - no double-application from `generator_iteration_bonus`
+      - amplitude bonus application path.
+
+[REMAINING][ENTITY_CHAKRA][PHASE_4]
+  - Item split paths still clone entities for stack quantity splits.
+  - Final-state target remains true split/reparent semantics in unified entity graph
+    (single-entity stack model with deterministic child split ids where needed).
+
+-------------------------------------------------------------------------------
+CRITICAL PATH SUMMARY
+
+The dependency chain for entity-chakra unification:
+
+  Phase 0: Tag legacy code + add invariant tests
+      |
+  Phase 1: Entity graph + containment tree + entity_id persistence
+      |
+  Phase 2: Chakra node/edge substrate + expansion/collapse lifecycle
+      |              \
+  Phase 3: Rule engine   Phase 4: Inventory-map unification
+      |              /
+  Phase 5: Starttsgard hierarchy vertical slice
+      |
+  Phase 6: Rune anchors + quest chain on chakra mutations
+      |
+  Phase 7: Scale-invariance + energy queue + multi-fovea
+      |
+  Phase 8: Delete all legacy bridges
+
+Highest-impact Phase 1 actions (unblocks everything):
+  1. Add entity_id + containment edges to Entity dataclass
+  2. Add unified entity graph storage (replaces 6+ parallel stores)
+  3. Convert transient effects to proper entity lifecycle
+  4. lineage_state -> entity_id persistence cutover
+
+Highest-impact Phase 2 actions (enables fractal promise):
+  1. ChakraNode/ChakraEdge dataclasses
+  2. Every entity gets minimum core chakra node
+  3. Expansion/collapse lifecycle
+  4. BladeState -> chakra sub-graph conversion
+
+Owner: Claude audit (2026-02-13)

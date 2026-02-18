@@ -623,10 +623,12 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
     def _get_chakra_count(game: Any) -> tuple[int, int]:
         """Return (unlocked_count, active_count)."""
         try:
+            from edgecaster.systems import chakra_items as chakra_items_system
+
             player = game._player()
-            if not hasattr(player, "chakra_state") or player.chakra_state is None:
+            cs = chakra_items_system.ensure_actor_chakra_state(player)
+            if cs is None:
                 return (1, 1)  # Default: torso only
-            cs = player.chakra_state
             return (len(cs.unlocked), len(cs.active))
         except Exception:
             return (1, 1)
@@ -638,13 +640,15 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         try:
             from edgecaster.prototypes import resolve_body_schema
             from edgecaster.systems.chakras import list_unlockable_chakras
+            from edgecaster.systems import chakra_items as chakra_items_system
 
             player = game._player()
-            if not hasattr(player, "chakra_state") or player.chakra_state is None:
+            chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
+            if chakra_state is None:
                 return []
 
             body_schema = resolve_body_schema(player)
-            return list_unlockable_chakras(body_schema, player.chakra_state)
+            return list_unlockable_chakras(body_schema, chakra_state)
         except Exception:
             return []
 
@@ -657,15 +661,14 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         """
         def effect(game: Any) -> None:
             try:
-                from edgecaster.systems.chakras import unlock_chakra
+                from edgecaster.systems import chakra_items as chakra_items_system
 
                 player = game._player()
-                if not hasattr(player, "chakra_state") or player.chakra_state is None:
+                chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
+                if chakra_state is None:
                     return
 
-                chakra_state = player.chakra_state
-
-                if unlock_chakra(chakra_state, node_id, auto_activate=True):
+                if chakra_items_system.unlock_actor_chakra(player, node_id, auto_activate=True):
                     display_name = chakra_display_name(node_id)
                     game.log.add(f"The Chakra Sage awakens your {display_name} chakra!")
                     game.log.add("You feel new energy flowing through you.")
@@ -1263,7 +1266,7 @@ def build_npc_dialogue_tree(game: Any, npc: Any) -> DialogueTree:
         return _build_hexmage(game, npc, npc_id, npc_def)
     if npc_id == "cartographer":
         return _build_cartographer(game, npc, npc_id, npc_def)
-    if npc_id == "local_guide":
+    if npc_id in {"local_guide", "guide_npc"}:
         return _build_guide(game, npc, npc_id, npc_def)
     if npc_id == "inventor_npc":
         return _build_inventor(game, npc, npc_id, npc_def)

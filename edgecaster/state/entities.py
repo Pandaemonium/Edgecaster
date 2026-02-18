@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+if TYPE_CHECKING:
+    from edgecaster.state.chakra_component import ChakraComponent
 
 Pos = Tuple[int, int]
 ZoneCoord = Tuple[int, int, int]
+RectF = Tuple[float, float, float, float]
 
 
 @dataclass
@@ -24,6 +28,15 @@ class Entity:
     name: str
     pos: Pos
 
+    # Phase 1 substrate fields (backward-compatible defaults).
+    entity_id: Optional[str] = None
+    semantic_id: Optional[str] = None
+    proto_id: Optional[str] = None
+    lod_band: str = "micro"
+    parent_entity_id: Optional[str] = None
+    socket_id: Optional[str] = None
+    chakra_component: Optional["ChakraComponent"] = None
+
     # Canonical world position (absolute tiles). Optional during migration.
     abs_pos: Optional[Pos] = None
 
@@ -35,6 +48,14 @@ class Entity:
 
     # Collision
     blocks_movement: bool = False
+
+    # Canonical runtime footprint fields (Option A).
+    # footprint_* values are in tile coordinates (float rectangles).
+    footprint_local: Optional[RectF] = None
+    footprint_abs: Optional[RectF] = None
+    footprint_follows_pos: bool = True
+    _footprint_anchor_local: Optional[Pos] = None
+    _footprint_anchor_abs: Optional[Pos] = None
 
     # Metadata
     tags: Dict[str, Any] = field(default_factory=dict)
@@ -61,4 +82,30 @@ class Entity:
 
     def set_abs_pos(self, abs_pos: Pos) -> None:
         """Set canonical ABS position."""
-        self.abs_pos = (int(abs_pos[0]), int(abs_pos[1]))
+        old = self.abs_pos
+        new_abs = (int(abs_pos[0]), int(abs_pos[1]))
+        self.abs_pos = new_abs
+
+        if self.footprint_follows_pos and self.footprint_abs is not None and old is not None:
+            dx = int(new_abs[0]) - int(old[0])
+            dy = int(new_abs[1]) - int(old[1])
+            x0, y0, x1, y1 = self.footprint_abs
+            self.footprint_abs = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            self._footprint_anchor_abs = new_abs
+        elif self._footprint_anchor_abs is None:
+            self._footprint_anchor_abs = new_abs
+
+    def set_pos(self, pos: Pos) -> None:
+        """Set local position and keep local footprint in sync when anchored."""
+        old = self.pos
+        new_pos = (int(pos[0]), int(pos[1]))
+        self.pos = new_pos
+
+        if self.footprint_follows_pos and self.footprint_local is not None:
+            dx = int(new_pos[0]) - int(old[0])
+            dy = int(new_pos[1]) - int(old[1])
+            x0, y0, x1, y1 = self.footprint_local
+            self.footprint_local = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            self._footprint_anchor_local = new_pos
+        elif self._footprint_anchor_local is None:
+            self._footprint_anchor_local = new_pos

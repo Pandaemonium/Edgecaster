@@ -145,9 +145,9 @@ DEFAULT_RULES: Tuple[ChakraEffectRule, ...] = (
     ),
     ChakraEffectRule(
         id="finger_finesse",
-        description="Finger dexterity adds +1 fractal iteration depth.",
+        description="Finger dexterity slightly strengthens chakra generators.",
         requires_any_tokens=("finger", "thumb", "index", "middle", "ring", "pinky"),
-        grants={"generator_iteration_bonus": 1.0},
+        grants={"chakra_generator_amp_bonus": 0.12},
     ),
 )
 

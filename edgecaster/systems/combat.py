@@ -32,6 +32,16 @@ def _telemetry(game: "Game", event: str, **payload) -> None:
         return
 
 
+def _mark_dead_lineage(game: "Game", actor: "Actor") -> None:
+    """Best-effort persistence write for deterministic lineage actors."""
+    try:
+        mark = getattr(game, "mark_actor_dead", None)
+        if callable(mark):
+            mark(actor, reason="killed")
+    except Exception:
+        pass
+
+
 def is_hostile(game: "Game", attacker: "Actor", target: "Actor") -> bool:
     """
     Reputation-driven hostility check used by movement + AI.
@@ -383,7 +393,12 @@ def kill_actor(
         killer_is_player=bool(killer_is_player),
     )
 
+    # Phase 1 lineage persistence: deterministic actor lineages do not respawn.
+    _mark_dead_lineage(game, actor)
+
     # Yoga aggregate persistence: dead stays dead for attention-refined enemies.
+    agg_id = None
+    slot = None
     try:
         tags = getattr(actor, "tags", {}) or {}
         agg_id = tags.get("from_aggregate", None)

@@ -139,6 +139,7 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
     try:
         from edgecaster.prototypes import resolve_body_schema
         from edgecaster.systems import chakras as chakra_system
+        from edgecaster.systems import chakra_items as chakra_items_system
     except Exception:
         return
 
@@ -146,7 +147,7 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
     charging = bool(getattr(level, "pattern", None) and level.pattern.vertices)
 
     for actor in level.actors.values():
-        chakra_state = getattr(actor, "chakra_state", None)
+        chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
         if chakra_state is None:
             continue
 
@@ -167,6 +168,7 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
             charging=charging,
             dex=dex,
         )
+        chakra_items_system.sync_actor_chakra_state(actor)
 
 
 def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, interval: int) -> None:

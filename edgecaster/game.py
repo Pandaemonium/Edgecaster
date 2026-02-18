@@ -80,6 +80,10 @@ from edgecaster import spawn_factory
 
 from edgecaster import mapgen
 from edgecaster import mapgen_sites
+from edgecaster.content.pois import get_poi_registry
+from edgecaster.systems.poi_registry import POIRegistry
+from edgecaster.systems import poi_worldgen
+from edgecaster.state.pois import ABSRect, POISpec
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.character import Character, default_character
@@ -99,6 +103,7 @@ from edgecaster.systems import scheduling
 from edgecaster.systems import combat as combat_system
 from edgecaster.systems import coords as coords_system
 from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import footprints as footprints_system
 from edgecaster.systems import render_query as render_query_system
 from edgecaster.systems import attention as attention_system
 from edgecaster.systems import zones as zones_system
@@ -216,7 +221,10 @@ class MessageLog:
 @dataclass
 class LevelState:
     world: World
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    # Parallel actor/entity stores will be replaced by unified entity graph storage.
     actors: Dict[str, Actor]
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
     entities: Dict[str, Entity]
     events: List[Tuple[int, int, Callable[[], None]]]
     order: int
@@ -238,10 +246,14 @@ class LevelState:
     fern_active: bool = False  # Is fern growth enabled?
     fern_growth_tips: List[int] = field(default_factory=list)  # Vertex indices that can spawn growth
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
     # Choking Vines runtime state (ABS-space tendril segments + tips).
+    # Transient effects should become first-class entities with TTL/state.
     choking_vines_state: Optional[Dict[str, Any]] = None
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
     # Rune-mutating choking vines runtime state (branches that become real edges).
     rune_choking_vines_state: Optional[Dict[str, Any]] = None
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
     # Visible thrown-knife projectiles (ABS-space center positions + rune-shape payload).
     thrown_knives_state: List[Dict[str, Any]] = field(default_factory=list)
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
@@ -428,12 +440,19 @@ class Game:
 
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
+        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+        # Transitional attention cache. End-state uses unified graph + quadtree index.
         # Attention-staged entities (Route 2: no rectangular zones as ontology)
         self.attn_store: attention_system.AttentionCellStore = attention_system.AttentionCellStore(bin_size=int(getattr(cfg, 'attn_bin_size', 32) or 32))
         # Track which child entities are active per aggregate (agg_id -> {slot:int -> eid:str})
         self._attn_active_agg_children: Dict[str, Dict[int, str]] = {}
         # Track which staged structure tiles are active per POI/site (parent_id -> set[eid])
         self._attn_active_struct_children: Dict[str, set[str]] = {}
+        # Persistent per-entity runtime state (ownership, lifecycle, deltas).
+        # Keyed by stable entity_id (falls back to runtime id during migration).
+        self.entity_state: Dict[str, Dict[str, Any]] = {}
+        # Cut over Starttsgard to entity+resolver ownership (legacy starting_zone spawn disabled).
+        self.starttsgard_cutover_enabled: bool = True
         # start roughly at world center so Julia coords near (0,0)
         center_zx = self.cfg.world_map_screens // 2
         center_zy = self.cfg.world_map_screens // 2
@@ -453,15 +472,38 @@ class Game:
         # Populated after overmap_params/tile_julia_grid are set up.
         from edgecaster.systems.sites import SiteRegistry
         from edgecaster.systems.site_placement import place_all_sites
-        place_all_sites(self)
+        self.site_registry: SiteRegistry | None = place_all_sites(self)
 
         # World-level entity index (macro-scale renderables).
         # Populated from site_registry once placement completes.
         zone_w_init = int(getattr(getattr(self, "cfg", None), "world_width", 60) or 60)
         zone_h_init = int(getattr(getattr(self, "cfg", None), "world_height", 40) or 40)
+        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+        # Transitional macro index. End-state folds macro entities into unified graph.
         self.world_entity_index: WorldEntityIndex = WorldEntityIndex(zone_w=zone_w_init, zone_h=zone_h_init)
         self._world_entity_index_wh = (zone_w_init, zone_h_init)  # Prevent recreation later
         self._world_entities_built: bool = False
+        # Ensure fixed/world sites are available immediately (important for Starttsgard cutover).
+        try:
+            site_placement_system.ensure_world_sites(self)
+        except Exception:
+            pass
+
+        # POI registry is authoritative for quest/world-map POIs.
+        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+        # Transitional semantic registry. End-state uses semantic_id queries on entity graph.
+        self.poi_registry: POIRegistry = get_poi_registry(zone_w=zone_w_init, zone_h=zone_h_init)
+        self.poi_locations: Dict[str, Tuple[int, int, int]] = {}
+
+        # Build world proxies for map-visible POIs.
+        try:
+            poi_worldgen.ensure_all_poi_world_entities(
+                self,
+                zone_w=zone_w_init,
+                zone_h=zone_h_init,
+            )
+        except Exception:
+            pass
 
 
 
@@ -474,6 +516,8 @@ class Game:
 
         # Inventories: mapping from owner id to a list of carried Entities.
         # Initially empty; per-owner lists are created lazily via get_inventory().
+        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+        # End-state: inventory is containment graph queries, not separate dict storage.
         self.inventories: Dict[str, List[Entity]] = {}
         # Per-actor fractal blade runtime state.
         self.blade_states: Dict[str, blade_runtime_system.BladeState] = {}
@@ -684,6 +728,7 @@ class Game:
             try:
                 from edgecaster.systems.chakras import ChakraState
                 player.chakra_state = ChakraState.from_dict(chakra_init)
+                chakra_items_system.sync_actor_chakra_state(player)
             except Exception:
                 pass
 
@@ -726,8 +771,16 @@ class Game:
             recursive_item = None
 
         if recursive_item is not None:
+            from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+
             # Put the bag into the player's starting inventory.
             self.player_inventory.append(recursive_item)
+            entity_graph_ops_system.attach_entity_to_parent(
+                self,
+                recursive_item,
+                self.player_id,
+                socket_id="inventory",
+            )
 
             # Now give *that bag* its own inventory, containing itself.
             rec_inv = self.get_inventory(recursive_item.id)
@@ -759,8 +812,16 @@ class Game:
             second = self.rng.choice(pool2) if pool2 else first
             for wid in (first, second):
                 try:
+                    from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+
                     wand = self._spawn_entity_from_template(wid, player.pos)
                     self.player_inventory.append(wand)
+                    entity_graph_ops_system.attach_entity_to_parent(
+                        self,
+                        wand,
+                        self.player_id,
+                        socket_id="inventory",
+                    )
                 except Exception:
                     continue
         except Exception:
@@ -868,6 +929,8 @@ class Game:
 
         # Generate a batch of legendary lairs for this run (hidden until discovered/rumored).
         self._init_legendaries(count=50)
+        # Cache POI marker coordinates for map rendering.
+        self.refresh_poi_locations()
 
 
     def _build_player_stats(self) -> Stats:
@@ -1024,7 +1087,7 @@ class Game:
         """Return currently unlockable chakra ids for the active player."""
         try:
             player = self._player()
-            chakra_state = getattr(player, "chakra_state", None)
+            chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
             if chakra_state is None:
                 return []
             body_schema = prototypes.resolve_body_schema(player)
@@ -1059,10 +1122,10 @@ class Game:
             node_id = unlockable[i]
             try:
                 p = g._player()
-                chakra_state = getattr(p, "chakra_state", None)
+                chakra_state = chakra_items_system.ensure_actor_chakra_state(p)
                 if chakra_state is None:
                     return
-                if chakras_system.unlock_chakra(chakra_state, node_id, auto_activate=True):
+                if chakra_items_system.unlock_actor_chakra(p, node_id, auto_activate=True):
                     display_name = chakras_system.chakra_display_name(node_id)
                     g.log.add(f"You awaken your {display_name} chakra.")
                     g.grant_ability("chakra")
@@ -1536,6 +1599,59 @@ class Game:
         """Return a unique POI id for a newly-generated legendary lair."""
         return legendaries_system.alloc_legendary_lair_poi_id(self)
 
+    def refresh_poi_locations(self) -> None:
+        """Rebuild cached POI marker locations from the POI registry."""
+        poi_reg = getattr(self, "poi_registry", None)
+        if poi_reg is None:
+            self.poi_locations = {}
+            return
+
+        cfg = getattr(self, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+        locs: Dict[str, Tuple[int, int, int]] = {}
+        for poi in poi_reg:
+            ax, ay = poi.anchor_abs
+            zx = int(ax) // zone_w
+            zy = int(ay) // zone_h
+            locs[str(poi.id)] = (zx, zy, int(poi.depth))
+        self.poi_locations = locs
+
+    def reanchor_poi(self, poi_id: str, coord: Tuple[int, int, int]) -> bool:
+        """Move an existing POI to a new zone (registry-only, ABS truth)."""
+        poi_reg = getattr(self, "poi_registry", None)
+        if poi_reg is None:
+            return False
+        poi_spec = poi_reg.get(str(poi_id))
+        if poi_spec is None:
+            return False
+
+        zx, zy, depth = coord
+        cfg = getattr(self, "cfg", None)
+        zone_w = int(getattr(cfg, "world_width", 60) or 60)
+        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+        footprint = ABSRect.from_zone_coord(int(zx), int(zy), zone_w, zone_h)
+        anchor_abs = footprint.center
+
+        new_spec = POISpec(
+            id=poi_spec.id,
+            kind=poi_spec.kind,
+            name=poi_spec.name,
+            footprint=footprint,
+            depth=int(depth),
+            anchor_abs=anchor_abs,
+            parent_id=poi_spec.parent_id,
+            child_ids=list(poi_spec.child_ids),
+            npc_specs=list(poi_spec.npc_specs),
+            structure_specs=list(poi_spec.structure_specs),
+            entity_specs=list(poi_spec.entity_specs),
+            seed=int(getattr(poi_spec, "seed", 0) or 0),
+            tags=dict(poi_spec.tags or {}),
+        )
+        poi_reg.add(new_spec)
+        self.refresh_poi_locations()
+        return True
+
 
 
 
@@ -1625,9 +1741,49 @@ class Game:
         x, y, depth = coord
         world = World(width=self.cfg.world_width, height=self.cfg.world_height)
 
-        lab_state = None  # Legacy hook; keep the slot for now.
+        # Determine POIs that overlap this zone for terrain/layout decisions.
+        poi_specs = []
+        poi_hits: List[str] = []
+        try:
+            poi_specs = self.poi_registry.get_at_zone(x, y, depth)
+            poi_hits = [p.id for p in poi_specs]
+        except Exception:
+            poi_specs = []
+            poi_hits = []
 
-        if depth == 0:
+        lab_state = None
+        is_lab_zone = False
+        is_lair_zone = False
+        lair_layout = "multi_room"
+        lair_seed: int | None = None
+
+        for poi_spec in poi_specs:
+            for struct_spec in poi_spec.structure_specs:
+                if struct_spec.kind == "lab":
+                    is_lab_zone = True
+                    break
+                if struct_spec.kind == "legendary_lair":
+                    is_lair_zone = True
+                    lair_layout = str(struct_spec.tags.get("layout") or lair_layout)
+                    try:
+                        lair_seed = int(struct_spec.tags.get("lair_seed", poi_spec.seed))
+                    except Exception:
+                        pass
+            if is_lab_zone or is_lair_zone:
+                break
+
+        if depth == 0 and is_lab_zone:
+            mapgen.generate_lab(world, self.rng)
+            lab_state = LabState()
+        elif depth == 0 and is_lair_zone:
+            lair_rng = self.rng
+            if lair_seed is not None:
+                try:
+                    lair_rng = random.Random(int(lair_seed) & 0xFFFFFFFF)
+                except Exception:
+                    lair_rng = self.rng
+            mapgen_sites.generate_legendary_lair(world, lair_rng, layout=lair_layout)
+        elif depth == 0:
             # Overworld terrain (pure terrain cache; macro entities resolve via WIE/attention).
             self._ensure_overmap_ready()
 
@@ -1657,9 +1813,9 @@ class Game:
             )
 
             # Default entry point when arriving via fast travel (up_pos is None).
-            # Start zone exception: spawn in the center.
+            # Starting zone should spawn near center; other zones near bottom edge.
             if up_pos is None:
-                if coord == (0, 0, 0):
+                if "starting_zone" in poi_hits:
                     ex = world.width // 2
                     ey = world.height // 2
                 else:
@@ -1668,10 +1824,28 @@ class Game:
 
                 if world.in_bounds(ex, ey) and world.is_walkable(ex, ey):
                     world.entry = (ex, ey)
-
         else:
-            # Non-overworld: terrain only for now.
             mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
+
+        # Stamp POI membership onto this world for discovery/runtime realization.
+        try:
+            poi_hits = mapgen.apply_pois(world, coord, poi_registry=self.poi_registry)
+        except Exception:
+            poi_hits = []
+            world.poi_ids = []  # type: ignore[attr-defined]
+        if bool(getattr(self, "starttsgard_cutover_enabled", False)) and poi_hits:
+            filtered_hits = [pid for pid in poi_hits if pid != "starting_zone"]
+            if len(filtered_hits) != len(poi_hits):
+                poi_hits = filtered_hits
+                world.poi_ids = filtered_hits  # type: ignore[attr-defined]
+
+        # Build starting structures (e.g., item depot) before runtime POI spawns.
+        if "starting_zone" in poi_hits and not bool(getattr(self, "starttsgard_cutover_enabled", False)):
+            try:
+                depot_info = mapgen.build_item_depot(world, self.rng, world.entry)
+                world.depot_info = depot_info  # type: ignore[attr-defined]
+            except Exception:
+                world.depot_info = None  # type: ignore[attr-defined]
 
         lvl = LevelState(
             world=world,
@@ -1695,6 +1869,9 @@ class Game:
 
         # Difficulty metadata (safe; should not fabricate ontology)
         difficulty_system.apply_zone_difficulty(self, lvl, coord)
+
+        # Spawn runtime POI entities/NPCs for this loaded zone.
+        self._spawn_poi_contents(lvl, coord)
 
         # Ensure this zone views the canonical pattern state
         self._sync_level_pattern_view(lvl)
@@ -1731,9 +1908,25 @@ class Game:
         template_id: str,
         pos: Tuple[int, int],
         overrides: Optional[Dict[str, object]] = None,
+        *,
+        deterministic: bool = False,
+        deterministic_recipe: Optional[str] = None,
+        deterministic_namespace: str = "ent",
+        deterministic_salt: Optional[str] = None,
+        zone_coord: Optional[Tuple[int, int, int]] = None,
     ) -> Entity:
         """Spawn entity from template. Delegates to spawning_system."""
-        return spawning_system.spawn_entity_from_template(self, template_id, pos, overrides)
+        return spawning_system.spawn_entity_from_template(
+            self,
+            template_id,
+            pos,
+            overrides,
+            deterministic=deterministic,
+            deterministic_recipe=deterministic_recipe,
+            deterministic_namespace=deterministic_namespace,
+            deterministic_salt=deterministic_salt,
+            zone_coord=zone_coord,
+        )
 
     def _spawn_mentor(self, level: LevelState) -> None:
         """Place mentor NPC near entry. Delegates to spawning_system."""
@@ -1745,7 +1938,7 @@ class Game:
 
     def _spawn_poi_contents(self, level: LevelState, coord: Tuple[int, int, int]) -> None:
         """Spawn/realize POI runtime contents for this loaded level."""
-        poi_spawning_system.spawn_poi_contents(self, level, coord)
+        poi_worldgen.spawn_poi_contents(self, level, coord)
 
     def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
         spawning_system.spawn_npcs(self, level, count)
@@ -1909,6 +2102,60 @@ class Game:
     def _toggle_door(self, ent: Entity, level: LevelState, notify: bool = False) -> None:
         entity_ops_system.toggle_door(self, ent, level, notify=notify)
 
+    def _remove_entity(
+        self,
+        level: LevelState,
+        ent_or_id: object,
+        *,
+        reason: str = "removed",
+    ) -> None:
+        """Remove a non-actor entity and persist lineage removal when available."""
+        ent = None
+        eid = ""
+        if isinstance(ent_or_id, str):
+            eid = str(ent_or_id)
+        else:
+            ent = ent_or_id
+            try:
+                eid = str(getattr(ent_or_id, "id", "") or "")
+            except Exception:
+                eid = ""
+
+        if ent is None and eid:
+            ent = level.entities.get(eid) or level.actors.get(eid)
+
+        # Persist deterministic lineage removals (doors/walls/items/etc.).
+        try:
+            if ent is not None:
+                self.mark_entity_removed(ent, reason=reason)
+            elif eid:
+                # Best-effort fallback when only an id string is available.
+                self.patch_entity_state(eid, removed=True, removed_reason=str(reason or "removed"))
+        except Exception:
+            pass
+
+        removed = False
+        if eid and eid in level.entities:
+            try:
+                del level.entities[eid]
+                removed = True
+            except Exception:
+                pass
+
+        # Defensive: if a non-actor leaked into actors, clean it up.
+        if eid and eid in level.actors and (ent is None or not hasattr(ent, "faction")):
+            try:
+                del level.actors[eid]
+                removed = True
+            except Exception:
+                pass
+
+        if removed:
+            try:
+                level.spatial_dirty = True
+            except Exception:
+                pass
+
 
     # --- status helpers ---
 
@@ -2051,6 +2298,122 @@ class Game:
     def _realize_aggregate_details_in_zone(self, level: "LevelState", coord: Tuple[int, int, int], kinds=None) -> None:
         """Delegate zone-local aggregate detail realization to systems.attention."""
         attention_system._realize_aggregate_details_in_zone(self, level, coord, kinds=kinds)
+
+
+    # --- identity persistence helpers ---
+
+    def _normalize_entity_id(self, entity_id: Any) -> str:
+        try:
+            eid = str(entity_id or "").strip()
+        except Exception:
+            eid = ""
+        return eid
+
+    def entity_id_for_entity(self, obj: object) -> Optional[str]:
+        """Return stable entity id for a runtime object, if available."""
+        if obj is None:
+            return None
+
+        eid = self._normalize_entity_id(getattr(obj, "entity_id", None))
+        if not eid:
+            eid = self._normalize_entity_id(getattr(obj, "id", None))
+            if eid:
+                try:
+                    setattr(obj, "entity_id", eid)
+                except Exception:
+                    pass
+        if eid:
+            return eid
+
+        try:
+            tags = getattr(obj, "tags", None) or {}
+        except Exception:
+            tags = {}
+        if isinstance(tags, dict):
+            eid = self._normalize_entity_id(tags.get("entity_id"))
+            if eid:
+                return eid
+        return None
+
+    def get_entity_state(self, entity_or_id: Any) -> Dict[str, Any]:
+        if isinstance(entity_or_id, str):
+            eid = self._normalize_entity_id(entity_or_id)
+        else:
+            eid = self.entity_id_for_entity(entity_or_id) or ""
+        if not eid:
+            return {}
+        state = self.entity_state.get(eid)
+        if not isinstance(state, dict):
+            state = {}
+            self.entity_state[eid] = state
+        return state
+
+    def patch_entity_state(self, entity_or_id: Any, patch: Optional[Dict[str, Any]] = None, **fields: Any) -> None:
+        if isinstance(entity_or_id, str):
+            eid = self._normalize_entity_id(entity_or_id)
+        else:
+            eid = self.entity_id_for_entity(entity_or_id) or ""
+        if not eid:
+            return
+        st = self.get_entity_state(eid)
+        if not isinstance(st, dict):
+            return
+        if isinstance(patch, dict):
+            st.update(patch)
+        if fields:
+            st.update(fields)
+        try:
+            lvl = self._level()
+            st["updated_tick"] = int(getattr(lvl, "current_tick", 0) or 0)
+        except Exception:
+            st["updated_tick"] = int(st.get("updated_tick", 0) or 0)
+        self.entity_state[eid] = st
+
+    def entity_is_suppressed(self, entity_or_id: Any) -> bool:
+        if isinstance(entity_or_id, str):
+            eid = self._normalize_entity_id(entity_or_id)
+        else:
+            eid = self.entity_id_for_entity(entity_or_id) or ""
+        if not eid:
+            return False
+        st = self.entity_state.get(eid)
+        if not isinstance(st, dict):
+            return False
+        return bool(st.get("removed")) or bool(st.get("dead"))
+
+    def mark_entity_removed(
+        self,
+        obj: object,
+        *,
+        reason: str = "removed",
+    ) -> Optional[str]:
+        eid = self.entity_id_for_entity(obj)
+        if eid:
+            self.patch_entity_state(
+                eid,
+                removed=True,
+                removed_reason=str(reason or "removed"),
+            )
+            return eid
+        return None
+
+    def mark_actor_dead(self, obj: object, *, reason: str = "killed") -> Optional[str]:
+        eid = self.entity_id_for_entity(obj)
+        hp = None
+        try:
+            hp = int(getattr(getattr(obj, "stats", None), "hp", 0))
+        except Exception:
+            hp = None
+        if eid:
+            patch: Dict[str, Any] = {
+                "dead": True,
+                "dead_reason": str(reason or "dead"),
+            }
+            if hp is not None:
+                patch["last_known_hp"] = int(hp)
+            self.patch_entity_state(eid, patch)
+            return eid
+        return None
 
 
 
@@ -2447,8 +2810,23 @@ class Game:
         x, y = actor.pos
         nx = x + dx
         ny = y + dy
+        moved_footprint = footprints_system.rect_translate(
+            footprints_system.entity_footprint_local(actor),
+            float(dx),
+            float(dy),
+        )
 
-        if not level.world.in_bounds(nx, ny):
+        in_local_bounds = False
+        try:
+            in_local_bounds = footprints_system.rect_within_bounds(
+                moved_footprint,
+                width=int(level.world.width),
+                height=int(level.world.height),
+            )
+        except Exception:
+            in_local_bounds = bool(level.world.in_bounds(nx, ny))
+
+        if not in_local_bounds:
             # Phase 1.5: player movement is canonical in abs-space.
             # Crossing a chunk boundary is just membership/caching, not metaphysics.
             if id == self.player_id:
@@ -2466,16 +2844,21 @@ class Game:
             return
 
         # stair use is explicit, so only move/attack here
-        target = self._actor_at(level, (nx, ny))
-        if target and target.id != id:
+        target = entity_ops_system.first_actor_overlapping_rect(
+            level,
+            moved_footprint,
+            exclude_id=id,
+        )
+        if target is not None:
             if self.is_hostile(actor, target) or self.is_hostile(target, actor):
                 # Blade-class hosts replace bump-attack with blade slash.
                 if blade_runtime_system.actor_uses_blade_melee(self, id):
+                    tpos = getattr(target, "pos", (nx, ny))
                     handled = blade_runtime_system.act_blade_attack(
                         self,
                         id,
                         "slash",
-                        target_pos=(nx, ny),
+                        target_pos=(int(tpos[0]), int(tpos[1])),
                         from_bump=True,
                     )
                     if handled:
@@ -2488,7 +2871,12 @@ class Game:
             return
 
         # treat blocking entities as solid, like walls
-        blocking_ent = self._blocking_entity_at(level, (nx, ny))
+        blocking_ent = entity_ops_system.blocking_entity_overlapping_rect(
+            level,
+            moved_footprint,
+            exclude_ids={id},
+            ignore_actor_entities=True,
+        )
         if blocking_ent:
             # Auto-open doors on bump
             if getattr(blocking_ent, "tags", {}).get("door_state") == "closed":
@@ -2501,7 +2889,7 @@ class Game:
                 self.log.add(f"You bump into the {blocking_ent.name}.")
             return
 
-        if not level.world.is_walkable(nx, ny):
+        if not footprints_system.world_walkable_for_rect(level.world, moved_footprint):
             if id == self.player_id:
                 self.log.add("You bump into a wall.")
             return
@@ -2572,27 +2960,24 @@ class Game:
             pass
 
         # Update local cached position (zone-relative)
-        actor.pos = (nx, ny)
+        self._set_entity_local_pos(actor, (nx, ny))
         # Yoga: spatial bins are a cache, so any move invalidates them.
         level.spatial_dirty = True
 
         # Canonical ABS update applies to *all* actors.
-        # During migration, some actors may not yet have abs_pos; derive from
-        # the current zone coord deterministically.
         try:
             cur_abs = getattr(actor, "abs_pos", None)
             if cur_abs is None:
-                ax, ay = self.abs_from_zone_local(level.coord, (x, y))
+                cur_abs = self.abs_from_zone_local(level.coord, (x, y))
             else:
-                ax, ay = int(cur_abs[0]), int(cur_abs[1])
-            new_abs = (ax + int(dx), ay + int(dy))
-            setattr(actor, "abs_pos", new_abs)
+                cur_abs = (int(cur_abs[0]), int(cur_abs[1]))
+            new_abs = (int(cur_abs[0]) + int(dx), int(cur_abs[1]) + int(dy))
+            self._set_entity_abs_pos(actor, new_abs)
             if id == self.player_id:
                 # Keep legacy helpers consistent; player is not special-cased in truth,
                 # but other subsystems may still consult _get/_set_player_abs during migration.
                 self._set_player_abs(new_abs)
         except Exception:
-            # If an unusual object lacks abs_pos support, fail soft (render bridge can still derive).
             pass
 
         if id == self.player_id:
@@ -2837,9 +3222,49 @@ class Game:
             setattr(p, "abs_pos", ap)
         return int(ap[0]), int(ap[1])
 
+    def _set_entity_local_pos(self, ent: object, pos: tuple[int, int]) -> None:
+        """Set local position, preferring entity API while remaining mock-safe."""
+        target = (int(pos[0]), int(pos[1]))
+        fn = getattr(ent, "set_pos", None)
+        if callable(fn):
+            try:
+                fn(target)
+            except Exception:
+                pass
+        cur = getattr(ent, "pos", None)
+        try:
+            cur_t = (int(cur[0]), int(cur[1])) if cur is not None else None
+        except Exception:
+            cur_t = None
+        if cur_t != target:
+            try:
+                setattr(ent, "pos", target)
+            except Exception:
+                pass
+
+    def _set_entity_abs_pos(self, ent: object, abs_pos: tuple[int, int]) -> None:
+        """Set absolute position, preferring entity API while remaining mock-safe."""
+        target = (int(abs_pos[0]), int(abs_pos[1]))
+        fn = getattr(ent, "set_abs_pos", None)
+        if callable(fn):
+            try:
+                fn(target)
+            except Exception:
+                pass
+        cur = getattr(ent, "abs_pos", None)
+        try:
+            cur_t = (int(cur[0]), int(cur[1])) if cur is not None else None
+        except Exception:
+            cur_t = None
+        if cur_t != target:
+            try:
+                setattr(ent, "abs_pos", target)
+            except Exception:
+                pass
+
     def _set_player_abs(self, abs_pos: tuple[int, int]) -> None:
         p = self._player()
-        setattr(p, "abs_pos", (int(abs_pos[0]), int(abs_pos[1])))
+        self._set_entity_abs_pos(p, abs_pos)
 
     def _move_actor_to_abs(
         self,
@@ -2886,7 +3311,7 @@ class Game:
             except Exception:
                 pass
 
-            actor.pos = dest_local
+            self._set_entity_local_pos(actor, dest_local)
             dest_level.actors[actor.id] = actor
             try:
                 dest_level.entities[actor.id] = actor
@@ -2909,13 +3334,13 @@ class Game:
             except Exception:
                 pass
         else:
-            actor.pos = dest_local
+            self._set_entity_local_pos(actor, dest_local)
             try:
                 dest_level.spatial_dirty = True
             except Exception:
                 pass
 
-        setattr(actor, "abs_pos", (int(abs_pos[0]), int(abs_pos[1])))
+        self._set_entity_abs_pos(actor, (int(abs_pos[0]), int(abs_pos[1])))
 
     def _move_player_to_abs(self, abs_pos: tuple[int, int]) -> None:
         """
@@ -2968,7 +3393,7 @@ class Game:
                 pass
 
             self.zone_coord = dest_coord
-            player.pos = dest_local
+            self._set_entity_local_pos(player, dest_local)
             dest_level.actors[self.player_id] = player
 
 
@@ -2988,7 +3413,7 @@ class Game:
             self.camera_needs_recenter = True
         else:
             # Same chunk, just update local pos
-            player.pos = dest_local
+            self._set_entity_local_pos(player, dest_local)
             # Yoga: local move still invalidates the cached bins.
             try:
                 dest_level.spatial_dirty = True

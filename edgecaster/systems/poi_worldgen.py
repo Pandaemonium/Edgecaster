@@ -5,6 +5,10 @@ POI World Entity Generation System
 Creates world entities for POI contents (NPCs, structures, walls) and stores them
 in WorldEntityIndex so they're visible when zooming around the map.
 
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+This module overlaps with `systems/poi_spawning.py` during migration.
+End-state is a single resolver/entity-graph realization pipeline.
+
 Follows the same pattern as aggregate_resolution.py for berry patches:
 - World entities exist in ABS space independent of zone loading
 - Deterministic IDs prevent duplicate spawning
@@ -538,79 +542,50 @@ def ensure_all_poi_world_entities(
 
 
 # =============================================================================
-# Realization: Convert World Entities to Actual Actors
+# Realization: Convert world POI content intents into runtime entities/actors
 # =============================================================================
 
-def realize_poi_npc(
+def realize_poi_npc_spec(
     game: "Game",
     level: Any,  # LevelState
-    world_ent: POIWorldEntity,
     coord: Tuple[int, int, int],
+    *,
+    poi_id: str,
+    npc_spec: NPCSpawnSpecV2,
+    spec_index: int,
+    spawn_pos: Tuple[int, int],
 ) -> Optional[Any]:
-    """
-    Convert a POI NPC world entity into an actual actor with AI.
-
-    Returns the created actor, or None if realization failed.
-    """
+    """Realize one POI NPC spec at a chosen local position."""
     from edgecaster.content import npcs
-    from edgecaster.state.actor import Human, Stats
-    from edgecaster.systems import enemy_factory
+    from edgecaster.enemies import factory as enemy_factory
+    from edgecaster.state.actors import Human, Stats
+    from edgecaster.systems import entity_ops as entity_ops_system
     from edgecaster.systems import spawning as spawning_system
-    from edgecaster.content.pois import get_poi_registry
 
-    poi_id = world_ent.poi_id
-    npc_spec = world_ent.spec_data.get("npc_spec")
-    if npc_spec is None:
+    registry = getattr(game, "poi_registry", None)
+    if registry is None:
         return None
 
-    # Check if already spawned
-    registry = get_poi_registry()
-    spec_key = f"npc:{npc_spec.npc_id}:{world_ent.spec_data.get('spec_index', 0)}"
-
+    spec_key = f"npc:{npc_spec.npc_id}:{int(spec_index)}"
     if registry.is_npc_spawned(poi_id, spec_key):
-        # Already realized
         return None
-
     if registry.is_npc_dead(poi_id, spec_key):
-        # NPC was killed, don't respawn
         return None
 
-    # Find spawn position
-    spawn_pos = world_ent.pos
-
-    # Use nearest_walkable to find valid position
-    def nearest_walkable(center: Tuple[int, int]) -> Optional[Tuple[int, int]]:
-        world = level.world
-        if world.in_bounds(*center) and world.is_walkable(*center):
-            return center
-        for r in range(1, 6):
-            for dx in range(-r, r + 1):
-                for dy in range(-r, r + 1):
-                    nx, ny = center[0] + dx, center[1] + dy
-                    if world.in_bounds(nx, ny) and world.is_walkable(nx, ny):
-                        return (nx, ny)
+    if entity_ops_system.actor_at(level, spawn_pos) is not None:
         return None
 
-    spawn_pos = nearest_walkable(spawn_pos)
-    if spawn_pos is None:
-        return None
-
-    # Check for existing actor
-    if game._actor_at(level, spawn_pos):
-        return None
-
-    # Create the actor based on NPC type
     npc_def = npcs.NPC_DEFS.get(npc_spec.npc_id, {})
     name = npc_spec.name or npc_def.get("name", npc_spec.npc_id.title())
     glyph = npc_spec.glyph or npc_def.get("glyph", "@")
     color = npc_spec.color or tuple(npc_def.get("color", (255, 255, 255)))
 
     actor = None
-
     if npc_spec.npc_id == "caged_demon":
         actor = enemy_factory.spawn_enemy(
-            "caged_demon", spawn_pos,
-            abs_pos=game.abs_from_zone_local(coord, spawn_pos)
+            "caged_demon",
+            spawn_pos,
+            abs_pos=game.abs_from_zone_local(coord, spawn_pos),
         )
         actor.faction = "neutral"
         actor.actions = ()
@@ -626,8 +601,9 @@ def realize_poi_npc(
         game._start_regen(level, actor.id, amount=1, interval=10)
     elif npc_spec.npc_id == "merchant":
         actor = enemy_factory.spawn_enemy(
-            "merchant", spawn_pos,
-            abs_pos=game.abs_from_zone_local(coord, spawn_pos)
+            "merchant",
+            spawn_pos,
+            abs_pos=game.abs_from_zone_local(coord, spawn_pos),
         )
         actor.faction = "npc"
         actor.actions = ()
@@ -635,20 +611,22 @@ def realize_poi_npc(
         actor.tags = getattr(actor, "tags", {}) or {}
         actor.tags["npc_id"] = npc_spec.npc_id
         actor.tags["merchant_id"] = npc_def.get("merchant_id", "general_store")
+        if poi_id == "starting_zone":
+            actor.tags["merchant_all_items"] = True
+            actor.tags["merchant_refresh_on_talk"] = True
         actor.name = name
         actor.glyph = glyph
         actor.color = color
         desc = npc_spec.description or npc_def.get("description") or actor.description
         if desc:
             actor.description = desc
-        # Initialize merchant
         try:
             from edgecaster.systems import trade as trade_system
+
             trade_system.ensure_merchant_initialized(game, level, actor)
         except Exception:
             pass
     else:
-        # Generic NPC
         aid = game._new_id()
         actor = Human(
             id=aid,
@@ -671,65 +649,104 @@ def realize_poi_npc(
             actor.tags["show_exact_hp"] = True
             actor.show_exact_hp = True
 
-    if actor:
-        # Track in POI registry
-        actor.tags = getattr(actor, "tags", {}) or {}
-        actor.tags["poi_id"] = poi_id
-        actor.tags["poi_spec_key"] = spec_key
+    if actor is None:
+        return None
 
-        level.actors[actor.id] = actor
-        level.entities[actor.id] = actor
+    extra_tags = getattr(npc_spec, "tags", None) or {}
+    if isinstance(extra_tags, dict):
+        try:
+            actor.tags.update(extra_tags)
+        except Exception:
+            pass
+    actor.tags = getattr(actor, "tags", {}) or {}
+    actor.tags["poi_id"] = poi_id
+    actor.tags["poi_spec_key"] = spec_key
 
-        registry.mark_npc_spawned(poi_id, spec_key, actor.id)
-
+    spawning_system.register_actor(game, level, actor, schedule_ai=False)
+    registry.mark_npc_spawned(poi_id, spec_key, actor.id)
     return actor
 
 
-def realize_poi_wall(
+def realize_poi_wall_at(
     game: "Game",
     level: Any,  # LevelState
-    world_ent: POIWorldEntity,
+    *,
+    pos: Tuple[int, int],
+    wall_eid: str,
+    glyph: str = "#",
+    color: Tuple[int, int, int] = (140, 120, 100),
+    name: str = "Arena Wall",
+    description: str = "Ancient stone walls.",
+    floor_color: Tuple[int, int, int] = (180, 160, 120),
+    deterministic_recipe: Optional[str] = None,
 ) -> Optional[Any]:
-    """
-    Convert a POI wall world entity into an actual blocking entity.
+    """Realize one wall entity into a loaded level."""
+    from edgecaster.systems import entity_ops as entity_ops_system
 
-    Returns the created entity, or None if realization failed.
-    """
-    from edgecaster.systems import spawning as spawning_system
-
-    pos = world_ent.pos
-    wall_eid = world_ent.id
-
-    # Check if already exists
-    if wall_eid in level.entities:
+    if str(wall_eid) in level.entities:
+        return None
+    if entity_ops_system.entity_at(level, pos) is not None:
         return None
 
-    # Check for blocking entity
-    if game._entity_at(level, pos):
-        return None
-
+    recipe = str(deterministic_recipe or wall_eid)
     try:
         ent = game._spawn_entity_from_template(
             "wall",
             pos,
             overrides={
-                "id": wall_eid,
-                "glyph": world_ent.glyph,
-                "color": list(world_ent.color),
-                "name": world_ent.name,
-                "description": world_ent.description,
+                "id": str(wall_eid),
+                "glyph": str(glyph or "#")[:1],
+                "color": list(color),
+                "name": str(name or "Wall"),
+                "description": str(description or ""),
             },
+            deterministic=True,
+            deterministic_recipe=recipe,
+            deterministic_namespace="poi",
+            zone_coord=getattr(game, "zone_coord", (0, 0, 0)),
         )
-        ent.id = wall_eid
-        level.entities[wall_eid] = ent
-
-        # Make terrain walkable (entity handles blocking)
-        tile = level.world.get_tile(*pos)
-        if tile:
-            tile.walkable = True
-            tile.glyph = "."
-            tile.color = (180, 160, 120)  # Arena floor
-
-        return ent
+    except TypeError:
+        try:
+            ent = game._spawn_entity_from_template(
+                "wall",
+                pos,
+                overrides={
+                    "id": str(wall_eid),
+                    "glyph": str(glyph or "#")[:1],
+                    "color": list(color),
+                    "name": str(name or "Wall"),
+                    "description": str(description or ""),
+                },
+            )
+        except Exception:
+            return None
     except Exception:
         return None
+
+    try:
+        ent.id = str(wall_eid)
+    except Exception:
+        pass
+    level.entities[str(wall_eid)] = ent
+
+    tile = level.world.get_tile(*pos)
+    if tile:
+        tile.walkable = True
+        tile.glyph = "."
+        tile.color = floor_color
+    return ent
+
+
+def spawn_poi_contents(
+    game: "Game",
+    level: Any,  # LevelState
+    coord: Tuple[int, int, int],
+) -> None:
+    """Unified runtime POI realization entrypoint.
+
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_5]
+    Temporary wrapper while `poi_spawning.py` logic is incrementally absorbed.
+    """
+    from edgecaster.systems import poi_spawning as poi_spawning_system
+
+    poi_spawning_system.spawn_poi_contents(game, level, coord)

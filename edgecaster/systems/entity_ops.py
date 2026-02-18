@@ -6,7 +6,8 @@ This module extracts frequently used query/status helpers from Game to keep
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, List, TYPE_CHECKING
+from typing import Optional, Tuple, List, TYPE_CHECKING, Iterable
+from edgecaster.systems import footprints as footprints_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game, LevelState
@@ -16,8 +17,86 @@ if TYPE_CHECKING:
 
 def actor_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Actor"]:
     for actor in level.actors.values():
-        if actor.pos == pos and actor.alive:
+        if actor.alive and footprints_system.entity_overlaps_tile(actor, pos):
             return actor
+    return None
+
+
+def actors_overlapping_rect(
+    level: "LevelState",
+    rect: tuple[float, float, float, float],
+    *,
+    exclude_id: str | None = None,
+) -> List["Actor"]:
+    out: List["Actor"] = []
+    for actor in level.actors.values():
+        if actor is None or not getattr(actor, "alive", False):
+            continue
+        if exclude_id is not None and getattr(actor, "id", None) == exclude_id:
+            continue
+        try:
+            if footprints_system.rect_overlaps(
+                footprints_system.entity_footprint_local(actor),
+                rect,
+            ):
+                out.append(actor)
+        except Exception:
+            continue
+    return out
+
+
+def first_actor_overlapping_rect(
+    level: "LevelState",
+    rect: tuple[float, float, float, float],
+    *,
+    exclude_id: str | None = None,
+) -> Optional["Actor"]:
+    for actor in actors_overlapping_rect(level, rect, exclude_id=exclude_id):
+        return actor
+    return None
+
+
+def entities_overlapping_rect(
+    level: "LevelState",
+    rect: tuple[float, float, float, float],
+    *,
+    exclude_ids: Iterable[str] | None = None,
+    include_actor_entities: bool = True,
+) -> List["Entity"]:
+    out: List["Entity"] = []
+    skip = set(str(eid) for eid in (exclude_ids or ()))
+    actor_ids = set(getattr(level, "actors", {}).keys())
+    for ent in level.entities.values():
+        ent_id = str(getattr(ent, "id", "") or "")
+        if ent_id in skip:
+            continue
+        if not include_actor_entities and ent_id in actor_ids:
+            continue
+        try:
+            if footprints_system.rect_overlaps(
+                footprints_system.entity_footprint_local(ent),
+                rect,
+            ):
+                out.append(ent)
+        except Exception:
+            continue
+    return out
+
+
+def first_entity_overlapping_rect(
+    level: "LevelState",
+    rect: tuple[float, float, float, float],
+    *,
+    exclude_ids: Iterable[str] | None = None,
+    include_actor_entities: bool = True,
+) -> Optional["Entity"]:
+    for ent in entities_overlapping_rect(
+        level,
+        rect,
+        exclude_ids=exclude_ids,
+        include_actor_entities=include_actor_entities,
+    ):
+        return ent
     return None
 
 
@@ -33,7 +112,7 @@ def entity_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Entity"]:
     actor_candidate: Optional["Entity"] = None
 
     for ent in level.entities.values():
-        if ent.pos != pos:
+        if not footprints_system.entity_overlaps_tile(ent, pos):
             continue
         if isinstance(ent, Actor):
             if actor_candidate is None:
@@ -47,7 +126,7 @@ def entity_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Entity"]:
 def items_at(level: "LevelState", pos: Tuple[int, int]) -> List["Entity"]:
     return [
         e for e in level.entities.values()
-        if getattr(e, "pos", None) == pos
+        if footprints_system.entity_overlaps_tile(e, pos)
         and getattr(e, "kind", None) == "item"
     ]
 
@@ -57,9 +136,32 @@ def all_entities(level: "LevelState") -> List["Entity"]:
 
 
 def blocking_entity_at(level: "LevelState", pos: Tuple[int, int]) -> Optional["Entity"]:
-    ent = entity_at(level, pos)
-    if ent and getattr(ent, "blocks_movement", False):
-        return ent
+    for ent in level.entities.values():
+        if footprints_system.entity_blocks_movement_at(ent, pos):
+            return ent
+    return None
+
+
+def blocking_entity_overlapping_rect(
+    level: "LevelState",
+    rect: tuple[float, float, float, float],
+    *,
+    exclude_ids: Iterable[str] | None = None,
+    ignore_actor_entities: bool = True,
+) -> Optional["Entity"]:
+    skip = set(exclude_ids or [])
+    actor_ids = set(getattr(level, "actors", {}).keys())
+    for ent in level.entities.values():
+        ent_id = str(getattr(ent, "id", "") or "")
+        if ent_id in skip:
+            continue
+        if ignore_actor_entities and ent_id in actor_ids:
+            continue
+        try:
+            if footprints_system.entity_blocks_movement_in_rect(ent, rect):
+                return ent
+        except Exception:
+            continue
     return None
 
 
@@ -111,4 +213,3 @@ def tick_status(actor: "Actor", name: str) -> None:
 
 def has_status(actor: "Actor", name: str) -> bool:
     return actor.statuses.get(name, 0) > 0
-

@@ -14,6 +14,8 @@ from edgecaster.patterns.activation import project_vertices
 from edgecaster.state.actors import Actor
 from edgecaster.systems import damage_policy as damage_policy_system
 from edgecaster.systems import chakra_items as chakra_items_system
+from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import footprints as footprints_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -41,6 +43,90 @@ def _line_points(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
             err += dx
             y += sy
     return points
+
+
+def _tile_centers_from_rect(
+    rect: Tuple[float, float, float, float],
+    *,
+    max_points: int = 64,
+) -> List[Tuple[float, float]]:
+    out: List[Tuple[float, float]] = []
+    seen: set[Tuple[int, int]] = set()
+    for tx, ty in footprints_system.iter_tiles_overlapped_by_rect(rect):
+        key = (int(tx), int(ty))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((float(key[0]) + 0.5, float(key[1]) + 0.5))
+        if len(out) >= int(max_points):
+            break
+    return out
+
+
+def _target_probe_points_local(obj: Any, *, max_points: int = 64) -> List[Tuple[float, float]]:
+    try:
+        rect = footprints_system.entity_footprint_local(obj)
+        pts = _tile_centers_from_rect(rect, max_points=max_points)
+        if pts:
+            return pts
+    except Exception:
+        pass
+    pos = getattr(obj, "pos", None)
+    if pos is not None:
+        return [(float(int(pos[0])) + 0.5, float(int(pos[1])) + 0.5)]
+    return []
+
+
+def _target_probe_points_abs(obj: Any, *, max_points: int = 64) -> List[Tuple[float, float]]:
+    try:
+        rect = footprints_system.entity_footprint_abs(obj)
+        pts = _tile_centers_from_rect(rect, max_points=max_points)
+        if pts:
+            return pts
+    except Exception:
+        pass
+    ap = getattr(obj, "abs_pos", None)
+    if ap is not None:
+        return [(float(int(ap[0])) + 0.5, float(int(ap[1])) + 0.5)]
+    pos = getattr(obj, "pos", None)
+    if pos is not None:
+        return [(float(int(pos[0])) + 0.5, float(int(pos[1])) + 0.5)]
+    return []
+
+
+def _target_tiles_local(obj: Any, *, max_tiles: int = 128) -> List[Tuple[int, int]]:
+    try:
+        rect = footprints_system.entity_footprint_local(obj)
+        out: List[Tuple[int, int]] = []
+        seen: set[Tuple[int, int]] = set()
+        for tx, ty in footprints_system.iter_tiles_overlapped_by_rect(rect):
+            key = (int(tx), int(ty))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+            if len(out) >= int(max_tiles):
+                break
+        if out:
+            return out
+    except Exception:
+        pass
+    pos = getattr(obj, "pos", None)
+    if pos is not None:
+        return [(int(pos[0]), int(pos[1]))]
+    return []
+
+
+def _target_probe_centroid_local(obj: Any) -> Optional[Tuple[float, float]]:
+    probes = _target_probe_points_local(obj)
+    if not probes:
+        return None
+    sx = sum(float(p[0]) for p in probes)
+    sy = sum(float(p[1]) for p in probes)
+    n = float(len(probes))
+    if n <= 0.0:
+        return None
+    return (sx / n, sy / n)
 
 
 def _wind_rush_start_vertex_candidates(
@@ -386,13 +472,11 @@ def act_wind_rush(self, actor_id: str, target_vertex: Optional[int]) -> None:
                 continue
             seen_ids.add(tid)
 
-            pos_abs = getattr(obj, "abs_pos", None)
-            if pos_abs is None:
-                pos_abs = self.abs_from_zone_local(lvl.coord, obj.pos)
-            tx = int(pos_abs[0])
-            ty = int(pos_abs[1])
-            # Distance measured from tile-center to the rush polyline.
-            d = _distance_to_path(float(tx) + 0.5, float(ty) + 0.5)
+            probe_points = _target_probe_points_abs(obj)
+            if not probe_points:
+                continue
+            # Distance measured from target footprint probes to rush polyline.
+            d = min(_distance_to_path(px, py) for (px, py) in probe_points)
             if d > hit_radius_tiles:
                 continue
             scale = max(0.0, 1.0 - (d / hit_radius_tiles))
@@ -517,14 +601,20 @@ def act_throw_flask(
         if not getattr(enemy, "alive", True):
             continue
 
-        # Calculate damage based on vertices near enemy.
-        dmg = damage_from_vertices(
-            active_verts,
-            enemy.pos,
-            flask_radius,
-            per_vertex_damage,
-            cap=damage_cap,
-        )
+        # Calculate damage based on vertices near any overlapped target tile.
+        dmg = 0
+        for tile in _target_tiles_local(enemy):
+            probe = damage_from_vertices(
+                active_verts,
+                tile,
+                flask_radius,
+                per_vertex_damage,
+                cap=damage_cap,
+            )
+            if probe > dmg:
+                dmg = probe
+            if dmg >= int(damage_cap):
+                break
 
         if dmg > 0:
             enemy.stats.hp -= dmg
@@ -590,6 +680,7 @@ def act_destabilize(self, actor_id: str) -> None:
     px, py = actor.pos
     radius = 10
     rng = getattr(self, "rng", None)
+    base_rect = footprints_system.entity_footprint_local(actor)
 
     candidates = []
     for dx in range(-radius, radius + 1):
@@ -597,15 +688,57 @@ def act_destabilize(self, actor_id: str) -> None:
             if max(abs(dx), abs(dy)) > radius:
                 continue
             tx, ty = px + dx, py + dy
-            if not level.world.in_bounds(tx, ty):
+            candidate_rect = footprints_system.rect_translate(
+                base_rect,
+                float(tx - px),
+                float(ty - py),
+            )
+            try:
+                in_bounds = footprints_system.rect_within_bounds(
+                    candidate_rect,
+                    width=int(level.world.width),
+                    height=int(level.world.height),
+                )
+            except Exception:
+                in_bounds = bool(level.world.in_bounds(tx, ty))
+            if not in_bounds:
                 continue
-            if not level.world.is_walkable(tx, ty):
+            if not footprints_system.world_walkable_for_rect(level.world, candidate_rect):
+                continue
+            if entity_ops_system.first_actor_overlapping_rect(
+                level,
+                candidate_rect,
+                exclude_id=actor_id,
+            ):
+                continue
+            if entity_ops_system.blocking_entity_overlapping_rect(
+                level,
+                candidate_rect,
+                exclude_ids={actor_id},
+                ignore_actor_entities=True,
+            ):
                 continue
             candidates.append((tx, ty))
 
     if candidates:
         dest = rng.choice(candidates) if rng else candidates[0]
-        actor.pos = dest
+        moved = False
+        try:
+            dest_abs = self.abs_from_zone_local(level.coord, dest)
+            self._move_actor_to_abs(actor, dest_abs, from_level=level)
+            moved = True
+        except Exception:
+            moved = False
+        if not moved:
+            try:
+                self._set_entity_local_pos(actor, dest)
+            except Exception:
+                actor.pos = dest
+            try:
+                dest_abs = self.abs_from_zone_local(level.coord, dest)
+                self._set_entity_abs_pos(actor, dest_abs)
+            except Exception:
+                pass
         if actor_id == self.player_id:
             self.log.add(f"You destabilize and reappear at {dest[0]},{dest[1]}.")
         else:
@@ -761,16 +894,24 @@ def act_ignite(self, actor_id: str) -> None:
             include_actors=True,
             include_entities=True,
         ):
-            pos = getattr(obj, "pos", None)
-            if not pos:
+            tiles = _target_tiles_local(obj)
+            if not tiles:
                 continue
-            tx, ty = int(round(pos[0])), int(round(pos[1]))
             dmg_val = 0.0
-            if (tx, ty) in direct_tiles:
-                redness = direct_tiles[(tx, ty)]
+            best_direct = 0.0
+            best_indirect = 0.0
+            for tile in tiles:
+                red = float(direct_tiles.get(tile, 0.0))
+                if red > best_direct:
+                    best_direct = red
+                red_i = float(indirect_tiles.get(tile, 0.0))
+                if red_i > best_indirect:
+                    best_indirect = red_i
+            if best_direct > 0.0:
+                redness = best_direct
                 dmg_val = base_direct * (redness / 255.0) * mult
-            elif (tx, ty) in indirect_tiles:
-                redness = indirect_tiles[(tx, ty)]
+            elif best_indirect > 0.0:
+                redness = best_indirect
                 dmg_val = base_indirect * (redness / 255.0) * mult
             if dmg_val <= 0:
                 continue
@@ -797,7 +938,10 @@ def act_ignite(self, actor_id: str) -> None:
                                 killer_is_player=caster_is_player,
                             )
                         elif tid in level.entities:
-                            del level.entities[tid]
+                            if hasattr(self, "_remove_entity"):
+                                self._remove_entity(level, obj, reason="destroyed_ignite")
+                            else:
+                                del level.entities[tid]
                             if caster_is_player:
                                 name = getattr(obj, "name", None) or "object"
                                 self.log.add(f"The {name} burns away.")
@@ -930,16 +1074,24 @@ def act_regrow(self, actor_id: str) -> None:
                 combined[eid] = ent
 
         for tid, obj in combined.items():
-            pos = getattr(obj, "pos", None)
-            if not pos:
+            tiles = _target_tiles_local(obj)
+            if not tiles:
                 continue
-            tx, ty = int(round(pos[0])), int(round(pos[1]))
             heal_val = 0.0
-            if (tx, ty) in direct_tiles:
-                gval = direct_tiles[(tx, ty)]
+            best_direct = 0.0
+            best_indirect = 0.0
+            for tile in tiles:
+                gv = float(direct_tiles.get(tile, 0.0))
+                if gv > best_direct:
+                    best_direct = gv
+                gv_i = float(indirect_tiles.get(tile, 0.0))
+                if gv_i > best_indirect:
+                    best_indirect = gv_i
+            if best_direct > 0.0:
+                gval = best_direct
                 heal_val = base_direct * (gval / 255.0) * mult
-            elif (tx, ty) in indirect_tiles:
-                gval = indirect_tiles[(tx, ty)]
+            elif best_indirect > 0.0:
+                gval = best_indirect
                 heal_val = base_indirect * (gval / 255.0) * mult
             if heal_val <= 0:
                 continue
@@ -1147,18 +1299,16 @@ def act_energy_kick(self, actor_id: str) -> None:
         include_actors=True,
         include_entities=True,
     ):
-        pos = getattr(obj, "pos", None)
         stats = getattr(obj, "stats", None)
-        if not pos or stats is None or not hasattr(stats, "hp"):
+        if stats is None or not hasattr(stats, "hp"):
             continue
-        tx = float(pos[0]) + 0.5
-        ty = float(pos[1]) + 0.5
+        probes = _target_probe_points_local(obj)
+        if not probes:
+            continue
 
         total_dmg = 0
         for (kx, ky), source_nodes in kick_sources:
-            dx = tx - kx
-            dy = ty - ky
-            dist = math.hypot(dx, dy)
+            dist = min(math.hypot(px - kx, py - ky) for (px, py) in probes)
             if dist > radius:
                 continue
             falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
@@ -1200,7 +1350,10 @@ def act_energy_kick(self, actor_id: str) -> None:
 
         # Non-actor entities with HP are removed when broken.
         if int(getattr(stats, "hp", 0)) <= 0 and tid in level.entities:
-            del level.entities[tid]
+            if hasattr(self, "_remove_entity"):
+                self._remove_entity(level, obj, reason="destroyed_energy_kick")
+            else:
+                del level.entities[tid]
             if caster_is_player:
                 name = getattr(obj, "name", None) or "object"
                 self.log.add(f"The {name} shatters.")
@@ -1334,18 +1487,16 @@ def act_palm_burst(self, actor_id: str) -> None:
         include_actors=True,
         include_entities=False,
     ):
-        pos = getattr(obj, "pos", None)
         stats = getattr(obj, "stats", None)
-        if not pos or stats is None or not hasattr(stats, "hp"):
+        if stats is None or not hasattr(stats, "hp"):
             continue
-        tx = float(pos[0]) + 0.5
-        ty = float(pos[1]) + 0.5
+        probes = _target_probe_points_local(obj)
+        if not probes:
+            continue
 
         total_dmg = 0
         for (px, py), source_nodes in burst_sources:
-            dx = tx - px
-            dy = ty - py
-            dist = math.hypot(dx, dy)
+            dist = min(math.hypot(tx - px, ty - py) for (tx, ty) in probes)
             if dist > radius:
                 continue
             falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
@@ -1493,18 +1644,16 @@ def act_mirror_strike(self, actor_id: str) -> None:
         include_actors=True,
         include_entities=False,
     ):
-        pos = getattr(obj, "pos", None)
         stats = getattr(obj, "stats", None)
-        if not pos or stats is None or not hasattr(stats, "hp"):
+        if stats is None or not hasattr(stats, "hp"):
             continue
-        tx = float(pos[0]) + 0.5
-        ty = float(pos[1]) + 0.5
+        probes = _target_probe_points_local(obj)
+        if not probes:
+            continue
 
         total_dmg = 0
         for (sx, sy), source_nodes in strike_entries:
-            dx = tx - sx
-            dy = ty - sy
-            dist = math.hypot(dx, dy)
+            dist = min(math.hypot(px - sx, py - sy) for (px, py) in probes)
             if dist > radius:
                 continue
             falloff = max(0.0, 1.0 - (dist / max(radius, r_eps)))
@@ -1627,14 +1776,15 @@ def act_aggressive_vines(self, actor_id: str) -> None:
         include_actors=True,
         include_entities=False,
     ):
-        pos = getattr(obj, "pos", None)
-        if not pos:
+        center = _target_probe_centroid_local(obj)
+        if center is None:
             continue
+        cx, cy = center
         hostile_abs.append((
             str(tid),
             obj,
-            float(pos[0]) + abs_ox + 0.5,
-            float(pos[1]) + abs_oy + 0.5,
+            float(cx) + abs_ox,
+            float(cy) + abs_oy,
         ))
 
     if not hostile_abs:
@@ -1898,11 +2048,10 @@ def act_choking_vines(self, actor_id: str) -> None:
         include_actors=True,
         include_entities=False,
     ):
-        pos = getattr(obj, "pos", None)
-        if not pos:
+        center = _target_probe_centroid_local(obj)
+        if center is None:
             continue
-        wx = float(pos[0]) + 0.5
-        wy = float(pos[1]) + 0.5
+        wx, wy = center
         lx = wx - float(anchor[0])
         ly = wy - float(anchor[1])
         hostile_local.append((str(tid), obj, wx, wy, lx, ly))
@@ -2239,11 +2388,10 @@ def _step_rune_choking_vines(game: "Game", level: Any, state: dict[str, Any]) ->
         include_actors=True,
         include_entities=False,
     ):
-        pos = getattr(obj, "pos", None)
-        if not pos:
+        center = _target_probe_centroid_local(obj)
+        if center is None:
             continue
-        wx = float(pos[0]) + 0.5
-        wy = float(pos[1]) + 0.5
+        wx, wy = center
         lx = wx - float(anchor[0])
         ly = wy - float(anchor[1])
         hostiles.append((str(tid), obj, wx, wy, lx, ly))

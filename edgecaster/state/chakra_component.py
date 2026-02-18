@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Tuple
+
+
+Vec2 = Tuple[float, float]
+
+
+@dataclass
+class ChakraNode:
+    node_id: str
+    kind: str = "core"
+    active: bool = True
+    abs_pos: Optional[Vec2] = None
+    channels: Dict[str, float] = field(default_factory=dict)
+    tags: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "node_id": str(self.node_id),
+            "kind": str(self.kind or "core"),
+            "active": bool(self.active),
+            "channels": {str(k): float(v) for k, v in (self.channels or {}).items()},
+            "tags": dict(self.tags or {}),
+        }
+        if self.abs_pos is not None:
+            out["abs_pos"] = [float(self.abs_pos[0]), float(self.abs_pos[1])]
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChakraNode":
+        raw_pos = data.get("abs_pos")
+        abs_pos: Optional[Vec2] = None
+        if isinstance(raw_pos, (list, tuple)) and len(raw_pos) >= 2:
+            abs_pos = (float(raw_pos[0]), float(raw_pos[1]))
+        channels_raw = data.get("channels")
+        channels: Dict[str, float] = {}
+        if isinstance(channels_raw, dict):
+            for k, v in channels_raw.items():
+                try:
+                    channels[str(k)] = float(v)
+                except Exception:
+                    continue
+        return cls(
+            node_id=str(data.get("node_id") or ""),
+            kind=str(data.get("kind") or "core"),
+            active=bool(data.get("active", True)),
+            abs_pos=abs_pos,
+            channels=channels,
+            tags=dict(data.get("tags") or {}),
+        )
+
+
+@dataclass
+class ChakraEdge:
+    edge_id: str
+    src_node_id: str
+    dst_node_id: str
+    kind: str = "contains"
+    propagation: str = "automatic"
+    weight: float = 1.0
+    tags: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "edge_id": str(self.edge_id),
+            "src_node_id": str(self.src_node_id),
+            "dst_node_id": str(self.dst_node_id),
+            "kind": str(self.kind or "contains"),
+            "propagation": str(self.propagation or "automatic"),
+            "weight": float(self.weight),
+            "tags": dict(self.tags or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChakraEdge":
+        return cls(
+            edge_id=str(data.get("edge_id") or ""),
+            src_node_id=str(data.get("src_node_id") or ""),
+            dst_node_id=str(data.get("dst_node_id") or ""),
+            kind=str(data.get("kind") or "contains"),
+            propagation=str(data.get("propagation") or "automatic"),
+            weight=float(data.get("weight", 1.0) or 1.0),
+            tags=dict(data.get("tags") or {}),
+        )
+
+
+@dataclass
+class ChakraComponent:
+    root_node_id: str
+    nodes: Dict[str, ChakraNode] = field(default_factory=dict)
+    edges: Dict[str, ChakraEdge] = field(default_factory=dict)
+    recursion_depth_cap: int = 7
+    tags: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "root_node_id": str(self.root_node_id),
+            "nodes": {str(k): v.to_dict() for k, v in (self.nodes or {}).items()},
+            "edges": {str(k): v.to_dict() for k, v in (self.edges or {}).items()},
+            "recursion_depth_cap": int(self.recursion_depth_cap),
+            "tags": dict(self.tags or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChakraComponent":
+        nodes_raw = data.get("nodes")
+        nodes: Dict[str, ChakraNode] = {}
+        if isinstance(nodes_raw, dict):
+            for k, v in nodes_raw.items():
+                if isinstance(v, dict):
+                    node = ChakraNode.from_dict(v)
+                    if not node.node_id:
+                        node.node_id = str(k)
+                    nodes[str(node.node_id)] = node
+
+        edges_raw = data.get("edges")
+        edges: Dict[str, ChakraEdge] = {}
+        if isinstance(edges_raw, dict):
+            for k, v in edges_raw.items():
+                if isinstance(v, dict):
+                    edge = ChakraEdge.from_dict(v)
+                    if not edge.edge_id:
+                        edge.edge_id = str(k)
+                    edges[str(edge.edge_id)] = edge
+
+        return cls(
+            root_node_id=str(data.get("root_node_id") or ""),
+            nodes=nodes,
+            edges=edges,
+            recursion_depth_cap=int(data.get("recursion_depth_cap", 7) or 7),
+            tags=dict(data.get("tags") or {}),
+        )
+
+
+def default_core_node_id(entity_id: str) -> str:
+    return f"{str(entity_id)}:core"
+
+
+def default_core_component(
+    *,
+    entity_id: str,
+    max_hp: Optional[float] = None,
+    mass: float = 1.0,
+) -> ChakraComponent:
+    core_id = default_core_node_id(str(entity_id))
+    channels: Dict[str, float] = {"mass": float(mass)}
+    if max_hp is not None:
+        channels["hp"] = float(max_hp)
+    node = ChakraNode(node_id=core_id, kind="core", active=True, channels=channels)
+    return ChakraComponent(
+        root_node_id=core_id,
+        nodes={core_id: node},
+        edges={},
+        recursion_depth_cap=7,
+        tags={},
+    )
+
+
+def coerce_chakra_component(
+    raw: Any,
+    *,
+    entity_id: str,
+    max_hp: Optional[float] = None,
+    mass: float = 1.0,
+) -> ChakraComponent:
+    if isinstance(raw, ChakraComponent):
+        comp = raw
+    elif isinstance(raw, dict):
+        comp = ChakraComponent.from_dict(raw)
+    else:
+        comp = ChakraComponent(root_node_id="", nodes={}, edges={}, recursion_depth_cap=7, tags={})
+
+    core_id = str(comp.root_node_id or default_core_node_id(entity_id))
+    comp.root_node_id = core_id
+    if core_id not in comp.nodes:
+        comp.nodes[core_id] = ChakraNode(node_id=core_id, kind="core", active=True, channels={})
+
+    core = comp.nodes[core_id]
+    if not isinstance(core.channels, dict):
+        core.channels = {}
+    core.channels.setdefault("mass", float(mass))
+    if max_hp is not None:
+        core.channels.setdefault("hp", float(max_hp))
+    if not core.kind:
+        core.kind = "core"
+    core.active = bool(getattr(core, "active", True))
+    comp.recursion_depth_cap = max(1, min(7, int(getattr(comp, "recursion_depth_cap", 7) or 7)))
+    return comp
+

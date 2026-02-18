@@ -327,7 +327,7 @@ class TestHandlePlayerDeath:
 
         game.set_urgent.assert_called_once_with(
             "by way of Dragon",
-            title="You unravel...",
+            title="You die. This world, now doomed, spirals infinitely toward decay and despair...",
             choices=["Continue..."],
         )
 
@@ -487,6 +487,25 @@ class TestKillActor:
             kill_actor(mock_game, level, actor)
 
         mock_game._on_enemy_killed.assert_called_once_with(actor)
+
+    def test_marks_lineage_actor_dead(self, mock_game):
+        """Should persist death for deterministic lineage actors."""
+        level = MagicMock()
+        level.actors = {"enemy_1": MagicMock()}
+        level.entities = {"enemy_1": MagicMock()}
+
+        actor = MagicMock()
+        actor.id = "enemy_1"
+        actor.pos = (5, 5)
+        actor.proto_id = None
+        actor.tags = {"lineage_id": "site:a/npc:b"}
+        actor.stats = MagicMock()
+        actor.stats.hp = 0
+
+        with patch("edgecaster.systems.reputation.apply_rep_event"):
+            kill_actor(mock_game, level, actor)
+
+        mock_game.mark_actor_dead.assert_called_once_with(actor, reason="killed")
 
 
 class TestFreeChainedBrutes:
