@@ -51,6 +51,15 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "anchor_channel": "Spend Coherence Crystals to seal a nearby fracture.",
     "anchor_stabilize": "Hold the anchor core together during final stabilization.",
     "anchor_purge": "Detonate stored coherence at the core to blast nearby demons.",
+    "invoke_god": "Invoke a god whose chakra signature matches your active chakras.",
+    "blood_edge": "Buff your next melee attack with bonus damage from The Dark Knife.",
+    "reaper_mark": "Mark a hostile target for death. Heal if it dies within 10 turns.",
+    "verdant_mend": "Heal with the power of The Verdant Mother.",
+    "root_ward": "Grow blocking roots on adjacent tiles for 5 turns.",
+    "all_seeing": "Expand your FOV radius by 3 for 15 turns.",
+    "piercing_gaze": "See through walls in a line toward the target.",
+    "god_iron_skin": "Harden your body with The Iron Spine's blessing.",
+    "unbreakable": "Survive one lethal hit with 1 HP. Costs 30 favor.",
 }
 
 
@@ -107,6 +116,43 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
         "Requires standing at the anchor core.",
         "Consumes extra Coherence Crystals for a defensive burst.",
         "Clears active catastrophe telegraphs once on cast.",
+    ),
+    "invoke_god": (
+        "Checks your active body chakras against known god signatures.",
+        "If multiple gods match, you choose which to invoke.",
+        "Only one god may be invoked at a time.",
+    ),
+    "blood_edge": (
+        "Bonus damage = floor(favor * 0.2). Consumed on next melee hit.",
+        "Requires The Dark Knife to be invoked.",
+    ),
+    "reaper_mark": (
+        "If the marked target dies within 10 heartbeats, you heal.",
+        "Heal amount scales with favor.",
+    ),
+    "verdant_mend": (
+        "Heals 15% max HP plus bonus scaling with favor.",
+        "Requires The Verdant Mother to be invoked.",
+    ),
+    "root_ward": (
+        "Spawns blocking roots on up to 8 adjacent tiles.",
+        "Roots dissolve after 5 heartbeats.",
+    ),
+    "all_seeing": (
+        "Grants +3 FOV radius for 15 heartbeats.",
+        "Requires The Hollow Eye to be invoked.",
+    ),
+    "piercing_gaze": (
+        "Reveals tiles in a line toward the target, ignoring walls.",
+        "Effect lasts 10 heartbeats.",
+    ),
+    "god_iron_skin": (
+        "Defense bonus = 2 + floor(favor * 0.02) for 20 heartbeats.",
+        "Requires The Iron Spine to be invoked.",
+    ),
+    "unbreakable": (
+        "If you would die, survive with 1 HP instead.",
+        "One-time effect. Costs 30 favor from The Iron Spine.",
     ),
 }
 

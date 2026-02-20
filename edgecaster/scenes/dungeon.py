@@ -694,6 +694,8 @@ class DungeonScene(Scene):
                 game.chakra_requested = False
             if hasattr(game, "blade_editor_requested"):
                 game.blade_editor_requested = False
+            if hasattr(game, "gods_menu_requested"):
+                game.gods_menu_requested = False
             renderer.start_dungeon(game)
             self._started = True
 
@@ -798,6 +800,13 @@ class DungeonScene(Scene):
             game.factions_requested = False
             from .factions_scene import FactionsScene
             manager.push_scene(FactionsScene(game))
+            return
+
+        # 4c) Gods menu requested -> push gods overlay
+        if getattr(game, "gods_menu_requested", False):
+            game.gods_menu_requested = False
+            from .gods_scene import GodsScene
+            manager.push_scene(GodsScene(game))
             return
 
         # 5) Fractal editor requested -> open editor scene
@@ -2484,6 +2493,12 @@ class DungeonScene(Scene):
         if kind == "open_factions":
             if not in_aim_mode:
                 setattr(game, "factions_requested", True)
+                renderer.quit_requested = True
+            return
+
+        if kind == "open_gods_menu":
+            if not in_aim_mode:
+                setattr(game, "gods_menu_requested", True)
                 renderer.quit_requested = True
             return
 

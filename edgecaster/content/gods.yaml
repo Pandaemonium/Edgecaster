@@ -1,0 +1,108 @@
+# God definitions
+# Each god is associated with a chakra signature (set of body chakra node IDs).
+# When the player's active chakras are a superset of a god's signature,
+# the player may invoke that god via the invoke_god action.
+
+- id: dark_knife
+  name: "The Dark Knife"
+  glyph: "K"
+  color: [180, 0, 0]
+  description: "Death god who savors every kill."
+  chakra_signature: ["body", "arm", "arm.hand"]
+  domain: "death"
+  rival_domains: ["life", "growth"]
+  favor_decay_rate: 0.5
+  favor_thresholds:
+    noticed: 10
+    blessed: 50
+    exalted: 100
+  abilities:
+    - id: blood_edge
+      name: "Blood Edge"
+      min_favor: 10
+      description: "Next melee attack deals bonus damage equal to 20% of favor."
+    - id: reaper_mark
+      name: "Reaper Mark"
+      min_favor: 50
+      description: "Mark a target. If it dies within 10 turns, regain HP."
+  favor_triggers:
+    kill_hostile: 3
+    kill_any: 1
+
+- id: verdant_mother
+  name: "The Verdant Mother"
+  glyph: "V"
+  color: [60, 200, 80]
+  description: "Goddess of growth and renewal."
+  chakra_signature: ["body", "body.torso", "body.chest"]
+  domain: "growth"
+  rival_domains: ["death"]
+  favor_decay_rate: 0.3
+  favor_thresholds:
+    noticed: 10
+    blessed: 50
+    exalted: 100
+  abilities:
+    - id: verdant_mend
+      name: "Verdant Mend"
+      min_favor: 10
+      description: "Heal 15% max HP. Scales with favor."
+    - id: root_ward
+      name: "Root Ward"
+      min_favor: 50
+      description: "Roots grow around you, blocking adjacent movement for 5 turns."
+  favor_triggers:
+    kill_hostile: 1
+    invoke: 2
+
+- id: hollow_eye
+  name: "The Hollow Eye"
+  glyph: "O"
+  color: [160, 120, 255]
+  description: "God of sight and secrets."
+  chakra_signature: ["body", "head", "head.skull"]
+  domain: "sight"
+  rival_domains: []
+  favor_decay_rate: 0.2
+  favor_thresholds:
+    noticed: 10
+    blessed: 50
+    exalted: 100
+  abilities:
+    - id: all_seeing
+      name: "All-Seeing"
+      min_favor: 10
+      description: "Reveal all entities in FOV radius +3 for 15 turns."
+    - id: piercing_gaze
+      name: "Piercing Gaze"
+      min_favor: 50
+      description: "See through walls in a cone for 10 turns."
+  favor_triggers:
+    explore_new_tile: 1
+    invoke: 3
+
+- id: iron_spine
+  name: "The Iron Spine"
+  glyph: "I"
+  color: [180, 180, 200]
+  description: "God of endurance and fortification."
+  chakra_signature: ["body", "body.torso", "body.back"]
+  domain: "fortification"
+  rival_domains: []
+  favor_decay_rate: 0.4
+  favor_thresholds:
+    noticed: 10
+    blessed: 50
+    exalted: 100
+  abilities:
+    - id: god_iron_skin
+      name: "Iron Skin"
+      min_favor: 10
+      description: "+2 defense for 20 turns. Scales with favor."
+    - id: unbreakable
+      name: "Unbreakable"
+      min_favor: 50
+      description: "Survive one lethal hit with 1 HP. Consumes 30 favor."
+  favor_triggers:
+    take_damage: 1
+    kill_hostile: 1

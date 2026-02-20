@@ -117,6 +117,8 @@ from edgecaster.systems import blade_runtime as blade_runtime_system
 from edgecaster.systems import chakras as chakras_system
 from edgecaster.systems import chakra_effects as chakra_effects_system
 from edgecaster.systems import chakra_items as chakra_items_system
+from edgecaster.systems import gods as gods_system
+from edgecaster.systems import god_abilities as god_abilities_system
 from edgecaster.systems import perf_profiler
 from edgecaster.systems import telemetry as telemetry_system
 from . import lorenz
@@ -452,6 +454,9 @@ class Game:
         # Persistent per-entity runtime state (ownership, lifecycle, deltas).
         # Keyed by stable entity_id (falls back to runtime id during migration).
         self.entity_state: Dict[str, Dict[str, Any]] = {}
+        # God system state
+        self.god_favor: Dict[str, Any] = {}
+        self.god_registry: Dict[str, Any] = gods_system.load_gods()
         # Cut over Starttsgard to entity+resolver ownership (legacy starting_zone spawn disabled).
         self.starttsgard_cutover_enabled: bool = True
         # start roughly at world center so Julia coords near (0,0)
@@ -716,6 +721,8 @@ class Game:
             ]
 
         # For now, all other classes keep only move/wait (empty ability bar).
+        # All classes can invoke gods.
+        actions.append("invoke_god")
         player.actions = tuple(actions)
 
         # Tag as 'the player'
@@ -4262,6 +4269,12 @@ class Game:
     # --- FOV ---
 
     def _on_enemy_killed(self, enemy: Actor) -> None:
+        # God system: grant favor + check reaper mark
+        try:
+            gods_system.on_kill_trigger(self, enemy)
+            god_abilities_system.reaper_mark_on_kill(self, enemy)
+        except Exception:
+            pass
         if enemy.faction != "hostile":
             return
         if enemy.tags.get("_xp_awarded"):
@@ -4383,6 +4396,8 @@ class Game:
             player = level.actors.get(self.player_id)
             if player and self._has_status(player, "third_eye"):
                 view_bonus += 10
+            if player and self._has_status(player, "all_seeing"):
+                view_bonus += 3
         except Exception:
             pass
         radius = int(radius + view_bonus)

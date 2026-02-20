@@ -102,6 +102,15 @@ def advance_time(
     # Chakra charge + resonance tick
     chakra_charge_tick(game, level, delta)
 
+    # God system tick (favor decay + status cleanup)
+    try:
+        from edgecaster.systems import gods as gods_system
+        from edgecaster.systems import god_abilities as god_abilities_system
+        gods_system.tick_gods(game, delta)
+        god_abilities_system.tick_god_statuses(game, level, delta)
+    except Exception:
+        pass
+
     # Pattern motion tick
     pattern_motion.step_motion(game, level, delta)
 

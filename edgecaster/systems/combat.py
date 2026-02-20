@@ -288,6 +288,13 @@ def attack(game: "Game", level: "LevelState", attacker: "Actor", defender: "Acto
     except Exception:
         pass
 
+    # God ability: unbreakable (survive lethal with 1 HP).
+    try:
+        from edgecaster.systems import god_abilities as _god_ab
+        dmg = _god_ab.unbreakable_check(game, defender, dmg)
+    except Exception:
+        pass
+
     _telemetry(
         game,
         "attack_resolved",
@@ -296,6 +303,21 @@ def attack(game: "Game", level: "LevelState", attacker: "Actor", defender: "Acto
         damage=int(dmg),
     )
     apply_damage(game, attacker, defender, dmg)
+
+    # God ability: consume blood edge buff after hitting.
+    try:
+        from edgecaster.systems import god_abilities as _god_ab
+        _god_ab.blood_edge_consume(game, attacker)
+    except Exception:
+        pass
+
+    # God ability: grant favor when player takes damage.
+    try:
+        from edgecaster.systems import gods as _gods_sys
+        if defender.id == game.player_id:
+            _gods_sys.on_damage_taken_trigger(game)
+    except Exception:
+        pass
 
     # Chakra passive: counter damage (elbow chakra).
     try:

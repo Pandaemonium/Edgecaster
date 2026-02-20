@@ -77,6 +77,7 @@ COMMAND_CONTEXTS = {
     "escape": {"global"},
     "show_help": {"global"},
     "open_abilities": {"dungeon"},
+    "open_gods_menu": {"dungeon"},
     "yawp": {"dungeon"},
 }
 
@@ -115,6 +116,7 @@ BASE_KEYBIND_CATEGORIES: List[Tuple[str, List[Tuple[str, str]]]] = [
         ("open_inventory", "Inventory"),
         ("open_blade_editor", "Blade Editor"),
         ("open_factions", "Factions & Reputation"),
+        ("open_gods_menu", "Gods Menu"),
         ("examine", "Examine"),
         ("toggle_fullscreen", "Toggle Fullscreen"),
         ("escape", "Back / Cancel"),

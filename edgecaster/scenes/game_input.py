@@ -89,6 +89,7 @@ DEFAULT_BINDINGS: Dict[str, List[int]] = {
     # ability bar page cycling
     "ability_page_prev": [encode_keybinding(pygame.K_PAGEUP)],
     "ability_page_next": [encode_keybinding(pygame.K_PAGEDOWN), encode_keybinding(pygame.K_TAB)],
+    "open_gods_menu": [encode_keybinding(pygame.K_g, pygame.KMOD_CTRL)],
 }
 
 # Default movement bindings (keycode -> (dx, dy))
@@ -302,6 +303,7 @@ class GameInput:
             "quick_activate_all",
             "look_action",
             "center_camera",
+            "open_gods_menu",
 
         ):
             if combined in self.bindings.get(kind, []):

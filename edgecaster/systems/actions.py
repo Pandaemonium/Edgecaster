@@ -3160,3 +3160,84 @@ def _action_spinal_surge(game: Any, actor_id: str, **kwargs: Any) -> None:
     chakra_items_system.sync_actor_chakra_state(actor)
 
     game.log.add("Energy surges up your spine, flooding every channel!")
+
+
+# ---------------------------------------------------------------------------
+# God actions
+# ---------------------------------------------------------------------------
+
+@register_action("invoke_god", label="Invoke God", speed="slow", show_in_bar=True)
+def _action_invoke_god(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Invoke a god whose chakra signature matches your active chakras."""
+    from edgecaster.systems import gods as gods_system
+    gods_system.act_invoke_god(game, actor_id, **kwargs)
+
+
+@register_action("blood_edge", label="Blood Edge", speed="fast", show_in_bar=True, cooldown_ticks=15)
+def _action_blood_edge(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Buff next melee attack with bonus damage from The Dark Knife."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_blood_edge(game, actor_id, **kwargs)
+
+
+@register_action(
+    "reaper_mark",
+    label="Reaper Mark",
+    speed="fast",
+    show_in_bar=True,
+    cooldown_ticks=30,
+    targeting=TargetingSpec(kind="tile", mode="aim", max_range=6),
+)
+def _action_reaper_mark(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Mark a hostile target for death. Heal if it dies within 10 turns."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_reaper_mark(game, actor_id, **kwargs)
+
+
+@register_action("verdant_mend", label="Verdant Mend", speed="fast", show_in_bar=True, cooldown_ticks=20)
+def _action_verdant_mend(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Heal with the power of The Verdant Mother."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_verdant_mend(game, actor_id, **kwargs)
+
+
+@register_action("root_ward", label="Root Ward", speed="slow", show_in_bar=True, cooldown_ticks=40)
+def _action_root_ward(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Grow blocking roots on adjacent tiles."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_root_ward(game, actor_id, **kwargs)
+
+
+@register_action("all_seeing", label="All-Seeing", speed="fast", show_in_bar=True, cooldown_ticks=25)
+def _action_all_seeing(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Expand your vision with the power of The Hollow Eye."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_all_seeing(game, actor_id, **kwargs)
+
+
+@register_action(
+    "piercing_gaze",
+    label="Piercing Gaze",
+    speed="fast",
+    show_in_bar=True,
+    cooldown_ticks=30,
+    targeting=TargetingSpec(kind="tile", mode="aim", max_range=8),
+)
+def _action_piercing_gaze(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """See through walls in a line toward the target."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_piercing_gaze(game, actor_id, **kwargs)
+
+
+@register_action("god_iron_skin", label="Iron Skin", speed="fast", show_in_bar=True, cooldown_ticks=25)
+def _action_god_iron_skin(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Harden your body with The Iron Spine's blessing."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_god_iron_skin(game, actor_id, **kwargs)
+
+
+@register_action("unbreakable", label="Unbreakable", speed="instant", show_in_bar=True, cooldown_ticks=60)
+def _action_unbreakable(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Survive one lethal hit with 1 HP. Costs 30 favor."""
+    from edgecaster.systems import god_abilities
+    god_abilities.act_unbreakable(game, actor_id, **kwargs)
