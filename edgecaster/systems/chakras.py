@@ -1369,7 +1369,7 @@ def chakras_to_seed_pattern(
 
     # Add vertices for each active chakra (including sub-schema nodes)
     for node_id, pos in positions.items():
-        idx = pattern.add_vertex(pos, color="chakra", power=1.0)
+        idx = pattern.add_vertex(pos, color="chakra", power=1.0, tags={"chakra_node": node_id})
         node_to_idx[node_id] = idx
         node_order.append(node_id)
 

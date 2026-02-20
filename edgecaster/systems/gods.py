@@ -41,6 +41,7 @@ class GodDef:
     favor_thresholds: Dict[str, int]
     abilities: List[Dict[str, Any]]
     favor_triggers: Dict[str, int]
+    shrine: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -48,7 +49,7 @@ class GodFavorState:
     """Per-god favor tracking for a player."""
     current_favor: float = 0.0
     peak_favor: float = 0.0
-    invoked: bool = False
+    pattern_active: bool = False
     last_invoked_tick: int = 0
     total_invocations: int = 0
 
@@ -84,6 +85,7 @@ def _parse_god(entry: dict) -> GodDef:
         favor_thresholds={str(k): int(v) for k, v in thresholds.items()},
         abilities=[dict(a) for a in abilities],
         favor_triggers={str(k): int(v) for k, v in triggers.items()},
+        shrine=dict(entry["shrine"]) if entry.get("shrine") else None,
     )
 
 
@@ -218,8 +220,6 @@ def _check_tier_transition(
                 game.log.add(f"{god.name} has {tier_name} you.")
             except Exception:
                 pass
-            # Update player actions when abilities unlock
-            _sync_god_abilities(game, god.id)
 
 
 def decay_favor(game: "Game", dt_ticks: int) -> None:
@@ -244,134 +244,88 @@ def decay_favor(game: "Game", dt_ticks: int) -> None:
 def _check_tier_loss(
     game: "Game", god: GodDef, old_favor: float, new_favor: float
 ) -> None:
-    """Remove abilities when favor drops below a threshold."""
+    """Log when favor drops below a threshold. Ability sync happens in tick_gods."""
     for tier_name, threshold in sorted(god.favor_thresholds.items(), key=lambda t: t[1]):
         if old_favor >= threshold > new_favor:
-            _sync_god_abilities(game, god.id)
-            return
+            try:
+                game.log.add(f"{god.name}'s {tier_name} fades.")
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
-# Invoke / Dismiss
+# Pattern-based access (replaces invoke)
 # ---------------------------------------------------------------------------
 
-def invoke_god(game: "Game", god_id: str) -> bool:
-    """Invoke a god. Returns True if successful."""
-    god = get_god(god_id)
-    if god is None:
-        return False
-
-    # Dismiss any currently invoked god
-    if hasattr(game, "god_favor"):
-        for gid, state in game.god_favor.items():
-            if state.invoked and gid != god_id:
-                dismiss_god(game, gid)
-
-    state = _ensure_favor(game, god_id)
-    state.invoked = True
-    try:
-        state.last_invoked_tick = game._level().current_tick
-    except Exception:
-        pass
-    state.total_invocations += 1
-
-    # Invoke favor trigger
-    invoke_favor = god.favor_triggers.get("invoke", 0)
-    if invoke_favor > 0:
-        grant_favor(game, god_id, invoke_favor)
-
-    try:
-        game.log.add(f"You invoke {god.name}.")
-    except Exception:
-        pass
-
-    # Add god abilities to player actions
-    _sync_god_abilities(game, god_id)
-    return True
-
-
-def dismiss_god(game: "Game", god_id: str) -> None:
-    """Dismiss a currently invoked god."""
-    state = _ensure_favor(game, god_id)
-    if not state.invoked:
-        return
-    state.invoked = False
-    god = get_god(god_id)
-
-    # Remove god abilities from player actions
-    _remove_god_abilities(game, god_id)
-
-    if god is not None:
-        try:
-            game.log.add(f"{god.name} recedes.")
-        except Exception:
-            pass
-
-
-def get_invoked_god(game: "Game") -> Optional[str]:
-    """Return the ID of the currently invoked god, or None."""
+def get_active_gods(game: "Game") -> List[str]:
+    """Return IDs of gods whose holy symbol pattern is currently active."""
     if not hasattr(game, "god_favor"):
-        return None
-    for god_id, state in game.god_favor.items():
-        if state.invoked:
-            return god_id
-    return None
+        return []
+    return [gid for gid, state in game.god_favor.items() if state.pattern_active]
 
 
-# ---------------------------------------------------------------------------
-# Action loadout management
-# ---------------------------------------------------------------------------
+def sync_all_god_abilities(game: "Game") -> None:
+    """Check player's active chakras against all gods.
 
-def _sync_god_abilities(game: "Game", god_id: str) -> None:
-    """Add/remove god abilities based on current favor and invocation status."""
-    god = get_god(god_id)
-    if god is None:
+    For each god whose signature matches, add abilities unlocked by favor.
+    For each god whose signature does NOT match, remove all abilities.
+    """
+    registry = get_god_registry()
+    if not registry:
         return
-    state = _ensure_favor(game, god_id)
-
     try:
+        from edgecaster.systems import chakra_items as chakra_items_system
         level = game._level()
         player = level.actors.get(game.player_id)
-        if player is None:
+        if player is None or not getattr(player, "alive", False):
             return
+        chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
+        if chakra_state is None:
+            return
+        active = set(chakra_state.active)
     except Exception:
         return
 
-    actions = list(player.actions)
-    favor = state.current_favor
+    matched = matching_gods(registry, active)
+    matched_ids = {g.id for g in matched}
 
-    for ability in god.abilities:
-        aid = ability.get("id", "")
-        if not aid:
-            continue
-        if state.invoked and favor >= ability.get("min_favor", 0):
-            if aid not in actions:
-                actions.append(aid)
+    actions = list(player.actions)
+
+    for god_id, god in registry.items():
+        state = _ensure_favor(game, god_id)
+        favor = state.current_favor
+
+        if god_id in matched_ids:
+            was_active = state.pattern_active
+            state.pattern_active = True
+            if not was_active:
+                try:
+                    game.log.add(f"You feel the presence of {god.name}.")
+                except Exception:
+                    pass
+            for ability in god.abilities:
+                aid = ability.get("id", "")
+                if not aid:
+                    continue
+                if favor >= ability.get("min_favor", 0):
+                    if aid not in actions:
+                        actions.append(aid)
+                else:
+                    while aid in actions:
+                        actions.remove(aid)
         else:
-            while aid in actions:
-                actions.remove(aid)
+            was_active = state.pattern_active
+            state.pattern_active = False
+            if was_active:
+                try:
+                    game.log.add(f"{god.name} recedes.")
+                except Exception:
+                    pass
+            for ability in god.abilities:
+                aid = ability.get("id", "")
+                while aid in actions:
+                    actions.remove(aid)
 
-    player.actions = tuple(actions)
-
-
-def _remove_god_abilities(game: "Game", god_id: str) -> None:
-    """Remove all abilities from a god."""
-    god = get_god(god_id)
-    if god is None:
-        return
-    try:
-        level = game._level()
-        player = level.actors.get(game.player_id)
-        if player is None:
-            return
-    except Exception:
-        return
-
-    actions = list(player.actions)
-    for ability in god.abilities:
-        aid = ability.get("id", "")
-        while aid in actions:
-            actions.remove(aid)
     player.actions = tuple(actions)
 
 
@@ -380,39 +334,42 @@ def _remove_god_abilities(game: "Game", god_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def on_kill_trigger(game: "Game", killed_actor: "Actor") -> None:
-    """Grant favor to the invoked god when an enemy is killed."""
-    invoked = get_invoked_god(game)
-    if invoked is None:
+    """Grant favor to ALL gods based on their kill triggers."""
+    registry = get_god_registry()
+    if not registry:
         return
-    god = get_god(invoked)
-    if god is None:
-        return
-
     faction = getattr(killed_actor, "faction", "")
-    if faction == "hostile":
-        amount = god.favor_triggers.get("kill_hostile", 0)
-    else:
-        amount = god.favor_triggers.get("kill_any", 0)
-
-    # kill_any also applies for hostile kills (additive)
-    if faction == "hostile":
-        amount += god.favor_triggers.get("kill_any", 0)
-
-    if amount > 0:
-        grant_favor(game, invoked, amount)
+    for god_id, god in registry.items():
+        amount = 0
+        if faction == "hostile":
+            amount = god.favor_triggers.get("kill_hostile", 0)
+            amount += god.favor_triggers.get("kill_any", 0)
+        else:
+            amount = god.favor_triggers.get("kill_any", 0)
+        if amount > 0:
+            grant_favor(game, god_id, amount)
 
 
 def on_damage_taken_trigger(game: "Game") -> None:
-    """Grant favor to the invoked god when the player takes damage."""
-    invoked = get_invoked_god(game)
-    if invoked is None:
+    """Grant favor to ALL gods that have take_damage triggers."""
+    registry = get_god_registry()
+    if not registry:
         return
-    god = get_god(invoked)
-    if god is None:
+    for god_id, god in registry.items():
+        amount = god.favor_triggers.get("take_damage", 0)
+        if amount > 0:
+            grant_favor(game, god_id, amount)
+
+
+def on_explore_trigger(game: "Game") -> None:
+    """Grant favor to ALL gods with explore_new_tile triggers."""
+    registry = get_god_registry()
+    if not registry:
         return
-    amount = god.favor_triggers.get("take_damage", 0)
-    if amount > 0:
-        grant_favor(game, invoked, amount)
+    for god_id, god in registry.items():
+        amount = god.favor_triggers.get("explore_new_tile", 0)
+        if amount > 0:
+            grant_favor(game, god_id, amount)
 
 
 # ---------------------------------------------------------------------------
@@ -420,54 +377,61 @@ def on_damage_taken_trigger(game: "Game") -> None:
 # ---------------------------------------------------------------------------
 
 def tick_gods(game: "Game", dt_ticks: int) -> None:
-    """Per-tick god system update: decay favor."""
+    """Per-tick god system update: decay favor, sync pattern-based abilities."""
     decay_favor(game, dt_ticks)
+    sync_all_god_abilities(game)
 
 
 # ---------------------------------------------------------------------------
-# Invoke action implementation
+# Shrine spawning
 # ---------------------------------------------------------------------------
 
-def act_invoke_god(game: Any, actor_id: str, **kwargs: Any) -> None:
-    """Action handler for invoke_god. Checks chakras and presents matching gods."""
+def spawn_god_actor(
+    game: "Game",
+    level: Any,
+    god_id: str,
+    pos: Tuple[int, int],
+) -> Optional["Actor"]:
+    """Create and register a god Actor at a shrine position.
+
+    The god entity has high HP, divine faction, and the god's glyph/color.
+    """
+    god = get_god(god_id)
+    if god is None:
+        return None
+
     try:
-        from edgecaster.systems import chakra_items as chakra_items_system
+        from edgecaster.state.actors import Actor, Stats
+        from edgecaster.systems import spawning as spawning_system
 
-        level = game._level()
-        player = level.actors.get(actor_id)
-        if player is None or not getattr(player, "alive", False):
-            return
+        shrine_cfg = god.shrine or {}
+        hp = int(shrine_cfg.get("hp", 200))
+        desc = str(shrine_cfg.get("description", f"A manifestation of {god.name}."))
 
-        chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
-        if chakra_state is None:
-            game.log.add("You have no chakra state to invoke a god.")
-            return
-
-        active = set(chakra_state.active)
-        registry = get_god_registry()
-        matches = matching_gods(registry, active)
-
-        if not matches:
-            game.log.add("Your active chakras do not match any known god.")
-            return
-
-        # If only one match, invoke directly
-        if len(matches) == 1:
-            invoke_god(game, matches[0].id)
-            return
-
-        # Multiple matches — present a choice
-        choices = [g.name for g in matches]
-
-        def on_choice(idx: int, g: "Game") -> None:
-            if 0 <= idx < len(matches):
-                invoke_god(g, matches[idx].id)
-
-        game.set_urgent(
-            "Which god do you invoke?",
-            title="Invoke God",
-            choices=choices,
-            on_choice_effect=on_choice,
+        actor = Actor(
+            id=game._new_id(),
+            name=god.name,
+            pos=pos,
+            glyph=god.glyph,
+            color=god.color,
+            kind="god_shrine",
+            faction="divine",
+            stats=Stats(hp=hp, max_hp=hp),
+            actions=(),
+            tags={
+                "god_id": god_id,
+                "shrine": True,
+                "description": desc,
+            },
         )
+
+        # Set absolute position
+        try:
+            actor.abs_pos = game.abs_from_zone_local(level.coord, pos)
+        except Exception:
+            pass
+
+        spawning_system.register_actor(game, level, actor, schedule_ai=False)
+        return actor
     except Exception:
-        game.log.add("You fail to invoke a god.")
+        return None

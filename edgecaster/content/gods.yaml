@@ -1,7 +1,7 @@
 # God definitions
 # Each god is associated with a chakra signature (set of body chakra node IDs).
 # When the player's active chakras are a superset of a god's signature,
-# the player may invoke that god via the invoke_god action.
+# the god's abilities become available automatically (pattern-based access).
 
 - id: dark_knife
   name: "The Dark Knife"
@@ -17,10 +17,10 @@
     blessed: 50
     exalted: 100
   abilities:
-    - id: blood_edge
-      name: "Blood Edge"
-      min_favor: 10
-      description: "Next melee attack deals bonus damage equal to 20% of favor."
+    - id: knife_rune
+      name: "Death Rune"
+      min_favor: 0
+      description: "Activate the Dark Knife's rune. Enemies near its vertices take damage. Low-HP enemies are executed."
     - id: reaper_mark
       name: "Reaper Mark"
       min_favor: 50
@@ -28,6 +28,9 @@
   favor_triggers:
     kill_hostile: 3
     kill_any: 1
+  shrine:
+    hp: 200
+    description: "A tall figure wreathed in shadow, a curved blade at its side."
 
 - id: verdant_mother
   name: "The Verdant Mother"
@@ -53,7 +56,9 @@
       description: "Roots grow around you, blocking adjacent movement for 5 turns."
   favor_triggers:
     kill_hostile: 1
-    invoke: 2
+  shrine:
+    hp: 200
+    description: "A towering figure of woven roots and flowering vines, eyes like emerald suns."
 
 - id: hollow_eye
   name: "The Hollow Eye"
@@ -79,7 +84,9 @@
       description: "See through walls in a cone for 10 turns."
   favor_triggers:
     explore_new_tile: 1
-    invoke: 3
+  shrine:
+    hp: 200
+    description: "A hovering sphere of violet light, its surface covered in shifting glyphs."
 
 - id: iron_spine
   name: "The Iron Spine"
@@ -106,3 +113,6 @@
   favor_triggers:
     take_damage: 1
     kill_hostile: 1
+  shrine:
+    hp: 200
+    description: "An immense iron figure, arms folded across its chest, radiating quiet power."

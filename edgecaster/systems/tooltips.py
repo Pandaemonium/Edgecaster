@@ -51,8 +51,7 @@ _ACTION_SUMMARIES: dict[str, str] = {
     "anchor_channel": "Spend Coherence Crystals to seal a nearby fracture.",
     "anchor_stabilize": "Hold the anchor core together during final stabilization.",
     "anchor_purge": "Detonate stored coherence at the core to blast nearby demons.",
-    "invoke_god": "Invoke a god whose chakra signature matches your active chakras.",
-    "blood_edge": "Buff your next melee attack with bonus damage from The Dark Knife.",
+    "knife_rune": "Activate the Dark Knife's rune. Enemies near its vertices take damage. Low-HP enemies are executed.",
     "reaper_mark": "Mark a hostile target for death. Heal if it dies within 10 turns.",
     "verdant_mend": "Heal with the power of The Verdant Mother.",
     "root_ward": "Grow blocking roots on adjacent tiles for 5 turns.",
@@ -117,14 +116,10 @@ _ACTION_DETAILS: dict[str, tuple[str, ...]] = {
         "Consumes extra Coherence Crystals for a defensive burst.",
         "Clears active catastrophe telegraphs once on cast.",
     ),
-    "invoke_god": (
-        "Checks your active body chakras against known god signatures.",
-        "If multiple gods match, you choose which to invoke.",
-        "Only one god may be invoked at a time.",
-    ),
-    "blood_edge": (
-        "Bonus damage = floor(favor * 0.2). Consumed on next melee hit.",
-        "Requires The Dark Knife to be invoked.",
+    "knife_rune": (
+        "Damage = (5 + favor * 0.15) scaled by proximity to rune vertices.",
+        "Enemies below (5 + favor * 0.35) HP after the hit are executed.",
+        "Requires The Dark Knife's pattern to be active.",
     ),
     "reaper_mark": (
         "If the marked target dies within 10 heartbeats, you heal.",

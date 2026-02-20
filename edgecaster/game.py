@@ -721,8 +721,7 @@ class Game:
             ]
 
         # For now, all other classes keep only move/wait (empty ability bar).
-        # All classes can invoke gods.
-        actions.append("invoke_god")
+        # God abilities are added automatically by sync_all_god_abilities().
         player.actions = tuple(actions)
 
         # Tag as 'the player'
@@ -4518,6 +4517,7 @@ class Game:
         new_spotted.add(self.player_id)
 
         r2 = radius * radius
+        _new_tiles_explored = 0
         for ay in range(min_ay, max_ay + 1):
             dy = ay - p_absy
             for ax in range(min_ax, max_ax + 1):
@@ -4546,6 +4546,8 @@ class Game:
                 # Project into chunk-local tile flags as cache/persistence.
                 tile = zl.world.get_tile(lx, ly)
                 if tile is not None:
+                    if not tile.explored:
+                        _new_tiles_explored += 1
                     tile.visible = True
                     tile.explored = True
 
@@ -4557,6 +4559,13 @@ class Game:
 
         level.spotted = new_spotted
         level.need_fov = False
+
+        # God favor: grant explore trigger when new tiles discovered
+        if _new_tiles_explored > 0:
+            try:
+                gods_system.on_explore_trigger(self)
+            except Exception:
+                pass
 
 
     # --- ABS-space fog queries (authoritative for terrain rendering) ---

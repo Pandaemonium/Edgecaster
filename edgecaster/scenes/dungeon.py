@@ -355,7 +355,7 @@ class DungeonScene(Scene):
                 ctx = WidgetContext(surface=renderer.surface, game=game, scene=self, renderer=renderer)
                 hovered_action = bar_widget.hover_action((mx, my), ctx)
                 self.ui_state.hovered_action = str(hovered_action) if hovered_action else None
-                hover_preview_actions = {"energy_kick", "palm_burst"}
+                hover_preview_actions = {"energy_kick", "palm_burst", "knife_rune"}
                 if hovered_action in hover_preview_actions:
                     self.ui_state.action_preview = build_action_preview(game, str(hovered_action), game.player_id)
                 else:
@@ -2133,7 +2133,7 @@ class DungeonScene(Scene):
                     hovered_action = None
                 self.ui_state.hovered_action = str(hovered_action) if hovered_action else None
 
-                hover_preview_actions = {"energy_kick", "palm_burst"}
+                hover_preview_actions = {"energy_kick", "palm_burst", "knife_rune"}
                 if hovered_action in hover_preview_actions:
                     self.ui_state.action_preview = build_action_preview(game, str(hovered_action), game.player_id)
                     return

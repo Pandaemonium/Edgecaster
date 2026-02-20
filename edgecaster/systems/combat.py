@@ -134,6 +134,10 @@ def apply_xp_drain(game: "Game", attacker: "Actor", defender: "Actor") -> bool:
 
 def apply_damage(game: "Game", attacker: "Actor", defender: "Actor", dmg: int) -> None:
     """Apply damage to defender and log the hit."""
+    tags = getattr(defender, "tags", None)
+    if isinstance(tags, dict) and tags.get("invulnerable"):
+        game.log.add(f"{defender.name} is invulnerable.")
+        return
     hp_before = int(getattr(defender.stats, "hp", 0))
     defender.stats.hp -= dmg
     defender.stats.clamp()
@@ -303,13 +307,6 @@ def attack(game: "Game", level: "LevelState", attacker: "Actor", defender: "Acto
         damage=int(dmg),
     )
     apply_damage(game, attacker, defender, dmg)
-
-    # God ability: consume blood edge buff after hitting.
-    try:
-        from edgecaster.systems import god_abilities as _god_ab
-        _god_ab.blood_edge_consume(game, attacker)
-    except Exception:
-        pass
 
     # God ability: grant favor when player takes damage.
     try:

@@ -3166,18 +3166,11 @@ def _action_spinal_surge(game: Any, actor_id: str, **kwargs: Any) -> None:
 # God actions
 # ---------------------------------------------------------------------------
 
-@register_action("invoke_god", label="Invoke God", speed="slow", show_in_bar=True)
-def _action_invoke_god(game: Any, actor_id: str, **kwargs: Any) -> None:
-    """Invoke a god whose chakra signature matches your active chakras."""
-    from edgecaster.systems import gods as gods_system
-    gods_system.act_invoke_god(game, actor_id, **kwargs)
-
-
-@register_action("blood_edge", label="Blood Edge", speed="fast", show_in_bar=True, cooldown_ticks=15)
-def _action_blood_edge(game: Any, actor_id: str, **kwargs: Any) -> None:
-    """Buff next melee attack with bonus damage from The Dark Knife."""
+@register_action("knife_rune", label="Death Rune", speed="fast", show_in_bar=True, cooldown_ticks=20)
+def _action_knife_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Activate the Dark Knife's rune to damage nearby enemies."""
     from edgecaster.systems import god_abilities
-    god_abilities.act_blood_edge(game, actor_id, **kwargs)
+    god_abilities.act_knife_rune(game, actor_id, **kwargs)
 
 
 @register_action(

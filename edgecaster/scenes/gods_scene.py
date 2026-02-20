@@ -26,13 +26,13 @@ class GodsScene(PopupMenuScene):
 
     def get_menu_items(self) -> list[Any]:
         """Build list of gods with favor indicators."""
-        from edgecaster.systems.gods import get_god_registry, get_favor, get_favor_tier, get_invoked_god
+        from edgecaster.systems.gods import get_god_registry, get_favor, get_favor_tier, get_active_gods
 
         registry = get_god_registry()
         if not registry:
             return ["No gods are known"]
 
-        invoked_id = get_invoked_god(self.game)
+        active_ids = set(get_active_gods(self.game))
         items = []
         self._god_ids = []
 
@@ -43,10 +43,9 @@ class GodsScene(PopupMenuScene):
             # Build display line
             tier_str = f" [{tier}]" if tier else ""
             favor_str = f" ({int(favor)} favor)" if favor > 0 else ""
-            invoked_str = " *INVOKED*" if god_id == invoked_id else ""
-            sig_str = ", ".join(sorted(god.chakra_signature))
+            active_str = " *ACTIVE*" if god_id in active_ids else ""
 
-            name = f"{god.glyph} {god.name}{tier_str}{favor_str}{invoked_str}"
+            name = f"{god.glyph} {god.name}{tier_str}{favor_str}{active_str}"
             items.append(name)
             self._god_ids.append(god_id)
 
@@ -56,15 +55,16 @@ class GodsScene(PopupMenuScene):
         return "The Gods"
 
     def get_body_text(self) -> Optional[str]:
-        from edgecaster.systems.gods import get_invoked_god
+        from edgecaster.systems.gods import get_active_gods, get_god
 
-        invoked = get_invoked_god(self.game)
-        if invoked:
-            from edgecaster.systems.gods import get_god
-            god = get_god(invoked)
-            name = god.name if god else invoked
-            return f"Currently invoking: {name}\n"
-        return "No god is currently invoked.\n"
+        active = get_active_gods(self.game)
+        if active:
+            names = []
+            for gid in active:
+                god = get_god(gid)
+                names.append(god.name if god else gid)
+            return f"Currently channeling: {', '.join(names)}\n"
+        return "No god's symbol is currently active.\n"
 
     def on_activate(self, index: int, manager: "SceneManager") -> bool:
         if 0 <= index < len(self._god_ids):
@@ -103,7 +103,7 @@ class GodDetailScene(PopupMenuScene):
 
     def get_body_text(self) -> Optional[str]:
         from edgecaster.systems.gods import (
-            get_god, get_favor, get_favor_tier, get_invoked_god,
+            get_god, get_favor, get_favor_tier,
             available_abilities, GodFavorState, _ensure_favor,
         )
 
@@ -113,7 +113,6 @@ class GodDetailScene(PopupMenuScene):
 
         favor = get_favor(self.game, self.god_id)
         tier = get_favor_tier(self.game, self.god_id)
-        invoked = get_invoked_god(self.game) == self.god_id
         state = _ensure_favor(self.game, self.god_id)
 
         lines: list[str] = []
@@ -143,10 +142,9 @@ class GodDetailScene(PopupMenuScene):
             lines.append(f"Standing: {tier.capitalize()}")
         else:
             lines.append("Standing: Unknown")
-        if invoked:
-            lines.append("Status: INVOKED")
+        if state.pattern_active:
+            lines.append("Status: PATTERN ACTIVE")
         lines.append(f"Peak Favor: {int(state.peak_favor)}")
-        lines.append(f"Total Invocations: {state.total_invocations}")
         lines.append(f"Decay Rate: {god.favor_decay_rate} per 100 heartbeats")
         lines.append("")
 
@@ -163,7 +161,6 @@ class GodDetailScene(PopupMenuScene):
             trigger_labels = {
                 "kill_hostile": "Kill hostile enemy",
                 "kill_any": "Kill any creature",
-                "invoke": "Invoke this god",
                 "take_damage": "Take damage",
                 "explore_new_tile": "Explore new territory",
             }

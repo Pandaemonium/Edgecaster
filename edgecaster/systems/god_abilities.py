@@ -2,7 +2,7 @@
 
 Each ability is a registered action function that checks god favor before
 executing. Abilities are dynamically added to the player's action tuple
-when invoked + favor is sufficient.
+when the god's chakra pattern is active + favor is sufficient.
 """
 
 from __future__ import annotations
@@ -21,45 +21,90 @@ if TYPE_CHECKING:
 # Dark Knife abilities
 # ---------------------------------------------------------------------------
 
-def act_blood_edge(game: Any, actor_id: str, **kwargs: Any) -> None:
-    """Buff next melee attack by floor(favor * 0.2) bonus damage."""
+_KNIFE_RUNE_CHAKRAS = frozenset({"body", "arm", "arm.hand"})
+_KNIFE_RUNE_MAX_RANGE = 5.0
+_KNIFE_RUNE_EXECUTE_BASE = 5       # flat HP threshold at 0 favor
+_KNIFE_RUNE_EXECUTE_SCALE = 0.35   # additional HP per point of favor (caps ~40 at 100 favor)
+
+
+def act_knife_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
+    """Death Rune: damage enemies near Dark Knife pattern vertices. Execute low-HP targets."""
     level = game._level()
     player = level.actors.get(actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "dark_knife":
-        game.log.add("The Dark Knife is not invoked.")
+    state = gods_system._ensure_favor(game, "dark_knife")
+    if not state.pattern_active:
+        game.log.add("The Dark Knife's symbol is not active.")
         return
 
+    # Get pattern and anchor
+    pattern = getattr(game, "pattern", None)
+    anchor = getattr(game, "pattern_anchor", None)
+    if pattern is None or anchor is None:
+        game.log.add("No rune is active.")
+        return
+
+    ax, ay = int(anchor[0]), int(anchor[1])
     favor = gods_system.get_favor(game, "dark_knife")
-    bonus = max(1, int(math.floor(favor * 0.2)))
+    base_damage = max(2, int(5 + favor * 0.15))
 
-    # Apply via attack_bonus tag (additive with existing bonus)
-    tags = getattr(player, "tags", {})
-    existing = int(tags.get("attack_bonus", 0))
-    tags["attack_bonus"] = existing + bonus
+    # Find vertices from Dark Knife's chakra signature
+    rune_points: list[tuple[float, float]] = []
+    for v in getattr(pattern, "vertices", ()) or ():
+        tags = getattr(v, "tags", {}) or {}
+        node = str(tags.get("chakra_node", "")).strip()
+        if not node:
+            continue
+        if node in _KNIFE_RUNE_CHAKRAS:
+            rune_points.append((float(v.pos[0] + ax), float(v.pos[1] + ay)))
 
-    # Track so we can remove it after one hit
-    entity_ops_system.add_status(
-        game, player, "blood_edge", 2,
-        on_apply=f"Blood Edge: +{bonus} damage on next attack.",
-    )
-    # Store the bonus amount for cleanup
-    player.tags["_blood_edge_bonus"] = bonus
-
-
-def blood_edge_consume(game: Any, actor: Any) -> None:
-    """Called after a melee hit to consume the blood edge buff."""
-    if not entity_ops_system.has_status(actor, "blood_edge"):
+    if not rune_points:
+        game.log.add("The Dark Knife's vertices are not present in your rune.")
         return
-    bonus = int(actor.tags.get("_blood_edge_bonus", 0))
-    if bonus > 0:
-        existing = int(actor.tags.get("attack_bonus", 0))
-        actor.tags["attack_bonus"] = max(0, existing - bonus)
-    actor.tags.pop("_blood_edge_bonus", None)
-    actor.statuses.pop("blood_edge", None)
+
+    # Damage enemies near rune vertices
+    total_damage = 0
+    kills = 0
+    for actor in list(level.actors.values()):
+        if not getattr(actor, "alive", False):
+            continue
+        if getattr(actor, "faction", "") != "hostile":
+            continue
+        ex, ey = actor.pos
+
+        # Find distance to nearest rune vertex
+        min_dist = float("inf")
+        for rx, ry in rune_points:
+            d = math.sqrt((ex - rx) ** 2 + (ey - ry) ** 2)
+            if d < min_dist:
+                min_dist = d
+
+        if min_dist > _KNIFE_RUNE_MAX_RANGE:
+            continue
+
+        # Closer = more damage (linear falloff)
+        dmg = max(1, int(base_damage * (1.0 - min_dist / _KNIFE_RUNE_MAX_RANGE)))
+        actor.stats.hp -= dmg
+        total_damage += dmg
+
+        # Execute check: if still alive but below flat HP threshold, kill outright
+        execute_hp = _KNIFE_RUNE_EXECUTE_BASE + int(favor * _KNIFE_RUNE_EXECUTE_SCALE)
+        if actor.stats.hp > 0 and actor.stats.hp < execute_hp:
+            actor.stats.hp = 0
+
+        if actor.stats.hp <= 0:
+            kills += 1
+            try:
+                game.log.add(f"The Death Rune claims {getattr(actor, 'name', 'an enemy')}.")
+            except Exception:
+                pass
+
+    if total_damage > 0:
+        game.log.add(f"The Dark Knife's rune pulses ({total_damage} damage, {kills} kills).")
+    else:
+        game.log.add("No enemies in range of the Death Rune.")
 
 
 def act_reaper_mark(game: Any, actor_id: str, **kwargs: Any) -> None:
@@ -69,9 +114,9 @@ def act_reaper_mark(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "dark_knife":
-        game.log.add("The Dark Knife is not invoked.")
+    state = gods_system._ensure_favor(game, "dark_knife")
+    if not state.pattern_active:
+        game.log.add("The Dark Knife's symbol is not active.")
         return
 
     target_pos = kwargs.get("target_pos")
@@ -148,9 +193,9 @@ def act_verdant_mend(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "verdant_mother":
-        game.log.add("The Verdant Mother is not invoked.")
+    state = gods_system._ensure_favor(game, "verdant_mother")
+    if not state.pattern_active:
+        game.log.add("The Verdant Mother's symbol is not active.")
         return
 
     favor = gods_system.get_favor(game, "verdant_mother")
@@ -176,9 +221,9 @@ def act_root_ward(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "verdant_mother":
-        game.log.add("The Verdant Mother is not invoked.")
+    state = gods_system._ensure_favor(game, "verdant_mother")
+    if not state.pattern_active:
+        game.log.add("The Verdant Mother's symbol is not active.")
         return
 
     px, py = player.pos
@@ -258,9 +303,9 @@ def act_all_seeing(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "hollow_eye":
-        game.log.add("The Hollow Eye is not invoked.")
+    state = gods_system._ensure_favor(game, "hollow_eye")
+    if not state.pattern_active:
+        game.log.add("The Hollow Eye's symbol is not active.")
         return
 
     entity_ops_system.add_status(
@@ -277,9 +322,9 @@ def act_piercing_gaze(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "hollow_eye":
-        game.log.add("The Hollow Eye is not invoked.")
+    state = gods_system._ensure_favor(game, "hollow_eye")
+    if not state.pattern_active:
+        game.log.add("The Hollow Eye's symbol is not active.")
         return
 
     target_pos = kwargs.get("target_pos")
@@ -327,9 +372,9 @@ def act_god_iron_skin(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "iron_spine":
-        game.log.add("The Iron Spine is not invoked.")
+    state = gods_system._ensure_favor(game, "iron_spine")
+    if not state.pattern_active:
+        game.log.add("The Iron Spine's symbol is not active.")
         return
 
     favor = gods_system.get_favor(game, "iron_spine")
@@ -362,9 +407,9 @@ def act_unbreakable(game: Any, actor_id: str, **kwargs: Any) -> None:
     if player is None or not getattr(player, "alive", False):
         return
 
-    invoked = gods_system.get_invoked_god(game)
-    if invoked != "iron_spine":
-        game.log.add("The Iron Spine is not invoked.")
+    state = gods_system._ensure_favor(game, "iron_spine")
+    if not state.pattern_active:
+        game.log.add("The Iron Spine's symbol is not active.")
         return
 
     favor = gods_system.get_favor(game, "iron_spine")
@@ -424,13 +469,6 @@ def tick_god_statuses(game: Any, level: Any, dt_ticks: int) -> None:
         if player.statuses["god_iron_skin"] <= 0:
             del player.statuses["god_iron_skin"]
             god_iron_skin_expire(game, player)
-
-    # Blood edge auto-expire (should be consumed on hit, but safety net)
-    if "blood_edge" in player.statuses:
-        player.statuses["blood_edge"] -= dt_ticks
-        if player.statuses["blood_edge"] <= 0:
-            del player.statuses["blood_edge"]
-            blood_edge_consume(game, player)
 
     # All-seeing expiry
     if "all_seeing" in player.statuses:

@@ -17,9 +17,7 @@ from edgecaster.systems.gods import (
     get_favor,
     get_favor_tier,
     available_abilities,
-    invoke_god,
-    dismiss_god,
-    get_invoked_god,
+    get_active_gods,
     on_kill_trigger,
     on_damage_taken_trigger,
     decay_favor,
@@ -81,7 +79,7 @@ def _make_player(actor_id: str = "player_1") -> MagicMock:
     player = MagicMock()
     player.id = actor_id
     player.alive = True
-    player.actions = ("move", "wait", "invoke_god")
+    player.actions = ("move", "wait")
     player.tags = {}
     player.statuses = {}
     player.stats = MagicMock()
@@ -282,72 +280,56 @@ class TestAvailableAbilities:
 
 
 # ---------------------------------------------------------------------------
-# Invoke / Dismiss Tests
+# Pattern-Based Access Tests
 # ---------------------------------------------------------------------------
 
-class TestInvokeDismiss:
-    def test_invoke_sets_invoked(self):
+class TestPatternAccess:
+    def test_pattern_active_when_chakras_match(self):
         game = _make_game()
-        player = _make_player()
-        game._level.return_value.actors = {"player_1": player}
-
-        god = _make_god(triggers={"invoke": 5})
-        with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
-            result = invoke_god(game, "test_god")
-
-        assert result is True
-        state = game.god_favor["test_god"]
-        assert state.invoked is True
-        assert state.total_invocations == 1
-
-    def test_invoke_grants_invoke_favor(self):
-        game = _make_game()
-        player = _make_player()
-        game._level.return_value.actors = {"player_1": player}
-
-        god = _make_god(triggers={"invoke": 5})
-        with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
-            invoke_god(game, "test_god")
-
-        assert get_favor(game, "test_god") == 5.0
-
-    def test_dismiss_clears_invoked(self):
-        game = _make_game()
-        player = _make_player()
-        game._level.return_value.actors = {"player_1": player}
-
-        god = _make_god()
+        god = _make_god(signature=frozenset({"body", "arm", "hand"}))
         with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
             state = _ensure_favor(game, "test_god")
-            state.invoked = True
-            dismiss_god(game, "test_god")
+            state.pattern_active = True
+            assert state.pattern_active is True
 
-        assert state.invoked is False
-
-    def test_invoking_new_god_dismisses_old(self):
+    def test_pattern_inactive_when_chakras_mismatch(self):
         game = _make_game()
-        player = _make_player()
-        game._level.return_value.actors = {"player_1": player}
+        god = _make_god(signature=frozenset({"body", "arm", "hand"}))
+        with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
+            state = _ensure_favor(game, "test_god")
+            assert state.pattern_active is False
 
-        god_a = _make_god("god_a")
-        god_b = _make_god("god_b")
+    def test_multiple_gods_active_simultaneously(self):
+        game = _make_game()
+        god_a = _make_god("god_a", signature=frozenset({"body", "arm"}))
+        god_b = _make_god("god_b", signature=frozenset({"body", "head"}))
         registry = {god_a.id: god_a, god_b.id: god_b}
         with patch("edgecaster.systems.gods._god_registry", registry):
-            invoke_god(game, "god_a")
-            assert get_invoked_god(game) == "god_a"
+            state_a = _ensure_favor(game, "god_a")
+            state_b = _ensure_favor(game, "god_b")
+            state_a.pattern_active = True
+            state_b.pattern_active = True
+            active = get_active_gods(game)
+            assert "god_a" in active
+            assert "god_b" in active
 
-            invoke_god(game, "god_b")
-            assert get_invoked_god(game) == "god_b"
-            assert not game.god_favor["god_a"].invoked
-
-    def test_get_invoked_god_none_when_none_invoked(self):
+    def test_get_active_gods_empty_when_none_active(self):
         game = _make_game()
-        assert get_invoked_god(game) is None
+        assert get_active_gods(game) == []
 
-    def test_invoke_unknown_god_returns_false(self):
+    def test_abilities_gated_by_favor_with_pattern(self):
         game = _make_game()
-        with patch("edgecaster.systems.gods._god_registry", {}):
-            assert invoke_god(game, "nonexistent") is False
+        god = _make_god(abilities=[
+            {"id": "a1", "name": "A1", "min_favor": 10},
+            {"id": "a2", "name": "A2", "min_favor": 50},
+        ])
+        with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
+            state = _ensure_favor(game, "test_god")
+            state.pattern_active = True
+            state.current_favor = 30.0
+            abilities = available_abilities(game, "test_god")
+            assert len(abilities) == 1
+            assert abilities[0]["id"] == "a1"
 
 
 # ---------------------------------------------------------------------------
@@ -359,9 +341,6 @@ class TestKillTrigger:
         game = _make_game()
         god = _make_god(triggers={"kill_hostile": 3, "kill_any": 1})
         with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
-            state = _ensure_favor(game, "test_god")
-            state.invoked = True
-
             enemy = MagicMock()
             enemy.faction = "hostile"
 
@@ -374,9 +353,6 @@ class TestKillTrigger:
         game = _make_game()
         god = _make_god(triggers={"kill_hostile": 3, "kill_any": 1})
         with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
-            state = _ensure_favor(game, "test_god")
-            state.invoked = True
-
             neutral = MagicMock()
             neutral.faction = "neutral"
 
@@ -384,9 +360,23 @@ class TestKillTrigger:
 
         assert get_favor(game, "test_god") == 1.0
 
-    def test_no_favor_when_no_god_invoked(self):
+    def test_kill_grants_favor_to_all_gods(self):
+        from edgecaster.systems.gods import on_kill_trigger
         game = _make_game()
-        god = _make_god(triggers={"kill_hostile": 3})
+        god_a = _make_god("god_a", triggers={"kill_hostile": 3})
+        god_b = _make_god("god_b", triggers={"kill_hostile": 1, "kill_any": 2})
+        registry = {"god_a": god_a, "god_b": god_b}
+        with patch("edgecaster.systems.gods._god_registry", registry):
+            enemy = MagicMock()
+            enemy.faction = "hostile"
+            on_kill_trigger(game, enemy)
+
+        assert get_favor(game, "god_a") == 3.0
+        assert get_favor(game, "god_b") == 3.0  # 1 + 2
+
+    def test_god_without_kill_trigger_gets_nothing(self):
+        game = _make_game()
+        god = _make_god(triggers={"explore_new_tile": 1})
         with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
             enemy = MagicMock()
             enemy.faction = "hostile"
@@ -400,12 +390,29 @@ class TestDamageTakenTrigger:
         game = _make_game()
         god = _make_god(triggers={"take_damage": 2})
         with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
-            state = _ensure_favor(game, "test_god")
-            state.invoked = True
-
             on_damage_taken_trigger(game)
 
         assert get_favor(game, "test_god") == 2.0
+
+
+class TestExploreTrigger:
+    def test_explore_grants_favor(self):
+        from edgecaster.systems.gods import on_explore_trigger
+        game = _make_game()
+        god = _make_god(triggers={"explore_new_tile": 1})
+        with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
+            on_explore_trigger(game)
+
+        assert get_favor(game, "test_god") == 1.0
+
+    def test_explore_no_effect_without_trigger(self):
+        from edgecaster.systems.gods import on_explore_trigger
+        game = _make_game()
+        god = _make_god(triggers={"kill_hostile": 3})
+        with patch("edgecaster.systems.gods._god_registry", {god.id: god}):
+            on_explore_trigger(game)
+
+        assert get_favor(game, "test_god") == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +440,7 @@ class TestLoadGods:
         registry = load_gods()
         dk = registry["dark_knife"]
         ability_ids = [a["id"] for a in dk.abilities]
-        assert "blood_edge" in ability_ids
+        assert "knife_rune" in ability_ids
         assert "reaper_mark" in ability_ids
 
     def test_favor_triggers_loaded(self):
@@ -446,41 +453,227 @@ class TestLoadGods:
 # God Abilities Tests
 # ---------------------------------------------------------------------------
 
-class TestBloodEdge:
-    def test_blood_edge_adds_attack_bonus(self):
-        from edgecaster.systems.god_abilities import act_blood_edge, blood_edge_consume
+def _make_pattern_with_vertices(chakra_nodes, anchor=(0, 0)):
+    """Create a mock pattern with vertices tagged with chakra_node IDs."""
+    vertices = []
+    for i, (node_id, pos) in enumerate(chakra_nodes):
+        v = MagicMock()
+        v.pos = pos
+        v.tags = {"chakra_node": node_id}
+        vertices.append(v)
+    pattern = MagicMock()
+    pattern.vertices = vertices
+    return pattern
+
+
+class TestKnifeRune:
+    def test_knife_rune_damages_nearby_enemy(self):
+        from edgecaster.systems.god_abilities import act_knife_rune
 
         game = _make_game()
         player = _make_player()
         game._level.return_value.actors = {"player_1": player}
 
-        god = _make_god("dark_knife", signature=frozenset({"body", "arm", "hand"}))
+        # Set up pattern with Dark Knife vertices at (5, 5)
+        game.pattern = _make_pattern_with_vertices([
+            ("body", (0, 0)),
+            ("arm", (1, 0)),
+            ("arm.hand", (2, 0)),
+        ])
+        game.pattern_anchor = (5, 5)
+
+        # Enemy at (6, 5) — distance 1 from arm vertex at (6, 5)
+        enemy = MagicMock()
+        enemy.alive = True
+        enemy.faction = "hostile"
+        enemy.pos = (6, 5)
+        enemy.stats = MagicMock()
+        enemy.stats.hp = 50
+        enemy.stats.max_hp = 50
+        enemy.name = "Imp"
+        game._level.return_value.actors["enemy_1"] = enemy
+
+        god = _make_god("dark_knife", signature=frozenset({"body", "arm", "arm.hand"}))
         with patch("edgecaster.systems.gods._god_registry", {"dark_knife": god}):
             state = _ensure_favor(game, "dark_knife")
-            state.invoked = True
+            state.pattern_active = True
             state.current_favor = 20.0
 
-            act_blood_edge(game, "player_1")
+            act_knife_rune(game, "player_1")
 
-        # floor(20 * 0.2) = 4
-        assert player.tags.get("attack_bonus") == 4
-        assert player.tags.get("_blood_edge_bonus") == 4
-        assert "blood_edge" in player.statuses
+        # Enemy should have taken damage
+        assert enemy.stats.hp < 50
 
-    def test_blood_edge_consume_removes_bonus(self):
-        from edgecaster.systems.god_abilities import blood_edge_consume
+    def test_knife_rune_closer_means_more_damage(self):
+        from edgecaster.systems.god_abilities import act_knife_rune
 
-        player = _make_player()
-        player.tags["attack_bonus"] = 5
-        player.tags["_blood_edge_bonus"] = 3
-        player.statuses["blood_edge"] = 2
+        # Test two enemies at different distances
+        game1 = _make_game()
+        player1 = _make_player()
+        game1._level.return_value.actors = {"player_1": player1}
+        game1.pattern = _make_pattern_with_vertices([("arm", (0, 0))])
+        game1.pattern_anchor = (5, 5)
+
+        close_enemy = MagicMock()
+        close_enemy.alive = True
+        close_enemy.faction = "hostile"
+        close_enemy.pos = (6, 5)  # dist 1 from (5,5)
+        close_enemy.stats = MagicMock()
+        close_enemy.stats.hp = 100
+        close_enemy.stats.max_hp = 100
+        close_enemy.name = "Close"
+        game1._level.return_value.actors["e1"] = close_enemy
+
+        game2 = _make_game()
+        player2 = _make_player()
+        game2._level.return_value.actors = {"player_1": player2}
+        game2.pattern = _make_pattern_with_vertices([("arm", (0, 0))])
+        game2.pattern_anchor = (5, 5)
+
+        far_enemy = MagicMock()
+        far_enemy.alive = True
+        far_enemy.faction = "hostile"
+        far_enemy.pos = (9, 5)  # dist 4 from (5,5)
+        far_enemy.stats = MagicMock()
+        far_enemy.stats.hp = 100
+        far_enemy.stats.max_hp = 100
+        far_enemy.name = "Far"
+        game2._level.return_value.actors["e1"] = far_enemy
+
+        god = _make_god("dark_knife", signature=frozenset({"body", "arm", "arm.hand"}))
+
+        with patch("edgecaster.systems.gods._god_registry", {"dark_knife": god}):
+            state1 = _ensure_favor(game1, "dark_knife")
+            state1.pattern_active = True
+            state1.current_favor = 20.0
+            act_knife_rune(game1, "player_1")
+
+            state2 = _ensure_favor(game2, "dark_knife")
+            state2.pattern_active = True
+            state2.current_favor = 20.0
+            act_knife_rune(game2, "player_1")
+
+        close_dmg = 100 - close_enemy.stats.hp
+        far_dmg = 100 - far_enemy.stats.hp
+        assert close_dmg > far_dmg
+
+    def test_knife_rune_execute_threshold(self):
+        from edgecaster.systems.god_abilities import act_knife_rune
 
         game = _make_game()
-        blood_edge_consume(game, player)
+        player = _make_player()
+        game._level.return_value.actors = {"player_1": player}
+        game.pattern = _make_pattern_with_vertices([("body", (0, 0))])
+        game.pattern_anchor = (5, 5)
 
-        assert player.tags.get("attack_bonus") == 2
-        assert "_blood_edge_bonus" not in player.tags
-        assert "blood_edge" not in player.statuses
+        # Enemy at distance 4 (near edge of range) so hit damage is low,
+        # but remaining HP after hit should be below execute threshold.
+        # At 0 favor: base_damage=5, dist=4/5 -> dmg=max(1,int(5*0.2))=1
+        # execute_hp = 5 + int(0*0.35) = 5
+        # Enemy at 6 HP takes 1 dmg -> 5 HP remaining, which is NOT < 5
+        # Enemy at 5 HP takes 1 dmg -> 4 HP remaining, which IS < 5 -> executed
+        enemy = MagicMock()
+        enemy.alive = True
+        enemy.faction = "hostile"
+        enemy.pos = (9, 5)  # distance 4 from vertex at (5,5)
+        enemy.stats = MagicMock()
+        enemy.stats.hp = 5
+        enemy.stats.max_hp = 100
+        enemy.name = "Weakling"
+        game._level.return_value.actors["e1"] = enemy
+
+        god = _make_god("dark_knife", signature=frozenset({"body", "arm", "arm.hand"}))
+        with patch("edgecaster.systems.gods._god_registry", {"dark_knife": god}):
+            state = _ensure_favor(game, "dark_knife")
+            state.pattern_active = True
+            state.current_favor = 0.0  # execute_hp = 5
+
+            act_knife_rune(game, "player_1")
+
+        # After 1 dmg: 4 HP remaining < execute_hp (5) -> executed
+        assert enemy.stats.hp <= 0
+        assert enemy.alive is False
+
+    def test_knife_rune_execute_scales_with_favor(self):
+        from edgecaster.systems.god_abilities import act_knife_rune
+
+        game = _make_game()
+        player = _make_player()
+        game._level.return_value.actors = {"player_1": player}
+        game.pattern = _make_pattern_with_vertices([("body", (0, 0))])
+        game.pattern_anchor = (5, 5)
+
+        # At 100 favor: execute_hp = 5 + int(100*0.35) = 40
+        # Enemy far away (dist 4), base_damage=max(2,int(5+100*0.15))=20
+        # dmg = max(1, int(20 * (1 - 4/5))) = 3 (float truncation)
+        # Enemy at 42 HP takes 3 -> 39 HP remaining, which IS < 40 -> executed
+        enemy = MagicMock()
+        enemy.alive = True
+        enemy.faction = "hostile"
+        enemy.pos = (9, 5)
+        enemy.stats = MagicMock()
+        enemy.stats.hp = 42
+        enemy.stats.max_hp = 100
+        enemy.name = "Tough"
+        game._level.return_value.actors["e1"] = enemy
+
+        god = _make_god("dark_knife", signature=frozenset({"body", "arm", "arm.hand"}))
+        with patch("edgecaster.systems.gods._god_registry", {"dark_knife": god}):
+            state = _ensure_favor(game, "dark_knife")
+            state.pattern_active = True
+            state.current_favor = 100.0
+
+            act_knife_rune(game, "player_1")
+
+        assert enemy.stats.hp <= 0
+        assert enemy.alive is False
+
+    def test_knife_rune_no_pattern_active(self):
+        from edgecaster.systems.god_abilities import act_knife_rune
+
+        game = _make_game()
+        player = _make_player()
+        game._level.return_value.actors = {"player_1": player}
+
+        god = _make_god("dark_knife", signature=frozenset({"body", "arm", "arm.hand"}))
+        with patch("edgecaster.systems.gods._god_registry", {"dark_knife": god}):
+            state = _ensure_favor(game, "dark_knife")
+            state.pattern_active = False
+
+            act_knife_rune(game, "player_1")
+
+        game.log.add.assert_called_with("The Dark Knife's symbol is not active.")
+
+    def test_knife_rune_out_of_range_no_damage(self):
+        from edgecaster.systems.god_abilities import act_knife_rune
+
+        game = _make_game()
+        player = _make_player()
+        game._level.return_value.actors = {"player_1": player}
+        game.pattern = _make_pattern_with_vertices([("body", (0, 0))])
+        game.pattern_anchor = (5, 5)
+
+        # Enemy far away (distance 10 > max_range 5)
+        enemy = MagicMock()
+        enemy.alive = True
+        enemy.faction = "hostile"
+        enemy.pos = (15, 5)
+        enemy.stats = MagicMock()
+        enemy.stats.hp = 50
+        enemy.stats.max_hp = 50
+        enemy.name = "Distant"
+        game._level.return_value.actors["e1"] = enemy
+
+        god = _make_god("dark_knife", signature=frozenset({"body", "arm", "arm.hand"}))
+        with patch("edgecaster.systems.gods._god_registry", {"dark_knife": god}):
+            state = _ensure_favor(game, "dark_knife")
+            state.pattern_active = True
+            state.current_favor = 20.0
+
+            act_knife_rune(game, "player_1")
+
+        # Enemy should not have taken damage
+        assert enemy.stats.hp == 50
 
 
 class TestVerdantMend:
@@ -497,7 +690,7 @@ class TestVerdantMend:
                         signature=frozenset({"body", "torso", "chest"}))
         with patch("edgecaster.systems.gods._god_registry", {"verdant_mother": god}):
             state = _ensure_favor(game, "verdant_mother")
-            state.invoked = True
+            state.pattern_active = True
             state.current_favor = 20.0
 
             act_verdant_mend(game, "player_1")
@@ -559,7 +752,7 @@ class TestGodIronSkin:
                         signature=frozenset({"body", "torso", "back"}))
         with patch("edgecaster.systems.gods._god_registry", {"iron_spine": god}):
             state = _ensure_favor(game, "iron_spine")
-            state.invoked = True
+            state.pattern_active = True
             state.current_favor = 50.0
 
             act_god_iron_skin(game, "player_1")

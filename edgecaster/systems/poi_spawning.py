@@ -565,6 +565,23 @@ def spawn_poi_contents(game: "Game", level: "LevelState", coord: Tuple[int, int,
                         spawning_system.register_actor(game, level, mob, schedule_ai=True)
                         spawned += 1
 
+            elif struct.get("kind") == "god_shrine":
+                god_id = str(struct.get("god_id", ""))
+                if god_id:
+                    try:
+                        from edgecaster.systems import gods as gods_system
+                        center = (level.world.width // 2, level.world.height // 2)
+                        spot = nearest_walkable(
+                            center,
+                            avoid_entities=True,
+                        )
+                        if spot:
+                            actor = gods_system.spawn_god_actor(game, level, god_id, spot)
+                            if actor:
+                                game._debug(f"[god_shrine] Spawned {god_id} at {spot}")
+                    except Exception as e:
+                        game._debug(f"[god_shrine] Failed to spawn {god_id}: {e!r}")
+
             elif struct.get("kind") == "colosseum_arena":
                 fp = poi_spec.footprint
                 zx, zy, _ = coord

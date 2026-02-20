@@ -84,6 +84,8 @@ PREVIEWABLE_ACTIONS: set[str] = {
     # Chakra activator previews
     "energy_kick",
     "palm_burst",
+    # God ability previews
+    "knife_rune",
 }
 
 
@@ -151,6 +153,11 @@ def build_action_preview(game: Any, action: str, actor_id: str | None = None) ->
         if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
             return None
         return _preview_palm_burst(game, pattern, anchor)
+
+    if action == "knife_rune":
+        if pattern is None or anchor is None or not getattr(pattern, "vertices", None):
+            return None
+        return _preview_knife_rune(game, pattern, anchor)
 
     return None
 
@@ -749,3 +756,34 @@ def _preview_palm_burst(_game: Any, pattern: Pattern, anchor: TilePos) -> Option
         for px, py in burst_points
     )
     return ActionPreview(action="palm_burst", circles=circles)
+
+
+_KNIFE_RUNE_CHAKRAS = frozenset({"body", "arm", "arm.hand"})
+
+
+def _preview_knife_rune(_game: Any, pattern: Pattern, anchor: TilePos) -> Optional[ActionPreview]:
+    """Preview grey aura circles at Dark Knife chakra vertices."""
+    rune_points: List[Tuple[float, float]] = []
+    for v in getattr(pattern, "vertices", ()) or ():
+        tags = getattr(v, "tags", {}) or {}
+        node = str(tags.get("chakra_node", "")).strip()
+        if not node:
+            continue
+        if node in _KNIFE_RUNE_CHAKRAS:
+            rune_points.append((float(v.pos[0] + anchor[0]), float(v.pos[1] + anchor[1])))
+
+    if not rune_points:
+        return ActionPreview(action="knife_rune")
+
+    radius = 5.0  # Matches _KNIFE_RUNE_MAX_RANGE in god_abilities.py
+    circles = tuple(
+        PreviewCircle(
+            pos=(px, py),
+            radius=radius,
+            color=(128, 128, 128, 100),
+            pulse="sine",
+            period_ms=2000,
+        )
+        for px, py in rune_points
+    )
+    return ActionPreview(action="knife_rune", circles=circles)
