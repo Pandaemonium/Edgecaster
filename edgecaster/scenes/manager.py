@@ -93,6 +93,8 @@ class SceneManager:
             "real_boy": "assets/music/real_boy.ogg",
             "creche": "assets/music/creche.ogg",
             "ice_cave": "assets/music/ice_cave.ogg",
+            "dwarf_train": "assets/music/dwarf_train.ogg",
+            
 
             # Event stingers
             "imp_cackle": "assets/music/imp_cackle.wav",
@@ -106,6 +108,10 @@ class SceneManager:
             "shop": "assets/music/shop.wav",
             "sergeant": "assets/music/sergeant.ogg",
             "chakric": "assets/music/chakric.ogg",
+            "dignity": "assets/music/dignity.ogg",
+            "tick_tock": "assets/music/tick_tock.ogg",
+
+
             
             # Location music
             "morituri": "assets/music/morituri.ogg",
