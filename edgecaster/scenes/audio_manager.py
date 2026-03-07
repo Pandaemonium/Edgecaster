@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence, Any
+from typing import Optional, Sequence, Any, Dict
 import os
 import random
 import pygame
@@ -72,7 +72,8 @@ class AudioManager:
         self._saved_playlist: list[str] | None = None
         self._saved_playlist_index: int = 0
         self._saved_playlist_loop: bool = True
-
+        self._sfx_channels: Dict[str, int] = {}
+        self._sfx_playing_sig: Dict[str, str] = {}
 
 
     # ---------------------------- Init / plumbing ----------------------------
@@ -85,11 +86,18 @@ class AudioManager:
                 # If you later want lower latency, tweak buffer/frequency here.
                 pygame.mixer.init()
             pygame.mixer.music.set_endevent(MUSIC_END_EVENT)
+            try:
+                # If already higher, this is a no-op
+                pygame.mixer.set_num_channels(max(pygame.mixer.get_num_channels(), 8))
+            except Exception:
+                pass
+
         except Exception:
             # Fail-soft: audio just won't play.
             self.enabled_music = False
             self.enabled_sfx = False
         self._initted = True
+
 
     def set_music_enabled(self, on: bool) -> None:
         self.enabled_music = bool(on)
@@ -437,3 +445,60 @@ class AudioManager:
         return True
 
 
+
+
+
+    def get_sfx_channel(self, name: str, *, channel_index: int) -> pygame.mixer.Channel | None:
+        """
+        Return a dedicated pygame.mixer.Channel for a named SFX lane.
+        Safe to call repeatedly.
+        """
+        self.ensure_init()
+        if not self.enabled_sfx:
+            return None
+        try:
+            name = str(name)
+            idx = int(channel_index)
+            self._sfx_channels[name] = idx
+            return pygame.mixer.Channel(idx)
+        except Exception:
+            return None
+
+    def play_sfx_loop(self, name: str, sound: pygame.mixer.Sound, *, sig: str, channel_index: int = 6, volume: float = 0.25) -> None:
+        """
+        Play (or keep playing) a looping SFX sound on a dedicated channel.
+        `sig` is a caller-provided signature; if unchanged, we avoid restarting.
+        """
+        self.ensure_init()
+        if not self.enabled_sfx:
+            return
+        try:
+            name = str(name)
+            sig = str(sig)
+            prev = self._sfx_playing_sig.get(name)
+            if prev == sig:
+                return
+
+            ch = self.get_sfx_channel(name, channel_index=channel_index)
+            if ch is None:
+                return
+            try:
+                sound.set_volume(max(0.0, min(1.0, float(volume))))
+            except Exception:
+                pass
+            ch.play(sound, loops=-1)
+            self._sfx_playing_sig[name] = sig
+        except Exception:
+            pass
+
+    def stop_sfx(self, name: str) -> None:
+        self.ensure_init()
+        try:
+            name = str(name)
+            idx = self._sfx_channels.get(name)
+            if idx is None:
+                return
+            pygame.mixer.Channel(int(idx)).stop()
+            self._sfx_playing_sig.pop(name, None)
+        except Exception:
+            pass

@@ -18,6 +18,8 @@ from edgecaster.ui.ability_bar import AbilityBarState
 from edgecaster.systems.actions import get_action, describe_entity_for_look
 from edgecaster.visuals import VisualProfile, apply_visual_panel  
 from edgecaster.ui.widgets import WidgetContext, VBox, HBox, LabelWidget, ButtonWidget, ListWidget
+from edgecaster.systems import rune_audio as rune_audio_system
+
 
 
 TargetKind = Literal["tile", "vertex", "look", "position"]
@@ -339,6 +341,14 @@ class DungeonScene(Scene):
         if game is None:
             manager.set_scene(None)
             return
+
+        # Rune audio: keep the current rune pattern expressed as a looped drone.
+        # Cheap signature compare; only resynthesizes on change.
+        try:
+            rune_audio_system.sync_rune_drone(game, manager.audio)
+        except Exception:
+            pass
+
 
         # Legacy flags still respected
         if getattr(renderer, "quit_requested", False) or getattr(renderer, "pause_requested", False):
