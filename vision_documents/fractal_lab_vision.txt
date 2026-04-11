@@ -1,3 +1,12 @@
+Title: Fractal Lab Vision
+Purpose: capture the active lab/spell-forge feature direction that extends the current lab POI and runtime hook.
+Status: active-plan
+Last verified: 2026-04-10
+Canonical for: Fractal Lab feature planning
+Related docs: `vision_documents/spring_cleaning.txt`, `vision_documents/architecture.txt`, `vision_documents/map_generation_strategy.txt`
+Related code: `edgecaster/mapgen.py`, `edgecaster/game.py`, `edgecaster/content/pois.yaml`
+Supersedes: none
+
 Fractal Lab Vision (run-time spell forge)
 
 Purpose

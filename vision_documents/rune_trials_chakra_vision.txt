@@ -1,3 +1,12 @@
+Title: Edgecaster Vision (Rune Trials + Chakras)
+Purpose: define the feature-level north-star for rune-trial progression, chakra buildcraft, and body-swap-driven geometry.
+Status: north-star
+Last verified: 2026-04-10
+Canonical for: rune-trial and chakra progression vision
+Related docs: `vision_documents/the_yoga.txt`, `vision_documents/procedural_myths_design.txt`, `vision_documents/spring_cleaning.txt`
+Related code: `edgecaster/systems/seal_trials.py`, `edgecaster/content/sealing_runes.py`, `edgecaster/scenes/chakra_scene.py`
+Supersedes: none
+
 EDGECASTER VISION (RUNE TRIALS + CHAKRAS)
 ========================================
 
@@ -153,4 +162,3 @@ Language: “seals,” “coherence,” “resonance,” “anchors,” “itera
 2. Build 3 handcrafted trial templates for early playtest.
 3. Ensure chakra generator yields predictable baseline scaling.
 4. Add at least one body swap "bridge trial" to prove the mechanic.
-

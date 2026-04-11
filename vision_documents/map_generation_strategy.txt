@@ -1,3 +1,12 @@
+Title: Map Generation Strategy
+Purpose: document the current mapgen, overmap, corruption, and multi-scale world-view invariants.
+Status: current-state reference
+Last verified: 2026-04-10
+Canonical for: detailed worldgen and overmap reference
+Related docs: `vision_documents/architecture.txt`, `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`
+Related code: `edgecaster/mapgen.py`, `edgecaster/mapgen_sites.py`, `edgecaster/climate.py`, `edgecaster/systems/overmap.py`
+Supersedes: none
+
 ## Map Generation Strategy (Current Implementation)
 
 This document describes how the game currently generates:

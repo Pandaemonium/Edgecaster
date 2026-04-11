@@ -1,3 +1,12 @@
+Title: Spring Cleaning - Actionable Plan
+Purpose: track active cleanup, migration, and correctness work that should continue shaping near-term implementation.
+Status: active-plan
+Last verified: 2026-04-10
+Canonical for: active cleanup and refactor follow-up work
+Related docs: `vision_documents/the_yoga.txt`, `vision_documents/architecture.txt`, `vision_documents/entity_chakra_unification_master_plan.txt`, `vision_documents/documentation_review_plan.md`
+Related code: `edgecaster/`, `tests/`
+Supersedes: none
+
 SPRING CLEANING - ACTIONABLE PLAN
 Updated: 2026-02-01
 Status: UI migration largely complete; map zoom refactor complete; game.py decomposition largely complete
@@ -641,6 +650,31 @@ GUIDING PRINCIPLES
 - Preserve functional parity before aesthetics
 - Let systems compose instead of special-casing
 - Keep the geometry weird
+
+===============================================================================
+RETAINED FOLLOW-UP QUEUES FROM ARCHIVED PLANS (2026-04-10)
+
+These items were retained when older plans were archived. Keep them here if
+they remain active; otherwise let them age out instead of recreating duplicate
+planning docs.
+
+Blade follow-ups
+- [BEHAVIOR] Item-to-blade generator transfer flow.
+- [BEHAVIOR] Non-player blade AI on the shared blade runtime.
+- [CLEANUP] Blade telemetry and balance instrumentation.
+- [BEHAVIOR] Advanced blade verb effects and evaluator depth.
+
+Pattern-source unification
+- [CLEANUP] Decide whether generator sources (chakra, tattoo, wand, shrine, resonance) should converge behind one pattern-source pipeline.
+- [YOGA] If unified, use one normalization path so previews and applied patterns cannot drift.
+
+Worldgen and site-generation carry-forward
+- [CLEANUP] Review surviving biome-to-site affinity rules and keep only what still matches `site_placement.py` and `mapgen_sites.py`.
+- [CLEANUP] Preserve good debugability: worldgen should stay explainable with overlays, logs, or deterministic rationale.
+- [VISION] Roads, networks, and persistent site relationships remain valid long-term goals, but should route through the current entity/site pipeline instead of older parallel plans.
+
+Scratch bug revalidation
+- [CLEANUP] Re-validate any bug copied out of archived scratch notes before restoring it to the active queue.
 - Absolute space is truth; zones are caches
 - The camera is the observer; scale is real
 

@@ -1,3 +1,12 @@
+Title: Edgecaster Yoga Treatise
+Purpose: define the north-star architectural doctrine for observer-driven reality, absolute space, and scale-aware simulation.
+Status: north-star
+Last verified: 2026-04-10
+Canonical for: architectural doctrine and anti-zone-metaphysics rules
+Related docs: `vision_documents/architecture.txt`, `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/procedural_myths_design.txt`
+Related code: `edgecaster/game.py`, `edgecaster/systems/coords.py`, `edgecaster/systems/attention.py`, `edgecaster/systems/zones.py`
+Supersedes: none
+
 Edgecaster Yoga Treatise
 Observer-Driven Reality, Absolute Space, and Scale-Aware Simulation
 

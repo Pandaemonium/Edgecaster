@@ -1,3 +1,12 @@
+Title: Entity + Chakra Unification Master Plan
+Purpose: define the active execution plan for converging entity, chakra, inventory, and POI systems toward one unified substrate.
+Status: active-plan
+Last verified: 2026-04-10
+Canonical for: active entity/chakra unification work
+Related docs: `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/architecture.txt`
+Related code: `edgecaster/state/`, `edgecaster/systems/`, `edgecaster/content/`
+Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
+
 ## Entity + Chakra Unification Master Plan
 Updated: 2026-02-18
 Status: v1.5 (Execution Queue + Legacy Deletion Priorities)
@@ -9,8 +18,8 @@ This is the execution plan for:
 3. Chakra relationships and entity relationships can both evolve over time.
 4. Rules are scale-invariant by default.
 
-This plan is intentionally implementation-first and aligned with
-`vision_documents/poi_entity_unification_master_plan.txt`.
+This plan is intentionally implementation-first and absorbs the still-relevant
+work that survived the earlier POI/entity unification plan.
 
 -------------------------------------------------------------------------------
 

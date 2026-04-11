@@ -1,3 +1,12 @@
+Title: Procedural Myths Design
+Purpose: define the long-lived narrative direction where myths are generated from real player actions and world consequences.
+Status: north-star
+Last verified: 2026-04-10
+Canonical for: procedural-myth feature vision
+Related docs: `vision_documents/the_yoga.txt`, `vision_documents/rune_trials_chakra_vision.txt`, `vision_documents/spring_cleaning.txt`
+Related code: `edgecaster/systems/telemetry.py`, `edgecaster/systems/quests.py`, `edgecaster/systems/reputation.py`
+Supersedes: none
+
 PROCEDURAL MYTHS DESIGN
 =======================
 
@@ -155,4 +164,3 @@ M6: NPC rumor integration
 - Templates should be short and distinctive (readable in UI).
 - Avoid repetition: mark myths as "recently shown."
 - Keep vocabulary consistent with the game's arcane‑math tone.
-

@@ -1,3 +1,12 @@
+Title: Edgecaster Architecture Guide
+Purpose: orient contributors and AI agents to the current code structure, responsibility boundaries, and major module ownership.
+Status: current-state reference
+Last verified: 2026-04-10
+Canonical for: current architecture map and responsibility boundaries
+Related docs: `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/map_generation_strategy.txt`, `ARCHITECTURE.md`
+Related code: `edgecaster/`, `tests/`
+Supersedes: none
+
 EDGECASTER ARCHITECTURE GUIDE
 Updated: 2026-02-06
 
@@ -12,6 +21,10 @@ SCENES (edgecaster/scenes/)
 - Do scene transitions/stacking via SceneManager.
 - Declare visual effects by NAME (but do not implement simulation rules).
 - Do not do low-level rendering or camera math.
+- `edgecaster/scenes/manager.py`: scene stack, shared options, keybinding load, and audio coordination hub.
+- `edgecaster/scenes/base.py`: Scene / PanelScene / PopupMenuScene framework, visual-profile-aware event unprojection, and widget routing.
+- `edgecaster/scenes/game_input.py`: pygame event -> `GameCommand` translation and persisted keybinding handling.
+- `edgecaster/scenes/dungeon.py`: main live gameplay scene. Owns `DungeonUIState`, command routing, targeting state, hover previews, and most scene pushes during play.
 - `edgecaster/scenes/blade_editor_scene.py`: V1 Fractal Blade editor.
   - Open via `open_blade_editor` command (default `B`) or knife context action in inventory.
   - Edits Blade-class intrinsic blade profile only in V1.
@@ -45,10 +58,18 @@ INVENTORY / LOOK SCENES (edgecaster/scenes/inventory_scene.py)
 - Slot identity:
   - Equip slots are canonicalized by prefixing the current zoom path so node-local IDs remain stable across depth.
 
+CHAKRA SCENE (edgecaster/scenes/chakra_scene.py)
+- Owns chakra selection UI, realign mode, preview widgets, and commit/cancel flow.
+- Chakra rules still belong to systems; this scene is the presentation/control surface around them.
+
 RENDERERS (edgecaster/render/)
 - Pure view layer ("TV unplug test"): if the renderer is removed, the game should still run.
 - Do not read input events, mutate game state, or re-implement game rules.
 - Renderer draws from scene-owned UI state (e.g. aim predictions, previews).
+- `edgecaster/render/ascii.py`: primary dungeon/world renderer. Still large and transitional; some UI/camera bridge state remains here, so edits have broad blast radius.
+- Canonical coordinate helpers live in `ascii.py` (`screen_to_abs_tile`, `screen_to_abs_tile_int`, `abs_tile_to_screen_px`) and should replace ad hoc tile/screen math.
+- `edgecaster/render/overmap_lod.py`: snapped overmap LoD helper for zoomed-out terrain rendering.
+- `edgecaster/render/terrain_tiles.py`: terrain-surface bank/helper code for tiles mode.
 
 SYSTEMS (edgecaster/systems/)
 - Where gameplay/simulation logic lives.
@@ -56,10 +77,17 @@ SYSTEMS (edgecaster/systems/)
 
 STATE (edgecaster/state/)
 - Dataclasses / persistent state containers (World, Actor, Entity, etc.).
+- `Entity.abs_pos` is canonical. `Entity.pos` is a loaded-zone/local cache.
+- `World` is a local tile cache for a loaded level, not the whole-world ontology.
+- `POISpec` / `ABSRect` in `state/pois.py` are ABS-space truth for POI definitions.
+- `LevelState` still lives in `game.py` as a migration holdout rather than in `edgecaster/state/`.
 
 CONTENT (edgecaster/content/*.yaml, edgecaster/content/*.py)
 - Data-driven prototypes and placements.
 - Prefer adding new entities/enemies/POIs here instead of hardcoding in code.
+- Prototype-bucket inputs currently include: `entities.yaml`, `enemies.yaml`, `anatomy.yaml`, `biology.yaml`, `quests.yaml`, and `site_types.yaml`.
+- Dedicated loaders/registries handle POIs, factions, merchants, sealing runes, rune-anchor sieges, and dialogue/NPC fallback metadata.
+- Prefer prototype-driven content over adding more parallel fallback definitions to `content/npcs.py` unless the fallback is genuinely still needed.
 
 ===============================================================================
 2) INPUT + KEYBINDINGS
@@ -108,9 +136,16 @@ Climate / Biome System:
   temperature/wind/moisture field computation. Core exports: Biome enum, classify_biome().
 - game.py owns ClimateConfig; systems/overmap.py passes it via overmap_params.
 
+Site placement and realization:
+- edgecaster/systems/site_placement.py: deterministic site placement from world fields and site types.
+- edgecaster/mapgen_sites.py: site and lair realization helpers once a placed site is concretized.
+- edgecaster/content/site_types.yaml: site taxonomy, tags, and placement/realization inputs.
+- `mapgen_sites.py` is mixed: legendary lair generation is current/useful, but several site-realization paths are stale or transitional and should be treated carefully.
+
 Overmap / world map rendering:
 - Orchestration + background rendering thread: edgecaster/systems/overmap.py
 - Fast numeric rendering path: edgecaster/overmap_accel.py (numpy)
+- Important invariant: overmap fast paths, scalar/canonical mapgen rules, and climate-aware local generation must stay aligned. Drift here produces map/local semantic mismatches.
 
 Corruption:
 - Pure distortion math/LUTs: edgecaster/corruption.py
@@ -200,9 +235,14 @@ Current concern map (authoritative):
     sapper sabotage pressure, and completion dampening reward).
   - Owns encounter state/actions (`anchor_channel`, `anchor_stabilize`, `anchor_purge`)
     and quest compatibility emit.
+- `edgecaster/systems/seal_trials.py`
+  - Rune Trial runtime and sealing-flow gameplay integration.
+- `edgecaster/content/sealing_runes.py` + `edgecaster/content/sealing_runes.yaml`
+  - Data definitions for sealing-rune content used by trial/seal systems.
 
 Still in `game.py` and planned for extraction:
 - `_make_zone()` once mapgen/POI coupling is reduced.
+- `LevelState` definition / ownership remains in `game.py`.
 
 Delegation note:
 - `Game.sync_attention_instantiation`, `Game.renderables_in_abs_rect`,
@@ -247,6 +287,7 @@ Key modules (non-exhaustive):
 - systems/rune_anchor_sieges.py: failing Rune Anchor gauntlet runtime
   (fracture channeling, wave pacing, stabilize hold, catastrophe pulses, sapper sabotage,
    persistent backlash, corruption dampening completion)
+- systems/sites.py: older site-registry path; still present, but no longer the main source of truth for prototype-driven `site_*` placement.
 
 Chakra item content tags (entities.yaml):
 - Temporary unlocks:
@@ -350,6 +391,16 @@ Debug log:
 Testing:
 - Run tests with: python -m pytest
   (Avoid calling bare "pytest" on PATH because it may point at a different Python install.)
+
+Currency:
+- Bismuth wallet totals live on `Game`.
+- Currency piles are content-driven entities (see `content/entities.yaml`) and auto-absorb into the wallet on pickup.
+- Merchant and trade flows consume the same wallet/currency model through `systems/trade.py`.
+
+Lab / spell-forge hook:
+- The run chooses a lab POI coordinate and reanchors it into the POI registry.
+- `edgecaster/mapgen.py` builds the small lab zone layout when the lab site is entered.
+- `LevelState.lab_state` / `Game.LabState` hold the lab-specific runtime hook for in-zone spell-forge behavior.
 
 ===============================================================================
 10) MERCHANTS / TRADING (ARCHITECTURE)

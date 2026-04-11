@@ -1,3 +1,12 @@
+Title: Edgecaster Vision - Everything Is an Entity, and All Entities Have Chakras
+Purpose: define the long-lived entity/chakra ontology that should guide future systems and content design.
+Status: north-star
+Last verified: 2026-04-10
+Canonical for: entity/chakra ontology and recursive simulation direction
+Related docs: `vision_documents/the_yoga.txt`, `vision_documents/entity_chakra_unification_master_plan.txt`, `vision_documents/architecture.txt`
+Related code: `edgecaster/state/`, `edgecaster/systems/chakras.py`, `edgecaster/systems/entity_graph_ops.py`
+Supersedes: none
+
 ## Edgecaster Vision: Everything Is an Entity, and All Entities Have Chakras
 Updated: 2026-02-13
 Status: North Star (Design Lock v1.1)
@@ -468,4 +477,3 @@ generalize to every scale:
 
 The player learns one interaction language and discovers it works everywhere.
 That is the fractal promise.
-
