@@ -23,7 +23,7 @@ Supersedes: none
 - `content/` - YAML/Python content definitions and loaders
 - `state/` - dataclasses and persistent-ish state structures
 - `ui/` - reusable widget primitives and HUD components
-- `patterns/` - geometry and generator helpers
+- `patterns/` - geometry and generator helpers (see local `AGENTS.md` for vertex-ordering and baseline contracts)
 - `devtools/` - editor/tool support
 - `enemies/` - enemy factory bridge
 

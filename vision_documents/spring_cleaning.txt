@@ -365,6 +365,40 @@ AUDIT NOTES (2026-02-01) - ADDITIONAL REFACTOR CANDIDATES
   - Make worldgen_on_rumor a first-class registry flag
   - Ensure all "known but not discovered" POIs are handled consistently.
 
+[CLEANUP] Retire systems/poi_worldgen.py (LEGACY_DELETE marker already present)
+  - The module is tagged [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] and overlaps
+    with systems/poi_spawning.py.
+  - End-state: a single resolver/entity-graph realization pipeline.
+  - Before removal: verify all callers have migrated to poi_spawning.py or
+    attention.py staging helpers; add a test asserting the legacy code path
+    is no longer exercised.
+
+[CLEANUP] Retire systems/sites.py once site registry migration is complete
+  - architecture.txt notes: "older site-registry path; still present, but no
+    longer the main source of truth for prototype-driven site_* placement."
+  - Confirm all site placement goes through systems/site_placement.py and
+    content/site_types.yaml; then remove the old registry module.
+
+[CLEANUP] Replace file-path comment headers with real module docstrings
+  - Several files open with a redundant `# edgecaster/systems/X.py` comment
+    instead of a proper module docstring.  Affected files (as of 2026-04-10):
+      - edgecaster/systems/aggregate_resolution.py (comment block, not docstring)
+      - edgecaster/systems/world_entity_index.py
+      - edgecaster/systems/rune_audio.py
+  - Replace the comment header with a `"""..."""` module docstring that
+    captures the design intent already in the comments.
+
+[CLEANUP] systems/attention.py — extract sync_attention_instantiation
+  - `sync_attention_instantiation()` still lives in game.py (see SLICE 5
+    follow-up).  Moving it into attention.py would complete the extraction and
+    keep all attention lifecycle logic in one module.
+
+[CLEANUP] Unify _stable_hash / _stable_int_hash helpers
+  - aggregate_resolution.py and poi_worldgen.py each define a private FNV-1a
+    hash function with the same algorithm and slightly different names.
+  - Consolidate into systems/entity_identity.py (which already handles stable
+    deterministic IDs) or a shared math_utils helper.
+
 
 ===============================================================================
 TESTING NOTES

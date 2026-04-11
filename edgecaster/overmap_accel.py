@@ -1,3 +1,27 @@
+"""Fast numpy-based overmap field rendering and biome sampling.
+
+This module owns the hot paths that render the world map at macro scale:
+Julia-set iteration, corruption distortion, climate classification, and
+the LoD-aware colour/elevation buffers consumed by the overmap renderer.
+
+**Alignment rule (critical):**
+The fast numpy paths in this file must stay semantically aligned with the
+scalar fallback logic in `edgecaster/systems/overmap.py` and the canonical
+biome rules in `edgecaster/climate.py`.  Drift between the fast path and the
+scalar path produces map/local semantic mismatches (e.g. a tile looks like
+tundra on the overmap but spawns desert enemies when entered).
+If you change biome classification thresholds, corruption parameters, or
+climate field formulas, update *both* paths or refactor so a single
+implementation is shared.
+
+Primary exports:
+- `render_overmap_buffers_numpy`: renders a px_w × px_h overmap buffer into
+  (elevation, biome_id, peak_mask) numpy arrays.
+- `render_overmap_fields_climate`: same but includes climate field outputs
+  (temperature, moisture, wind) for use by the biome classifier.
+- `sample_biome_id_at_world_xy`: single-point biome lookup used by spawning
+  and local-zone creation to pick the right biome for a world tile.
+"""
 from __future__ import annotations
 
 from typing import Iterable, Optional, TYPE_CHECKING

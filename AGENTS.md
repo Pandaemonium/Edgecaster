@@ -11,17 +11,24 @@ This file applies repo-wide unless a deeper `AGENTS.md` overrides or extends it.
 For orientation, read these in roughly this order:
 
 1. `vision_documents/INDEX.md`
-2. `vision_documents/architecture.txt`
-3. `vision_documents/the_yoga.txt`
-4. `vision_documents/spring_cleaning.txt`
-5. `README.md`
-6. local `AGENTS.md` and `INDEX.md` files in the area you are changing
+2. `vision_documents/the_yoga.txt`
+3. `vision_documents/aesthetics.md`
+4. `vision_documents/lore_bible.md`
+5. `vision_documents/factions_and_nations.md`
+6. `vision_documents/architecture.txt`
+7. `vision_documents/spring_cleaning.txt`
+8. `README.md`
+9. local `AGENTS.md` and `INDEX.md` files in the area you are changing
 
 ## Canonical Docs
 
 - `vision_documents/architecture.txt` is the canonical current-state architecture reference.
-- `vision_documents/the_yoga.txt` is canonical north-star guidance.
-- `vision_documents/spring_cleaning.txt` is canonical active-planning guidance.
+- `vision_documents/the_yoga.txt` is canonical north-star guidance for architecture and world-model doctrine.
+- `vision_documents/aesthetics.md` is canonical north-star guidance for tone, style, naming, visual language, and writing voice.
+- `vision_documents/lore_bible.md` is canonical north-star guidance for world truths, public knowledge, and hidden lore.
+- `vision_documents/factions_and_nations.md` is canonical north-star guidance for cultural, national, and faction differentiation.
+- `vision_documents/spring_cleaning.txt` is canonical active-planning guidance, specifically used to note down things that should be refactored or cleaned up later.
+- `vision_documents/elflore.md` is the canonical active-planning reference for current elven lore and cult-system direction.
 - `vision_documents/documentation_review_plan.md` is the canonical plan for the documentation-review effort.
 - `ARCHITECTURE.md` should stay short and act as a summary/redirect, not the full architecture source of truth.
 
@@ -63,7 +70,7 @@ Outdated planning material belongs under `vision_documents/archived/`.
 - Prefer descriptive variable names over terse abbreviations.
 - Prefer relatively verbose comments when they help explain intent, invariants, or tricky behavior.
 - Keep documentation close to the current code rather than preserving stale speculation.
-- Follow `the_yoga.txt` for gameplay and aesthetic direction.
+- Follow `the_yoga.txt`, `aesthetics.md`, and `lore_bible.md` for gameplay, world, and aesthetic direction.
 - Prefer extending existing patterns over inventing a parallel architecture.
 
 ## Operational Notes

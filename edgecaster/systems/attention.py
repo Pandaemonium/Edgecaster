@@ -1,4 +1,29 @@
-﻿from __future__ import annotations
+﻿"""Attention-driven render candidate assembly and world proxy staging.
+
+This module is the bridge between the ABS-space world ontology and the
+per-frame render candidate list.  Its central job is to decide *which* world
+entities (sites, POIs, aggregates) should be visible and materialized at the
+current camera LoD, without triggering gameplay-side-effects.
+
+Key responsibilities:
+- `renderables_in_abs_rect`: builds the render candidate list for the current
+  view rect, merging live level actors/entities with world-level proxy stubs.
+- World proxy staging helpers: `ensure_site_entities`, `ensure_poi_entities`,
+  `ensure_aggregate_entities`, `realize_aggregate_details_in_zone` — these
+  decide when a world-level stub should be promoted to a realized interactive
+  entity and when it should remain a lightweight render proxy.
+- Suppression tracking: entities that have been removed/killed in a zone are
+  suppressed in the world index so they do not reappear on the overmap.
+- `sync_attention_instantiation` (called from `game.py`): ensures the staged
+  ontology matches the last known view before each game tick so render
+  candidates and simulation state stay aligned.
+
+Invariant: none of the query paths in this module may instantiate zones or
+directly mutate gameplay state.  Side effects (spawning real actors, marking
+entities removed) are intentional and go through `game` delegate calls, but
+the render query path itself must remain free of observable gameplay mutations.
+"""
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math

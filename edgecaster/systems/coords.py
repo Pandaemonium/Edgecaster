@@ -1,4 +1,24 @@
-﻿from __future__ import annotations
+﻿"""Canonical ABS ↔ zone/local coordinate transforms.
+
+The world uses two layered coordinate systems:
+
+- **ABS (absolute) space**: a single flat integer grid spanning the entire
+  world map.  `Entity.abs_pos` is the source of truth.  All cross-zone
+  reasoning (FOV, pathfinding, ABS-space POI queries) works in this space.
+
+- **Zone/local space**: the world is divided into rectangular *zones*
+  (`cfg.world_width` × `cfg.world_height` tiles each).  A zone is identified
+  by `(zx, zy, depth)` and a local position `(lx, ly)` within it.
+  `Entity.pos` is a zone-local cache loaded when a zone is active.
+
+These two functions are the only approved converters between those spaces.
+Do not inline the division/modulo arithmetic elsewhere; use these helpers so
+edge cases (negative coordinates, world-edge clamping) are handled once.
+
+Invariant: `abs_from_zone_local(game, *zone_local_from_abs(game, p))` should
+round-trip back to `p` for any in-bounds ABS position `p`.
+"""
+from __future__ import annotations
 
 
 def zone_dims(game) -> tuple[int, int]:

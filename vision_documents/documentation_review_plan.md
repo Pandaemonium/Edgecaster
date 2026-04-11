@@ -2,7 +2,7 @@
 
 Purpose: guide the complete documentation review and cleanup for this repo, with a bias toward legibility for AI agents and future maintainers.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-11
 Canonical for: the documentation-review process and rollout order
 Related docs: `vision_documents/architecture.txt`, `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `README.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`
 Related code: repo root, `edgecaster/`, `tests/`, `assets/`
@@ -368,3 +368,12 @@ This section is intentionally lightweight and should be updated as the review pr
   - `edgecaster/systems/INDEX.md`
   - `tests/AGENTS.md`
   - `tests/INDEX.md`
+
+### 2026-04-11
+
+- Split the former mixed `aesthetics.md` into a clearer three-layer lore/style stack:
+  - `aesthetics.md` for style, tone, naming, writing voice, and spoiler discipline
+  - `lore_bible.md` for world truths, public knowledge, and hidden truths
+  - `factions_and_nations.md` for culture and nation differentiation
+- Added `elflore.md` as a focused active-plan doc for current elven lore and cult-system direction.
+- Updated root and `vision_documents/` agent guidance to reflect the new reading order and canonical doc split.

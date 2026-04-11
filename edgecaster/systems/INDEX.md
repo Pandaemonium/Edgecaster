@@ -68,9 +68,9 @@ Supersedes: none
 - `ambient_spawns.py`
 - `poi_spawning.py`
 - `poi_registry.py`
-- `poi_worldgen.py`
+- `poi_worldgen.py` *(legacy — migration pending; tagged [LEGACY_DELETE]; overlaps with `poi_spawning.py`; do not add new logic here)*
 - `site_placement.py`
-- `sites.py`
+- `sites.py` *(legacy — no longer the main source of truth for prototype-driven site placement; prefer `site_placement.py` + `content/site_types.yaml`)*
 - `overmap.py`
 - `legendaries.py`
 - `difficulty.py`

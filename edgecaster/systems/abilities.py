@@ -1,3 +1,23 @@
+"""Ability bar construction and signature helpers.
+
+An *ability* in this context is a slot in the player-facing action bar —
+one entry per ActionDef that has `show_in_bar=True` and is registered on the
+current host actor.  This module is intentionally model-only: the `Ability`
+dataclass carries no pygame Rects or other renderer-specific state.
+
+Key responsibilities:
+- `Ability`: pure data model for a single action-bar slot.
+- `build_abilities(game)`: constructs the current bar from the host actor's
+  registered actions; called whenever the bar needs a full rebuild.
+- `compute_abilities_signature(game)`: returns a small hashable tuple
+  summarizing the inputs that determine bar shape (unlocked generators,
+  illuminator, custom patterns, host actions, cooldown snapshot).  Callers
+  compare signatures frame-to-frame to detect when a rebuild is needed.
+
+Rule: renderer code (dungeon.py, ascii.py) may attach `.rect` / `.gear_rect`
+to `Ability` instances for hit-testing, but that state is not part of the
+model and must not be expected to survive a rebuild.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

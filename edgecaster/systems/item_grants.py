@@ -1,3 +1,27 @@
+"""Item-granted ability helpers.
+
+Some items grant actions to the player while they are held or equipped.
+This module provides a unified tag-schema parser (`get_item_grants`) that
+reads the relevant tags from an entity and returns a list of
+`(action_name, grant_mode)` pairs.
+
+Grant modes:
+- `"held"`: the action is available while the item is in the player's
+  inventory (does not need to be in an equip slot).
+- `"equipped"`: the action is available only when the item is actively
+  equipped in a matching slot.
+
+Supported tag schema (best-effort, backwards-compatible):
+- `tags.grants_ability`: single string → held
+- `tags.grants_abilities`: list → mode from `tags.grant_requires` (default held)
+- `tags.grants_actions`: list → same as grants_abilities
+- `tags.equip_grants_abilities`: list → always equipped
+- `tags.grant_requires`: `"held"` | `"equipped"` override for the above lists
+
+Callers (typically `systems/action_runner.py` and `systems/spawning.py`)
+collect these grants at spawn/equip time and register them on the actor's
+`actions` list.
+"""
 from __future__ import annotations
 
 from typing import Any, Iterable, List, Optional, Tuple

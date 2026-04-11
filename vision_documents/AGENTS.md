@@ -11,7 +11,11 @@ This file applies to `vision_documents/` and its subdirectories.
 - `architecture.txt` - canonical current-state architecture reference
 - `map_generation_strategy.txt` - detailed current-state worldgen reference
 - `the_yoga.txt` - canonical north-star document
+- `aesthetics.md` - canonical tone and style guide
+- `lore_bible.md` - canonical world lore and public-knowledge guide
+- `factions_and_nations.md` - canonical culture and nation guide
 - `spring_cleaning.txt` - canonical active-plan document
+- `elflore.md` - canonical active-plan reference for current elven design
 - `documentation_review_plan.md` - canonical documentation-review plan
 - `INDEX.md` - the folder map and classification ledger for `vision_documents/`
 

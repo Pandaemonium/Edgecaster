@@ -2,19 +2,22 @@
 
 Purpose: map the status and role of documents in `vision_documents/` so agents can find trusted material quickly.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-11
 Canonical for: folder-level reading order and document classification
-Related docs: `vision_documents/architecture.txt`, `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/documentation_review_plan.md`
+Related docs: `vision_documents/aesthetics.md`, `vision_documents/lore_bible.md`, `vision_documents/factions_and_nations.md`, `vision_documents/architecture.txt`, `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/documentation_review_plan.md`
 Related code: `edgecaster/`, `tests/`
 Supersedes: none
 
 ## Read First
 
-1. `architecture.txt`
-2. `the_yoga.txt`
-3. `spring_cleaning.txt`
-4. `documentation_review_plan.md`
-5. topic-specific current-state or north-star docs as needed
+1. `the_yoga.txt`
+2. `aesthetics.md`
+3. `lore_bible.md`
+4. `factions_and_nations.md`
+5. `architecture.txt`
+6. `spring_cleaning.txt`
+7. `documentation_review_plan.md`
+8. topic-specific current-state, faction, or feature docs such as `elflore.md` as needed
 
 ## Canonical
 
@@ -26,6 +29,9 @@ Supersedes: none
 ### North-Star
 
 - `the_yoga.txt`
+- `aesthetics.md`
+- `lore_bible.md`
+- `factions_and_nations.md`
 - `entity_chakra_unification_vision.txt`
 - `procedural_myths_design.txt`
 - `rune_trials_chakra_vision.txt`
@@ -34,6 +40,7 @@ Supersedes: none
 
 - `spring_cleaning.txt`
 - `documentation_review_plan.md`
+- `elflore.md`
 - `entity_chakra_unification_master_plan.txt`
 - `fractal_lab_vision.txt`
 
