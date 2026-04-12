@@ -23,6 +23,12 @@ class EntityGraphNode:
     entity_id is the primary key and should match the runtime entity.id (or
     entity.entity_id when populated). parent_entity_id/socket_id record
     containment; semantic_id is the optional stable content-addressable name.
+
+    dirty: True when this node's channel state has changed since the last
+    reducer pass.  The channel reducer skips clean subtrees (dirty=False with
+    no dirty descendants) so only modified paths are re-reduced each tick.
+    Call EntityGraphStore.mark_dirty_up(entity_id) after any channel mutation
+    to propagate the dirty flag up to the root.
     """
 
     entity_id: str
@@ -34,6 +40,7 @@ class EntityGraphNode:
     layout_id: Optional[str] = None
     rule_id: Optional[str] = None
     tags: Dict[str, Any] = field(default_factory=dict)
+    dirty: bool = True  # New nodes start dirty so the first reduction pass includes them.
 
 
 class EntityGraphStore:
@@ -113,6 +120,10 @@ class EntityGraphStore:
             if self.semantic_index.get(existing.semantic_id) == eid:
                 self.semantic_index.pop(existing.semantic_id, None)
 
+        # Preserve dirty flag when re-registering an existing node that was
+        # already marked dirty; a clean re-registration should not lose dirtiness.
+        next_dirty = True if existing is None else bool(getattr(existing, "dirty", True))
+
         node = EntityGraphNode(
             entity_id=eid,
             semantic_id=next_semantic_id,
@@ -123,6 +134,7 @@ class EntityGraphStore:
             layout_id=next_layout_id,
             rule_id=next_rule_id,
             tags=next_tags,
+            dirty=next_dirty,
         )
         self.nodes[eid] = node
 
@@ -176,6 +188,63 @@ class EntityGraphStore:
         node.socket_id = str(new_socket_id) if new_socket_id else None
         if node.parent_entity_id:
             self.children_by_parent.setdefault(node.parent_entity_id, set()).add(eid)
+
+    # ------------------------------------------------------------------
+    # Dirty-flag propagation (R2)
+    # ------------------------------------------------------------------
+
+    def mark_dirty_up(self, entity_id: str, *, max_depth: int = 64) -> None:
+        """Mark entity_id and all its ancestors as dirty.
+
+        Call this after any channel mutation on a node so the reducer knows
+        which subtrees to re-process.  Walks up through parent_entity_id links
+        until reaching a root (no parent) or max_depth is exceeded.
+        """
+        eid = str(entity_id)
+        visited: Set[str] = set()
+        depth = 0
+        while eid and depth < max_depth:
+            if eid in visited:
+                break  # Cycle guard.
+            visited.add(eid)
+            node = self.nodes.get(eid)
+            if node is None:
+                break
+            node.dirty = True
+            eid = str(node.parent_entity_id or "")
+            depth += 1
+
+    def mark_clean(self, entity_id: str) -> None:
+        """Clear the dirty flag for a single node.
+
+        Call this after the reducer has processed a node and its result has
+        been committed.  Does not propagate to ancestors or descendants.
+        """
+        node = self.nodes.get(str(entity_id))
+        if node is not None:
+            node.dirty = False
+
+    def mark_subtree_clean(self, root_entity_id: str, *, max_depth: int = 64) -> None:
+        """Clear dirty flags for root_entity_id and all its descendants.
+
+        Used by the reducer to mark a processed subtree as clean after a full
+        reduction pass.
+        """
+        queue = [str(root_entity_id)]
+        visited: Set[str] = set()
+        depth = 0
+        while queue and depth < max_depth:
+            eid = queue.pop(0)
+            if eid in visited:
+                continue
+            visited.add(eid)
+            node = self.nodes.get(eid)
+            if node is not None:
+                node.dirty = False
+            children = self.children_by_parent.get(eid)
+            if children:
+                queue.extend(sorted(children))
+            depth += 1
 
     # ------------------------------------------------------------------
     # Read operations

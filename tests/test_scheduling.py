@@ -5,13 +5,17 @@ Tests event scheduling, time advancement, regen, and cooldown decay.
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from edgecaster.state.chakra_component import ChakraComponent, ChakraEdge, ChakraNode
+from edgecaster.state.entity_graph import EntityGraphStore
 
 from edgecaster.systems.scheduling import (
     schedule,
     advance_time,
     start_regen,
+    chakra_reducer_tick,
     coherence_tick,
     cooldown_tick,
     _tick_frozen_slow,
@@ -476,3 +480,59 @@ class TestApplyActionTickOffset:
 
         assert result == 45
         mock_offset.assert_called_once_with(actor, 50)
+
+
+def _make_reducer_actor() -> SimpleNamespace:
+    chakra_component = ChakraComponent(
+        root_node_id="body",
+        nodes={
+            "body": ChakraNode(node_id="body", active=True, channels={"charge": 0.2}),
+            "head": ChakraNode(node_id="head", active=True, channels={"charge": 0.1}),
+        },
+        edges={
+            "body->head": ChakraEdge(
+                edge_id="body->head",
+                src_node_id="body",
+                dst_node_id="head",
+                kind="contains",
+            )
+        },
+        tags={},
+    )
+    return SimpleNamespace(
+        id="actor:test:reducer",
+        entity_id="actor:test:reducer",
+        chakra_component=chakra_component,
+    )
+
+
+class TestChakraReducerTick:
+    def test_reduces_dirty_actor_and_marks_graph_clean(self):
+        actor = _make_reducer_actor()
+        game = SimpleNamespace(entity_graph=EntityGraphStore())
+        level = SimpleNamespace(actors={actor.id: actor})
+        game.entity_graph.register(actor.entity_id, kind="actor")
+
+        chakra_reducer_tick(game, level)
+
+        assert actor._chakra_effective_channels["head"]["charge"] == pytest.approx(0.3)
+        assert game.entity_graph.get_node(actor.entity_id).dirty is False
+
+    def test_skips_clean_cached_actor_until_dirty_again(self):
+        actor = _make_reducer_actor()
+        game = SimpleNamespace(entity_graph=EntityGraphStore())
+        level = SimpleNamespace(actors={actor.id: actor})
+        game.entity_graph.register(actor.entity_id, kind="actor")
+
+        chakra_reducer_tick(game, level)
+        first_head_charge = actor._chakra_effective_channels["head"]["charge"]
+
+        actor.chakra_component.nodes["head"].channels["charge"] = 0.9
+        chakra_reducer_tick(game, level)
+        assert actor._chakra_effective_channels["head"]["charge"] == pytest.approx(first_head_charge)
+
+        game.entity_graph.mark_dirty_up(actor.entity_id)
+        chakra_reducer_tick(game, level)
+
+        assert actor._chakra_effective_channels["head"]["charge"] == pytest.approx(1.1)
+        assert game.entity_graph.get_node(actor.entity_id).dirty is False

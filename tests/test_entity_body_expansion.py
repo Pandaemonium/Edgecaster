@@ -6,10 +6,12 @@ from edgecaster import prototypes
 from edgecaster import spawn_factory
 from edgecaster.state.entity_graph import EntityGraphStore
 from edgecaster.systems import attention
+from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import entity_geometry as entity_geometry_system
 from edgecaster.systems import entity_body as entity_body_system
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
+from edgecaster.systems.chakras import ChakraState, build_chakra_generator_seed
 
 
 class _DummyGame:
@@ -143,6 +145,103 @@ def test_zero_radius_cluster_keeps_starttsgard_city_on_site_anchor() -> None:
     child = entity_lifecycle_system.find_runtime_entity(game, child_ids[0])
     assert child is not None
     assert getattr(child, "abs_pos", None) == (10, 10)
+
+
+def test_build_chakra_generator_seed_prewarms_entity_tree() -> None:
+    """B1 invariant: seed builder expands the entity tree before building the seed.
+
+    Body-anatomy offsets are sub-tile floats that collapse to the same integer
+    grid cell under rounding, so entity abs_pos is not a viable geometry source.
+    Geometry comes from the body-schema float-position path.  The B1 contract
+    is that build_chakra_generator_seed triggers expand_entity, making body-node
+    entities available in the graph for later B2 unlock/active state reads.
+    """
+    actor = _make_actor()
+    game = _DummyGame(actor)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+
+    body_schema = getattr(actor, "body_schema", None) or prototypes.resolve_body_schema(actor) or {}
+    # Need >= 2 connected active nodes for the body-schema geometry path.
+    # pattern_root must be set (require_root=True default).
+    chakra_state = ChakraState(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        pattern_root="body",
+    )
+
+    seed = build_chakra_generator_seed(
+        body_schema,
+        chakra_state,
+        actor=actor,
+        game=game,
+    )
+
+    # Seed geometry comes from the body-schema path and must be valid.
+    assert seed.verts, "seed.verts should be non-empty"
+    assert seed.node_order, "seed.node_order should be non-empty"
+
+    # B1 invariant: expand_entity was triggered by build_chakra_generator_seed,
+    # so the direct body-schema-root child must now exist in the entity graph.
+    body_child_id = "actor:test_body:body:body"
+    assert game.entity_graph.get_node(body_child_id) is not None, (
+        "B1: build_chakra_generator_seed must pre-warm the entity tree "
+        "(body-node child should exist in entity graph after seed build)"
+    )
+
+
+def test_toggle_actor_chakra_mirrors_active_state_to_body_node_entity() -> None:
+    """B2 invariant: toggle_actor_chakra writes active state to realized body-node entity.
+
+    When the entity tree is realized (body-node children exist in the runtime
+    registry), toggle_actor_chakra(game=game) should update the body-node
+    entity's chakra_component root node's active flag, not just the actor's.
+    """
+    actor = _make_actor()
+    game = _DummyGame(actor)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+
+    # Realize the first body level (body root entity) and its children.
+    actor_children = entity_lifecycle_system.expand_entity(game, actor.id)
+    assert actor_children, "actor must have body-node children"
+    body_root_id = actor_children[0]
+    # Expand body root to realize head, arm, leg, etc.
+    entity_lifecycle_system.expand_entity(game, body_root_id)
+
+    # Verify head entity exists in runtime.
+    head_entity_id = "actor:test_body:body:head"
+    head_ent = entity_lifecycle_system.find_runtime_entity(game, head_entity_id)
+    assert head_ent is not None, "head body-node entity must be realized before B2 test"
+
+    # Head's chakra_component root node should start as active=True (default).
+    head_comp = getattr(head_ent, "chakra_component", None)
+    assert head_comp is not None
+    from edgecaster.state import chakra_component as chakra_component_state
+    head_comp = chakra_component_state.coerce_chakra_component(head_comp, entity_id=head_entity_id)
+    root_nid = head_comp.root_node_id
+    assert bool(getattr(head_comp.nodes[root_nid], "active", True)) is True
+
+    # Unlock and ensure head is in actor's component first (required for toggle).
+    chakra_items_system.unlock_actor_chakra(actor, "head", auto_activate=True, game=game)
+
+    # Now deactivate via toggle — should mirror to body-node entity.
+    chakra_items_system.toggle_actor_chakra(actor, "head", active=False, game=game)
+
+    # Re-read body-node entity's chakra_component.
+    head_comp_after = chakra_component_state.coerce_chakra_component(
+        getattr(head_ent, "chakra_component", None), entity_id=head_entity_id
+    )
+    assert bool(getattr(head_comp_after.nodes[root_nid], "active", True)) is False, (
+        "B2: toggle_actor_chakra must write active=False to body-node entity's chakra_component"
+    )
+
+    # Re-activate.
+    chakra_items_system.toggle_actor_chakra(actor, "head", active=True, game=game)
+    head_comp_reactivated = chakra_component_state.coerce_chakra_component(
+        getattr(head_ent, "chakra_component", None), entity_id=head_entity_id
+    )
+    assert bool(getattr(head_comp_reactivated.nodes[root_nid], "active", True)) is True, (
+        "B2: toggle_actor_chakra must write active=True to body-node entity's chakra_component"
+    )
 
 
 def test_generic_resolve_entities_do_not_take_actor_body_expansion_path() -> None:

@@ -748,7 +748,7 @@ class Game:
             try:
                 from edgecaster.systems.chakras import ChakraState
                 player.chakra_state = ChakraState.from_dict(chakra_init)
-                chakra_items_system.sync_actor_chakra_state(player)
+                chakra_items_system.sync_actor_chakra_state(player, game=self)
             except Exception:
                 pass
 
@@ -1110,12 +1110,7 @@ class Game:
             chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
             if chakra_state is None:
                 return []
-            # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-            # Monk unlock flow still routes through body_schema + ChakraState.
-            # Replace with graph/body-entity queries when unlock logic moves to
-            # the unified runtime model.
-            body_schema = prototypes.resolve_body_schema(player)
-            return chakras_system.list_unlockable_chakras(body_schema, chakra_state)
+            return chakras_system.list_unlockable_chakras_for_entity(player, chakra_state)
         except Exception:
             return []
 
@@ -1149,7 +1144,7 @@ class Game:
                 chakra_state = chakra_items_system.ensure_actor_chakra_state(p)
                 if chakra_state is None:
                     return
-                if chakra_items_system.unlock_actor_chakra(p, node_id, auto_activate=True):
+                if chakra_items_system.unlock_actor_chakra(p, node_id, auto_activate=True, game=g):
                     display_name = chakras_system.chakra_display_name(node_id)
                     g.log.add(f"You awaken your {display_name} chakra.")
                     g.grant_ability("chakra")

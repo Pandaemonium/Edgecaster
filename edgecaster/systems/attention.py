@@ -711,6 +711,38 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         pass
 
     try:
+        current_rect = tuple(map(float, abs_rect))
+    except Exception:
+        current_rect = None
+    try:
+        previous_rect = tuple(getattr(game, "_attn_last_sync_abs_rect", ()) or ())
+    except Exception:
+        previous_rect = ()
+    try:
+        previous_lod = float(getattr(game, "_attn_last_sync_cam_lod", 0.0))
+        has_previous_lod = hasattr(game, "_attn_last_sync_cam_lod")
+    except Exception:
+        previous_lod = 0.0
+        has_previous_lod = False
+
+    if current_rect is not None and len(previous_rect) == 4 and has_previous_lod:
+        same_rect = all(abs(float(a) - float(b)) <= 1e-6 for a, b in zip(current_rect, previous_rect))
+        same_lod = abs(float(cam_lod) - float(previous_lod)) <= 1e-6
+        if same_rect and same_lod:
+            try:
+                levels = getattr(game, "levels", None)
+                has_spatial_dirty = False
+                if isinstance(levels, dict):
+                    for level in levels.values():
+                        if bool(getattr(level, "spatial_dirty", False)):
+                            has_spatial_dirty = True
+                            break
+                if not has_spatial_dirty:
+                    return
+            except Exception:
+                pass
+
+    try:
         ax0, ay0, ax1, ay1 = map(float, abs_rect)
     except Exception:
         return
@@ -1397,6 +1429,12 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
     except Exception:
         # Never let resolve-recipe logic break the rest of attention.
+        pass
+
+    try:
+        game._attn_last_sync_abs_rect = (float(ax0), float(ay0), float(ax1), float(ay1))
+        game._attn_last_sync_cam_lod = float(cam_lod)
+    except Exception:
         pass
 
 

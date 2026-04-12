@@ -3,10 +3,61 @@
 #   edge behavior.
 # - As the migration continues, expand this schema to cover geometry-aware
 #   reducers and composed propagation policies, not only default edge labels.
+#
+# Channel rules:
+#   combine: additive | override | max | min
+#   clamp: none | [min, max]
+#
+# Edge propagation:
+#   automatic — values flow unconditionally across this edge kind.
+#   none      — no propagation across this edge kind.
+#   opt_in    — propagation only when explicitly enabled on the edge or node.
+
 channels:
   defaults:
     clamp: none
     combine: additive
+
+  # Per-channel overrides — edge inherits default unless specified here.
+  per_channel:
+    # hp flows additively; clamp to [0, max_hp] is applied by the game layer,
+    # not by the reducer (max_hp is runtime-dynamic, not a rule constant).
+    hp:
+      combine: additive
+      clamp: none
+
+    # mass accumulates toward the root (additive, no clamp).
+    mass:
+      combine: additive
+      clamp: none
+
+    # coherence propagates via override: the nearest ancestor with a coherence
+    # value defines the local coherence floor.  Leaf nodes can raise it but
+    # the parent's value is used when the leaf has none.
+    coherence:
+      combine: override
+      clamp: [0.0, 1.0]
+
+    # corruption accumulates additively and is clamped to [0, 1].
+    corruption:
+      combine: additive
+      clamp: [0.0, 1.0]
+
+    # resonance uses max-of-parent-and-child so a resonant ancestor lifts
+    # all its children.
+    resonance:
+      combine: max
+      clamp: [0.0, 1.0]
+
+    # flow propagates additively and is unclamped at the reducer level.
+    flow:
+      combine: additive
+      clamp: none
+
+    # charge propagates additively from leaves to root.
+    charge:
+      combine: additive
+      clamp: none
 
 edges:
   contains:

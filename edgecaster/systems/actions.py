@@ -3156,8 +3156,7 @@ def _action_spinal_surge(game: Any, actor_id: str, **kwargs: Any) -> None:
     if chakra_state is None:
         return
     for node_id in active:
-        chakra_items_system.set_actor_chakra_charge(actor, node_id, 1.0)
-    chakra_items_system.sync_actor_chakra_state(actor)
+        chakra_items_system.set_actor_chakra_charge(actor, node_id, 1.0, game=game)
 
     game.log.add("Energy surges up your spine, flooding every channel!")
 

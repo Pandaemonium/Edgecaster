@@ -9,7 +9,7 @@ Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
 Updated: 2026-04-12
-Status: v1.21 (Phase 2 Actor-Body Expansion Slice)
+Status: v1.22 (Phase 2 Reducer Runtime Wiring Slice)
 
 This is the execution plan for:
 
@@ -86,6 +86,9 @@ Implemented and stable:
    - Monk unlock flow, Chakra Sage dialogue unlock flow, and Chakra Scene toggle
      interactions now route through wrapper mutations.
    - Spawn-time actor `ChakraState` bootstrap has been removed.
+   - Chakra mutation wrappers now mark the entity graph dirty when a `game`
+     context is available, so reducer cache invalidation follows real runtime
+     writes instead of test-only helper calls.
 
 6. Test posture:
    - Migration-focused suites are green (inventory, spawning, POI cutover,
@@ -118,6 +121,19 @@ Implemented and stable:
    - `query_geometry(..., realize_policy="require")` now fully realizes the
      actor-body subtree for graph/query callers.
 
+9. Reducer runtime wiring kickoff:
+   - `scheduling.chakra_reducer_tick(...)` now reuses cached reduced channel
+     snapshots for clean actor subtrees and only re-reduces actors whose graph
+     path was marked dirty.
+   - `pattern_runtime.chakra_modifiers(...)` now reads reduced charge channels
+     when present, so one real gameplay consumer is on the reducer path.
+   - Runtime resonance/charge evaluation no longer needs to resolve
+     `body_schema` during the main tick loop; it now derives resonance from the
+     active node set directly.
+   - Monk level-up unlocks and Chakra Sage unlock choices now query unlockable
+     chakras from deterministic body-node specs, not from a fresh
+     body-schema-only traversal.
+
 Not yet complete:
 
 1. Unified graph storage is not authoritative yet.
@@ -128,9 +144,9 @@ Not yet complete:
      compatibility adapter paths.
    - The docs now lock in that every chakra is an entity; implementation still
      has to catch up to that simplification.
-   - `chakra_layouts.yaml` + `chakra_rules.yaml` now exist, but reducer/runtime
-     semantics and geometry-aware rule evaluation are not yet sourced from
-     these rules.
+   - `chakra_layouts.yaml` + `chakra_rules.yaml` now exist, and reducer-backed
+     charge evaluation has entered runtime, but most gameplay still reads
+     compatibility adapters instead of shared geometry/rule queries.
 3. POI realization still has dual pathways.
    - `poi_spawning.py` and `poi_worldgen.py` both remain active.
    - Runtime NPC/wall realization now shares helper paths and game delegates

@@ -337,3 +337,103 @@ class TestRegisterEntity:
         assert node.lod_state == "collapsed"
         assert node.layout_id == "site_layout"
         assert node.rule_id == "site_rules"
+
+
+# ---------------------------------------------------------------------------
+# R2: Dirty-flag propagation
+# ---------------------------------------------------------------------------
+
+class TestDirtyFlag:
+    def test_new_node_starts_dirty(self):
+        """Freshly registered nodes are dirty so the first reducer pass includes them."""
+        store = EntityGraphStore()
+        node = store.register("e1")
+        assert node.dirty is True
+
+    def test_mark_clean_clears_single_node(self):
+        store = EntityGraphStore()
+        store.register("e1")
+        store.mark_clean("e1")
+        assert store.get_node("e1").dirty is False
+
+    def test_mark_clean_noop_for_unknown(self):
+        store = EntityGraphStore()
+        store.mark_clean("ghost")  # should not raise
+
+    def test_mark_dirty_up_marks_node_dirty(self):
+        store = EntityGraphStore()
+        store.register("e1")
+        store.mark_clean("e1")
+        store.mark_dirty_up("e1")
+        assert store.get_node("e1").dirty is True
+
+    def test_mark_dirty_up_propagates_to_parent(self):
+        store = EntityGraphStore()
+        store.register("root")
+        store.register("child", parent_entity_id="root")
+        store.mark_clean("root")
+        store.mark_clean("child")
+        store.mark_dirty_up("child")
+        assert store.get_node("child").dirty is True
+        assert store.get_node("root").dirty is True
+
+    def test_mark_dirty_up_propagates_full_chain(self):
+        """Dirty propagates all the way from leaf to root through intermediate nodes."""
+        store = EntityGraphStore()
+        store.register("root")
+        store.register("mid", parent_entity_id="root")
+        store.register("leaf", parent_entity_id="mid")
+        for eid in ("root", "mid", "leaf"):
+            store.mark_clean(eid)
+        store.mark_dirty_up("leaf")
+        assert store.get_node("leaf").dirty is True
+        assert store.get_node("mid").dirty is True
+        assert store.get_node("root").dirty is True
+
+    def test_mark_dirty_up_noop_for_unknown(self):
+        store = EntityGraphStore()
+        store.mark_dirty_up("ghost")  # should not raise
+
+    def test_mark_subtree_clean_clears_root_and_descendants(self):
+        store = EntityGraphStore()
+        store.register("root")
+        store.register("child1", parent_entity_id="root")
+        store.register("child2", parent_entity_id="root")
+        store.register("grandchild", parent_entity_id="child1")
+        # All start dirty; clean the subtree from root.
+        store.mark_subtree_clean("root")
+        assert store.get_node("root").dirty is False
+        assert store.get_node("child1").dirty is False
+        assert store.get_node("child2").dirty is False
+        assert store.get_node("grandchild").dirty is False
+
+    def test_mark_subtree_clean_does_not_affect_unrelated_nodes(self):
+        store = EntityGraphStore()
+        store.register("root")
+        store.register("child", parent_entity_id="root")
+        store.register("unrelated")
+        store.mark_subtree_clean("root")
+        # Unrelated node was not touched and still starts dirty=True.
+        assert store.get_node("unrelated").dirty is True
+
+    def test_mark_subtree_clean_noop_for_unknown(self):
+        store = EntityGraphStore()
+        store.mark_subtree_clean("ghost")  # should not raise
+
+    def test_register_preserves_dirty_false_on_re_registration(self):
+        """Re-registering a clean node must not reset dirty=True."""
+        store = EntityGraphStore()
+        store.register("e1", kind="item")
+        store.mark_clean("e1")
+        assert store.get_node("e1").dirty is False
+        # Re-register with no substantive change.
+        store.register("e1", kind="item")
+        assert store.get_node("e1").dirty is False
+
+    def test_register_preserves_dirty_true_on_re_registration(self):
+        """Re-registering a dirty node must not clear dirty=True."""
+        store = EntityGraphStore()
+        store.register("e1")
+        assert store.get_node("e1").dirty is True
+        store.register("e1")
+        assert store.get_node("e1").dirty is True

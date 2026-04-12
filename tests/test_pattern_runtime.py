@@ -155,3 +155,44 @@ def test_act_chakra_applies_amp_bonus(monkeypatch) -> None:
 
     assert captured_amp
     assert captured_amp[0] == 1.2
+
+
+def test_chakra_modifiers_prefers_reduced_charge_snapshot(monkeypatch) -> None:
+    game, actor = _make_game()
+    actor.chakra_state = SimpleNamespace(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        charges={"body": 0.0, "head": 0.0},
+        alignments={},
+        generators={},
+        pattern_root="body",
+    )
+    actor._chakra_effective_channels = {
+        "body": {"charge": 0.0},
+        "head": {"charge": 1.0},
+    }
+
+    monkeypatch.setattr(
+        pattern_runtime.chakra_items_system,
+        "ensure_actor_chakra_state",
+        lambda _actor: actor.chakra_state,
+    )
+    monkeypatch.setattr(
+        pattern_runtime.chakra_items_system,
+        "effective_active_nodes",
+        lambda _game, _actor: {"body", "head"},
+    )
+
+    import edgecaster.prototypes as prototypes
+
+    monkeypatch.setattr(
+        prototypes,
+        "resolve_body_schema",
+        lambda _actor: {"root": "body", "nodes": {"body": {}, "head": {}}},
+    )
+
+    mods = pattern_runtime.chakra_modifiers(game, "player")
+
+    assert mods is not None
+    assert mods.damage_mult > 1.0
+    assert mods.mana_cost_mult < 1.0

@@ -18,6 +18,60 @@ from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import damage_policy as damage_policy_system
 
 
+def _normalize_chakra_node_id(node_id: Any) -> str:
+    """Normalize chakra node ids to the dotted lowercase form used at runtime."""
+    node_text = str(node_id or "").strip().lower()
+    if not node_text:
+        return ""
+    return node_text.replace(":", ".").replace("/", ".")
+
+
+def _average_reduced_charge(actor: Any, active_node_ids: set[str] | None = None) -> Optional[float]:
+    """Return average charge from the reducer snapshot when a usable one exists."""
+    effective_channels = getattr(actor, "_chakra_effective_channels", None)
+    if not isinstance(effective_channels, dict) or not effective_channels:
+        return None
+
+    normalized_channels: dict[str, dict[str, float]] = {}
+    for node_id, channel_values in effective_channels.items():
+        normalized_node_id = _normalize_chakra_node_id(node_id)
+        if not normalized_node_id or not isinstance(channel_values, dict):
+            continue
+        normalized_channels[normalized_node_id] = channel_values
+
+    if not normalized_channels:
+        return None
+
+    if active_node_ids:
+        targets = {
+            _normalize_chakra_node_id(node_id)
+            for node_id in active_node_ids
+            if _normalize_chakra_node_id(node_id)
+        }
+        if not targets:
+            return None
+        if not any(node_id in normalized_channels for node_id in targets):
+            return None
+        total_charge = 0.0
+        for node_id in targets:
+            channel_values = normalized_channels.get(node_id) or {}
+            try:
+                total_charge += float(channel_values.get("charge", 0.0) or 0.0)
+            except Exception:
+                continue
+        return total_charge / float(len(targets))
+
+    charge_values: list[float] = []
+    for channel_values in normalized_channels.values():
+        try:
+            charge_values.append(float(channel_values.get("charge", 0.0) or 0.0))
+        except Exception:
+            continue
+    if not charge_values:
+        return None
+    return sum(charge_values) / float(len(charge_values))
+
+
 def act_polygon(self, actor_id: str) -> None:
     """Place a regular polygon pattern centered on the player.
 
@@ -144,15 +198,21 @@ def chakra_modifiers(self, actor_id: str):
         return None
 
     try:
-        from edgecaster.prototypes import resolve_body_schema
         from edgecaster.systems import chakras as chakra_system
     except Exception:
         return None
 
-    body_schema = resolve_body_schema(actor) or {}
-    bonuses = chakra_system.check_resonance_bonuses(body_schema, chakra_state)
+    bonuses = chakra_system.check_resonance_bonuses_from_active_nodes(
+        set(getattr(chakra_state, "active", set()) or set())
+    )
     mods = chakra_system.get_resonance_modifiers(bonuses)
-    avg_charge = chakra_system.get_average_charge(chakra_state)
+    try:
+        active_node_ids = chakra_items_system.effective_active_nodes(self, actor)
+    except Exception:
+        active_node_ids = set(getattr(chakra_state, "active", set()) or set())
+    avg_charge = _average_reduced_charge(actor, active_node_ids)
+    if avg_charge is None:
+        avg_charge = chakra_system.get_average_charge(chakra_state)
     mods = chakra_system.apply_charge_to_modifiers(mods, avg_charge)
     return mods
 
@@ -176,7 +236,7 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
         return
     chakra_system.consume_chakra_charge(chakra_state, amount)
     # Phase 2B: push charge values into ChakraComponent (charges only, no full mirror).
-    chakra_items_system.flush_charges_to_component(actor)
+    chakra_items_system.flush_charges_to_component(actor, game=self)
 
 
 def act_chakra(self, actor_id: str) -> None:

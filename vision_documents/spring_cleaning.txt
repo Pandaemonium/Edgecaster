@@ -1233,19 +1233,20 @@ PHASE 2 — CHAKRA NODE/EDGE SUBSTRATE
   - Target: implement expansion/collapse per master plan section
     "Expansion and Collapse Model".
 
-[CLEANUP][ENTITY_CHAKRA] No content rules YAML
-  - Files needed: content/chakra_layouts.yaml, content/chakra_rules.yaml
-  - Currently no data-driven chakra topology or reducer definitions.
-  - Master plan decision #15: content rules in YAML, engine rules in code.
+[RESOLVED][ENTITY_CHAKRA] No content rules YAML
+  - DONE: content/chakra_rules.yaml exists with per-channel and edge rules
+    (combine: additive/override/max/min, clamp bounds, edge propagation policies).
+  - Slice R1 (chakra_reducer.py + test_chakra_reducer.py).
 
 -------------------------------------------------------------------------------
 PHASE 3 — RULE ENGINE AND PRECEDENCE
 
-[CLEANUP][ENTITY_CHAKRA] No channel reducer pipeline
-  - No parent-from-children behavior derivation exists.
-  - No weighted transforms, threshold bands, or dirty-flag propagation.
-  - No nearest-parent precedence system.
-  - Target: reducer pipeline per master plan section "Runtime Rule Contracts".
+[RESOLVED][ENTITY_CHAKRA] No channel reducer pipeline
+  - DONE: systems/chakra_reducer.py — deterministic reduction of ChakraComponent
+    node graphs using rules from chakra_rules.yaml.  Slice R1.
+  - reduce_component(comp, rules, dirty_node_ids=...) handles additive,
+    override, max, min combine plus clamping.  Wired into
+    scheduling.chakra_reducer_tick (Slice R3).
 
 [CLEANUP][ENTITY_CHAKRA] No universal mutation envelope
   - No mutation_id, source_lineage_id, target_selector, delta_channels,
@@ -1253,11 +1254,15 @@ PHASE 3 — RULE ENGINE AND PRECEDENCE
   - Combat damage, chakra activation, corruption spread — all ad-hoc.
   - Target: all gameplay effects mutate chakra state through one envelope.
 
-[CLEANUP][ENTITY_CHAKRA] No dirty-flag propagation
-  - No mechanism to mark ancestors dirty on leaf mutation.
-  - All chakra nodes would be re-evaluated every tick (performance bomb).
-  - Target: dirty-flag propagation per master plan decision #18.
-  - Only dirty subtrees re-reduce. Clean subtrees cost zero.
+[RESOLVED][ENTITY_CHAKRA] No dirty-flag propagation
+  - DONE: EntityGraphNode.dirty field + EntityGraphStore.mark_dirty_up /
+    mark_clean / mark_subtree_clean.  Slice R2.
+  - reduce_component accepts dirty_node_ids for per-tick skip of clean edges.
+  - Runtime mutation wrappers in `chakra_items.py` now mark the entity graph
+    dirty when a `game` context is available, and `scheduling.chakra_reducer_tick`
+    now skips clean cached actor subtrees instead of always re-reducing.
+  - Fine-grained live `dirty_node_ids` reduction is still deferred until the
+    runtime can safely merge partial propagation against the previous snapshot.
 
 -------------------------------------------------------------------------------
 PHASE 4 — INVENTORY <-> MAP UNIFICATION
@@ -2120,6 +2125,48 @@ Owner: Claude audit (2026-02-18)
       - generic resolver entities expand into resolver children, not `:body:`
         compatibility nodes.
       - a real game boot + attention sync realizes Starttsgard walls and NPCs.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2][2026-04-12] runtime unlock queries shifted toward body-node specs
+  - Files:
+      - `edgecaster/systems/chakras.py`
+      - `edgecaster/game.py`
+      - `edgecaster/content/dialogues.py`
+      - `tests/test_chakra_unlock_queries.py`
+      - `tests/INDEX.md`
+  - Added `list_unlockable_chakras_for_entity(...)`, which derives unlockable
+    chakra ids from deterministic body-node specs rather than re-walking
+    `body_schema` directly.
+  - Monk level-up awakening and Chakra Sage dialogue now use that runtime query,
+    while character-creation/editor-style flows can keep the legacy
+    `list_unlockable_chakras(body_schema, ...)` helper for now.
+  - Added regression coverage asserting the new entity-body unlock query matches
+    the previous body-schema unlock ordering/availability.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2][2026-04-12] runtime resonance/charge tick no longer resolves body_schema
+  - Files:
+      - `edgecaster/systems/chakras.py`
+      - `edgecaster/systems/scheduling.py`
+      - `edgecaster/systems/pattern_runtime.py`
+  - Added `check_resonance_bonuses_from_active_nodes(...)` and routed the main
+    charge tick plus runtime modifier calculation through active-node sets
+    instead of a fresh `body_schema` resolve.
+  - `check_resonance_bonuses(body_schema, chakra_state)` remains as a
+    compatibility wrapper for older callers and UI flows.
+
+[PROGRESS][PERF][2026-04-12] unchanged-view attention sync early-out
+  - Files:
+      - `edgecaster/systems/attention.py`
+      - `tests/test_attention_suppression.py`
+      - `vision_documents/architecture.txt`
+  - Profiling showed the dominant hot path was repeated
+    `sync_attention_instantiation(...)` work inside `advance_time()` when the
+    camera view had not changed.
+  - Added a short-circuit for the case where:
+      - view rect is unchanged
+      - camera LoD is unchanged
+      - no loaded level is `spatial_dirty`
+  - This preserves the attention safety net while avoiding redundant
+    realization walks on stable frames.
 
 [CLEANUP][ENTITY_CHAKRA] Legacy body-schema gameplay readers still need deletion path
   - Files:

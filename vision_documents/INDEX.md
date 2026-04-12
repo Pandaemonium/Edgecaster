@@ -42,6 +42,7 @@ Supersedes: none
 - `documentation_review_plan.md`
 - `elflore.md`
 - `entity_chakra_unification_master_plan.txt`
+- `entity_chakra_unification_overview.md`
 - `fractal_lab_vision.txt`
 
 ## Archived On 2026-04-10

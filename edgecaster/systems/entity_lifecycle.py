@@ -186,10 +186,20 @@ def _link_parent_child_chakra(parent: object, child: object) -> None:
             nodes = {}
             pcomp.nodes = nodes
         if dst not in nodes:
+            # Capture the child's abs_pos so geometry queries on the parent
+            # can read positions without needing a separate entity lookup.
+            child_abs_pos = None
+            try:
+                raw_pos = getattr(child, "abs_pos", None)
+                if isinstance(raw_pos, (tuple, list)) and len(raw_pos) >= 2:
+                    child_abs_pos = (float(raw_pos[0]), float(raw_pos[1]))
+            except Exception:
+                pass
             nodes[dst] = chakra_component_state.ChakraNode(
                 node_id=dst,
                 kind="external_child_root",
                 active=True,
+                abs_pos=child_abs_pos,
                 channels={},
                 tags={
                     "external_ref": True,

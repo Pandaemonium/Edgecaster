@@ -1862,7 +1862,7 @@ class ChakraSelectionScene(PanelScene):
         if hasattr(state, "pattern_root"):
             state.pattern_root = getattr(snap, "pattern_root", None)
         try:
-            chakra_items_system.sync_actor_chakra_state(self._actor)
+            chakra_items_system.sync_actor_chakra_state(self._actor, game=self.game)
         except Exception:
             pass
 
@@ -1920,18 +1920,21 @@ class ChakraSelectionScene(PanelScene):
                     self._actor,
                     node_id,
                     active=True,
+                    game=self.game,
                 )
             elif action == "deactivate":
                 now_active = chakra_items_system.toggle_actor_chakra(
                     self._actor,
                     node_id,
                     active=False,
+                    game=self.game,
                 )
             else:
                 now_active = chakra_items_system.toggle_actor_chakra(
                     self._actor,
                     node_id,
                     active=None,
+                    game=self.game,
                 )
 
             # Visual burst at the chakra location
@@ -1975,7 +1978,7 @@ class ChakraSelectionScene(PanelScene):
         self._push_undo()
         state.pattern_root = primary
         try:
-            chakra_items_system.sync_actor_chakra_state(self._actor)
+            chakra_items_system.sync_actor_chakra_state(self._actor, game=self.game)
         except Exception:
             pass
         self._preview.mark_dirty()
@@ -2231,7 +2234,7 @@ class ChakraSelectionScene(PanelScene):
                 self._push_undo()
             state.alignments = dict(self._pending_alignments)
             try:
-                chakra_items_system.sync_actor_chakra_state(self._actor)
+                chakra_items_system.sync_actor_chakra_state(self._actor, game=self.game)
             except Exception:
                 pass
             if changed:
@@ -2435,7 +2438,7 @@ class ChakraSelectionScene(PanelScene):
         was_active = node_id in chakra_state.active
 
         # Toggle
-        chakra_items_system.toggle_actor_chakra(self._actor, node_id, active=None)
+        chakra_items_system.toggle_actor_chakra(self._actor, node_id, active=None, game=self.game)
 
         # Spawn particle burst
         point = self._silhouette._chakra_points.get(node_id)

@@ -171,6 +171,38 @@ def _actor_entity_id(actor: Any) -> str:
     return aid or "entity:unknown"
 
 
+def _body_node_entity_id(actor: Any, node_id: str) -> str:
+    """Return the deterministic body-node entity id for an actor chakra node."""
+    actor_id = _actor_entity_id(actor)
+    nid = _normalize_node_id(node_id)
+    if not actor_id or not nid:
+        return ""
+    return f"{actor_id}:body:{nid}"
+
+
+def _mark_actor_chakra_dirty(game: Any, actor: Any, node_id: str) -> None:
+    """Mark a mutated chakra path dirty in the entity graph when available."""
+    graph = getattr(game, "entity_graph", None)
+    if graph is None:
+        return
+
+    body_entity_id = _body_node_entity_id(actor, node_id)
+    if body_entity_id:
+        try:
+            if graph.get_node(body_entity_id) is not None:
+                graph.mark_dirty_up(body_entity_id)
+                return
+        except Exception:
+            pass
+
+    actor_id = _actor_entity_id(actor)
+    if actor_id:
+        try:
+            graph.mark_dirty_up(actor_id)
+        except Exception:
+            pass
+
+
 def _actor_max_hp(actor: Any) -> Optional[float]:
     try:
         stats = getattr(actor, "stats", None)
@@ -323,7 +355,7 @@ def ensure_actor_chakra_state(actor: Any) -> Any:
     return state
 
 
-def sync_actor_chakra_state(actor: Any) -> None:
+def sync_actor_chakra_state(actor: Any, game: Any = None) -> None:
     """Mirror legacy ChakraState into ChakraComponent for migration cutover.
 
     [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] — Phase 2B reversed write authority
@@ -447,9 +479,11 @@ def sync_actor_chakra_state(actor: Any) -> None:
             if sval:
                 gens_out[nid] = sval
     tags["compat_generators"] = gens_out
+    if game is not None:
+        _mark_actor_chakra_dirty(game, actor, str(getattr(comp, "root_node_id", "") or "body"))
 
 
-def flush_charges_to_component(actor: Any) -> None:
+def flush_charges_to_component(actor: Any, game: Any = None) -> None:
     """Push current ChakraState.charges into ChakraComponent after a tick or consume.
 
     Call this after tick_chakra_charge or consume_chakra_charge mutate
@@ -467,17 +501,22 @@ def flush_charges_to_component(actor: Any) -> None:
     comp = _coerce_actor_chakra_component(actor)
     if comp is None:
         return
+    dirtied_node_ids: set[str] = set()
     for key, value in charges_raw.items():
         nid = _normalize_node_id(str(key))
         if not nid:
             continue
         try:
             chakra_component_state.set_node_charge(comp, nid, float(value))
+            dirtied_node_ids.add(nid)
         except Exception:
             continue
+    if game is not None:
+        for node_id in sorted(dirtied_node_ids):
+            _mark_actor_chakra_dirty(game, actor, node_id)
 
 
-def set_actor_chakra_charge(actor: Any, node_id: str, amount: float) -> None:
+def set_actor_chakra_charge(actor: Any, node_id: str, amount: float, game: Any = None) -> None:
     """Set one chakra node charge. ChakraComponent is the write authority."""
     nid = _normalize_node_id(str(node_id))
     if not nid:
@@ -492,13 +531,52 @@ def set_actor_chakra_charge(actor: Any, node_id: str, amount: float) -> None:
         charges = getattr(state, "charges", None)
         if isinstance(charges, dict):
             charges[nid] = float(amount)
+    if game is not None:
+        _mark_actor_chakra_dirty(game, actor, nid)
 
 
-def unlock_actor_chakra(actor: Any, node_id: str, *, auto_activate: bool = True) -> bool:
+def _write_active_to_body_node_entity(game: Any, actor: Any, nid: str, *, active: bool) -> None:
+    """B2: Mirror active-state write to the realized body-node entity when present.
+
+    The body-node entity's chakra_component root node is the long-term authority
+    for that node's active state.  This write is best-effort and silent on
+    failure so it never blocks the actor-level write above it.
+    """
+    try:
+        from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
+        # Body entity IDs are formed as "{actor_id}:body:{full_node_id}".
+        # _normalize_node_id converts ":" → "." so we use the raw node_id string.
+        body_entity_id = _body_node_entity_id(actor, nid)
+        body_ent = entity_lifecycle_system.find_runtime_entity(game, body_entity_id)
+        if body_ent is None:
+            return
+        body_comp = getattr(body_ent, "chakra_component", None)
+        if body_comp is None:
+            return
+        body_comp = chakra_component_state.coerce_chakra_component(
+            body_comp, entity_id=str(body_entity_id)
+        )
+        # The body entity's root node represents the whole body-node entity.
+        root_nid = str(getattr(body_comp, "root_node_id", "") or "")
+        if root_nid:
+            chakra_component_state.set_node_active(body_comp, root_nid, active=active)
+        # Keep coerced comp on the entity so subsequent reads see the mutation.
+        try:
+            body_ent.chakra_component = body_comp
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def unlock_actor_chakra(actor: Any, node_id: str, *, auto_activate: bool = True, game: Any = None) -> bool:
     """Unlock chakra node on actor. ChakraComponent is the write authority.
 
     Presence in comp.nodes is the canonical definition of unlocked. Returns
     True when the node is newly added, False when already present.
+
+    Pass `game` to also mirror the active state onto the body-node entity when
+    the entity tree has been realized (B2).
     """
     nid = _normalize_node_id(str(node_id))
     if not nid:
@@ -520,11 +598,19 @@ def unlock_actor_chakra(actor: Any, node_id: str, *, auto_activate: bool = True)
             active_set = getattr(state, "active", None)
             if isinstance(active_set, set):
                 active_set.add(nid)
+    # B2: Mirror active state to body-node entity when tree is realized.
+    if game is not None:
+        _write_active_to_body_node_entity(game, actor, nid, active=bool(auto_activate))
+        _mark_actor_chakra_dirty(game, actor, nid)
     return True
 
 
-def toggle_actor_chakra(actor: Any, node_id: str, *, active: Optional[bool] = None) -> bool:
-    """Toggle/activate/deactivate chakra node. ChakraComponent is the write authority."""
+def toggle_actor_chakra(actor: Any, node_id: str, *, active: Optional[bool] = None, game: Any = None) -> bool:
+    """Toggle/activate/deactivate chakra node. ChakraComponent is the write authority.
+
+    Pass `game` to also mirror the active state onto the body-node entity when
+    the entity tree has been realized (B2).
+    """
     nid = _normalize_node_id(str(node_id))
     if not nid:
         return False
@@ -553,6 +639,10 @@ def toggle_actor_chakra(actor: Any, node_id: str, *, active: Optional[bool] = No
                 active_set.add(nid)
             else:
                 active_set.discard(nid)
+    # B2: Mirror active state to body-node entity when tree is realized.
+    if game is not None:
+        _write_active_to_body_node_entity(game, actor, nid, active=now_active)
+        _mark_actor_chakra_dirty(game, actor, nid)
     return now_active
 
 

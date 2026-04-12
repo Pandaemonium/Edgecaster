@@ -555,6 +555,49 @@ def list_unlockable_chakras(
     ]
 
 
+def list_unlockable_chakras_for_entity(
+    owner_ent: Any,
+    chakra_state: ChakraState,
+) -> List[str]:
+    """Return unlockable chakra ids using deterministic body-node specs.
+
+    This is the runtime-facing unlock query for real actor/entities. It uses
+    `entity_body.build_body_node_specs(...)` instead of re-walking `body_schema`
+    directly, which keeps the unlock flow aligned with the new body-entity
+    hierarchy. The old `list_unlockable_chakras(body_schema, ...)` helper stays
+    available for pre-runtime/editor flows that still only have authored schema
+    data, such as character creation previews.
+    """
+    try:
+        from edgecaster.systems import entity_body as entity_body_system
+
+        specs = entity_body_system.build_body_node_specs(owner_ent)
+    except Exception:
+        specs = {}
+
+    if not specs:
+        try:
+            from edgecaster.prototypes import resolve_body_schema
+
+            return list_unlockable_chakras(resolve_body_schema(owner_ent), chakra_state)
+        except Exception:
+            return []
+
+    locked: List[Tuple[str, int]] = []
+    for spec in specs.values():
+        full_id = str(getattr(spec, "full_id", "") or "")
+        if not full_id or full_id in chakra_state.unlocked:
+            continue
+        locked.append((full_id, int(full_id.count("."))))
+
+    locked.sort(key=lambda row: (row[1], chakra_display_name(row[0]), row[0]))
+    return [
+        full_id
+        for (full_id, _depth) in locked
+        if can_unlock_full_chakra_id(chakra_state, full_id)
+    ]
+
+
 # =============================================================================
 # CHAKRA OPERATIONS
 # =============================================================================
@@ -1225,9 +1268,15 @@ def build_chakra_generator_seed(
     - active compact graph extraction
     - normalized custom-graph conversion
     """
-    # Prefer shared geometry queries when a ChakraComponent already exposes a
-    # richer graph. Fall back to the body-schema compatibility path until the
-    # component layout has fully absorbed actor anatomy.
+    # Phase B1: Entity tree path.
+    # Step 1 — Pre-warm: if this actor has an expandable body schema, realize
+    # body-node children now so B2 unlock/active lookups find them in the graph.
+    # Body-anatomy node offsets are sub-tile floats (< 0.5 tile) that collapse
+    # to the same integer grid cell, so entity abs_pos cannot serve as geometry.
+    # Step 2 — Geometry query: try query_normalized_pattern for entities that
+    # have explicit, world-scale chakra_component abs_pos (sites, structures,
+    # non-body actors).  Coincident positions cause normalization to fail, which
+    # is caught internally; the legacy body-schema path below handles that case.
     if actor is not None and game is not None:
         try:
             root_entity_id = str(getattr(actor, "entity_id", "") or getattr(actor, "id", "") or "").strip()
@@ -1240,13 +1289,23 @@ def build_chakra_generator_seed(
                 has_component = False
             if has_component:
                 try:
+                    from edgecaster.systems import entity_body as entity_body_system
                     from edgecaster.systems import entity_geometry as entity_geometry_system
+                    from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
 
+                    # Pre-warm: realize body-node children for B2 state reads.
+                    if entity_body_system.can_expand_entity(actor):
+                        entity_lifecycle_system.expand_entity(
+                            game, root_entity_id, reason="chakra_seed"
+                        )
+
+                    # Geometry query: succeeds for explicit world-scale components;
+                    # silently returns empty for sub-tile body anatomy.
                     query = entity_geometry_system.query_normalized_pattern(
                         game,
                         root_entity_id,
                         helper_id="seed_pattern",
-                        realize_policy="forbid",
+                        realize_policy="allow",
                     )
                     verts = list(query.get("verts") or [])
                     edges = list(query.get("edges") or [])
@@ -1274,6 +1333,13 @@ def build_chakra_generator_seed(
                 except Exception:
                     pass
 
+    # Body-schema geometry path: authoritative source for chakra pattern positions.
+    # Body anatomy offsets are sub-tile floats; these float positions are what
+    # the pattern generator requires.  This path remains the geometry source for
+    # body-anatomy actors until B2 wires unlock/active authority to body-node
+    # entity channels and a float-resolution geometry query replaces the schema
+    # traversal.
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
     positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph(
         body_schema,
         chakra_state,
@@ -1602,26 +1668,10 @@ RESONANCE_EFFECTS: Dict[str, ChakraModifiers] = {
     "full_hand_m": ChakraModifiers(charge_gain_mult=1.25, charge_cap_bonus=0.15, neighbor_depth_bonus=1),
 }
 
-def check_resonance_bonuses(
-    body_schema: Dict[str, Any],
-    chakra_state: ChakraState
-) -> List[str]:
-    """
-    Check for special chakra combinations that grant bonuses.
-
-    Resonance occurs when certain chakra patterns are active together.
-
-    Returns:
-        List of resonance bonus IDs that are currently active
-
-    Current resonance patterns:
-    - "bilateral_arms": Both arm chakras active (shoulder + shoulder_m)
-    - "full_hand": All 5 finger chakras active
-    - "grounded": Both leg chakras active (thigh + thigh_m)
-    - "centered": Torso + chest + back all active
-    """
+def check_resonance_bonuses_from_active_nodes(active_node_ids: Set[str]) -> List[str]:
+    """Return active resonance bonus ids from normalized active node ids."""
     bonuses: List[str] = []
-    active = chakra_state.active
+    active = {str(node_id or "") for node_id in (active_node_ids or set()) if str(node_id or "")}
 
     def _has(node_id: str) -> bool:
         """True if any active node matches node_id or a prefixed sub-schema id."""
@@ -1653,6 +1703,22 @@ def check_resonance_bonuses(
         bonuses.append("centered")
 
     return bonuses
+
+
+def check_resonance_bonuses(
+    body_schema: Dict[str, Any],
+    chakra_state: ChakraState
+) -> List[str]:
+    """
+    Compatibility wrapper for resonance checks.
+
+    `body_schema` is retained here so older callers do not break, but current
+    resonance rules only depend on the active node ids. Runtime code should
+    prefer `check_resonance_bonuses_from_active_nodes(...)`.
+    """
+    _ = body_schema
+    active_nodes = set(getattr(chakra_state, "active", set()) or set())
+    return check_resonance_bonuses_from_active_nodes(active_nodes)
 
 
 def get_resonance_modifiers(bonuses: List[str]) -> ChakraModifiers:
@@ -1688,7 +1754,6 @@ def apply_charge_to_modifiers(mods: ChakraModifiers, avg_charge: float) -> Chakr
 
 
 def tick_chakra_charge(
-    body_schema: Dict[str, Any],
     chakra_state: ChakraState,
     delta: int,
     *,
@@ -1699,7 +1764,8 @@ def tick_chakra_charge(
     if delta <= 0:
         return
 
-    bonuses = check_resonance_bonuses(body_schema, chakra_state)
+    active_nodes = set(getattr(chakra_state, "active", set()) or set())
+    bonuses = check_resonance_bonuses_from_active_nodes(active_nodes)
     mods = get_resonance_modifiers(bonuses)
 
     gain = CHARGE_GAIN_PER_TICK * mods.charge_gain_mult

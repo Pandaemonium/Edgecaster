@@ -182,6 +182,9 @@ Current concern map (authoritative):
   - Attention-driven render candidate assembly (`renderables_in_abs_rect` core path).
   - World proxy staging delegates for sites/POIs/aggregates.
   - Zone-time aggregate detail realization bridge.
+  - `sync_attention_instantiation(...)` now short-circuits when the camera view and
+    LoD are unchanged and no loaded level is `spatial_dirty`, which keeps the
+    advance-time safety-net call from redoing the full realization walk every tick.
 - `edgecaster/systems/zones.py`
   - Mechanical zone/chunk transitions only (no gameplay rituals).
   - Explicit transitions (stairs/fast travel/edge wrap) now trigger a small prewarm slice around
@@ -212,6 +215,9 @@ Current concern map (authoritative):
     fractal-op application, Activate R/N damage execution, and polygon/star/chakra
     generator actions.
   - Owns chakra resonance/charge helpers used by pattern actions.
+  - Runtime modifier calculation now prefers reducer-backed charge snapshots and
+    derives resonance from active node ids rather than resolving `body_schema`
+    on the hot path.
   - `Game` keeps delegate wrappers (`_apply_fractal_op`, `_activate_pattern_*`,
     `act_polygon`, `act_star`, `act_chakra`, chakra charge/modifier helpers).
 - `edgecaster/systems/chakra_effects.py`
@@ -294,8 +300,21 @@ Key modules (non-exhaustive):
 - systems/lorenz_aura.py: Strange Attractor aura simulation (game-side)
 - systems/lighting.py: light emission from entities (illumination, visibility)
 - systems/chakras.py: body-based chakra system for fractal pattern generation
+  - Runtime unlock queries now have a body-node-spec path
+    (`list_unlockable_chakras_for_entity`) used by monk level-up and Chakra
+    Sage unlock flows, while body-schema traversal remains as a compatibility
+    path for editor/pre-runtime callers.
 - systems/chakra_effects.py: centralized chakra passive-rule evaluation
 - systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers)
+- systems/chakra_reducer.py: [ENTITY_CHAKRA] channel reducer pipeline (R1-R3)
+  - reduce_component(comp, rules, dirty_node_ids) computes effective channel values
+    (mass, hp, coherence, resonance, corruption, flow, charge) per ChakraComponent node.
+  - Rules loaded from content/chakra_rules.yaml (additive/override/max/min combine,
+    clamp bounds, edge propagation policies: automatic/none/opt_in).
+  - scheduling.chakra_reducer_tick runs this per-tick; result stored as
+    actor._chakra_effective_channels for downstream consumers.
+  - dirty_node_ids optimization (R2): EntityGraphNode.dirty + mark_dirty_up/
+    mark_clean/mark_subtree_clean allow skipping clean edges on future passes.
 - systems/rune_anchor_sieges.py: failing Rune Anchor gauntlet runtime
   (fracture channeling, wave pacing, stabilize hold, catastrophe pulses, sapper sabotage,
    persistent backlash, corruption dampening completion)

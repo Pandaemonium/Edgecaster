@@ -102,6 +102,10 @@ def advance_time(
     # Chakra charge + resonance tick
     chakra_charge_tick(game, level, delta)
 
+    # R3: Channel reducer pass — compute effective channel values for actors.
+    # Runs after charge flush so channel state is current before reduction.
+    chakra_reducer_tick(game, level)
+
     # God system tick (favor decay + status cleanup)
     try:
         from edgecaster.systems import gods as gods_system
@@ -140,13 +144,86 @@ def advance_time(
         pass
 
 
+def _actor_entity_graph_id(actor: "Actor") -> str:
+    """Return the graph entity id used for actor reducer dirtiness checks."""
+    return str(getattr(actor, "entity_id", "") or getattr(actor, "id", "") or "")
+
+
+def _actor_chakra_snapshot_is_clean(game: "Game", actor: "Actor") -> bool:
+    """True when the actor has a cached reduced snapshot and no dirty graph node."""
+    cached_snapshot = getattr(actor, "_chakra_effective_channels", None)
+    if not isinstance(cached_snapshot, dict):
+        return False
+
+    graph = getattr(game, "entity_graph", None)
+    if graph is None:
+        return False
+
+    actor_entity_id = _actor_entity_graph_id(actor)
+    if not actor_entity_id:
+        return False
+
+    graph_node = graph.get_node(actor_entity_id)
+    if graph_node is None:
+        return False
+    return not bool(getattr(graph_node, "dirty", True))
+
+
+def chakra_reducer_tick(game: "Game", level: "LevelState") -> None:
+    """R3: Run the channel reducer over every actor's chakra_component.
+
+    Computes effective channel values (mass, hp, coherence, resonance, etc.)
+    by propagating channels from parent to child nodes according to the rules
+    in chakra_rules.yaml.  The result is stored on each actor as
+    ``_chakra_effective_channels: Dict[node_id, Dict[channel_name, float]]``
+    for consumption by downstream systems (combat, FOV, stat derivation).
+
+    Runtime uses entity-graph dirty flags conservatively: clean actor subtrees
+    keep their cached snapshot, while dirty actor subtrees are fully reduced
+    and then marked clean again. The finer-grained ``dirty_node_ids`` reducer
+    entry point remains available for a later pass once live runtime reduction
+    can safely merge partial propagation against the previous snapshot.
+
+    [ENTITY_CHAKRA][PHASE_R3]
+    """
+    try:
+        from edgecaster.systems import chakra_reducer as chakra_reducer_system
+        from edgecaster.state import chakra_component as chakra_component_state
+    except Exception:
+        return
+
+    try:
+        rules = chakra_reducer_system.load_rules()
+    except Exception:
+        return
+
+    for actor in list(level.actors.values()):
+        raw_comp = getattr(actor, "chakra_component", None)
+        if raw_comp is None:
+            continue
+        try:
+            actor_id = _actor_entity_graph_id(actor)
+            comp = chakra_component_state.coerce_chakra_component(raw_comp, entity_id=actor_id)
+            if not comp or not comp.nodes:
+                continue
+            if _actor_chakra_snapshot_is_clean(game, actor):
+                continue
+            effective = chakra_reducer_system.reduce_component(comp, rules)
+            actor._chakra_effective_channels = effective
+            graph = getattr(game, "entity_graph", None)
+            if graph is not None and actor_id:
+                graph.mark_subtree_clean(actor_id)
+        except Exception:
+            # Reduction failures must never interrupt the tick loop.
+            continue
+
+
 def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
     """Update chakra charge for actors with chakra_state."""
     if delta <= 0:
         return
 
     try:
-        from edgecaster.prototypes import resolve_body_schema
         from edgecaster.systems import chakras as chakra_system
         from edgecaster.systems import chakra_items as chakra_items_system
     except Exception:
@@ -169,16 +246,14 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
         except Exception:
             dex = 0
 
-        body_schema = resolve_body_schema(actor) or {}
         chakra_system.tick_chakra_charge(
-            body_schema,
             chakra_state,
             delta,
             charging=charging,
             dex=dex,
         )
         # Phase 2B: push charge values into ChakraComponent (charges only, no full mirror).
-        chakra_items_system.flush_charges_to_component(actor)
+        chakra_items_system.flush_charges_to_component(actor, game=game)
 
 
 def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, interval: int) -> None:

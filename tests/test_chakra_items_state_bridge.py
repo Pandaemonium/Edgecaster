@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from edgecaster.state.chakra_component import ChakraComponent, ChakraNode
+from edgecaster.state.entity_graph import EntityGraphStore
 from edgecaster.systems.chakras import ChakraState
 from edgecaster.systems import chakra_items as chakra_items_system
 
@@ -193,3 +194,60 @@ def test_toggle_actor_chakra_syncs_component() -> None:
     assert "arm.hand" not in actor.chakra_state.active
     assert "arm.hand" in actor.chakra_component.nodes
     assert bool(actor.chakra_component.nodes["arm.hand"].active) is False
+
+
+def test_flush_charges_to_component_marks_actor_graph_dirty_when_game_provided() -> None:
+    actor = SimpleNamespace(
+        id="actor:test:10",
+        entity_id="actor:test:10",
+        body_schema={"root": "body"},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
+            tags={},
+        ),
+        chakra_state=ChakraState(
+            unlocked={"body", "arm.hand"},
+            active={"body", "arm.hand"},
+            charges={"arm.hand": 0.45},
+        ),
+    )
+    game = SimpleNamespace(entity_graph=EntityGraphStore())
+    game.entity_graph.register(actor.entity_id, kind="actor")
+    game.entity_graph.mark_subtree_clean(actor.entity_id)
+
+    chakra_items_system.flush_charges_to_component(actor, game=game)
+
+    assert float(actor.chakra_component.nodes["arm.hand"].channels.get("charge", 0.0)) == 0.45
+    assert game.entity_graph.get_node(actor.entity_id).dirty is True
+
+
+def test_toggle_actor_chakra_marks_realized_body_node_dirty_when_game_provided() -> None:
+    actor = SimpleNamespace(
+        id="actor:test:11",
+        entity_id="actor:test:11",
+        body_schema={"root": "body"},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={
+                "body": ChakraNode(node_id="body", active=True, channels={}),
+                "arm.hand": ChakraNode(node_id="arm.hand", active=True, channels={}),
+            },
+            tags={},
+        ),
+        chakra_state=ChakraState(unlocked={"body", "arm.hand"}, active={"body", "arm.hand"}),
+    )
+    game = SimpleNamespace(entity_graph=EntityGraphStore())
+    game.entity_graph.register(actor.entity_id, kind="actor")
+    game.entity_graph.register(
+        "actor:test:11:body:arm.hand",
+        parent_entity_id=actor.entity_id,
+        socket_id="body",
+        kind="body_node",
+    )
+    game.entity_graph.mark_subtree_clean(actor.entity_id)
+
+    chakra_items_system.toggle_actor_chakra(actor, "arm.hand", active=False, game=game)
+
+    assert game.entity_graph.get_node("actor:test:11:body:arm.hand").dirty is True
+    assert game.entity_graph.get_node(actor.entity_id).dirty is True

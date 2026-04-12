@@ -1,6 +1,7 @@
 """Unit tests for attention suppression bridge helpers."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from edgecaster.systems import attention
 
@@ -167,6 +168,59 @@ def test_resolve_depth_defaults_follow_lod_curve() -> None:
     assert attention._resolve_max_depth_for_lod(g, cam_lod=1.0, parent_tags={}) == 1
     assert attention._resolve_max_depth_for_lod(g, cam_lod=0.4, parent_tags={}) == 2
     assert attention._resolve_max_depth_for_lod(g, cam_lod=-1.0, parent_tags={}) == 4
+
+
+def test_sync_attention_instantiation_skips_unchanged_clean_view() -> None:
+    class _WorldIndex:
+        def query_abs_rect(self, *_args, **_kwargs):
+            raise AssertionError("unchanged clean attention sync should return early")
+
+    level = SimpleNamespace(spatial_dirty=False)
+    g = SimpleNamespace(
+        levels={(0, 0, 0): level},
+        world_entity_index=_WorldIndex(),
+        _attn_last_sync_abs_rect=(0.0, 0.0, 10.0, 10.0),
+        _attn_last_sync_cam_lod=0.0,
+    )
+
+    attention.sync_attention_instantiation(g, (0.0, 0.0, 10.0, 10.0), cam_lod=0.0)
+
+    assert g._last_view_abs_rect == (0.0, 0.0, 10.0, 10.0)
+    assert g._last_view_cam_lod == 0.0
+
+
+def test_sync_attention_instantiation_rechecks_when_loaded_level_is_dirty() -> None:
+    class _WorldIndex:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def query_abs_rect(self, *_args, **_kwargs):
+            self.calls += 1
+            return []
+
+    level = SimpleNamespace(
+        spatial_dirty=True,
+        world=SimpleNamespace(width=10, height=10),
+    )
+    world_index = _WorldIndex()
+    g = SimpleNamespace(
+        levels={(0, 0, 0): level},
+        zone_coord=(0, 0, 0),
+        cfg=SimpleNamespace(world_width=10, world_height=10, entity_render_pad_tiles=0.0, render_max_zone_span=1),
+        world_entity_index=world_index,
+        attn_store=object(),
+        _attn_last_sync_abs_rect=(0.0, 0.0, 10.0, 10.0),
+        _attn_last_sync_cam_lod=0.0,
+        _ensure_world_aggregate_entities=lambda **_kwargs: None,
+        _clamp_zone_window=lambda zx0, zx1, zy0, zy1, **_kwargs: (zx0, zx1, zy0, zy1, False),
+        _get_player_abs=lambda: (5.0, 5.0),
+        _level=lambda: level,
+    )
+
+    with patch("edgecaster.systems.site_placement.ensure_world_sites", lambda _game: None):
+        attention.sync_attention_instantiation(g, (0.0, 0.0, 10.0, 10.0), cam_lod=0.0)
+
+    assert world_index.calls == 1
 
 
 def test_resolve_depth_respects_parent_cap_and_bias() -> None:

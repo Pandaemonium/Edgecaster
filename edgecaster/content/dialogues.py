@@ -766,8 +766,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         Return all currently unlockable chakra ids based on shared gating rules.
         """
         try:
-            from edgecaster.prototypes import resolve_body_schema
-            from edgecaster.systems.chakras import list_unlockable_chakras
+            from edgecaster.systems.chakras import list_unlockable_chakras_for_entity
             from edgecaster.systems import chakra_items as chakra_items_system
 
             player = game._player()
@@ -775,8 +774,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
             if chakra_state is None:
                 return []
 
-            body_schema = resolve_body_schema(player)
-            return list_unlockable_chakras(body_schema, chakra_state)
+            return list_unlockable_chakras_for_entity(player, chakra_state)
         except Exception:
             return []
 
@@ -796,7 +794,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
                 if chakra_state is None:
                     return
 
-                if chakra_items_system.unlock_actor_chakra(player, node_id, auto_activate=True):
+                if chakra_items_system.unlock_actor_chakra(player, node_id, auto_activate=True, game=game):
                     display_name = chakra_display_name(node_id)
                     game.log.add(f"The Chakra Sage awakens your {display_name} chakra!")
                     game.log.add("You feel new energy flowing through you.")

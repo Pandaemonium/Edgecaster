@@ -23,6 +23,7 @@ Supersedes: none
 - `test_pattern_runtime.py`
 - `test_chakra_component.py`
 - `test_chakra_items_state_bridge.py`
+- `test_chakra_unlock_queries.py`
 - `test_entity_geometry.py`
 - `test_gods.py`
 - `test_lorenz_aura.py`
