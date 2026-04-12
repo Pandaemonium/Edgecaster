@@ -21,6 +21,10 @@ Supersedes: none
 - `sites.py` - site placement products and site-type config dataclasses
 - `quests.py` - quest state dataclasses
 
+## Entity Graph
+
+- `entity_graph.py` - `EntityGraphNode`, `EntityGraphStore` — authoritative containment graph; written through `entity_graph_ops.attach_entity_to_parent` and `detach_entity_from_parent`
+
 ## Chakra And Persistence
 
 - `chakra_component.py` - typed chakra component graph structures

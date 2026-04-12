@@ -182,12 +182,13 @@ def test_toggle_door_updates_runtime_and_persists_open_state() -> None:
     assert tile.glyph == "."
     assert level.need_fov is True
     game.patch_entity_state.assert_called_once_with(
-        door,
+        "runtime:door:1",
         {
             "last_known_tags": {"door_state": "open"},
             "last_known_glyph": "/",
             "last_known_blocks_movement": False,
         },
+        lineage_id="site:test:door:1",
     )
     game._update_fov.assert_called_once_with(level)
 
@@ -213,11 +214,12 @@ def test_toggle_door_updates_runtime_and_persists_closed_state() -> None:
     assert tile.glyph == "+"
     assert level.need_fov is True
     game.patch_entity_state.assert_called_once_with(
-        door,
+        "runtime:door:2",
         {
             "last_known_tags": {"door_state": "closed"},
             "last_known_glyph": "+",
             "last_known_blocks_movement": True,
         },
+        lineage_id="site:test:door:2",
     )
     game._update_fov.assert_called_once_with(level)

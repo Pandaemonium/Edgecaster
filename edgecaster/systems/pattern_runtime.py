@@ -126,6 +126,10 @@ def act_star(self, actor_id: str) -> None:
     self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
 
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# These chakra runtime helpers still read actor body_schema/ChakraState
+# directly. Move them to shared entity_geometry/entity_body queries so pattern
+# gameplay stops depending on actor-only schema walkers.
 def chakra_modifiers(self, actor_id: str):
     """Return ChakraModifiers for the given actor (resonance + charge)."""
     try:
@@ -171,7 +175,8 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
     except Exception:
         return
     chakra_system.consume_chakra_charge(chakra_state, amount)
-    chakra_items_system.sync_actor_chakra_state(actor)
+    # Phase 2B: push charge values into ChakraComponent (charges only, no full mirror).
+    chakra_items_system.flush_charges_to_component(actor)
 
 
 def act_chakra(self, actor_id: str) -> None:
@@ -206,7 +211,7 @@ def act_chakra(self, actor_id: str) -> None:
         self.log.add("Could not resolve body schema.")
         return
 
-    if not body_schema or not body_schema.get("nodes"):
+    if (not body_schema or not body_schema.get("nodes")) and getattr(actor, "chakra_component", None) is None:
         self.log.add("No body schema to generate pattern from.")
         return
 
@@ -216,6 +221,8 @@ def act_chakra(self, actor_id: str) -> None:
             chakra_state,
             base_scale=1.0,
             require_root=True,
+            actor=actor,
+            game=self,
         )
     except ValueError as e:
         self.log.add(str(e))

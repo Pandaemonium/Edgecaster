@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple, List, TYPE_CHECKING, Iterable
 from edgecaster.systems import footprints as footprints_system
+from edgecaster.systems import entity_snapshots as entity_snapshots_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game, LevelState
@@ -232,21 +233,14 @@ def toggle_door(game: "Game", ent: "Entity", level: "LevelState", notify: bool =
 
     # Unification note: door toggles are one of the clearest examples of a
     # deterministic entity mutating while it may later collapse out of the
-    # active zone. Persist the same display/runtime deltas that attention-side
-    # rehydration already knows how to apply.
-    try:
-        patch_state = getattr(game, "patch_entity_state", None)
-        if callable(patch_state):
-            patch_state(
-                ent,
-                {
-                    "last_known_tags": {"door_state": tags.get("door_state")},
-                    "last_known_glyph": str(getattr(ent, "glyph", "+") or "+")[:1],
-                    "last_known_blocks_movement": bool(getattr(ent, "blocks_movement", False)),
-                },
-            )
-    except Exception:
-        pass
+    # active zone. Persist through the shared snapshot bridge so this uses the
+    # same patch shape as attention collapse/re-realization.
+    entity_snapshots_system.persist_entity_snapshot(
+        game,
+        ent,
+        entity_id=str(getattr(ent, "entity_id", "") or getattr(ent, "id", "") or ""),
+        lineage_id=str(tags.get("lineage_id", "") or "") or None,
+    )
 
     ent.tags = tags
     level.need_fov = True

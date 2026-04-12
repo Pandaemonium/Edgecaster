@@ -78,6 +78,10 @@ Vec2 = Tuple[float, float]
 # CHAKRA STATE
 # =============================================================================
 
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# ChakraState remains only as a compatibility facade for actor-centric callers.
+# The long-term runtime authority should be actor/body entities plus
+# ChakraComponent geometry queried through shared entity/chakra APIs.
 @dataclass
 class ChakraState:
     """
@@ -674,6 +678,12 @@ def toggle_chakra_active(
 # =============================================================================
 # POSITION EXTRACTION
 # =============================================================================
+#
+# [LEGACY_DELETE][ENTITY_CHAKRA][BODY_SCHEMA]
+# These recursive body-schema readers are now a compatibility bridge. The
+# long-term runtime/query path should come from realized actor/body entities via
+# `entity_body.py` + `entity_geometry.py`, with body_schema retained as authoring
+# input instead of the main gameplay traversal substrate.
 
 def get_chakra_connections_recursive(
     body_schema: Dict[str, Any],
@@ -1204,6 +1214,8 @@ def build_chakra_generator_seed(
     *,
     base_scale: float = 1.0,
     require_root: bool = True,
+    actor: Any | None = None,
+    game: Any | None = None,
 ) -> ChakraGeneratorSeed:
     """
     Build the canonical chakra generator seed.
@@ -1213,6 +1225,55 @@ def build_chakra_generator_seed(
     - active compact graph extraction
     - normalized custom-graph conversion
     """
+    # Prefer shared geometry queries when a ChakraComponent already exposes a
+    # richer graph. Fall back to the body-schema compatibility path until the
+    # component layout has fully absorbed actor anatomy.
+    if actor is not None and game is not None:
+        try:
+            root_entity_id = str(getattr(actor, "entity_id", "") or getattr(actor, "id", "") or "").strip()
+        except Exception:
+            root_entity_id = ""
+        if root_entity_id:
+            try:
+                has_component = getattr(actor, "chakra_component", None) is not None
+            except Exception:
+                has_component = False
+            if has_component:
+                try:
+                    from edgecaster.systems import entity_geometry as entity_geometry_system
+
+                    query = entity_geometry_system.query_normalized_pattern(
+                        game,
+                        root_entity_id,
+                        helper_id="seed_pattern",
+                        realize_policy="forbid",
+                    )
+                    verts = list(query.get("verts") or [])
+                    edges = list(query.get("edges") or [])
+                    node_order = list(query.get("node_order") or [])
+                    if verts and edges and node_order:
+                        positions = {
+                            str(node_id): tuple(query["positions"][str(node_id)])
+                            for node_id in node_order
+                            if str(node_id) in query.get("positions", {})
+                        }
+                        compact_edges = [
+                            (str(a), str(b))
+                            for a, b in (query.get("compact_edges") or [])
+                        ]
+                        return ChakraGeneratorSeed(
+                            positions=positions,
+                            compact_edges=compact_edges,
+                            root_id=str(query.get("root_id") or ""),
+                            terminus_id=str(query.get("terminus_id") or ""),
+                            verts=[(float(x), float(y)) for (x, y) in verts],
+                            edges=[(int(a), int(b)) for (a, b) in edges],
+                            node_order=[str(node_id) for node_id in node_order],
+                            base_len=float(query.get("base_len", 0.0) or 0.0),
+                        )
+                except Exception:
+                    pass
+
     positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph(
         body_schema,
         chakra_state,

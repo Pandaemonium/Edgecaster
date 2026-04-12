@@ -32,24 +32,14 @@ from typing import Any, Dict, List, Tuple
 from edgecaster import prototypes
 from edgecaster import spawn_factory
 from edgecaster.content import npcs
-from edgecaster.enemies import factory as enemy_factory
 from edgecaster.systems import aggregate_resolution as aggregate_system
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
+from edgecaster.systems import entity_snapshots as entity_snapshots_system
 from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.state import chakra_component as chakra_component_state
-from edgecaster.state.actors import Human, Stats
 
-
-_PERSIST_TAG_KEYS = (
-    "quantity",
-    "charges",
-    "max_charges",
-    "door_state",
-    "locked",
-    "broken",
-    "opened",
-)
 
 _PRIMARY_ENTITY_STATE_KEYS = {
     "removed",
@@ -64,6 +54,11 @@ _PRIMARY_ENTITY_STATE_KEYS = {
 }
 
 
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# The persistence/suppression wrappers in this block keep older attention paths
+# working while entity_state, snapshots, and attention still overlap. Once
+# attention reads lifecycle state through one shared authority path, collapse
+# these helpers into direct calls or delete them.
 def _peek_entity_state(game: object, key: str) -> Dict[str, Any]:
     store = getattr(game, "entity_state", None)
     if isinstance(store, dict):
@@ -211,76 +206,7 @@ def _apply_persisted_entity_state(
 ) -> bool:
     """Apply persisted lineage/entity deltas to runtime object; return False if suppressed."""
     state = _effective_entity_state(game, entity_id=str(entity_id or ""), lineage_id=str(lineage_id or ""))
-    if not isinstance(state, dict) or not state:
-        return True
-    if bool(state.get("removed")) or bool(state.get("dead")):
-        return False
-
-    try:
-        tags = getattr(obj, "tags", None)
-        if not isinstance(tags, dict):
-            tags = {}
-        last_tags = state.get("last_known_tags")
-        if isinstance(last_tags, dict):
-            tags.update(dict(last_tags))
-        if lineage_id and not tags.get("lineage_id"):
-            tags["lineage_id"] = str(lineage_id)
-        setattr(obj, "tags", tags)
-    except Exception:
-        pass
-
-    try:
-        if "last_known_glyph" in state:
-            setattr(obj, "glyph", str(state.get("last_known_glyph") or getattr(obj, "glyph", "?"))[:1] or "?")
-    except Exception:
-        pass
-    try:
-        if "last_known_blocks_movement" in state:
-            setattr(obj, "blocks_movement", bool(state.get("last_known_blocks_movement")))
-    except Exception:
-        pass
-
-    stats = getattr(obj, "stats", None)
-    if stats is not None:
-        try:
-            if "last_known_max_hp" in state:
-                stats.max_hp = max(1, int(state.get("last_known_max_hp", getattr(stats, "max_hp", 1)) or 1))
-        except Exception:
-            pass
-        try:
-            if "last_known_hp" in state:
-                stats.hp = int(state.get("last_known_hp", getattr(stats, "hp", 0)) or 0)
-        except Exception:
-            pass
-        try:
-            if "last_known_max_mana" in state and hasattr(stats, "max_mana"):
-                stats.max_mana = max(0, int(state.get("last_known_max_mana", getattr(stats, "max_mana", 0)) or 0))
-        except Exception:
-            pass
-        try:
-            if "last_known_mana" in state and hasattr(stats, "mana"):
-                stats.mana = int(state.get("last_known_mana", getattr(stats, "mana", 0)) or 0)
-        except Exception:
-            pass
-        try:
-            if hasattr(stats, "clamp"):
-                stats.clamp()
-        except Exception:
-            pass
-
-    try:
-        raw_statuses = state.get("last_known_statuses")
-        if isinstance(raw_statuses, dict):
-            setattr(obj, "statuses", dict(raw_statuses))
-    except Exception:
-        pass
-    try:
-        raw_cooldowns = state.get("last_known_cooldowns")
-        if isinstance(raw_cooldowns, dict):
-            setattr(obj, "cooldowns", dict(raw_cooldowns))
-    except Exception:
-        pass
-    return True
+    return entity_snapshots_system.apply_entity_snapshot(obj, state, lineage_id=lineage_id)
 
 
 def _persist_entity_snapshot(
@@ -291,80 +217,12 @@ def _persist_entity_snapshot(
     lineage_id: str | None = None,
 ) -> None:
     """Persist mutable runtime deltas for deterministic descendants."""
-    # Unification note: this patch path is still scalar/display oriented.
-    # Expansion/collapse will need generalized chakra_patch and geometry deltas
-    # here so realized subtrees can de-realize without losing meaningful edits.
-    patch: Dict[str, Any] = {}
-
-    try:
-        stats = getattr(obj, "stats", None)
-    except Exception:
-        stats = None
-    if stats is not None:
-        for src, dst in (
-            ("hp", "last_known_hp"),
-            ("max_hp", "last_known_max_hp"),
-            ("mana", "last_known_mana"),
-            ("max_mana", "last_known_max_mana"),
-        ):
-            try:
-                raw = getattr(stats, src, None)
-                if raw is not None:
-                    patch[dst] = int(raw)
-            except Exception:
-                continue
-
-    try:
-        tags = getattr(obj, "tags", None)
-    except Exception:
-        tags = None
-    if isinstance(tags, dict):
-        kept: Dict[str, Any] = {}
-        for k in _PERSIST_TAG_KEYS:
-            if k in tags:
-                kept[str(k)] = tags.get(k)
-        if kept:
-            patch["last_known_tags"] = kept
-
-    try:
-        glyph = getattr(obj, "glyph", None)
-        if glyph is not None:
-            patch["last_known_glyph"] = str(glyph)[:1]
-    except Exception:
-        pass
-    try:
-        patch["last_known_blocks_movement"] = bool(getattr(obj, "blocks_movement", False))
-    except Exception:
-        pass
-
-    try:
-        raw_statuses = getattr(obj, "statuses", None)
-        if isinstance(raw_statuses, dict) and raw_statuses:
-            patch["last_known_statuses"] = dict(raw_statuses)
-    except Exception:
-        pass
-    try:
-        raw_cooldowns = getattr(obj, "cooldowns", None)
-        if isinstance(raw_cooldowns, dict) and raw_cooldowns:
-            patch["last_known_cooldowns"] = dict(raw_cooldowns)
-    except Exception:
-        pass
-
-    if not patch:
-        return
-    try:
-        fn = getattr(game, "patch_entity_state", None)
-        if callable(fn):
-            lid = str(lineage_id or "").strip()
-            try:
-                if lid:
-                    fn(str(entity_id), patch, lineage_id=lid)
-                else:
-                    fn(str(entity_id), patch)
-            except TypeError:
-                fn(str(entity_id), patch)
-    except Exception:
-        pass
+    entity_snapshots_system.persist_entity_snapshot(
+        game,
+        obj,
+        entity_id=str(entity_id or ""),
+        lineage_id=lineage_id,
+    )
 
 
 def _resolve_depth_ladder(game: object) -> tuple[tuple[float, int], ...]:
@@ -626,56 +484,171 @@ class _YogaStagedEntity:
 
 
 class AttentionCellStore:
-    """Unified cache of instantiated entities keyed by ABS-space bins (not zones).
+    """Unified cache of instantiated entities keyed by a hierarchical ABS-space index.
 
-    This is a Phase-1.8 stepping stone toward a full quadtree-backed attention field.
-    For now it's a simple ABS bin grid so we can:
-      - stage/unstage derived entities anywhere (god-vision), without creating zones
-      - keep derived entities "real" objects that can be rendered and later interacted with
+    Public methods stay intentionally small:
+      - `stage(obj, abs_x, abs_y, zz)`
+      - `despawn(eid)`
+      - `query_abs_rect(abs_rect, zz=...)`
+
+    Internally we bucket entities into scale-aware rect cells so large
+    footprints do not explode into duplicates and queries can respect
+    footprint rectangles instead of point anchors.
+
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    AttentionCellStore is still a parallel runtime cache. The end-state is one
+    authoritative realization/index path shared with the entity graph and
+    geometry query system.
     """
 
     def __init__(self, *, bin_size: int = 32) -> None:
         self.bin_size = max(1, int(bin_size))
         self.entities: Dict[str, object] = {}
-        self.eid_to_bin: Dict[str, Tuple[int, int, int]] = {}
-        self.bins: Dict[Tuple[int, int, int], List[str]] = {}
+        self.eid_to_bin: Dict[str, Tuple[int, int, int, int]] = {}
+        self.bins: Dict[Tuple[int, int, int, int], List[str]] = {}
+        self.entity_rects: Dict[str, Tuple[float, float, float, float]] = {}
+        self.entity_cells: Dict[str, List[Tuple[int, int, int, int]]] = {}
 
-    def _bin_for_abs(self, ax: float, ay: float, zz: int) -> Tuple[int, int, int]:
-        bs = self.bin_size
-        return (int(math.floor(float(ax) / bs)), int(math.floor(float(ay) / bs)), int(zz))
+    @staticmethod
+    def _normalize_rect(rect: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+        x0, y0, x1, y1 = rect
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        return (float(x0), float(y0), float(x1), float(y1))
+
+    @staticmethod
+    def _coerce_rect(raw: object) -> Tuple[float, float, float, float] | None:
+        if isinstance(raw, dict):
+            if all(k in raw for k in ("x0", "y0", "x1", "y1")):
+                try:
+                    return AttentionCellStore._normalize_rect(
+                        (
+                            float(raw["x0"]),
+                            float(raw["y0"]),
+                            float(raw["x1"]),
+                            float(raw["y1"]),
+                        )
+                    )
+                except Exception:
+                    return None
+            return None
+        if isinstance(raw, (tuple, list)) and len(raw) >= 4:
+            try:
+                return AttentionCellStore._normalize_rect(
+                    (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
+                )
+            except Exception:
+                return None
+        return None
+
+    def _rect_for_obj(
+        self,
+        obj: object,
+        *,
+        abs_x: float,
+        abs_y: float,
+    ) -> Tuple[float, float, float, float]:
+        rect = self._coerce_rect(getattr(obj, "footprint_abs", None))
+        if rect is None:
+            tags = getattr(obj, "tags", None)
+            if isinstance(tags, dict):
+                rect = self._coerce_rect(tags.get("footprint_abs"))
+
+        if rect is None:
+            size_val = None
+            for raw in (
+                getattr(obj, "abs_size", None),
+                getattr(obj, "base_size", None),
+            ):
+                if isinstance(raw, (int, float)) and float(raw) > 1.0:
+                    size_val = float(raw)
+                    break
+            if size_val is None:
+                tags = getattr(obj, "tags", None)
+                if isinstance(tags, dict):
+                    raw = tags.get("abs_size")
+                    if isinstance(raw, (int, float)) and float(raw) > 1.0:
+                        size_val = float(raw)
+            if size_val is not None:
+                half = 0.5 * float(size_val)
+                rect = (float(abs_x) - half, float(abs_y) - half, float(abs_x) + half, float(abs_y) + half)
+            else:
+                rect = (float(abs_x), float(abs_y), float(abs_x) + 1.0, float(abs_y) + 1.0)
+        return self._normalize_rect(rect)
+
+    def _cell_size_for_rect(self, rect: Tuple[float, float, float, float]) -> Tuple[int, float]:
+        x0, y0, x1, y1 = rect
+        max_dim = max(1.0, float(x1) - float(x0), float(y1) - float(y0))
+        cell_size = float(self.bin_size)
+        level = 0
+        while cell_size < max_dim and level < 16:
+            cell_size *= 2.0
+            level += 1
+        return (int(level), float(cell_size))
+
+    def _cells_for_rect(
+        self,
+        rect: Tuple[float, float, float, float],
+        *,
+        level: int,
+        cell_size: float,
+        zz: int,
+    ) -> List[Tuple[int, int, int, int]]:
+        x0, y0, x1, y1 = rect
+        bx0 = int(math.floor(float(x0) / float(cell_size)))
+        by0 = int(math.floor(float(y0) / float(cell_size)))
+        bx1 = int(math.floor((float(x1) - 1e-6) / float(cell_size)))
+        by1 = int(math.floor((float(y1) - 1e-6) / float(cell_size)))
+        out: List[Tuple[int, int, int, int]] = []
+        for by in range(by0, by1 + 1):
+            for bx in range(bx0, bx1 + 1):
+                out.append((int(level), int(bx), int(by), int(zz)))
+        return out
+
+    def _remove_entity_cells(self, eid: str) -> None:
+        prev_cells = self.entity_cells.pop(str(eid), None)
+        if prev_cells:
+            for cell in prev_cells:
+                try:
+                    ids = self.bins.get(cell)
+                    if ids and eid in ids:
+                        ids.remove(eid)
+                    if not ids:
+                        self.bins.pop(cell, None)
+                except Exception:
+                    pass
+        self.entity_rects.pop(str(eid), None)
+        self.eid_to_bin.pop(str(eid), None)
 
     def stage(self, obj: object, *, abs_x: float, abs_y: float, zz: int) -> str:
         eid = str(getattr(obj, "id", "") or "")
         if not eid:
             raise ValueError("staged object missing id")
+        try:
+            if getattr(obj, "abs_pos", None) is None:
+                obj.abs_pos = (int(abs_x), int(abs_y))
+        except Exception:
+            pass
 
-        b = self._bin_for_abs(abs_x, abs_y, zz)
+        rect = self._rect_for_obj(obj, abs_x=abs_x, abs_y=abs_y)
+        level, cell_size = self._cell_size_for_rect(rect)
+        cells = self._cells_for_rect(rect, level=level, cell_size=cell_size, zz=int(zz))
 
-        prevb = self.eid_to_bin.get(eid)
-        if prevb and prevb != b:
-            # Move bins
-            try:
-                lst = self.bins.get(prevb)
-                if lst and eid in lst:
-                    lst.remove(eid)
-            except Exception:
-                pass
+        self._remove_entity_cells(eid)
 
         self.entities[eid] = obj
-        self.eid_to_bin[eid] = b
-        self.bins.setdefault(b, []).append(eid)
+        self.entity_rects[eid] = rect
+        self.entity_cells[eid] = list(cells)
+        self.eid_to_bin[eid] = cells[0] if cells else (int(level), 0, 0, int(zz))
+        for cell in cells:
+            self.bins.setdefault(cell, []).append(eid)
         return eid
 
     def despawn(self, eid: str) -> None:
         eid = str(eid)
-        b = self.eid_to_bin.pop(eid, None)
-        if b is not None:
-            try:
-                lst = self.bins.get(b)
-                if lst and eid in lst:
-                    lst.remove(eid)
-            except Exception:
-                pass
+        self._remove_entity_cells(eid)
         self.entities.pop(eid, None)
 
     def query_abs_rect(self, abs_rect: Tuple[float, float, float, float], *, zz: int) -> List[Tuple[object, float, float]]:
@@ -687,30 +660,36 @@ class AttentionCellStore:
         if ax1 == ax0 or ay1 == ay0:
             return []
 
-        bs = self.bin_size
-        bx0 = int(math.floor(ax0 / bs))
-        by0 = int(math.floor(ay0 / bs))
-        bx1 = int(math.floor((ax1 - 1e-6) / bs))
-        by1 = int(math.floor((ay1 - 1e-6) / bs))
-
         out: List[Tuple[object, float, float]] = []
-        for by in range(by0, by1 + 1):
-            for bx in range(bx0, bx1 + 1):
-                ids = self.bins.get((bx, by, int(zz)))
+        seen: set[str] = set()
+        levels = sorted({cell[0] for cell in self.bins.keys() if int(cell[3]) == int(zz)})
+        for level in levels:
+            cell_size = float(self.bin_size) * float(2 ** int(level))
+            for cell in self._cells_for_rect((ax0, ay0, ax1, ay1), level=int(level), cell_size=cell_size, zz=int(zz)):
+                ids = self.bins.get(cell)
                 if not ids:
                     continue
                 for eid in ids:
+                    if eid in seen:
+                        continue
                     obj = self.entities.get(eid)
                     if obj is None:
                         continue
-                    ap = getattr(obj, "abs_pos", None)
-                    if not ap:
+                    rect = self.entity_rects.get(eid)
+                    if rect is None:
                         continue
-                    ax, ay = ap
-                    ax = float(ax)
-                    ay = float(ay)
-                    if ax0 <= ax < ax1 and ay0 <= ay < ay1:
-                        out.append((obj, ax, ay))
+                    rx0, ry0, rx1, ry1 = rect
+                    if rx1 <= ax0 or rx0 >= ax1 or ry1 <= ay0 or ry0 >= ay1:
+                        continue
+                    ap = getattr(obj, "abs_pos", None)
+                    if isinstance(ap, (tuple, list)) and len(ap) >= 2:
+                        ax = float(ap[0])
+                        ay = float(ap[1])
+                    else:
+                        ax = float(rx0)
+                        ay = float(ry0)
+                    seen.add(eid)
+                    out.append((obj, ax, ay))
         return out
 
 def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, float], *, cam_lod: float) -> None:
@@ -1266,163 +1245,6 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         except Exception:
             pass
 
-    
-    # Shared actor helpers used by detail resolvers.
-    #
-    # We intentionally keep these outside any legacy kill-switch so modern
-    # attention paths (site-detail resolution) never depend on dead code.
-    def _build_staged_actor(
-        *,
-        eid: str,
-        npc_id: str,
-        name: str,
-        glyph: str,
-        color,
-        abs_pos: tuple[int, int],
-        local_pos: tuple[int, int],
-        owner_id: str,
-        ns,
-    ):
-        """Build a real staged actor used by attention detail passes."""
-        spec = ns if isinstance(ns, dict) else {}
-        spec_tags = (spec.get("tags") or {}) if isinstance(spec, dict) else {}
-
-        # Special cases kept centralized for consistency with runtime NPC behavior.
-        if npc_id == "caged_demon":
-            try:
-                a = enemy_factory.spawn_enemy("caged_demon", local_pos, abs_pos=abs_pos, game=game)
-            except TypeError:
-                a = enemy_factory.spawn_enemy("caged_demon", local_pos, game=game)
-                try:
-                    a.abs_pos = abs_pos
-                except Exception:
-                    pass
-            a.id = eid
-            a.pos = local_pos
-            a.faction = "neutral"
-            a.actions = ()
-            a.ai = "idle"
-            a.tags = getattr(a, "tags", {}) or {}
-            a.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
-            a.tags["show_exact_hp"] = True
-            try:
-                a.show_exact_hp = True
-            except Exception:
-                pass
-            desc = spec.get("description") or getattr(a, "description", None)
-            if desc:
-                a.description = desc
-            try:
-                a.regen_per_tick = (1, 10)
-                game._start_regen(
-                    game.get_zone_for_render((abs_pos[0] // zone_w, abs_pos[1] // zone_h, zz)) or game._level(),
-                    a.id,
-                    amount=1,
-                    interval=10,
-                )
-            except Exception:
-                pass
-            a.name = name
-            try:
-                a.glyph = glyph
-                a.color = color  # type: ignore[assignment]
-            except Exception:
-                pass
-            return a
-
-        if npc_id == "merchant":
-            try:
-                a = enemy_factory.spawn_enemy("merchant", local_pos, abs_pos=abs_pos, game=game)
-            except TypeError:
-                a = enemy_factory.spawn_enemy("merchant", local_pos, game=game)
-                try:
-                    a.abs_pos = abs_pos
-                except Exception:
-                    pass
-            a.id = eid
-            a.pos = local_pos
-            a.faction = "npc"
-            a.actions = ()
-            a.ai = "idle"
-            a.tags = getattr(a, "tags", {}) or {}
-            a.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
-            a.tags["merchant_id"] = spec_tags.get("merchant_id", "general_store")
-            a.name = name
-            try:
-                a.glyph = glyph
-                a.color = color  # type: ignore[assignment]
-            except Exception:
-                pass
-            desc = spec.get("description") or getattr(a, "description", None)
-            if desc:
-                a.description = desc
-            try:
-                from edgecaster.systems import trade as trade_system
-
-                lvl = game.get_zone_for_render((abs_pos[0] // zone_w, abs_pos[1] // zone_h, zz))
-                if lvl is not None:
-                    trade_system.ensure_merchant_initialized(game, lvl, a)
-            except Exception:
-                pass
-            return a
-
-        # Default: Human NPC
-        try:
-            a = Human(
-                id=eid,
-                name=name,
-                pos=local_pos,
-                abs_pos=abs_pos,
-                faction="npc",
-                stats=Stats(hp=50, max_hp=50),
-                tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
-                disposition=int(spec_tags.get("base_disposition", 0) or 0),
-                affiliations=tuple(spec_tags.get("factions", [])),
-                glyph=glyph,
-                color=color,  # type: ignore[arg-type]
-            )
-        except TypeError:
-            a = Human(
-                id=eid,
-                name=name,
-                pos=local_pos,
-                faction="npc",
-                stats=Stats(hp=50, max_hp=50),
-                tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
-                disposition=int(spec_tags.get("base_disposition", 0) or 0),
-                affiliations=tuple(spec_tags.get("factions", [])),
-                glyph=glyph,
-                color=color,  # type: ignore[arg-type]
-            )
-            try:
-                a.abs_pos = abs_pos
-            except Exception:
-                pass
-
-        desc = spec.get("description")
-        if desc:
-            a.description = desc
-        return a
-
-    def _mirror_actor_into_loaded_zone(eid: str, actor_obj, abs_pos: tuple[int, int]) -> None:
-        """If actor's zone is loaded, mirror into level.actors/entities."""
-        try:
-            zc = (int(abs_pos[0]) // int(zone_w), int(abs_pos[1]) // int(zone_h), int(zz))
-            lvl = game.get_zone_for_render(zc)
-        except Exception:
-            lvl = None
-        if lvl is None:
-            return
-        try:
-            if eid not in lvl.entities:
-                lvl.entities[eid] = actor_obj
-                lvl.spatial_dirty = True
-            if eid not in lvl.actors:
-                lvl.actors[eid] = actor_obj
-                lvl.spatial_dirty = True
-        except Exception:
-            pass
-
     # -----------------------------
     # C) GENERIC RESOLVE RECIPES (sites + buildings + any future resolve-tagged parents)
     #
@@ -1445,64 +1267,23 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             #  1) macro WIE refs (sites, aggregates, etc.)
             #  2) already-staged children in attn_store (e.g., buildings), so they can resolve further
             parents: list[tuple[object, tuple[int, int, int], tuple[int, int]]] = []
-            evicted_resolved_ids: set[str] = set()
 
-            def _despawn_resolved_tree(root_eid: str) -> None:
-                stack = [str(root_eid or "")]
-                while stack:
-                    cur = str(stack.pop() or "")
-                    if not cur or cur in evicted_resolved_ids:
-                        continue
-                    evicted_resolved_ids.add(cur)
-                    try:
-                        branch = game._attn_active_resolved_children.pop(cur, None)
-                    except Exception:
-                        branch = None
-                    if isinstance(branch, set):
-                        for cid in branch:
-                            stack.append(str(cid))
-                    try:
-                        obj = attn_store.entities.get(cur)
-                        if obj is None:
-                            for lvl in list(getattr(game, "levels", {}).values()):
-                                if cur in getattr(lvl, "entities", {}):
-                                    obj = lvl.entities.get(cur)
-                                    break
-                                if cur in getattr(lvl, "actors", {}):
-                                    obj = lvl.actors.get(cur)
-                                    break
-                        lid = ""
-                        if obj is not None:
-                            try:
-                                t = getattr(obj, "tags", None) or {}
-                            except Exception:
-                                t = {}
-                            if isinstance(t, dict):
-                                lid = str(t.get("lineage_id", "") or "").strip()
-                            _persist_entity_snapshot(game, obj, entity_id=str(cur), lineage_id=lid or None)
-
-                        for lvl in list(getattr(game, "levels", {}).values()):
-                            removed_here = False
-                            try:
-                                if cur in getattr(lvl, "entities", {}):
-                                    lvl.entities.pop(cur, None)
-                                    removed_here = True
-                            except Exception:
-                                pass
-                            try:
-                                if cur in getattr(lvl, "actors", {}):
-                                    lvl.actors.pop(cur, None)
-                                    removed_here = True
-                            except Exception:
-                                pass
-                            if removed_here:
-                                try:
-                                    lvl.spatial_dirty = True
-                                except Exception:
-                                    pass
-                        attn_store.despawn(cur)
-                    except Exception:
-                        pass
+            def _entity_overlaps_warm_window(ent: object) -> bool:
+                rect = getattr(ent, "footprint_abs", None)
+                if isinstance(rect, (tuple, list)) and len(rect) >= 4:
+                    rx0, ry0, rx1, ry1 = rect[:4]
+                    return not (
+                        float(rx1) <= float(wx0)
+                        or float(rx0) >= float(wx1)
+                        or float(ry1) <= float(wy0)
+                        or float(ry0) >= float(wy1)
+                    )
+                ap = getattr(ent, "abs_pos", None)
+                if isinstance(ap, (tuple, list)) and len(ap) >= 2:
+                    ax = float(ap[0])
+                    ay = float(ap[1])
+                    return float(wx0) <= ax < float(wx1) and float(wy0) <= ay < float(wy1)
+                return False
 
             # 1) WIE refs already computed earlier as `refs`
             for r in refs:
@@ -1538,11 +1319,12 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 parent_ent, zc, lp = parents[i]
                 i += 1
 
-                parent_id = str(getattr(parent_ent, "id", "") or "")
+                parent_id = str(getattr(parent_ent, "entity_id", "") or getattr(parent_ent, "id", "") or "")
                 if not parent_id:
                     continue
                 in_scope_parents.add(parent_id)
                 parent_tags = getattr(parent_ent, "tags", {}) or {}
+                current_depth = int(parent_tags.get("_resolve_depth", 0) or 0)
                 max_depth_cap = _resolve_max_depth_for_lod(
                     game,
                     cam_lod=float(cam_lod),
@@ -1565,331 +1347,53 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 )
                 max_depth_cap = min(int(max_depth_cap), int(dist_depth_cap))
 
-                active = game._attn_active_resolved_children.get(parent_id)
-                if not isinstance(active, set):
-                    active = set()
-                    game._attn_active_resolved_children[parent_id] = active
-                desired: set[str] = set()
+                if int(max_depth_cap) <= int(current_depth):
+                    entity_lifecycle_system.collapse_entity(
+                        game,
+                        parent_id,
+                        reason="attention_depth",
+                    )
+                    continue
 
-                # Ask aggregate_resolution for deterministic spawn intents
-                intents = []
-                if int(max_depth_cap) > 0:
+                child_ids = entity_lifecycle_system.expand_entity(
+                    game,
+                    parent_id,
+                    reason="attention",
+                )
+
+                for child_id in child_ids:
+                    child_obj = entity_lifecycle_system.find_runtime_entity(game, child_id)
+                    if child_obj is None:
+                        continue
                     try:
-                        intents = aggregate_system.resolve_spawn_intents_from_recipe(
-                            game,
-                            parent_ent=parent_ent,
-                            zone_coord=tuple(map(int, zc)),
-                            local_pos=tuple(map(int, lp)),
-                            zone_w=int(zone_w),
-                            zone_h=int(zone_h),
-                            zz=int(zz),
-                            max_depth=int(max_depth_cap),
-                        )
+                        child_tags = getattr(child_obj, "tags", {}) or {}
                     except Exception:
-                        intents = []
-
-                for intent in intents:
-                    ax = int(intent.abs_x)
-                    ay = int(intent.abs_y)
-
-                    # Keep within warm rect
-                    if ax < wx0 or ax >= wx1 or ay < wy0 or ay >= wy1:
+                        child_tags = {}
+                    if not isinstance(child_tags, dict) or "resolve" not in child_tags:
                         continue
-
-                    eid = str(intent.eid)
-                    lineage_id = _normalize_optional_lineage_id(intent.lineage_id)
-                    if _is_suppressed(game, entity_id=eid, lineage_id=lineage_id):
-                        try:
-                            if eid in attn_store.entities:
-                                attn_store.despawn(eid)
-                        except Exception:
-                            pass
-                        try:
-                            zc2 = (ax // int(zone_w), ay // int(zone_h), int(zz))
-                            level = game.get_zone_for_render(zc2)
-                            if level is not None:
-                                level.entities.pop(eid, None)
-                                level.actors.pop(eid, None)
-                                level.spatial_dirty = True
-                        except Exception:
-                            pass
+                    if not _entity_overlaps_warm_window(child_obj):
                         continue
-                    desired.add(eid)
-
-                    # Already staged?
-                    if eid in attn_store.entities:
-                        try:
-                            existing = attn_store.entities.get(eid)
-                            if existing is not None:
-                                if not _apply_persisted_entity_state(
-                                    game,
-                                    existing,
-                                    entity_id=str(eid),
-                                    lineage_id=str(lineage_id or "") or None,
-                                ):
-                                    desired.discard(eid)
-                                    try:
-                                        attn_store.despawn(eid)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        zc2 = (ax // int(zone_w), ay // int(zone_h), int(zz))
-                                        level = game.get_zone_for_render(zc2)
-                                        if level is not None:
-                                            level.entities.pop(eid, None)
-                                            level.actors.pop(eid, None)
-                                            level.spatial_dirty = True
-                                    except Exception:
-                                        pass
-                                    continue
-                                entity_graph_ops_system.attach_entity_to_parent(
-                                    game,
-                                    existing,
-                                    parent_id,
-                                    socket_id="resolve",
-                                )
-                                _link_parent_child_chakra(parent_ent, existing)
-                        except Exception:
-                            pass
-                        # If actor and loaded zone, promote it (same pattern as aggregate actor slots)
-                        if str(intent.child_type) == "actor":
-                            zc2 = (ax // int(zone_w), ay // int(zone_h), int(zz))
-                            level = game.get_zone_for_render(zc2)
-                            if level is not None:
-                                try:
-                                    if eid not in level.actors:
-                                        spawning_system.register_actor(
-                                            game, level, attn_store.entities[eid], schedule_ai=True
-                                        )
-                                        level.spatial_dirty = True
-                                    # Once simulating in zone, remove from attn_store to avoid ghosting
-                                    try:
-                                        attn_store.despawn(eid)
-                                    except Exception:
-                                        pass
-                                except Exception:
-                                    pass
-                        else:
-                            # Mirror non-actor into loaded zone if present
-                            zc2 = (ax // int(zone_w), ay // int(zone_h), int(zz))
-                            level = game.get_zone_for_render(zc2)
-                            if level is not None and eid not in level.entities:
-                                try:
-                                    level.entities[eid] = attn_store.entities[eid]
-                                    level.spatial_dirty = True
-                                except Exception:
-                                    pass
-                        continue
-
-                    # Not staged yet: build it
-                    zxx = ax // int(zone_w)
-                    zyy = ay // int(zone_h)
-                    lx = ax - zxx * int(zone_w)
-                    ly = ay - zyy * int(zone_h)
-
-                    child_type = str(intent.child_type or "entity").lower().strip()
-
-                    # Track the actual spawned object if we create one (so we can frontier-expand)
-                    spawned_obj = None
-
-                    if child_type == "staged" and intent.staged:
-                        sd = intent.staged
-                        sd_tags = dict(sd.get("tags", {}) or {})
-                        if lineage_id:
-                            sd_tags["lineage_id"] = lineage_id
-                        obj = _YogaStagedEntity(
-                            id=eid,
-                            pos=(int(lx), int(ly)),
-                            abs_pos=(int(ax), int(ay)),
-                            kind=str(sd.get("kind", "structure") or "structure"),
-                            glyph=str(sd.get("glyph", "#") or "#")[0],
-                            color=tuple(sd.get("color", (140, 120, 100))),
-                            base_size=float(sd.get("base_size", 1.0) or 1.0),
-                            tags=sd_tags,
-                        )
-                        try:
-                            entity_graph_ops_system.attach_entity_to_parent(
-                                game, obj, parent_id, socket_id="resolve"
-                            )
-                            _link_parent_child_chakra(parent_ent, obj)
-                        except Exception:
-                            pass
-                        if not _apply_persisted_entity_state(
-                            game,
-                            obj,
-                            entity_id=str(eid),
-                            lineage_id=str(lineage_id or "") or None,
-                        ):
-                            desired.discard(eid)
+                    try:
+                        ap = getattr(child_obj, "abs_pos", None)
+                        if not isinstance(ap, (tuple, list)) or len(ap) < 2:
                             continue
-                        attn_store.stage(
-                            obj,
-                            abs_x=ax,
-                            abs_y=ay,
-                            zz=zz,
-                        )
-                        _mark_entity_live(game, str(eid), lineage_id=str(lineage_id or "") or None)
-                        # staged geometry is not a resolver-parent in Phase 1
+                        cax = int(ap[0])
+                        cay = int(ap[1])
+                        zpp = (cax // int(zone_w), cay // int(zone_h), int(zz))
+                        lpp = (cax - zpp[0] * int(zone_w), cay - zpp[1] * int(zone_h))
+                        parents.append((child_obj, zpp, lpp))
+                    except Exception:
                         continue
 
-                    # Actor child: use existing staged actor helper
-                    if child_type == "actor":
-                        npc_id = str(intent.proto_id)
-
-                        # Pull actor presentation + metadata from the prototype (entities.yaml),
-                        # not from legacy npcs.NPC_DEFS.
-                        try:
-                            spec = prototypes.resolve_proto(str(npc_id))
-                        except Exception:
-                            spec = None
-                        if not isinstance(spec, dict):
-                            spec = {}
-
-                        glyph = (spec.get("glyph") or "@")
-                        name = (spec.get("name") or npc_id.replace("_", " ").title())
-                        color = (spec.get("color") or (255, 255, 255))
-
-                        a = _build_staged_actor(
-                            eid=eid,
-                            npc_id=npc_id,
-                            name=str(name),
-                            glyph=str(glyph)[0] if glyph else "@",
-                            color=tuple(color) if isinstance(color, (list, tuple)) else (255, 255, 255),
-                            abs_pos=(int(ax), int(ay)),
-                            local_pos=(int(lx), int(ly)),
-                            owner_id=parent_id,
-                            ns=spec,
-                        )
-                        # carry tags
-                        try:
-                            a.tags = getattr(a, "tags", {}) or {}
-                            if intent.tags:
-                                a.tags.update(dict(intent.tags))
-                            if lineage_id:
-                                a.tags["lineage_id"] = lineage_id
-                        except Exception:
-                            pass
-                        try:
-                            entity_graph_ops_system.attach_entity_to_parent(
-                                game, a, parent_id, socket_id="resolve"
-                            )
-                            _link_parent_child_chakra(parent_ent, a)
-                        except Exception:
-                            pass
-
-                        if not _apply_persisted_entity_state(
-                            game,
-                            a,
-                            entity_id=str(eid),
-                            lineage_id=str(lineage_id or "") or None,
-                        ):
-                            desired.discard(eid)
-                            continue
-                        spawned_obj = a
-                        attn_store.stage(
-                            a,
-                            abs_x=ax,
-                            abs_y=ay,
-                            zz=zz,
-                        )
-                        _mark_entity_live(game, str(eid), lineage_id=str(lineage_id or "") or None)
-
-                        # Promote if loaded
-                        level = game.get_zone_for_render((zxx, zyy, int(zz)))
-                        if level is not None:
-                            try:
-                                if eid not in level.actors:
-                                    spawning_system.register_actor(game, level, a, schedule_ai=True)
-                                    level.spatial_dirty = True
-                                try:
-                                    attn_store.despawn(eid)
-                                except Exception:
-                                    pass
-                            except Exception:
-                                pass
-                    else:
-                        # Generic entity child
-                        child_proto = prototypes.resolve_proto(str(intent.proto_id))
-                        if not isinstance(child_proto, dict):
-                            continue
-                        obj = spawn_factory.build_entity_from_spec(
-                            spec=child_proto,
-                            eid=eid,
-                            pos=(int(lx), int(ly)),
-                            abs_pos=(int(ax), int(ay)),
-                            overrides={"tags": dict(intent.tags or {})},
-                        )
-                        if lineage_id:
-                            try:
-                                obj.tags = getattr(obj, "tags", {}) or {}
-                                obj.tags["lineage_id"] = lineage_id
-                            except Exception:
-                                pass
-                        try:
-                            entity_graph_ops_system.attach_entity_to_parent(
-                                game, obj, parent_id, socket_id="resolve"
-                            )
-                            _link_parent_child_chakra(parent_ent, obj)
-                        except Exception:
-                            pass
-                        if not _apply_persisted_entity_state(
-                            game,
-                            obj,
-                            entity_id=str(eid),
-                            lineage_id=str(lineage_id or "") or None,
-                        ):
-                            desired.discard(eid)
-                            continue
-                        spawned_obj = obj
-                        attn_store.stage(
-                            obj,
-                            abs_x=ax,
-                            abs_y=ay,
-                            zz=zz,
-                        )
-                        _mark_entity_live(game, str(eid), lineage_id=str(lineage_id or "") or None)
-
-                        # Mirror if loaded
-                        level = game.get_zone_for_render((zxx, zyy, int(zz)))
-                        if level is not None:
-                            try:
-                                level.entities[eid] = obj
-                                level.spatial_dirty = True
-                            except Exception:
-                                pass
-
-                    # Frontier-expand: if the spawned child can itself resolve, process it this sync.
-                    if spawned_obj is not None:
-                        try:
-                            stags = getattr(spawned_obj, "tags", {}) or {}
-                        except Exception:
-                            stags = {}
-                        if isinstance(stags, dict) and "resolve" in stags:
-                            try:
-                                zpp = (int(ax) // int(zone_w), int(ay) // int(zone_h), int(zz))
-                                lpp = (int(ax) - zpp[0] * int(zone_w), int(ay) - zpp[1] * int(zone_h))
-                                parents.append((spawned_obj, zpp, lpp))
-                            except Exception:
-                                pass
-
-                # Evict no-longer-desired children
-                for ceid in list(active):
-                    if ceid in desired:
-                        continue
-                    _despawn_resolved_tree(str(ceid))
-                    active.discard(ceid)
-
-                for ceid in desired:
-                    active.add(ceid)
-
-        # Evict parents that left scope entirely
-        for parent_id, active in list(getattr(game, "_attn_active_resolved_children", {}).items()):
+        # Evict parents that left scope entirely or no longer qualify for detail.
+        for parent_id in list(getattr(game, "_attn_active_resolved_children", {}).keys()):
             if parent_id in in_scope_parents:
                 continue
-            if isinstance(active, set):
-                for ceid in list(active):
-                    _despawn_resolved_tree(str(ceid))
-            del game._attn_active_resolved_children[parent_id]
+            entity_lifecycle_system.collapse_entity(
+                game,
+                str(parent_id),
+                reason="attention_out_of_scope",
+            )
 
     except Exception:
         # Never let resolve-recipe logic break the rest of attention.

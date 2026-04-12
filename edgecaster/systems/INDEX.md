@@ -2,7 +2,7 @@
 
 Purpose: map the main module clusters in `edgecaster/systems/` so agents can find the right ownership area quickly.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-11
 Canonical for: systems-folder navigation and ownership hints
 Related docs: `edgecaster/systems/AGENTS.md`, `vision_documents/architecture.txt`, `vision_documents/spring_cleaning.txt`
 Related code: `edgecaster/systems/`
@@ -55,7 +55,11 @@ Supersedes: none
 - `coords.py`
 - `entity_ops.py`
 - `entity_identity.py`
+- `entity_body.py`
 - `entity_graph_ops.py`
+- `entity_snapshots.py`
+- `entity_lifecycle.py`
+- `entity_geometry.py`
 - `attention.py`
 - `aggregate_resolution.py`
 - `world_entity_index.py`

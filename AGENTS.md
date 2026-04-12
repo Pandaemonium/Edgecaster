@@ -40,6 +40,9 @@ For orientation, read these in roughly this order:
 - When local `INDEX.md` files exist for the area you changed, update them when structure, ownership, commands, or tests change.
 - When local `AGENTS.md` files exist for the area you changed, update them when local invariants or workflow expectations change.
 - When a stale doc contains useful material, merge the useful material forward before archiving the stale source.
+- When you introduce or discover a compatibility bridge, obsolete subsystem, or dead migration shim, mark it aggressively for deletion in code comments and log it in `vision_documents/spring_cleaning.txt`.
+- Prefer deleting dead legacy code as soon as it is safe instead of leaving compatibility scaffolding in place.
+- When logging deletion candidates in `vision_documents/spring_cleaning.txt`, note both what should be deleted and the condition or phase when it becomes safe to remove.
 
 ## Documentation Taxonomy
 
@@ -72,6 +75,7 @@ Outdated planning material belongs under `vision_documents/archived/`.
 - Keep documentation close to the current code rather than preserving stale speculation.
 - Follow `the_yoga.txt`, `aesthetics.md`, and `lore_bible.md` for gameplay, world, and aesthetic direction.
 - Prefer extending existing patterns over inventing a parallel architecture.
+- Keep the codebase trim: do not normalize legacy bloat. Use explicit markers such as `# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_N]` for temporary bridges and remove them once safe.
 
 ## Operational Notes
 

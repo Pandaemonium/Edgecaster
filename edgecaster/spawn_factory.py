@@ -263,10 +263,11 @@ def build_entity_from_spec(
     # factory should hydrate geometry-rich chakra layouts from the same
     # recipe/body-schema source used for realization so items, buildings, and
     # sites do not drift into parallel shape definitions.
+    layout_id = str(s.get("chakra_layout_id") or "default_core")
     raw_component = s.get("chakra_component")
     if raw_component is None:
         raw_component = chakra_content_system.resolve_layout_component(
-            s.get("chakra_layout_id") or "default_core"
+            layout_id
         )
     chakra_component = chakra_component_state.coerce_chakra_component(
         raw_component,
@@ -274,6 +275,11 @@ def build_entity_from_spec(
         max_hp=core_hp,
         mass=1.0,
     )
+    try:
+        chakra_component.tags = dict(getattr(chakra_component, "tags", {}) or {})
+        chakra_component.tags.setdefault("layout_id", layout_id)
+    except Exception:
+        pass
 
     # Build kwargs, then filter against Entity.__init__ so we never crash on
     # new YAML fields (e.g. blocks_vision) or older Entity signatures.
@@ -325,9 +331,10 @@ def build_entity_from_spec(
             pass
 
     # Birth-time bilateral symmetry baking.
-    # Unification note: body_schema and chakra layout generation should converge
-    # on one recipe source. Today they are adjacent, but still effectively
-    # parallel definitions of entity geometry.
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    # body_schema remains authored source data, but storing a runtime copy on
+    # every entity is a compatibility bridge while body/entity expansion is
+    # still incomplete.
     try:
         if getattr(ent, "proto_id", None):
             ent.body_schema = bake_instance_body_schema(str(ent.proto_id))
@@ -397,10 +404,11 @@ def build_actor_from_spec(
     # Unification note: actor_body_seed is only a bootstrap. Long-term, actors
     # should get their chakra geometry from the same authored recipe/body schema
     # that defines their anatomy so the spawn path and pattern path stay aligned.
+    layout_id = str(s.get("chakra_layout_id") or "actor_body_seed")
     raw_component = s.get("chakra_component")
     if raw_component is None:
         raw_component = chakra_content_system.resolve_layout_component(
-            s.get("chakra_layout_id") or "actor_body_seed"
+            layout_id
         )
     chakra_component = chakra_component_state.coerce_chakra_component(
         raw_component,
@@ -408,6 +416,11 @@ def build_actor_from_spec(
         max_hp=float(base_hp),
         mass=1.0,
     )
+    try:
+        chakra_component.tags = dict(getattr(chakra_component, "tags", {}) or {})
+        chakra_component.tags.setdefault("layout_id", layout_id)
+    except Exception:
+        pass
 
     actor_tags: Dict[str, Any] = {
         "template_id": s.get("id"),
@@ -504,9 +517,9 @@ def build_actor_from_spec(
             pass
 
     # Birth-time bilateral symmetry baking
-    # Unification note: once body-schema-derived chakra layouts are
-    # authoritative, this bake step and the component bootstrap above should be
-    # two views of the same recipe instead of parallel initialization tracks.
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    # This actor-level runtime body_schema copy should disappear once body
+    # entity expansion and geometry queries are the authoritative runtime view.
     try:
         if getattr(actor, "proto_id", None):
             actor.body_schema = bake_instance_body_schema(str(actor.proto_id))

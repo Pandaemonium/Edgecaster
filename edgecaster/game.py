@@ -71,6 +71,7 @@ from edgecaster import config
 from edgecaster.state.world import World
 from edgecaster.state.actors import Actor, Stats, Human
 from edgecaster.state.entities import Entity
+from edgecaster.state.entity_graph import EntityGraphStore
 from edgecaster.enemies import factory as enemy_factory
 from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.systems import aggregate_resolution as aggregate_system
@@ -455,6 +456,13 @@ class Game:
         # New writes should target stable entity_id keys. Legacy lineage-only
         # records may still be read during migration as compatibility fallback.
         self.entity_state: Dict[str, Dict[str, Any]] = {}
+        # Authoritative containment graph. Records parent/socket relationships
+        # for all runtime entities. The parallel stores (LevelState.actors,
+        # LevelState.entities, inventories, attn_store, world_entity_index,
+        # poi_registry) remain as caches; writes go here first via
+        # entity_graph_ops.attach_entity_to_parent / detach_entity_from_parent.
+        # [ENTITY_CHAKRA][PHASE_2C]
+        self.entity_graph: EntityGraphStore = EntityGraphStore()
         # God system state
         self.god_favor: Dict[str, Any] = {}
         self.god_registry: Dict[str, Any] = gods_system.load_gods()
@@ -731,6 +739,10 @@ class Game:
             player.tags.setdefault("class", player_class)
 
         # Apply any character-defined chakra initialization (e.g., Monk setup).
+        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+        # Character creation still seeds a legacy ChakraState cache. Once class
+        # setup writes directly into ChakraComponent/body entities, delete this
+        # bridge and the mirror sync call.
         chakra_init = getattr(self.character, "chakra_init", None)
         if chakra_init:
             try:
@@ -1098,6 +1110,10 @@ class Game:
             chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
             if chakra_state is None:
                 return []
+            # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+            # Monk unlock flow still routes through body_schema + ChakraState.
+            # Replace with graph/body-entity queries when unlock logic moves to
+            # the unified runtime model.
             body_schema = prototypes.resolve_body_schema(player)
             return chakras_system.list_unlockable_chakras(body_schema, chakra_state)
         except Exception:
@@ -2357,6 +2373,10 @@ class Game:
                 return lid
         return None
 
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    # The dual entity_id + lineage fallback helpers below are migration-only.
+    # Once remaining lineage-keyed records are upgraded, collapse this block to
+    # entity_id-only reads/writes.
     def _entity_state_keys(self, entity_or_id: Any, *, lineage_id: Any = None) -> List[str]:
         """Return read-compat persistence keys for an entity."""
         # Unification note: dual-key merging is a migration bridge. Long-term,

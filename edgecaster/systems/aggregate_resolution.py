@@ -28,6 +28,7 @@ import random
 
 from edgecaster import prototypes
 from edgecaster import spawn_factory
+from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import spawning as spawning_system
 
 
@@ -357,6 +358,7 @@ def _ensure_unique_world_root(
         return True
 
     try:
+        entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
         game.world_entity_index.add(
             ent,
             zone_coord=(int(zx), int(zy), int(zz)),
@@ -549,6 +551,7 @@ def ensure_world_aggregates(
                         continue
 
                     try:
+                        entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
                         game.world_entity_index.add(
                             ent,
                             zone_coord=(int(zx), int(zy), int(zz)),
@@ -895,7 +898,11 @@ def _emit_children_with_placement(
     pax, pay = map(int, parent_anchor_abs)
 
     if pattern == "cluster":
-        radius = float(placement.get("radius", 8) or 8)
+        raw_radius = placement.get("radius", 8)
+        try:
+            radius = float(8 if raw_radius is None else raw_radius)
+        except Exception:
+            radius = 8.0
         min_sep = float(placement.get("min_sep", 0) or 0)
         min_sep2 = min_sep * min_sep
         rng = random.Random(

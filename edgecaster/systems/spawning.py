@@ -35,6 +35,7 @@ from edgecaster.enemies import factory as enemy_factory
 from edgecaster.state.actors import Human, Stats
 from edgecaster.content import npcs
 from edgecaster.systems import difficulty as difficulty_system
+from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import entity_identity as entity_identity_system
 from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems import footprints as footprints_system
@@ -402,6 +403,7 @@ def spawn_entity_from_template(
     # Initialize per-instance item charges
     _init_entity_charges(game, ent)
     _patch_spawned_entity_state(game, ent, owner_id=None, in_inventory=False)
+    entity_graph_ops_system.register_entity(game, ent, lod_state="expanded")
 
     return ent
 
@@ -491,6 +493,7 @@ def register_actor(
     level.actors[actor.id] = actor
     level.entities[actor.id] = actor
     _patch_spawned_entity_state(game, actor, owner_id=None, in_inventory=False)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
 
     if schedule_ai:
         game._schedule(

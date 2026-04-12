@@ -276,6 +276,11 @@ def _component_state_overrides(comp: Any) -> tuple[dict[str, tuple[float, float]
     return (alignments, generators, pattern_root)
 
 
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# The ChakraState facade below exists for actor-centric callers that still
+# expect cached unlocked/active sets. Once gameplay/UI code reads directly from
+# ChakraComponent plus actor/body entity queries, delete these facade helpers
+# and the compat_* payload mirrors they maintain.
 def ensure_actor_chakra_state(actor: Any) -> Any:
     """Return legacy ChakraState, creating a baseline state when missing."""
     # Unification note: this is a compatibility adapter for actor-only callers.
@@ -314,12 +319,18 @@ def ensure_actor_chakra_state(actor: Any) -> Any:
         actor.chakra_state = state
     except Exception:
         pass
-    sync_actor_chakra_state(actor)
+    # Phase 2B: component is already the source here; no sync needed.
     return state
 
 
 def sync_actor_chakra_state(actor: Any) -> None:
-    """Mirror legacy ChakraState into ChakraComponent for migration cutover."""
+    """Mirror legacy ChakraState into ChakraComponent for migration cutover.
+
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] — Phase 2B reversed write authority
+    so ChakraComponent drives mutations. New code should use unlock_actor_chakra,
+    toggle_actor_chakra, set_actor_chakra_charge, and flush_charges_to_component
+    instead of calling this function directly.
+    """
     # Unification note: keep this mirror narrow. New geometry, propagation, and
     # reducer semantics should live on ChakraComponent/rule evaluation, not as
     # ever-growing compat_* payloads.
@@ -438,53 +449,110 @@ def sync_actor_chakra_state(actor: Any) -> None:
     tags["compat_generators"] = gens_out
 
 
-def set_actor_chakra_charge(actor: Any, node_id: str, amount: float) -> None:
-    """Set one chakra node charge in legacy+component state."""
-    state = ensure_actor_chakra_state(actor)
+def flush_charges_to_component(actor: Any) -> None:
+    """Push current ChakraState.charges into ChakraComponent after a tick or consume.
+
+    Call this after tick_chakra_charge or consume_chakra_charge mutate
+    state.charges in place. Replaces sync_actor_chakra_state in the hot
+    tick and consume paths — charge writes only, no full state mirror.
+
+    [ENTITY_CHAKRA][PHASE_2B]
+    """
+    state = getattr(actor, "chakra_state", None)
     if state is None:
         return
+    charges_raw = getattr(state, "charges", {}) or {}
+    if not isinstance(charges_raw, dict):
+        return
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
+        return
+    for key, value in charges_raw.items():
+        nid = _normalize_node_id(str(key))
+        if not nid:
+            continue
+        try:
+            chakra_component_state.set_node_charge(comp, nid, float(value))
+        except Exception:
+            continue
+
+
+def set_actor_chakra_charge(actor: Any, node_id: str, amount: float) -> None:
+    """Set one chakra node charge. ChakraComponent is the write authority."""
     nid = _normalize_node_id(str(node_id))
     if not nid:
         return
-    try:
-        state.charges[nid] = float(amount)
-    except Exception:
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
         return
-    sync_actor_chakra_state(actor)
+    chakra_component_state.set_node_charge(comp, nid, float(amount))
+    # Keep cached ChakraState in sync when present.
+    state = getattr(actor, "chakra_state", None)
+    if state is not None:
+        charges = getattr(state, "charges", None)
+        if isinstance(charges, dict):
+            charges[nid] = float(amount)
 
 
 def unlock_actor_chakra(actor: Any, node_id: str, *, auto_activate: bool = True) -> bool:
-    """Unlock chakra node on actor state and mirror to ChakraComponent."""
-    state = ensure_actor_chakra_state(actor)
-    if state is None:
+    """Unlock chakra node on actor. ChakraComponent is the write authority.
+
+    Presence in comp.nodes is the canonical definition of unlocked. Returns
+    True when the node is newly added, False when already present.
+    """
+    nid = _normalize_node_id(str(node_id))
+    if not nid:
         return False
-    try:
-        from edgecaster.systems import chakras as chakra_system
-    except Exception:
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
         return False
-    try:
-        changed = bool(chakra_system.unlock_chakra(state, str(node_id), auto_activate=bool(auto_activate)))
-    except Exception:
+    # Component is authority: if node already present, nothing to do.
+    newly_added = chakra_component_state.unlock_node(comp, nid, active=bool(auto_activate))
+    if not newly_added:
         return False
-    if changed:
-        sync_actor_chakra_state(actor)
-    return changed
+    # Keep cached ChakraState in sync when present.
+    state = getattr(actor, "chakra_state", None)
+    if state is not None:
+        unlocked = getattr(state, "unlocked", None)
+        if isinstance(unlocked, set):
+            unlocked.add(nid)
+        if auto_activate:
+            active_set = getattr(state, "active", None)
+            if isinstance(active_set, set):
+                active_set.add(nid)
+    return True
 
 
 def toggle_actor_chakra(actor: Any, node_id: str, *, active: Optional[bool] = None) -> bool:
-    """Toggle/activate/deactivate chakra node and mirror to ChakraComponent."""
-    state = ensure_actor_chakra_state(actor)
-    if state is None:
+    """Toggle/activate/deactivate chakra node. ChakraComponent is the write authority."""
+    nid = _normalize_node_id(str(node_id))
+    if not nid:
         return False
-    try:
-        from edgecaster.systems import chakras as chakra_system
-    except Exception:
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
         return False
-    try:
-        now_active = bool(chakra_system.toggle_chakra_active(state, str(node_id), active=active))
-    except Exception:
+    # Compat: node may be in legacy ChakraState.unlocked but not yet in component.
+    # Backfill it so subsequent writes have a target.
+    if nid not in comp.nodes:
+        state_compat = getattr(actor, "chakra_state", None)
+        if state_compat is not None:
+            state_unlocked = _normalize_nodes(getattr(state_compat, "unlocked", set()) or set())
+            if nid in state_unlocked:
+                chakra_component_state.unlock_node(comp, nid, active=False)
+    if nid not in comp.nodes:
         return False
-    sync_actor_chakra_state(actor)
+    node = comp.nodes[nid]
+    now_active = (not bool(getattr(node, "active", True))) if active is None else bool(active)
+    chakra_component_state.set_node_active(comp, nid, active=now_active)
+    # Keep cached ChakraState in sync when present.
+    state = getattr(actor, "chakra_state", None)
+    if state is not None:
+        active_set = getattr(state, "active", None)
+        if isinstance(active_set, set):
+            if now_active:
+                active_set.add(nid)
+            else:
+                active_set.discard(nid)
     return now_active
 
 
@@ -577,6 +645,11 @@ def effective_chakra_state(game: Any, actor: Any) -> Any:
     The returned state is *not* persisted; it is used as a runtime view for
     systems that need a coherent unlocked/active snapshot without mutating the
     actor's stored chakra state.
+
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    Replace this temporary projected ChakraState with a graph/component query
+    result once items, bodies, and other entity hierarchies all share one
+    runtime evaluation path.
     """
     # Unification note: this currently projects item effects onto legacy actor
     # state. The final version should build the effective view from graph edges

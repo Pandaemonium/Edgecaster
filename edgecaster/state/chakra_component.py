@@ -164,6 +164,97 @@ def default_core_component(
     )
 
 
+# =============================================================================
+# Component mutation helpers
+#
+# These are the authoritative write operations for ChakraComponent state.
+# New code should write through these helpers rather than mutating
+# component.nodes directly so every write follows consistent node
+# initialization and the presence-equals-unlocked invariant is upheld.
+#
+# Unification note (Phase 2B):
+# Writing through these helpers makes ChakraComponent the primary store.
+# ChakraState becomes a derived cache: rebuilt from the component by
+# ensure_actor_chakra_state when absent, and kept in sync by the mutation
+# wrappers in chakra_items.py after each write.
+# =============================================================================
+
+def unlock_node(comp: ChakraComponent, node_id: str, *, active: bool = False) -> bool:
+    """Add a node to the component as unlocked.
+
+    Presence in comp.nodes is the canonical definition of "unlocked."
+    Returns True if the node was newly added, False if already present.
+    """
+    nid = str(node_id)
+    if nid in comp.nodes:
+        return False
+    comp.nodes[nid] = ChakraNode(
+        node_id=nid,
+        kind="compat",
+        active=bool(active),
+        channels={},
+        tags={"compat_unlocked": True},
+    )
+    return True
+
+
+def set_node_active(comp: ChakraComponent, node_id: str, *, active: bool) -> None:
+    """Set the active flag for a node.
+
+    Creates the node as unlocked when not yet in the component. This allows
+    toggling nodes that were unlocked via legacy ChakraState paths before the
+    component was fully populated.
+    """
+    nid = str(node_id)
+    if nid not in comp.nodes:
+        comp.nodes[nid] = ChakraNode(
+            node_id=nid,
+            kind="compat",
+            active=bool(active),
+            channels={},
+            tags={"compat_unlocked": True},
+        )
+    else:
+        comp.nodes[nid].active = bool(active)
+
+
+def set_node_charge(comp: ChakraComponent, node_id: str, charge: float) -> None:
+    """Set the 'charge' channel for a node.
+
+    Creates the node as unlocked-but-inactive when not yet in the component.
+    This handles charge ticks on nodes whose unlock happened via legacy paths.
+    """
+    nid = str(node_id)
+    if nid not in comp.nodes:
+        comp.nodes[nid] = ChakraNode(
+            node_id=nid,
+            kind="compat",
+            active=False,
+            channels={"charge": float(charge)},
+            tags={"compat_unlocked": True},
+        )
+    else:
+        node = comp.nodes[nid]
+        if not isinstance(node.channels, dict):
+            node.channels = {}
+        node.channels["charge"] = float(charge)
+
+
+def get_node_charge(comp: ChakraComponent, node_id: str) -> float:
+    """Return the 'charge' channel value for a node, defaulting to 0.0."""
+    nid = str(node_id)
+    node = comp.nodes.get(nid)
+    if node is None:
+        return 0.0
+    channels = node.channels if not isinstance(node, dict) else node.get("channels")
+    if not isinstance(channels, dict):
+        return 0.0
+    try:
+        return float(channels.get("charge", 0.0))
+    except Exception:
+        return 0.0
+
+
 def coerce_chakra_component(
     raw: Any,
     *,

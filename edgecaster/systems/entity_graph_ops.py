@@ -5,12 +5,18 @@ Phase-1 scope:
 - Keep inventory semantics compatible with existing UI/content expectations.
 - Deterministic stack splitting via shared graph operation.
 
+Phase-2C additions:
+- attach_entity_to_parent / detach_entity_from_parent now also write
+  containment edges into game.entity_graph (EntityGraphStore) alongside
+  the legacy attribute patching.
+- register_entity writes a fresh node into game.entity_graph at spawn time.
+
 Unification note:
-- This module currently patches per-entity metadata plus persistence bridge
-  fields.
 - The end-state is one authoritative graph store where attach/detach/reparent
   also updates provenance, chakra-subtree wiring, and geometry invalidation
-  together.
+  together. Currently this module writes to both the graph store and the
+  legacy attribute/entity_state paths; legacy paths will be trimmed in
+  Phase 8.
 """
 
 from __future__ import annotations
@@ -18,6 +24,36 @@ from __future__ import annotations
 from typing import Any, Optional, Tuple
 
 from edgecaster.systems import entity_identity as entity_identity_system
+from edgecaster.state import chakra_component as chakra_component_state
+
+
+# ---------------------------------------------------------------------------
+# Graph store helpers
+# ---------------------------------------------------------------------------
+
+def _get_entity_graph(game: Any) -> Any:
+    """Return game.entity_graph if present, otherwise None."""
+    try:
+        return getattr(game, "entity_graph", None)
+    except Exception:
+        return None
+
+
+def _graph_entity_id(ent: Any) -> str:
+    """Return the id to use as the graph key for this entity.
+
+    Prefers the stable entity_id field; falls back to the legacy runtime id.
+    """
+    try:
+        eid = str(getattr(ent, "entity_id", "") or "").strip()
+    except Exception:
+        eid = ""
+    if eid:
+        return eid
+    try:
+        return str(getattr(ent, "id", "") or "").strip()
+    except Exception:
+        return ""
 
 
 def _ensure_tags(ent: Any) -> dict:
@@ -27,6 +63,11 @@ def _ensure_tags(ent: Any) -> dict:
     return tags
 
 
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# This write-through helper exists only while graph operations still mirror
+# containment/ownership metadata into legacy entity_state fields. Once graph
+# queries become the single runtime authority, delete this helper and stop
+# backfilling owner/socket state outside the graph.
 def _patch_entity_state(game: Any, entity_or_id: Any, **fields: Any) -> None:
     try:
         patch = getattr(game, "patch_entity_state", None)
@@ -34,6 +75,88 @@ def _patch_entity_state(game: Any, entity_or_id: Any, **fields: Any) -> None:
             patch(entity_or_id, **fields)
     except Exception:
         pass
+
+
+def _entity_chakra_component(ent: Any) -> Any:
+    try:
+        raw = getattr(ent, "chakra_component", None)
+    except Exception:
+        raw = None
+    if raw is None:
+        return None
+    if isinstance(raw, chakra_component_state.ChakraComponent):
+        return raw
+    try:
+        return chakra_component_state.coerce_chakra_component(
+            raw,
+            entity_id=_graph_entity_id(ent),
+        )
+    except Exception:
+        return None
+
+
+def _graph_layout_id(ent: Any) -> Optional[str]:
+    for raw in (
+        getattr(ent, "chakra_layout_id", None),
+        (_ensure_tags(ent).get("chakra_layout_id") if isinstance(_ensure_tags(ent), dict) else None),
+    ):
+        try:
+            value = str(raw or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            return value
+    comp = _entity_chakra_component(ent)
+    if comp is not None:
+        try:
+            value = str(getattr(comp, "tags", {}).get("layout_id", "") or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            return value
+    return None
+
+
+def _graph_rule_id(ent: Any) -> Optional[str]:
+    tags = _ensure_tags(ent)
+    for raw in (
+        getattr(ent, "rule_id", None),
+        tags.get("rule_id"),
+    ):
+        try:
+            value = str(raw or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            return value
+    comp = _entity_chakra_component(ent)
+    if comp is not None:
+        try:
+            value = str(getattr(comp, "tags", {}).get("rule_id", "") or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            return value
+    return None
+
+
+def _graph_lod_state(ent: Any, *, default: str = "expanded") -> str:
+    tags = _ensure_tags(ent)
+    for raw in (
+        getattr(ent, "lod_state", None),
+        tags.get("lod_state"),
+    ):
+        try:
+            value = str(raw or "").strip().lower()
+        except Exception:
+            value = ""
+        if value in {"expanded", "collapsed", "mixed"}:
+            return value
+    if bool(tags.get("world_entity")) and (
+        bool(tags.get("aggregate")) or bool(tags.get("site")) or ("resolve" in tags)
+    ):
+        return "collapsed"
+    return str(default or "expanded")
 
 
 def attach_entity_to_parent(
@@ -44,13 +167,33 @@ def attach_entity_to_parent(
     socket_id: str = "inventory",
     inventory_socket: str = "inventory",
 ) -> None:
-    """Attach an entity to a parent node using runtime containment metadata."""
-    # Unification note: this currently patches parent/socket metadata directly.
-    # The final version should write authoritative containment edges and trigger
-    # chakra/provenance/geometry invalidation from the same operation.
+    """Attach an entity to a parent node using runtime containment metadata.
+
+    Writes containment into game.entity_graph (Phase-2C authority) and also
+    patches legacy per-entity attributes and entity_state for compatibility.
+    """
     pid = str(parent_id)
     sid = str(socket_id or inventory_socket)
 
+    # --- Phase-2C: write authoritative containment edge first ---
+    graph = _get_entity_graph(game)
+    if graph is not None:
+        eid = _graph_entity_id(ent)
+        if eid:
+            sem_id = str(getattr(ent, "semantic_id", "") or "").strip() or None
+            kind = str(getattr(ent, "kind", "generic") or "generic")
+            graph.register(
+                eid,
+                semantic_id=sem_id,
+                parent_entity_id=pid,
+                socket_id=sid,
+                kind=kind,
+                lod_state=_graph_lod_state(ent, default="expanded"),
+                layout_id=_graph_layout_id(ent),
+                rule_id=_graph_rule_id(ent),
+            )
+
+    # --- Legacy: patch per-entity attributes ---
     try:
         setattr(ent, "parent_entity_id", pid)
     except Exception:
@@ -89,7 +232,19 @@ def detach_entity_from_parent(
     *,
     inventory_socket: str = "inventory",
 ) -> None:
-    """Detach an entity from its current parent/socket metadata."""
+    """Detach an entity from its current parent/socket metadata.
+
+    Clears the containment edge in game.entity_graph (Phase-2C authority) and
+    also clears legacy per-entity attributes and entity_state for compatibility.
+    """
+    # --- Phase-2C: clear containment edge first ---
+    graph = _get_entity_graph(game)
+    if graph is not None:
+        eid = _graph_entity_id(ent)
+        if eid:
+            graph.reparent(eid, None, None)
+
+    # --- Legacy: clear per-entity attributes ---
     try:
         setattr(ent, "parent_entity_id", None)
     except Exception:
@@ -114,6 +269,44 @@ def detach_entity_from_parent(
         parent_entity_id=None,
         socket_id=None,
         in_inventory=False,
+    )
+
+
+def register_entity(
+    game: Any,
+    ent: Any,
+    *,
+    lod_state: Optional[str] = None,
+    layout_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
+) -> None:
+    """Register an entity in game.entity_graph at spawn time.
+
+    Should be called when an entity first enters the world. Idempotent:
+    safe to call on an entity that is already registered (updates the node).
+    This does not touch legacy stores; it only writes into the graph.
+
+    [ENTITY_CHAKRA][PHASE_2C]
+    """
+    graph = _get_entity_graph(game)
+    if graph is None:
+        return
+    eid = _graph_entity_id(ent)
+    if not eid:
+        return
+    sem_id = str(getattr(ent, "semantic_id", "") or "").strip() or None
+    pid = str(getattr(ent, "parent_entity_id", "") or "").strip() or None
+    sid = str(getattr(ent, "socket_id", "") or "").strip() or None
+    kind = str(getattr(ent, "kind", "generic") or "generic")
+    graph.register(
+        eid,
+        semantic_id=sem_id,
+        parent_entity_id=pid,
+        socket_id=sid,
+        kind=kind,
+        lod_state=str(lod_state or "").strip() or _graph_lod_state(ent, default="expanded"),
+        layout_id=layout_id or _graph_layout_id(ent),
+        rule_id=rule_id or _graph_rule_id(ent),
     )
 
 

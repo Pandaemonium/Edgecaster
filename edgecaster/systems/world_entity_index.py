@@ -8,6 +8,11 @@ at macro scales without instantiating gameplay zones (LevelState).
 Invariant:
 - Querying this index must have no gameplay side effects.
 - These entities are not owned by a LevelState; they exist "on the overmap".
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+WorldEntityIndex remains a macro-scale parallel cache. Once attention/render
+queries read from a shared realization/index path over the entity graph, this
+module should go away.
 """
 
 from __future__ import annotations

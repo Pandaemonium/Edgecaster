@@ -109,6 +109,7 @@ def get_inventory(game: "Game", owner_id: str) -> List["Entity"]:
     This keeps all inventories in a single registry on the Game object,
     while still conceptually treating them as per-entity state.
     """
+    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
     # Unification note: this list-backed registry is a compatibility cache.
     # The final authoritative inventory should be a query/materialized view
     # over containment edges in the shared entity graph.

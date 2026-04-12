@@ -177,7 +177,8 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
             charging=charging,
             dex=dex,
         )
-        chakra_items_system.sync_actor_chakra_state(actor)
+        # Phase 2B: push charge values into ChakraComponent (charges only, no full mirror).
+        chakra_items_system.flush_charges_to_component(actor)
 
 
 def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, interval: int) -> None:

@@ -155,6 +155,10 @@ if TYPE_CHECKING:
 # Small helpers: smooth animation
 # ---------------------------------------------------------------------------
 
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# Inventory body zoom still traverses authored body_schema directly. Once body
+# sub-entities are the authoritative runtime structure, replace these helpers
+# with graph/geometry queries and delete the schema-specific zoom plumbing.
 def _resolve_body_schema_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> dict:
     """
     Resolve the *currently viewed* body schema, following the scene's zoom path.

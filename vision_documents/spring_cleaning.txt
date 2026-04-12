@@ -1,14 +1,14 @@
 Title: Spring Cleaning - Actionable Plan
 Purpose: track active cleanup, migration, and correctness work that should continue shaping near-term implementation.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-12
 Canonical for: active cleanup and refactor follow-up work
 Related docs: `vision_documents/the_yoga.txt`, `vision_documents/architecture.txt`, `vision_documents/entity_chakra_unification_master_plan.txt`, `vision_documents/documentation_review_plan.md`
 Related code: `edgecaster/`, `tests/`
 Supersedes: none
 
 SPRING CLEANING - ACTIONABLE PLAN
-Updated: 2026-02-01
+Updated: 2026-04-12
 Status: UI migration largely complete; map zoom refactor complete; game.py decomposition largely complete
 
 Legend:
@@ -1125,6 +1125,9 @@ PHASE 1 — CORE IDENTITY AND GRAPH SUBSTRATE
   - ChakraState is actor-only and untyped (Optional[Any]).
   - No non-actor entity can have chakras.
   - Target: chakra_component on base Entity with typed ChakraComponent.
+  - Phase 2B status: ChakraComponent is now the write authority. ChakraState
+    is a derived cache. Mutations go through chakra_items helpers, not state.
+    Still Optional[Any] — typed promotion deferred to a later pass.
 
 [CLEANUP][ENTITY_CHAKRA] ChakraState shadows body schema instead of IS body schema
   - File: edgecaster/systems/chakras.py
@@ -1298,11 +1301,15 @@ PHASE 5 — STARTTSGARD HIERARCHY
   - Target: POI content spawning produces child entities with parent linkage
     and deterministic IDs from seed + recipe.
 
-[CLEANUP][ENTITY_CHAKRA] Duplicate POI worldgen systems
-  - Files: edgecaster/systems/poi_spawning.py, edgecaster/systems/poi_worldgen.py
-  - poi_worldgen.py has POIWorldEntity as another parallel entity-like type.
-  - Duplicate NPC dispatch logic across both files.
-  - Target: merge into single entity-based POI realization pipeline.
+[CLEANUP][ENTITY_CHAKRA] POIWorldEntity proxy type still separate from Entity
+  - File: edgecaster/systems/poi_worldgen.py
+  - poi_worldgen.py still contains the POIWorldEntity dataclass, which is a
+    migration proxy for world-map visibility rather than a real Entity record.
+  - Duplicate orchestration paths have been merged (see Slice 2A progress above);
+    POIWorldEntity is the remaining split.
+  - Target: retire POIWorldEntity and treat POI/world roots as ordinary Entity
+    records whose attention level changes (world-proxy visibility via LoD band,
+    not a parallel dataclass).
 
 [CLEANUP][ENTITY_CHAKRA] No containment recipes in prototypes
   - File: edgecaster/content/entities.yaml
@@ -1553,6 +1560,71 @@ PROGRESS NOTES (2026-02-17)
       - `poi_worldgen.spawn_poi_contents(...)`
     and switched `Game._spawn_poi_contents(...)` to delegate through this
     single module-level interface.
+
+[PROGRESS][ENTITY_CHAKRA][SLICE_2A] POI orchestration merger (2026-04-11)
+  - Files:
+      - `edgecaster/systems/poi_worldgen.py`
+      - `edgecaster/systems/poi_spawning.py`
+      - `tests/test_poi_spawning_cutover.py`
+  - Absorbed full `spawn_poi_contents` implementation into `poi_worldgen.py`.
+    The previous delegation chain (worldgen → spawning → worldgen callbacks)
+    is replaced by a single authoritative implementation in poi_worldgen.
+  - Resolved the circular delegation: poi_worldgen no longer imports
+    poi_spawning at runtime; colosseum/NPC realization calls now reference
+    the module-local helpers directly.
+  - `poi_spawning.py` reduced to a thin re-export facade (12 lines).
+    Tagged [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] for Phase 8 removal.
+  - Updated test patches from `poi_spawning.*` → `poi_worldgen.*` namespace.
+  - All 5 POI cutover tests pass; no new failures introduced.
+
+[PROGRESS][ENTITY_CHAKRA][SLICE_2B] Chakra gameplay cutover (2026-04-11)
+  - Files:
+      - `edgecaster/state/chakra_component.py`
+      - `edgecaster/systems/chakra_items.py`
+      - `edgecaster/systems/scheduling.py`
+      - `edgecaster/systems/pattern_runtime.py`
+  - Added mutation helpers to `chakra_component.py`: `unlock_node`,
+    `set_node_active`, `set_node_charge`, `get_node_charge`. These are the
+    authoritative write operations for ChakraComponent state.
+  - Reversed write authority in `chakra_items.py`:
+      - `unlock_actor_chakra`: writes to ChakraComponent first (presence =
+        unlocked), then updates cached ChakraState when present.
+      - `toggle_actor_chakra`: writes to ChakraComponent first; includes a
+        compat backfill path for nodes that are in ChakraState.unlocked but
+        not yet in the component.
+      - `set_actor_chakra_charge`: writes to ChakraComponent first, then
+        updates cached ChakraState.
+  - Added `flush_charges_to_component`: lightweight helper that pushes
+    ChakraState.charges into ChakraComponent after tick/consume paths run.
+    Replaces the full sync in hot paths.
+  - Updated `scheduling.py` and `pattern_runtime.py` to call
+    `flush_charges_to_component` instead of `sync_actor_chakra_state`.
+  - Deprecated `sync_actor_chakra_state` with
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] — function remains functional for
+    back-compat callers; delete in Phase 8.
+  - Done criteria met: ChakraComponent drives mutations; ChakraState is now a
+    derived cache that is updated in place but never the first writer.
+  - All 9 chakra bridge tests pass; no new failures introduced.
+
+[PROGRESS][ENTITY_CHAKRA][SLICE_2C] Authoritative entity graph store (2026-04-11)
+  - Files:
+      - `edgecaster/state/entity_graph.py` (new)
+      - `edgecaster/systems/entity_graph_ops.py`
+      - `edgecaster/game.py`
+      - `tests/test_entity_graph_store.py` (new)
+  - Created `EntityGraphNode` and `EntityGraphStore` in `state/entity_graph.py`.
+    Store maintains three indexes: nodes (entity_id → node), children_by_parent
+    (parent_id → set of child entity_ids), semantic_index (semantic_id → entity_id).
+    All write operations (`register`, `deregister`, `reparent`) keep derived
+    indexes consistent.
+  - Added `game.entity_graph: EntityGraphStore` to `Game.__init__`.
+  - Updated `attach_entity_to_parent` and `detach_entity_from_parent` in
+    `entity_graph_ops.py` to write into `game.entity_graph` first, then do
+    legacy attribute patching for compatibility.
+  - Added `register_entity` helper for first-time entity registration at spawn.
+  - Six parallel stores remain as caches with [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    tags; entity_graph is now the write-first authority for containment.
+  - 30 new tests all pass; no new failures introduced.
 
 [PROGRESS][ENTITY_CHAKRA][PHASE_3] shared graph operation substrate
   - Files:
@@ -1842,7 +1914,7 @@ Should be tagged for future deletion:
     combat_actions.py and blade_runtime.py — consolidate
   - phantom_limb duplication in blade_runtime.py — consolidate
   - Dual vines systems in scheduling.py — unify
-  - poi_spawning.py ~50% duplicate of poi_worldgen.py — converge remaining
+  - poi_spawning.py is now a thin facade (see Slice 2A progress) — delete in Phase 8
 
 -------------------------------------------------------------------------------
 (3) LEGIBILITY AND ORGANIZATION
@@ -2001,3 +2073,124 @@ Owner: Claude audit (2026-02-18)
     leaving and re-entering attention windows preserves damage/door/item state.
   - Added unit tests for lineage-aware suppression + persisted state application:
       - tests/test_attention_suppression.py
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2][2026-04-12] actor-body layered subtree expansion kickoff
+  - Files:
+      - edgecaster/systems/entity_body.py
+      - edgecaster/systems/entity_lifecycle.py
+      - edgecaster/systems/entity_geometry.py
+      - tests/test_entity_body_expansion.py
+  - Added deterministic body-node expansion specs derived from authored actor
+    body schemas, with stable entity ids shaped like:
+      - `actor_id:body:body`
+      - `actor_id:body:head.neck`
+      - `actor_id:body:arm.hand.wrist`
+  - `expand_entity(...)` can now realize actor/body children on `socket_id="body"`.
+  - Internal body-node entities live in a private runtime registry instead of
+    the visible attention store, so they are queryable without becoming world
+    renderables by accident.
+  - `query_geometry(..., realize_policy=\"require\")` now fully realizes actor
+    body subtrees for graph/query callers.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2][2026-04-12] deleted dead attention helper block
+  - File:
+      - edgecaster/systems/attention.py
+  - Deleted unused nested helper functions:
+      - `_build_staged_actor(...)`
+      - `_mirror_actor_into_loaded_zone(...)`
+  - Removed their now-unused imports (`enemy_factory`, `Human`, `Stats`).
+  - These helpers were left behind by the lifecycle-based resolver cutover and
+    had no remaining call-sites.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_2][2026-04-12] fixed Starttsgard resolver/runtime regression
+  - Files:
+      - edgecaster/systems/aggregate_resolution.py
+      - edgecaster/systems/entity_body.py
+      - tests/test_entity_body_expansion.py
+      - tests/test_starttsgard_runtime.py
+      - tests/INDEX.md
+  - Fixed zero-radius resolver placements so explicit `radius: 0` no longer
+    falls back to the default cluster radius.
+  - Restricted body expansion to actor-like roots plus explicit opt-ins, so
+    generic resolver parents (sites, cities, buildings, rooms) no longer get
+    diverted into compatibility `body_schema` expansion.
+  - Regression coverage now asserts:
+      - Starttsgard site/city zero-radius placement stays pinned to the parent
+        anchor.
+      - generic resolver entities expand into resolver children, not `:body:`
+        compatibility nodes.
+      - a real game boot + attention sync realizes Starttsgard walls and NPCs.
+
+[CLEANUP][ENTITY_CHAKRA] Legacy body-schema gameplay readers still need deletion path
+  - Files:
+      - edgecaster/systems/chakras.py
+      - edgecaster/scenes/chakra_scene.py
+      - edgecaster/scenes/inventory_scene.py
+  - These files still walk `body_schema` directly for gameplay/UI behavior.
+  - Target end-state:
+      - body_schema remains authored source data
+      - runtime queries come from realized actor/body entities via
+        `entity_body.py` + `entity_geometry.py`
+      - ChakraState/body-schema-only traversal becomes compatibility code, then
+        Phase-8 deletion once consumers have switched
+
+[CLEANUP][ENTITY_CHAKRA][2026-04-12] aggressive legacy deletion ledger
+  - Goal: treat Phase 8 deletion as a planned burn-down, not a vague future
+    cleanup pass.
+  - High-priority actor/body compatibility surfaces to remove:
+      - `edgecaster/systems/chakras.py`
+        - `ChakraState`
+        - recursive `body_schema` walkers
+        - resonance/pattern helpers that still take `body_schema` +
+          `ChakraState` as the primary runtime inputs
+      - `edgecaster/systems/chakra_items.py`
+        - `ensure_actor_chakra_state(...)`
+        - `sync_actor_chakra_state(...)`
+        - `effective_chakra_state(...)`
+        - `compat_*` tags mirrored onto `ChakraComponent.tags`
+      - `edgecaster/scenes/chakra_scene.py`
+        - schema-derived chakra layout / edit helpers
+      - `edgecaster/scenes/inventory_scene.py`
+        - body zoom path helpers that descend through `body_schema`
+      - `edgecaster/systems/pattern_runtime.py`
+        - `chakra_modifiers(...)`
+        - `act_chakra(...)` body-schema fallback path
+      - `edgecaster/spawn_factory.py`
+        - runtime `ent.body_schema` / `actor.body_schema` copies
+      - `edgecaster/game.py`
+        - player `chakra_state` bootstrap during character setup
+        - `_unlockable_chakras_for_player(...)`
+  - High-priority persistence/authority bridges to remove:
+      - `edgecaster/game.py`
+        - dual `entity_id` + `lineage_id` fallback readers/writers:
+          `_entity_state_keys(...)`, `_entity_state_write_key(...)`,
+          `_merge_entity_state_records(...)`, `get_effective_entity_state(...)`
+      - `edgecaster/systems/entity_graph_ops.py`
+        - `_patch_entity_state(...)`
+        - legacy per-entity attribute mirroring in attach/detach helpers
+      - `edgecaster/systems/entity_snapshots.py`
+        - `last_known_*` snapshot payload shape once typed persistence deltas
+          exist
+      - `edgecaster/systems/attention.py`
+        - suppression/persistence wrapper block near the top of the file
+        - `_attn_active_resolved_children` sidecar map
+        - `AttentionCellStore` once attention/render queries use a shared
+          realization index
+  - High-priority parallel storage/query systems to delete:
+      - `edgecaster/systems/inventory.py`
+        - list-backed `game.inventories` authority path
+      - `edgecaster/systems/trade.py`
+        - trade flows that still mutate list-backed inventories directly
+      - `edgecaster/systems/world_entity_index.py`
+        - whole module after attention/render cut over to shared indexing
+      - `edgecaster/systems/poi_worldgen.py`
+        - whole module after POI realization is absorbed by the unified
+          resolver/lifecycle path
+      - `edgecaster/systems/poi_spawning.py`
+        - thin facade module once imports are updated
+  - Tests/docs to prune once those bridges die:
+      - `tests/test_chakra_items_state_bridge.py`
+      - `tests/test_attention_suppression.py` legacy fallback cases
+      - `tests/test_world_entity_index.py`
+      - documentation that still describes ChakraState/body_schema as runtime
+        authority rather than authored source + compatibility layer

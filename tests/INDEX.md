@@ -2,7 +2,7 @@
 
 Purpose: map the major test clusters in `tests/` so agents can find the right regression surface quickly.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-12
 Canonical for: tests-folder navigation
 Related docs: `tests/AGENTS.md`, `vision_documents/architecture.txt`, `vision_documents/spring_cleaning.txt`
 Related code: `tests/`
@@ -23,6 +23,7 @@ Supersedes: none
 - `test_pattern_runtime.py`
 - `test_chakra_component.py`
 - `test_chakra_items_state_bridge.py`
+- `test_entity_geometry.py`
 - `test_gods.py`
 - `test_lorenz_aura.py`
 - `test_rune_anchor_sieges.py`
@@ -37,6 +38,7 @@ Supersedes: none
 
 - `test_spawning.py`
 - `test_poi_spawning_cutover.py`
+- `test_starttsgard_runtime.py`
 - `test_legendaries.py`
 - `test_world_hierarchy_content.py`
 - `test_aggregate_resolution.py`
@@ -44,7 +46,11 @@ Supersedes: none
 ### Entities, Coordinates, And Observation
 
 - `test_attention_suppression.py`
+- `test_attention_store.py`
+- `test_entity_body_expansion.py`
+- `test_entity_graph_store.py`
 - `test_entity_graph_ops.py`
+- `test_entity_lifecycle.py`
 - `test_world_entity_index.py`
 - `test_yoga_coordinates.py`
 - `test_zones.py`

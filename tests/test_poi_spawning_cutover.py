@@ -81,10 +81,10 @@ def test_starting_zone_bismuth_spawn_uses_template_footprint_rect() -> None:
         return True
 
     with patch(
-        "edgecaster.systems.poi_spawning.prototypes.resolve_proto",
+        "edgecaster.systems.poi_worldgen.prototypes.resolve_proto",
         return_value={"id": "bismuth_pile", "tags": {"footprint_w": 2, "footprint_h": 2}},
     ), patch(
-        "edgecaster.systems.poi_spawning.spawning_system._is_tile_spawnable",
+        "edgecaster.systems.poi_worldgen.spawning_system._is_tile_spawnable",
         side_effect=_check_spawnable,
     ):
         poi_spawning.spawn_poi_contents(game, level, (0, 0, 0))
@@ -147,15 +147,15 @@ def test_caged_demon_npc_spawn_uses_spawn_spec_footprint() -> None:
         return True
 
     with patch(
-        "edgecaster.systems.poi_spawning.prototypes.resolve_proto",
+        "edgecaster.systems.poi_worldgen.prototypes.resolve_proto",
         side_effect=lambda tid: {"id": tid, "tags": {"footprint_w": 3, "footprint_h": 2}}
         if tid == "caged_demon"
         else {"id": tid},
     ), patch(
-        "edgecaster.systems.poi_spawning.enemy_factory.spawn_enemy",
+        "edgecaster.systems.poi_worldgen.enemy_factory.spawn_enemy",
         return_value=actor,
     ), patch(
-        "edgecaster.systems.poi_spawning.spawning_system._is_tile_spawnable",
+        "edgecaster.systems.poi_worldgen.spawning_system._is_tile_spawnable",
         side_effect=_check_spawnable,
     ):
         poi_spawning.spawn_poi_contents(game, level, (0, 0, 0))

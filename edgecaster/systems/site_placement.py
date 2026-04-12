@@ -23,6 +23,7 @@ import numpy as np
 
 from edgecaster import prototypes
 from edgecaster import spawn_factory  # <-- IMPORTANT: bind spawn_factory name here
+from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 
 from edgecaster.climate import (
     Biome,
@@ -111,6 +112,7 @@ def _place_fixed_sites(game: "Game", *, zone_w: int, zone_h: int, existing_coord
             },
         )
 
+        entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
         game.world_entity_index.add(ent, zone_coord=(zx, zy, zz), local_pos=(ox, oy))
         existing_coords.add((zx, zy))
         placed += 1
@@ -486,6 +488,7 @@ def _place_fixed_near_sites(
             },
         )
 
+        entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
         game.world_entity_index.add(ent, zone_coord=(int(zx), int(zy), int(zz)), local_pos=(int(ox), int(oy)))
         placed += 1
 
@@ -724,6 +727,7 @@ def place_all_sites(game: "Game") -> None:
                 },
             )
 
+            entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
             game.world_entity_index.add(
                 ent,
                 zone_coord=(zx, zy, zz),

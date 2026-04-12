@@ -168,6 +168,10 @@ def _draw_subtle_grid(surface: pygame.Surface, rect: pygame.Rect, step: int = 48
         pygame.draw.line(surface, col, (rect.x, y), (rect.right, y))
 
 
+# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+# ChakraScene still derives layout and interaction from body_schema +
+# ChakraState. Replace these schema walkers with entity_body/entity_geometry
+# queries once the actor-body graph becomes the UI authority.
 def _get_body_schema(actor: Any) -> Dict[str, Any]:
     """Extract body schema from an actor, handling various storage formats."""
     if actor is None:
@@ -1299,6 +1303,8 @@ class PatternPreviewWidget(Widget):
                 base_scale=1.0,
                 # Match runtime cast behavior exactly so preview is WYSIWYG.
                 require_root=True,
+                actor=self.actor,
+                game=getattr(self, "game", None),
             )
         except Exception:
             self._pattern_surface = None

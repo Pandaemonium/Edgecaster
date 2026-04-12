@@ -250,6 +250,10 @@ Delegation note:
   `Game._ensure_world_aggregate_entities`, and
   `Game._realize_aggregate_details_in_zone` are thin delegates into
   `edgecaster/systems/attention.py`.
+- The resolver-backed realization path now further delegates to
+  `edgecaster/systems/entity_lifecycle.py` for expand/collapse and uses
+  `AttentionCellStore`'s hierarchical rect index instead of the older
+  single-level ABS bin grid.
 
 Key modules (non-exhaustive):
 - systems/actions.py: ActionDef registry (labels, cooldown, cost, etc.)
@@ -264,6 +268,14 @@ Key modules (non-exhaustive):
 - systems/overmap.py: Julia grid, world map cache/threading, corruption/anchors
 - systems/spawning.py: spawn helpers, biome-aware creature selection (tile.biome_id + biome_spawn tags)
 - systems/ambient_spawns.py: active-zone population maintenance (Option 2 roaming spawn model)
+- systems/entity_snapshots.py: shared persistence bridge for deterministic runtime entities
+  (`snapshot_patch_for_entity`, `persist_entity_snapshot`, `apply_entity_snapshot`)
+- systems/entity_body.py: deterministic actor/body-schema expansion helpers that map authored
+  anatomy into a layered entity subtree under the owning actor
+- systems/entity_lifecycle.py: resolver-backed expand/collapse lifecycle for attention-managed
+  descendants; owns materialization, graph attach/detach, and snapshot writeback on collapse
+- systems/entity_geometry.py: shared geometry query envelope + normalized pattern helper used by
+  chakra/runtime consumers when component geometry is available
 - systems/combat_actions.py: extracted runtime logic for advanced combat actions
   (Wind Rush / Energy Kick / Palm Burst / Mirror Strike / Choking Vines /
    Throw Flask / Destabilize / Ignite / Regrow / Freeze / corrosion + fern toggles)
@@ -442,7 +454,14 @@ UI:
 
 Chakra pipeline responsibilities (key scripts):
 - edgecaster/systems/chakras.py: core chakra data model (unlock/activate), body schema traversal,
-  world-position projection, and seed pattern generation + metadata.
+  world-position projection, and seed pattern generation + metadata. When an actor already has a
+  geometry-rich `ChakraComponent`, the seed builder now asks `entity_geometry.py` for the shared
+  normalized pattern before falling back to the body-schema compatibility path.
+- edgecaster/systems/entity_body.py: builds deterministic actor/body subtree specs from the
+  authored body schema and now drives the first layered actor-body expansion path through
+  `entity_lifecycle.expand_entity(...)`.
+- edgecaster/systems/entity_geometry.py: shared query surface for entity/chakra geometry and
+  normalized seed-pattern reconstruction from `ChakraComponent` node/edge data.
 - edgecaster/systems/chakra_items.py: runtime effective chakra overlays from equipped items
   (temporary unlocks, auto-activation, and hit-modifier tag parsing).
 - edgecaster/scenes/chakra_scene.py: player-facing UI for selecting/activating chakras, choosing
