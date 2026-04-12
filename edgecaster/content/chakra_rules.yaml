@@ -1,3 +1,8 @@
+# Unification note:
+# - Keep engine invariants in code; use this file for data-driven channel and
+#   edge behavior.
+# - As the migration continues, expand this schema to cover geometry-aware
+#   reducers and composed propagation policies, not only default edge labels.
 channels:
   defaults:
     clamp: none

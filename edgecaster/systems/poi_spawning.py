@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 
 def spawn_poi_contents(game: "Game", level: "LevelState", coord: Tuple[int, int, int]) -> None:
     """Spawn runtime POI contents for this loaded level."""
+    # Unification note: this delegate still exists because POI realization is
+    # split between legacy and newer paths. Fold it into the canonical
+    # attention/entity-graph resolver as the dual-path migration finishes.
     poi_ids = list(getattr(level.world, "poi_ids", []) or [])
     if bool(getattr(game, "starttsgard_cutover_enabled", False)):
         poi_ids = [pid for pid in poi_ids if pid != "starting_zone"]

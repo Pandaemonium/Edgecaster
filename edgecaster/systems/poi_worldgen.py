@@ -84,7 +84,13 @@ def poi_structure_world_id(poi_id: str, kind: str, index: int) -> str:
 
 @dataclass
 class POIWorldEntity:
-    """Lightweight world entity for POI content (render-only until realized)."""
+    """Lightweight world entity for POI content (render-only until realized).
+
+    Unification note: this is a migration proxy, not the desired final type.
+    POI/world roots should ultimately be ordinary Entity records whose
+    attention/realization level changes, so world proxies and realized
+    instances stop drifting apart.
+    """
     id: str
     poi_id: str
     content_type: str  # "npc", "wall", "structure"
@@ -556,6 +562,9 @@ def realize_poi_npc_spec(
     spawn_pos: Tuple[int, int],
 ) -> Optional[Any]:
     """Realize one POI NPC spec at a chosen local position."""
+    # Unification note: this still contains bespoke POI realization branches.
+    # The end-state should route observed POI content through the canonical
+    # spawn/entity-graph path instead of hand-maintaining special NPC cases here.
     from edgecaster.content import npcs
     from edgecaster.enemies import factory as enemy_factory
     from edgecaster.state.actors import Human, Stats

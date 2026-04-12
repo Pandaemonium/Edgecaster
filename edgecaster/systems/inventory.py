@@ -109,6 +109,9 @@ def get_inventory(game: "Game", owner_id: str) -> List["Entity"]:
     This keeps all inventories in a single registry on the Game object,
     while still conceptually treating them as per-entity state.
     """
+    # Unification note: this list-backed registry is a compatibility cache.
+    # The final authoritative inventory should be a query/materialized view
+    # over containment edges in the shared entity graph.
     oid = str(owner_id)
     return game.inventories.setdefault(oid, [])
 
@@ -740,6 +743,9 @@ def equip_item_to_slot(
         # Ensure only one item occupies a slot.
         unequip_slot(game, oid, sid)
 
+        # Unification note: equipment is still represented as tags on a
+        # list-owned inventory item. Phase 4 should turn this into socket-typed
+        # containment edges so equip/unequip no longer bypasses the graph model.
         tags = getattr(ent, "tags", {}) or {}
         tags["equipped_slot"] = sid
         try:

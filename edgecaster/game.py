@@ -2358,6 +2358,9 @@ class Game:
 
     def _entity_state_keys(self, entity_or_id: Any, *, lineage_id: Any = None) -> List[str]:
         """Return persistence keys for an entity, preferring lineage + entity id."""
+        # Unification note: dual-key merging is a migration bridge. Long-term,
+        # stable entity_id should be the primary key and lineage should remain
+        # provenance/context, not a competing persistence identity.
         keys: List[str] = []
         if isinstance(entity_or_id, str):
             eid = self._normalize_entity_id(entity_or_id)
@@ -2378,6 +2381,8 @@ class Game:
 
     def get_effective_entity_state(self, entity_or_id: Any, *, lineage_id: Any = None) -> Dict[str, Any]:
         """Return merged state across lineage + entity keys without creating entries."""
+        # Unification note: this helper exists so current runtime paths can read
+        # both key spaces. Keep new systems biased toward entity_id-only writes.
         out: Dict[str, Any] = {}
         keys = self._entity_state_keys(entity_or_id, lineage_id=lineage_id)
         if not keys:
@@ -2412,6 +2417,9 @@ class Game:
         lineage_id: Any = None,
         **fields: Any,
     ) -> None:
+        # Unification note: once lineage compatibility is fully retired, this
+        # should become a simpler entity_id-keyed delta write path, including
+        # generalized chakra/component geometry patches.
         keys = self._entity_state_keys(entity_or_id, lineage_id=lineage_id)
         if not keys:
             return

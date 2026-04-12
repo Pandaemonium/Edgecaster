@@ -4,6 +4,13 @@ Phase-1 scope:
 - Attach/detach/reparent runtime entities using parent/socket metadata.
 - Keep inventory semantics compatible with existing UI/content expectations.
 - Deterministic stack splitting via shared graph operation.
+
+Unification note:
+- This module currently patches per-entity metadata plus persistence bridge
+  fields.
+- The end-state is one authoritative graph store where attach/detach/reparent
+  also updates provenance, chakra-subtree wiring, and geometry invalidation
+  together.
 """
 
 from __future__ import annotations
@@ -38,6 +45,9 @@ def attach_entity_to_parent(
     inventory_socket: str = "inventory",
 ) -> None:
     """Attach an entity to a parent node using runtime containment metadata."""
+    # Unification note: this currently patches parent/socket metadata directly.
+    # The final version should write authoritative containment edges and trigger
+    # chakra/provenance/geometry invalidation from the same operation.
     pid = str(parent_id)
     sid = str(socket_id or inventory_socket)
 

@@ -74,6 +74,9 @@ def _effective_entity_state(game: object, *, entity_id: str | None, lineage_id: 
     out: Dict[str, Any] = {}
     lid = str(lineage_id or "").strip()
     eid = str(entity_id or "").strip()
+    # Unification note: lineage_id merging is still a migration bridge. Once
+    # graph/persistence cutover is complete, entity_id should be authoritative
+    # and lineage should survive only as contextual provenance/history.
     if lid:
         st = _peek_entity_state(game, lid)
         if isinstance(st, dict):
@@ -253,6 +256,9 @@ def _persist_entity_snapshot(
     lineage_id: str | None = None,
 ) -> None:
     """Persist mutable runtime deltas for deterministic descendants."""
+    # Unification note: this patch path is still scalar/display oriented.
+    # Expansion/collapse will need generalized chakra_patch and geometry deltas
+    # here so realized subtrees can de-realize without losing meaningful edits.
     patch: Dict[str, Any] = {}
 
     try:
@@ -484,6 +490,9 @@ def _coerce_chakra_component_for_entity(ent: object):
     except Exception:
         max_hp = None
 
+    # Unification note: attention currently coerces components opportunistically.
+    # Once the shared entity/chakra substrate is authoritative, these call sites
+    # should mostly become validation/checkpoints instead of shape-repair hooks.
     try:
         comp = chakra_component_state.coerce_chakra_component(
             raw,
@@ -499,6 +508,9 @@ def _coerce_chakra_component_for_entity(ent: object):
 
 def _link_parent_child_chakra(parent: object, child: object) -> None:
     """Create parent->child hierarchy edge; future sibling edges can layer on top."""
+    # Unification note: this is still a lightweight attention-time stitch. The
+    # final system needs authoritative graph edges with provenance, geometry
+    # payloads, and pattern invalidation instead of remote placeholder nodes.
     pcomp = _coerce_chakra_component_for_entity(parent)
     ccomp = _coerce_chakra_component_for_entity(child)
     if pcomp is None or ccomp is None:

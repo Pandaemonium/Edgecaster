@@ -29,6 +29,10 @@ class Entity:
     pos: Pos
 
     # Phase 1 substrate fields (backward-compatible defaults).
+    # Unification note: these are the right per-entity identity hooks, but
+    # relationship authority still needs to move into the shared graph store so
+    # reparenting, provenance, and geometry invalidation do not rely on ad hoc
+    # attribute patching alone.
     entity_id: Optional[str] = None
     semantic_id: Optional[str] = None
     proto_id: Optional[str] = None

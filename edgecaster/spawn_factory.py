@@ -259,6 +259,10 @@ def build_entity_from_spec(
         core_hp = float(s.get("max_hp", s.get("base_hp", 1)) or 1)
     except Exception:
         core_hp = 1.0
+    # Unification note: this is still a bootstrap layout choice. The eventual
+    # factory should hydrate geometry-rich chakra layouts from the same
+    # recipe/body-schema source used for realization so items, buildings, and
+    # sites do not drift into parallel shape definitions.
     raw_component = s.get("chakra_component")
     if raw_component is None:
         raw_component = chakra_content_system.resolve_layout_component(
@@ -321,6 +325,9 @@ def build_entity_from_spec(
             pass
 
     # Birth-time bilateral symmetry baking.
+    # Unification note: body_schema and chakra layout generation should converge
+    # on one recipe source. Today they are adjacent, but still effectively
+    # parallel definitions of entity geometry.
     try:
         if getattr(ent, "proto_id", None):
             ent.body_schema = bake_instance_body_schema(str(ent.proto_id))
@@ -387,6 +394,9 @@ def build_actor_from_spec(
     xp = int(s.get("xp", 0) or 0)
     local_pos = (int(pos[0]), int(pos[1]))
     canonical_abs = _coerce_tile_pos(abs_pos)
+    # Unification note: actor_body_seed is only a bootstrap. Long-term, actors
+    # should get their chakra geometry from the same authored recipe/body schema
+    # that defines their anatomy so the spawn path and pattern path stay aligned.
     raw_component = s.get("chakra_component")
     if raw_component is None:
         raw_component = chakra_content_system.resolve_layout_component(
@@ -494,6 +504,9 @@ def build_actor_from_spec(
             pass
 
     # Birth-time bilateral symmetry baking
+    # Unification note: once body-schema-derived chakra layouts are
+    # authoritative, this bake step and the component bootstrap above should be
+    # two views of the same recipe instead of parallel initialization tracks.
     try:
         if getattr(actor, "proto_id", None):
             actor.body_schema = bake_instance_body_schema(str(actor.proto_id))

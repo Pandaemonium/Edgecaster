@@ -1,22 +1,23 @@
 Title: Entity + Chakra Unification Master Plan
-Purpose: define the active execution plan for converging entity, chakra, inventory, and POI systems toward one unified substrate.
+Purpose: define the active execution plan for converging entity, geometry/query, inventory, and POI systems toward one unified hierarchical substrate.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-11
 Canonical for: active entity/chakra unification work
 Related docs: `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/architecture.txt`
 Related code: `edgecaster/state/`, `edgecaster/systems/`, `edgecaster/content/`
 Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
-Updated: 2026-02-18
-Status: v1.5 (Execution Queue + Legacy Deletion Priorities)
+Updated: 2026-04-11
+Status: v1.8 (Ontology Simplification + Query Contract Prep)
 
 This is the execution plan for:
 
-1. Everything is an entity.
-2. All entities have chakras.
-3. Chakra relationships and entity relationships can both evolve over time.
-4. Rules are scale-invariant by default.
+1. Everything with persistent gameplay identity or compositional participation is an entity.
+2. "Chakra" is a role/query word for an entity within a larger hierarchy, not a second ontology.
+3. The canonical organization is a strict containment tree plus expandable typed relation edges.
+4. Geometry is first-class, stored canonically in absolute world space, and queryable through one shared interface.
+5. Rules are scale-invariant by default.
 
 This plan is intentionally implementation-first and absorbs the still-relevant
 work that survived the earlier POI/entity unification plan.
@@ -54,6 +55,8 @@ Implemented and stable:
 5. Chakra substrate kickoff:
    - Typed chakra dataclasses now exist:
      `ChakraNode`, `ChakraEdge`, `ChakraComponent`.
+   - These are currently a migration surface for the unified hierarchical
+     entity model, not a permanent second ontology.
    - Spawn factory now coerces YAML chakra payloads to typed components and
      guarantees a default `{entity_id}:core` node.
    - Runtime bridge now lazily initializes legacy actor chakra state via
@@ -79,8 +82,11 @@ Not yet complete:
 2. Chakra substrate integration is not complete.
    - Legacy `ChakraState` still drives gameplay/runtime abilities through
      compatibility adapter paths.
+   - The docs now lock in that every chakra is an entity; implementation still
+     has to catch up to that simplification.
    - `chakra_layouts.yaml` + `chakra_rules.yaml` now exist, but reducer/runtime
-     semantics are not yet sourced from these rules.
+     semantics and geometry-aware rule evaluation are not yet sourced from
+     these rules.
 3. POI realization still has dual pathways.
    - `poi_spawning.py` and `poi_worldgen.py` both remain active.
    - Runtime NPC/wall realization now shares helper paths and game delegates
@@ -89,6 +95,61 @@ Not yet complete:
 4. Split-stack operations still create child entities in list-backed inventories.
    - Shared graph-op split is in place, but final graph-authoritative stack
      storage is not complete.
+
+## Repo Read-Through Notes (2026-04-11)
+
+These notes tie the plan to the current code seams so the next migration passes
+land in the right places.
+
+1. `edgecaster/state/entities.py`
+   - `Entity` already carries the right identity shell (`entity_id`,
+     `semantic_id`, `parent_entity_id`, `socket_id`, `chakra_component`).
+   - Relationship authority still lives in patched attrs and side stores. The
+     next substrate step is a real entity-graph store plus invalidation/query
+     helpers so reparenting, provenance, and geometry updates stop depending on
+     ad hoc field mutation.
+
+2. `edgecaster/state/chakra_component.py`
+   - Typed chakra storage exists, but `ChakraEdge` still only models basic kind,
+     propagation, and weight.
+   - Phase 2/3 should normalize universal `hp`/`mass`, add geometry payloads,
+     and centralize deterministic edge ordering/composed propagation here.
+
+3. `edgecaster/systems/chakra_items.py` and `edgecaster/systems/chakras.py`
+   - Gameplay still reads an actor-only `ChakraState`, while `ChakraComponent`
+     is mostly a compatibility mirror.
+   - Extract geometry/pattern queries into shared component APIs first, then
+     retire the actor-only adapter.
+
+4. `edgecaster/spawn_factory.py`
+   - Spawn already ensures every entity/actor has a chakra component, but the
+     chosen layouts are still bootstrap-level defaults.
+   - Factory construction should eventually derive geometry-rich chakra layouts
+     from the same recipe/body-schema source used during realization so actors,
+     items, buildings, and sites do not drift into parallel shape definitions.
+
+5. `edgecaster/systems/entity_graph_ops.py` and `edgecaster/systems/inventory.py`
+   - Attach/detach and inventory lists are still compatibility surfaces.
+   - Final cutover is graph-authoritative containment with inventories as
+     materialized views, not the primary store.
+
+6. `edgecaster/systems/attention.py` and `edgecaster/game.py`
+   - Persistence currently round-trips scalar runtime deltas (stats, tags,
+     statuses, cooldowns), but not generalized `chakra_patch` / geometry deltas.
+   - De-realization/re-realization will not be truly unified until those
+     patches flow through the same stable-`entity_id` persistence path.
+
+7. `edgecaster/systems/poi_worldgen.py`, `edgecaster/systems/poi_spawning.py`,
+   `edgecaster/systems/world_entity_index.py`, and `edgecaster/systems/aggregate_resolution.py`
+   - World proxies and realized entities still split ontology.
+   - End-state should treat POI/world roots as ordinary entities whose attention
+     level changes, not bespoke dataclasses plus duplicate realization paths.
+
+8. `edgecaster/content/chakra_layouts.yaml` and `edgecaster/content/chakra_rules.yaml`
+   - The content schema is present, but it is still placeholder-level.
+   - Before routing more gameplay onto data, expand those files so layouts carry
+     useful geometry and rules can declare geometry-aware reducers plus composed
+     propagation behavior.
 
 Execution priority (next refactor batches):
 
@@ -129,6 +190,8 @@ Rule for all new work:
 2. Inventory scene, map scene, anatomy, runecasting, and resolution rules
    are the same substrate viewed at different scales.
    - Arm -> hand -> finger and city -> district -> building follow one model.
+   - The geometry formed by those relations is also shared substrate, not only
+     the scalar state.
 
 3. Legacy rectangular zone metaphysics is now a blocker.
    - It breaks multi-size entities, cross-boundary interactions, and attention-driven
@@ -144,38 +207,57 @@ Rule for all new work:
 1. Identity and persistence:
    - `entity_id` is immutable and is the primary persistence key.
    - `semantic_id` remains for quest and narrative meaning.
+   - Multiple entities may share a `semantic_id` when they participate in the
+     same gameplay concept.
    - `lineage_path` is contextual and may change when graph links change.
 
 2. Spatial truth:
-   - Every chakra has absolute physical coordinates in float64 world space.
-   - Chakra physical location does not change automatically when graph edges change.
-   - Game effects can move chakra coordinates.
+   - Canonical geometry is stored in absolute world space.
+   - Parent-relative or local coordinate systems may be derived when useful,
+     but they are adapters, not the source of truth.
+   - Geometry formed by entity positions and links is canonical gameplay
+     data, not renderer garnish.
+   - Rune interactions, fractal growth, and future magic systems may query this
+     geometry directly.
+   - For now, assume all entities participate in this geometry/query surface.
 
 3. Graph model:
    - One strict containment tree (single containment parent).
    - Additional typed graph edges allowed (`owns`, `influences`, `linked_to`, etc.).
+   - Every chakra is an entity. "Chakra" describes an entity's role within a
+     larger composition.
+   - Current `ChakraComponent` records are a migration/cache structure, not a
+     separate ontology.
    - "Owning a forest" means legal/control ownership edge, not inventory containment.
 
-4. Chakra recursion and determinism:
+4. Query surface:
+   - The shared geometry API must support raw positions/edges and richer derived
+     primitives when useful.
+   - Higher-level helpers are part of the target, not an afterthought
+     (example: normalized seed patterns for fractal casting).
+   - The return contract should remain forward-extensible rather than assuming
+     we already know every primitive future systems will need.
+
+5. Chakra recursion and determinism:
    - Recursion depth cap is 7.
    - Deterministic generation from world seed + stable IDs + rule salts.
 
-5. Modifier precedence:
+6. Modifier precedence:
    - Closest generation parent can override, add to, or transform ancestor modifiers.
    - Grandparent modifiers are advisory unless nearest-parent rule says otherwise.
 
-6. Attention and time:
+7. Attention and time:
    - Offscreen entities freeze.
    - No deferred offscreen chakra propagation for now.
 
-7. Scale policy:
+8. Scale policy:
    - Behavior should be scale-invariant unless a rule explicitly opts out.
 
-8. Detach/reattach policy:
+9. Detach/reattach policy:
    - Subtrees can detach and reattach while preserving full internal hierarchy/state.
    - Reattach changes graph links, not immutable identities.
 
-9. Identity generation strategy:
+10. Identity generation strategy:
     - World-generated content: deterministic from seed + recipe.
       ID format: `world:{seed_hash}:{recipe_path}:{ordinal}`.
       The ID is derived, never minted. Regenerating the same chunk with the
@@ -184,30 +266,34 @@ Rule for all new work:
     - Transient entities (projectiles, VFX, mirror blade clones) are still
       full entities in the same system.
       - They receive valid `entity_id` values and lifecycle state.
+      - Default transient ID form is runtime-only sequential (`act{N}`) with
+        no persistence entry unless the effect is explicitly promoted to a
+        deterministic persistent entity.
       - They are removed via normal entity expiry/removal rules when effect TTL,
         range, or condition ends.
       - No ad-hoc special simulation path is allowed.
     - Persistence key: `entity_id` is primary for all new writes starting now.
 
-10. Lineage state migration (completed 2026-02-17):
+11. Lineage state migration (completed 2026-02-17):
     - Runtime persistence and suppression are now `entity_id` keyed only.
     - Legacy `lineage_state` bridge APIs and suppression fallbacks were removed
       from active runtime paths.
 
-11. Item stacks:
+12. Item stacks:
     - One entity with `quantity` scalar. Not N child entities.
     - Stacks are a rendering/UI concern, not ontological.
     - Splitting a stack creates a new entity with a new `entity_id`.
 
-12. Equipment slots:
+13. Equipment slots:
     - Not in Phase 1. Current flat inventory list stays.
     - Phase 1 proves attach/detach/reparent with map pickup/drop.
     - Equipment slots become socket-typed containment edges in Phase 4
       (inventory-map unification vertical slice).
 
-13. Default chakra layouts:
-    - Single core node by default. Every entity gets at minimum:
+14. Default chakra layouts:
+    - During migration, a single core node by default. Every entity gets at minimum:
       `{chakra_id: "{entity_id}:core", channels: {hp: max_hp, mass: 1.0}, active: true}`
+    - Universal channels shared by all entities / cached chakra views: `hp`, `mass`.
     - Type-specific templates available but never required.
     - Progression by entity kind:
       Simple item:  1 core node (gets slots if enchantable)
@@ -216,32 +302,41 @@ Rule for all new work:
       Building:     1 core node (expands to room chakras when entered)
       City district: 1 core node (expands to building chakras on attention)
 
-14. Chakra channels:
+15. Chakra channels:
+    - Universal channels: `hp`, `mass`.
+    - Common standardized but optional channels:
+      `coherence`, `resonance`, `corruption`, `stability`, `flow`.
     - Channels allow negatives. Floats, not clamped by the substrate.
     - Clamping to [0, max] is a rule applied per-channel, not a system property.
     - Some channels are naturally negative (temperature delta, debt, corruption).
 
-15. Rule precedence split:
+16. Rule precedence split:
     - Content rules in `chakra_rules.yaml`: which channels propagate, attenuation
-      values, reducer weights, threshold bands.
+      values, reducer weights, threshold bands, and any geometry-aware
+      reduction logic.
     - Engine rules in code: containment invariants, recursion depth cap,
       determinism guarantees, cycle prevention. Not overridable by data.
     - Analogy: CSS cascade rules are in the engine; stylesheets are in data.
 
-16. Non-containment edge propagation:
+17. Non-containment edge propagation:
     - Opt-in per edge kind with explicit defaults. Schema:
       `contains`:   propagation=automatic (child channels reduce into parent)
       `owns`:       propagation=none (metadata only, no tick cost)
       `influences`: propagation=opt_in (only listed channels, per rule)
       `routes`:     propagation=opt_in
+      `linked_to`:  propagation=opt_in
+      `resonance`:  propagation=opt_in
+    - Propagation modes are composable when rules require it.
     - `owns` edges carry no gameplay effects until Phase 5+. Metadata first.
+    - Feedback loops and oscillating channel states are a known future concern;
+      track them, but do not block the migration on a premature global fix.
 
-17. Detachability constraints (v1):
+18. Detachability constraints (v1):
     - Keep the system general: any entity is theoretically detachable.
     - Gameplay permissions are policy/data decisions, not hard engine bans.
     - Detachability is enforced by `detach_policy` data and caller authority.
 
-18. Performance budget:
+19. Performance budget:
     - Target: 2ms per tick for graph/chakra processing.
     - Onscreen entities (attention budget ~2000): full chakra tick if dirty,
       skip if clean.
@@ -252,13 +347,13 @@ Rule for all new work:
       Attention means ~200 entities expanded at once, average depth 3-4,
       ~2000 chakra nodes to reduce. At 1us per reduction = 2ms. Fits.
 
-19. Spatial substrate:
+20. Spatial substrate:
     - Legacy rectangular zones are deprecated as world truth.
     - Canonical cache geometry is quadtree/attention-grid by LoD band.
     - Quadtree radix is configurable (default radix=2, not hardcoded).
     - Rectangular legacy zones may exist temporarily as compatibility caches only.
 
-20. Multi-size entities and footprints:
+21. Multi-size entities and footprints:
     - Every entity has an absolute footprint, not just a point.
     - Runtime entity records carry explicit `footprint_local` and `footprint_abs`.
       Tag-based footprint inference is migration fallback only.
@@ -269,20 +364,20 @@ Rule for all new work:
     - LoD bands (micro, local, regional, continental, etc.) are simulation/render
       bands, not separate ontologies.
 
-21. Attention field and observer sources:
+22. Attention field and observer sources:
     - Player/camera fovea is the primary attention source.
     - Additional observer anchors (scry points, remote eyes, special entities)
       can request high-fidelity realization in distant regions.
     - "Observed = real" applies to all active observers, not only the player body.
     - If multiple foveas disagree on temperature/fidelity, take the hottest tier.
 
-22. Global energy queue:
+23. Global energy queue:
     - Simulation temperature model is mandatory:
       hot (full fidelity), warm (reduced cadence), cold (stochastic/lazy).
     - Important entities (kings, artifacts, quest anchors) may be promoted
       in priority even when distant.
 
-23. Legacy cleanup protocol:
+24. Legacy cleanup protocol:
     - During migration, mark temporary bridges with
       `# [LEGACY_DELETE][ENTITY_CHAKRA]`.
     - Each such tag must be recorded in `vision_documents/spring_cleaning.txt`
@@ -318,6 +413,12 @@ The fractal blade is the same pattern: blade generators ARE the expansion
 recipe. Subdividing the blade expands chakra node children. The pattern
 builder becomes a chakra expansion engine. The blade and the city use the
 same substrate.
+
+Open design question (explicitly deferred):
+
+- What geometry guarantees should a collapsed entity expose when exact child
+  positions lie outside attention and "observed = real" forbids fake precision?
+- An approximation may be enough, but the exact contract is not yet locked.
 
 -------------------------------------------------------------------------------
 
@@ -452,7 +553,7 @@ Current systems still split logic across:
 This causes duplicate truth and blocks true fractal gameplay.
 
 Goal: one ontology where all content is represented, simulated, and mutated
-through entity graphs plus chakra graphs.
+through one hierarchical entity graph plus shared geometry/relation queries.
 
 -------------------------------------------------------------------------------
 
@@ -461,7 +562,7 @@ through entity graphs plus chakra graphs.
 ### A. Entity record
 
 - `entity_id: str` (immutable PK)
-- `semantic_id: Optional[str]`
+- `semantic_id: Optional[str]` (may be shared across multiple entities)
 - `proto_id: str`
 - `kind: str`
 - `abs_x: float64`
@@ -486,12 +587,19 @@ Typed relation edges (graph):
 - `weight`
 - `rule_id`
 
-### C. Chakra model
+### C. Geometry / composition view
 
-Chakra node:
-- `chakra_id` (stable within entity, e.g. `entity_id:node_id`)
+Ontology rule:
+
+- every meaningful subcomponent should eventually be representable as an entity
+- during migration, code may still expose part of this through
+  `chakra_component`
+- that migration surface is allowed, but it is not a second ontology
+
+Minimum queryable primitives:
+
+- `node_or_entity_id`
 - `entity_id`
-- `node_id`
 - `x: float64`
 - `y: float64`
 - `z: float64`
@@ -499,13 +607,26 @@ Chakra node:
 - `active: bool`
 - `tags: dict`
 
-Chakra edge:
-- `src_chakra_id`
-- `dst_chakra_id`
-- `edge_kind` (`generation`, `influence`, `resonance`, etc.)
+Relation primitive:
+
+- `src_id`
+- `dst_id`
+- `edge_kind` (`contains`, `generation`, `influence`, `resonance`, etc.)
 - `rule_id`
 - `weight`
 - `priority`
+- `geometry_kind` (default `segment`; optional richer edge semantics later)
+- `geometry_payload` (optional shape/control data if edge geometry is not implicit)
+
+The shared query surface must support:
+
+- raw nodes/edges/positions
+- pattern queries
+- geometry-aware reducers
+- rune and fractal interactions
+- richer derived primitives and helper calls when useful
+  (for example normalized seed patterns)
+- forward-extensible return shapes so new helpers/primitives can be added later
 
 ### D. Persistence state
 
@@ -514,7 +635,7 @@ Chakra edge:
 - `dead`
 - `last_known_hp`
 - `tags_patch`
-- `chakra_patch`
+- `chakra_patch` (transitional name for channel/geometry diffs)
 - `custom_payload`
 
 Lineage state remains read-compat only during migration. `entity_id` is the
@@ -530,20 +651,32 @@ authoritative persistence key.
    - `reparent_entity(child, new_parent, socket)`
    - Must preserve `entity_id`.
 
-2. Chakra operations:
-   - `move_chakra(chakra_id, dx, dy, dz)`
-   - `set_chakra_position(chakra_id, x, y, z)`
-   - `mutate_chakra(chakra_id, delta_channels, policy)`
-   - `rewire_chakra_edge(src, dst, edge_kind, rule)`
+2. Geometry / composition operations:
+   - The shared substrate must support operations equivalent to:
+     `move_entity_geometry(target_id, dx, dy, dz)`
+     `set_entity_position(target_id, x, y, z)`
+     `mutate_entity_channels(target_id, delta_channels, policy)`
+     `rewire_relation_edge(src, dst, edge_kind, rule)`
+     `query_geometry(root_entity_id, capabilities_or_detail)`
+     `query_normalized_pattern(root_entity_id, helper_options)`
+   - Chakra-named wrappers may survive during migration, but they should not
+     imply a second ontology.
 
 3. Reduction:
-   - Parent chakra/entity behavior derives from child chakra states.
+   - Parent behavior derives from child state and geometry.
    - Nearest-parent precedence applies before ancestor aggregation.
+   - Reducers may inspect relative positions, edge geometry, sibling symmetries,
+     and other pattern features, not only scalar channels.
 
-4. Determinism:
+4. Mutation propagation:
+   - Propagation modes may be composed (`radial + upward`, etc.) when the
+     content requires it.
+   - Composition order and no-double-apply behavior must remain deterministic.
+
+5. Determinism:
    - Any generated subtree/edge set must be reproducible with same seed and IDs.
 
-5. Footprint and interaction contracts:
+6. Footprint and interaction contracts:
    - `overlaps(a, b)` and `contains(a, b)` are canonical interaction primitives.
    - Cross-band interaction uses same primitives plus rule multipliers.
    - Point-only interaction helpers are compatibility wrappers and must be tagged.
@@ -599,17 +732,24 @@ Done criteria:
 
 ---
 
-### Phase 2 - Chakra Node/Edge Substrate
+### Phase 2 - Uniform Geometry / Composition Substrate
 
 Goal:
-- Give every entity a chakra component, even if minimal.
+- Give every entity a uniform geometry/composition representation, even if
+  the migration surface still uses `ChakraComponent`.
 
 Actions:
-1. Add chakra node/edge storage with float64 absolute positions.
+1. Add geometry-bearing node/edge storage with float64 absolute positions.
+   - During migration, some of this may still live inside `ChakraComponent`.
 2. Implement default single-core-node layout: every entity gets
    `{entity_id}:core` with basic channels. Zero-cost opt-in.
+   - Universal channels must at least include `hp` and `mass`.
 3. Add type-specific templates for actors (body schema), weapons
    (segment layout), buildings (room layout).
+   - `chakra_layouts.yaml` must store enough positional/linkage data to recover
+     meaningful geometry, not only node membership.
+   - Richer subcomponents should trend toward child entities under the same
+     containment tree, not a separate hidden ontology.
 4. Add load/save hooks for chakra patches.
 5. Implement expansion/collapse lifecycle:
    - `expand_entity(entity_id)`: deterministic recipe -> subtree
@@ -620,7 +760,8 @@ Actions:
    - Keep rectangular zone hooks only as compatibility wrappers.
 
 Done criteria:
-- All instantiated entities can expose chakra state through one API.
+- All instantiated entities can expose geometry/composition state through one API.
+- Expanded entities can answer geometry/pattern queries from the same API.
 - Collapsed entities cost zero ticks. Expanded entities tick only when dirty.
 - Attention-window realization can run from quadtree coordinates.
 
@@ -633,14 +774,18 @@ Goal:
 
 Actions:
 1. Add channel reducer pipeline with nearest-parent override support.
-2. Add universal mutation envelope with propagation policies.
+   - Reducers must be able to inspect geometry and pattern structure, not only
+     scalar channels.
+2. Add universal mutation envelope with composable propagation policies.
 3. Clamp recursion depth to 7 with explicit terminal behavior.
 4. Implement dirty-flag propagation: leaf mutation marks ancestors dirty.
    Only re-reduce dirty subtrees. Clean subtrees skip entirely.
 5. Content rules in `chakra_rules.yaml`; engine invariants in code.
+   - Rules data must be able to declare geometry-aware reduction behavior.
 
 Done criteria:
 - Reducer outputs are deterministic and testable.
+- Composed propagation behavior is deterministic and free of accidental double-apply.
 - Tick budget for graph/chakra processing stays under 2ms.
 
 ---
@@ -733,7 +878,8 @@ Actions:
 3. Consolidate docs and test suites around one architecture.
 
 Done criteria:
-- One entity ontology and one chakra ontology remain.
+- One hierarchical entity ontology remains.
+- "Chakra" survives as role/query vocabulary, not a separate thing-type.
 
 -------------------------------------------------------------------------------
 
@@ -749,12 +895,13 @@ Done criteria:
 3. Chakra tests:
    - Chakra coordinates remain stable across graph rewires unless explicitly moved.
    - Nearest-parent precedence wins over ancestor defaults when configured.
+   - Universal channels (`hp`, `mass`) exist on all instantiated geometry/chakra payloads.
 
 4. Determinism tests:
    - Same seed and inputs produce identical generated graphs/reducer outputs.
 
 5. Persistence tests:
-   - Moved entities and mutated chakras restore exactly after unload/reload.
+   - Moved entities and mutated geometry/chakra state restore exactly after unload/reload.
 
 6. Scale tests:
    - Same rule behavior at multiple scales for equivalent structures.
@@ -762,6 +909,8 @@ Done criteria:
 7. Geometry tests:
    - Footprint overlap/containment invariants hold across LoD bands.
    - Quadtree realization window selection is deterministic and camera-stable.
+   - Pattern reconstruction from chakra node/edge data is deterministic.
+   - Geometry-aware reducers return stable results for the same seeded layout.
 
 8. Observer tests:
    - Secondary observer anchors create deterministic remote foveas.
@@ -770,6 +919,11 @@ Done criteria:
 9. Energy queue tests:
    - Hot/warm/cold cadence is deterministic for same seed and ticks.
    - Priority entities receive promoted cadence without violating budgets.
+
+10. Mutation tests:
+   - Composed propagation policies apply in deterministic order.
+   - A composed propagation effect does not accidentally double-apply the same
+     mutation unless the rule explicitly says it should.
 
 -------------------------------------------------------------------------------
 
@@ -799,7 +953,12 @@ Done criteria:
    - Mitigation: all non-containment propagation is opt-in.
      `owns` edges have zero tick cost by default.
 
-7. Risk: Zone-to-quadtree transition causes duplicate caches or stale entities.
+7. Risk: Overlay edges create feedback loops or oscillating channel behavior.
+   - Mitigation: keep propagation opt-in, add reducer tracing and deterministic
+     fixtures, and wait for a concrete failure mode before adding heavyweight
+     general loop-control machinery.
+
+8. Risk: Zone-to-quadtree transition causes duplicate caches or stale entities.
    - Mitigation: keep one authoritative realization index keyed by entity_id +
      quadtree cell and enforce de-duplication checks in attention staging.
 
@@ -810,9 +969,11 @@ Done criteria:
 This plan is complete when:
 
 1. All world and inventory content uses the same entity graph.
-2. All entities expose chakra state through one model.
+2. All entities expose geometry/composition state through one model, including geometry
+   rich enough for pattern queries.
 3. Detach/reattach works without identity or state loss.
-4. Parent behavior is derived from child chakra state with nearest-parent precedence.
+4. Parent behavior is derived from child state and geometry with
+   nearest-parent precedence.
 5. Recursion is deterministic and capped at 7.
 6. Scale-invariant behavior is the default across systems.
 7. Legacy split pipelines are removed.

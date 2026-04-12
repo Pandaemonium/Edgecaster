@@ -278,6 +278,9 @@ def _component_state_overrides(comp: Any) -> tuple[dict[str, tuple[float, float]
 
 def ensure_actor_chakra_state(actor: Any) -> Any:
     """Return legacy ChakraState, creating a baseline state when missing."""
+    # Unification note: this is a compatibility adapter for actor-only callers.
+    # The long-term target is ChakraComponent-backed runtime state for every
+    # entity, with ChakraState surviving only as a thin facade or disappearing.
     state = getattr(actor, "chakra_state", None)
     if state is not None:
         return state
@@ -317,6 +320,9 @@ def ensure_actor_chakra_state(actor: Any) -> Any:
 
 def sync_actor_chakra_state(actor: Any) -> None:
     """Mirror legacy ChakraState into ChakraComponent for migration cutover."""
+    # Unification note: keep this mirror narrow. New geometry, propagation, and
+    # reducer semantics should live on ChakraComponent/rule evaluation, not as
+    # ever-growing compat_* payloads.
     state = getattr(actor, "chakra_state", None)
     if state is None:
         return
@@ -572,6 +578,10 @@ def effective_chakra_state(game: Any, actor: Any) -> Any:
     systems that need a coherent unlocked/active snapshot without mutating the
     actor's stored chakra state.
     """
+    # Unification note: this currently projects item effects onto legacy actor
+    # state. The final version should build the effective view from graph edges
+    # plus ChakraComponent channels so items, limbs, buildings, and sites all
+    # use the same evaluation path.
     state = ensure_actor_chakra_state(actor)
     if state is None:
         return None

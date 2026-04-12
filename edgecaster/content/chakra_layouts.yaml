@@ -1,3 +1,8 @@
+# Unification note:
+# - Layouts need enough positional and linkage data to answer pattern and
+#   geometry queries directly, not just mark which nodes exist.
+# - Keep defaults tiny, but grow new layouts toward shared actor/item/building/
+#   site geometry rather than actor-only special cases.
 layouts:
   default_core:
     component:

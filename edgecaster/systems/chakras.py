@@ -56,6 +56,12 @@ Usage:
 
     # Generate pattern from active chakras
     pattern = generate_chakra_pattern(actor.body_schema, actor.chakra_state)
+
+Migration note:
+- The geometry/pattern code in this module is still valuable, but it is too
+  actor/body-schema specific to be the final substrate.
+- During unification, extract the geometry/pattern builders so any entity's
+  ChakraComponent can feed them; keep ChakraState here as a compatibility layer.
 """
 
 from __future__ import annotations
@@ -1250,6 +1256,10 @@ def normalized_custom_graph_from_positions(
     if root_id not in positions or terminus_id not in positions:
         raise ValueError("Root/terminus missing from active chakra positions.")
 
+    # Unification note: the normalization math here is already substrate-worthy.
+    # Once non-actor entities expose geometry-rich ChakraComponents, lift this to
+    # a shared helper that reads node/edge geometry directly instead of relying
+    # on body_schema + legacy ChakraState inputs.
     # Stable order: root first, terminus last, everything else deterministic.
     middle = sorted([nid for nid in positions.keys() if nid not in {root_id, terminus_id}])
     node_order = [root_id] + middle + [terminus_id]
@@ -1332,6 +1342,10 @@ def chakras_to_seed_pattern(
     # Import here to avoid circular dependency
     from edgecaster.state.patterns import Pattern
 
+    # Unification note: this still pulls connectivity from body_schema. The
+    # end-state equivalent should accept any entity/chakra root and build the
+    # seed from shared ChakraComponent geometry so sites, items, and anatomy all
+    # speak the same API.
     # Build full positions map (includes inactive + sub-schema nodes).
     all_positions = get_all_chakra_positions_recursive(
         body_schema,
@@ -1441,6 +1455,9 @@ def generate_chakra_pattern(
         SubdivideGenerator,
     )
 
+    # Unification note: keep the fractal iteration stage reusable, but make the
+    # seed input come from shared chakra graph queries rather than actor-only
+    # state once ChakraComponent becomes the main runtime substrate.
     # Get seed pattern from chakras
     seed = chakras_to_seed_pattern(body_schema, chakra_state, base_scale)
 

@@ -54,6 +54,9 @@ class ChakraNode:
 
 @dataclass
 class ChakraEdge:
+    # Unification note: keep the bootstrap edge record small, but Phase 2/3
+    # needs explicit geometry semantics and composed propagation metadata here
+    # so rune/fractal systems can query more than plain parent/child links.
     edge_id: str
     src_node_id: str
     dst_node_id: str
@@ -145,6 +148,9 @@ def default_core_component(
     mass: float = 1.0,
 ) -> ChakraComponent:
     core_id = default_core_node_id(str(entity_id))
+    # Unification note: hp/mass are the universal baseline channels. We still
+    # allow hp to be omitted when callers truly have no meaningful value yet,
+    # but higher-level layout recipes should steadily eliminate that gap.
     channels: Dict[str, float] = {"mass": float(mass)}
     if max_hp is not None:
         channels["hp"] = float(max_hp)
@@ -165,6 +171,10 @@ def coerce_chakra_component(
     max_hp: Optional[float] = None,
     mass: float = 1.0,
 ) -> ChakraComponent:
+    # Unification note: this currently normalizes today's minimal component
+    # payloads. As ChakraComponent becomes authoritative, also normalize edge
+    # geometry payloads, propagation-policy composition, and deterministic edge
+    # ordering here instead of scattering that work across callers.
     if isinstance(raw, ChakraComponent):
         comp = raw
     elif isinstance(raw, dict):
@@ -188,4 +198,3 @@ def coerce_chakra_component(
     core.active = bool(getattr(core, "active", True))
     comp.recursion_depth_cap = max(1, min(7, int(getattr(comp, "recursion_depth_cap", 7) or 7)))
     return comp
-
