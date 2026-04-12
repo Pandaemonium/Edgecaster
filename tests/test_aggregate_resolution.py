@@ -26,6 +26,23 @@ def test_aggregate_slot_lineage_id_format() -> None:
     assert lid == "agg:berries:1,2,0:0:blueberry:7"
 
 
+def test_entity_id_from_lineage_is_deterministic_and_separate() -> None:
+    lid = "site:starttsgard@10,10/building:inn:0:child:npcs:merchant:0"
+    eid_a = ar.entity_id_from_lineage(lid)
+    eid_b = ar.entity_id_from_lineage(lid)
+    assert eid_a == eid_b
+    assert eid_a != lid
+    assert eid_a.startswith("world:")
+
+
+def test_unique_world_root_lineage_id_is_deterministic_and_separate() -> None:
+    lid_a = ar.unique_world_root_lineage_id("world_continent", 0)
+    lid_b = ar.unique_world_root_lineage_id("world_continent", 0)
+    assert lid_a == lid_b
+    assert lid_a == "world_root:world_continent:0"
+    assert lid_a != "agg:world_continent:root:0"
+
+
 def test_resolve_spawn_intents_use_parent_lineage_root() -> None:
     game = _dummy_game(777)
     parent = SimpleNamespace(
@@ -56,8 +73,8 @@ def test_resolve_spawn_intents_use_parent_lineage_root() -> None:
     merchant = [i for i in intents if i.proto_id == "merchant"]
     assert merchant
     child = merchant[0]
-    assert child.eid.startswith("site:starttsgard@10,10/building:inn:0:child:npcs:merchant:")
-    assert child.lineage_id == child.eid
+    assert str(child.lineage_id).startswith("site:starttsgard@10,10/building:inn:0:child:npcs:merchant:")
+    assert child.eid == ar.entity_id_from_lineage(child.lineage_id)
 
 
 def test_resolve_spawn_intents_deterministic_same_seed() -> None:
@@ -135,7 +152,7 @@ def test_children_fixed_spawn_kind_from_placement_overrides_proto() -> None:
     )
     wall_children = [
         i for i in intents
-        if i.proto_id == "wall" and ":child:forced_kind:wall:" in i.eid
+        if i.proto_id == "wall" and ":child:forced_kind:wall:" in str(i.lineage_id or "")
     ]
     assert wall_children
     assert all(i.child_type == "actor" for i in wall_children)
@@ -218,6 +235,10 @@ def test_unique_world_root_continent_spawns_once() -> None:
             continents.append(ent)
     ids = {str(getattr(e, "id", "")) for e in continents}
     assert ids == {"agg:world_continent:root:0"}
+    assert len(continents) == 1
+    continent_tags = getattr(continents[0], "tags", {}) or {}
+    assert continent_tags.get("lineage_id") == ar.unique_world_root_lineage_id("world_continent", 0)
+    assert continent_tags.get("lineage_id") != getattr(continents[0], "id", "")
 
 
 def test_children_scaled_is_deterministic_and_honors_count_bounds() -> None:

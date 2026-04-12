@@ -230,6 +230,24 @@ def toggle_door(game: "Game", ent: "Entity", level: "LevelState", notify: bool =
         if notify:
             game.log.add("You close the door.")
 
+    # Unification note: door toggles are one of the clearest examples of a
+    # deterministic entity mutating while it may later collapse out of the
+    # active zone. Persist the same display/runtime deltas that attention-side
+    # rehydration already knows how to apply.
+    try:
+        patch_state = getattr(game, "patch_entity_state", None)
+        if callable(patch_state):
+            patch_state(
+                ent,
+                {
+                    "last_known_tags": {"door_state": tags.get("door_state")},
+                    "last_known_glyph": str(getattr(ent, "glyph", "+") or "+")[:1],
+                    "last_known_blocks_movement": bool(getattr(ent, "blocks_movement", False)),
+                },
+            )
+    except Exception:
+        pass
+
     ent.tags = tags
     level.need_fov = True
     game._update_fov(level)

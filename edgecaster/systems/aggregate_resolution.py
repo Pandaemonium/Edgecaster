@@ -81,7 +81,7 @@ def lineage_root_for_entity(ent: object) -> str:
     """Return stable lineage root for an entity-like object.
 
     Preference order:
-      1) tags["lineage_id"] when present (explicit stable identity)
+      1) tags["lineage_id"] when present (explicit stable ancestry/provenance)
       2) runtime entity id fallback
     """
     tags = _tags(ent)
@@ -116,9 +116,25 @@ def build_lineage_id(root: object, *parts: object) -> str:
     return ":".join(out)
 
 
+def entity_id_from_lineage(lineage_id: object) -> str:
+    """Return a deterministic entity_id derived from a lineage path."""
+    try:
+        lid = str(lineage_id or "").strip()
+    except Exception:
+        lid = ""
+    if not lid:
+        return ""
+    return f"world:{_stable_int_hash('entity_id', lid):08x}:{lid}"
+
+
 def aggregate_slot_lineage_id(aggregate_id: object, child_id: object, slot: int) -> str:
     """Stable lineage id for an aggregate slot child."""
     return build_lineage_id(aggregate_id, child_id, int(slot))
+
+
+def unique_world_root_lineage_id(kind: object, zz: object) -> str:
+    """Stable lineage id for a root aggregate that has no parent lineage."""
+    return build_lineage_id("world_root", kind, zz)
 
 
 # -----------------------------
@@ -312,6 +328,7 @@ def _ensure_unique_world_root(
     ox = int(ax) - zx * int(zone_w)
     oy = int(ay) - zy * int(zone_h)
     eid = f"agg:{kind}:root:{int(zz)}"
+    lineage_id = unique_world_root_lineage_id(kind, zz)
     base_tags = dict(tags)
     overrides = {
         "tags": {
@@ -320,7 +337,10 @@ def _ensure_unique_world_root(
             "aggregate": True,
             "aggregate_kind": str(base_tags.get("aggregate_kind") or kind),
             "detail_mode": base_tags.get("detail_mode", "cluster"),
-            "lineage_id": eid,
+            # Unification note: root aggregates still keep their historical
+            # runtime `eid` for compatibility, but their lineage should remain
+            # ancestry/provenance vocabulary rather than mirroring identity.
+            "lineage_id": lineage_id,
         }
     }
     try:
@@ -919,7 +939,8 @@ def _emit_children_with_placement(
             if i >= len(pts):
                 break
             ax, ay = pts[i]
-            eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+            lineage_id = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+            eid = entity_id_from_lineage(lineage_id)
             child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
             out.append(
                 SpawnIntent(
@@ -930,7 +951,7 @@ def _emit_children_with_placement(
                     zz=int(zz),
                     child_type=child_type,
                     tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
-                    lineage_id=eid,
+                    lineage_id=lineage_id,
                 )
             )
         return out
@@ -962,7 +983,8 @@ def _emit_children_with_placement(
 
         for i, proto_id in enumerate(children):
             x, y = interior[i % len(interior)]
-            eid = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+            lineage_id = build_lineage_id(parent_lineage, "child", salt, proto_id, i)
+            eid = entity_id_from_lineage(lineage_id)
             child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
             out.append(
                 SpawnIntent(
@@ -973,7 +995,7 @@ def _emit_children_with_placement(
                     zz=int(zz),
                     child_type=child_type,
                     tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1},
-                    lineage_id=eid,
+                    lineage_id=lineage_id,
                 )
             )
         return out
@@ -1085,7 +1107,8 @@ def resolve_spawn_intents_from_recipe(
                         if door_xy is not None and (x, y) == door_xy:
                             # optionally spawn a door entity at the gap
                             if door_proto:
-                                eid = build_lineage_id(parent_lineage, "door", f"{x},{y}")
+                                lineage_id = build_lineage_id(parent_lineage, "door", f"{x},{y}")
+                                eid = entity_id_from_lineage(lineage_id)
                                 intents.append(
                                     SpawnIntent(
                                         eid=eid,
@@ -1095,12 +1118,13 @@ def resolve_spawn_intents_from_recipe(
                                         zz=int(zz),
                                         child_type="entity",
                                         tags={"structure": True, "door": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
-                                        lineage_id=eid,
+                                        lineage_id=lineage_id,
                                     )
                                 )
                             else:
                                 # If no door entity, at least ensure a walkable floor tile here:
-                                eid = build_lineage_id(parent_lineage, "floor", f"{x},{y}")
+                                lineage_id = build_lineage_id(parent_lineage, "floor", f"{x},{y}")
+                                eid = entity_id_from_lineage(lineage_id)
                                 intents.append(
                                     SpawnIntent(
                                         eid=eid,
@@ -1116,11 +1140,12 @@ def resolve_spawn_intents_from_recipe(
                                             "base_size": 1.0,
                                             "tags": {"structure": True, "floor": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
                                         },
-                                        lineage_id=eid,
+                                        lineage_id=lineage_id,
                                     )
                                 )
                             continue 
-                        eid = build_lineage_id(parent_lineage, "wall", f"{x},{y}")
+                        lineage_id = build_lineage_id(parent_lineage, "wall", f"{x},{y}")
+                        eid = entity_id_from_lineage(lineage_id)
                         intents.append(
                             SpawnIntent(
                                 eid=eid,
@@ -1130,11 +1155,12 @@ def resolve_spawn_intents_from_recipe(
                                 zz=int(zz),
                                 child_type="entity",
                                 tags={"structure": True, "wall": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
-                                lineage_id=eid,
+                                lineage_id=lineage_id,
                             )
                         )
                     else:
-                        eid = build_lineage_id(parent_lineage, "floor", f"{x},{y}")
+                        lineage_id = build_lineage_id(parent_lineage, "floor", f"{x},{y}")
+                        eid = entity_id_from_lineage(lineage_id)
                         intents.append(
                             SpawnIntent(
                                 eid=eid,
@@ -1150,7 +1176,7 @@ def resolve_spawn_intents_from_recipe(
                                     "base_size": 1.0,
                                     "tags": {"structure": True, "floor": True, "owner": parent_lineage, "_resolve_depth": depth + 1},
                                 },
-                                lineage_id=eid,
+                                lineage_id=lineage_id,
                             )
                         )
             continue
@@ -1306,7 +1332,8 @@ def resolve_spawn_intents_from_recipe(
             for i in range(target_n):
                 proto_id = spawn_queue[i]
                 x, y = interior2[i % len(interior2)]
-                eid = build_lineage_id(parent_lineage, "pool", salt, proto_id, i)
+                lineage_id = build_lineage_id(parent_lineage, "pool", salt, proto_id, i)
+                eid = entity_id_from_lineage(lineage_id)
                 child_type = _spawn_kind_for_child(proto_id=str(proto_id), placement=placement, default="entity")
                 intents.append(
                     SpawnIntent(
@@ -1317,7 +1344,7 @@ def resolve_spawn_intents_from_recipe(
                         zz=int(zz),
                         child_type=child_type,
                         tags={"from_parent": parent_lineage, "_resolve_depth": depth + 1, "spawned_by": "children_pool"},
-                        lineage_id=eid,
+                        lineage_id=lineage_id,
                     )
                 )
             continue

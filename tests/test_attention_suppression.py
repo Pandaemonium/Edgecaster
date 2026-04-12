@@ -21,6 +21,13 @@ class _DummyGame:
         self.entity_state[str(entity_id)] = st
 
 
+def test_normalize_optional_lineage_id_preserves_absence() -> None:
+    assert attention._normalize_optional_lineage_id(None) is None
+    assert attention._normalize_optional_lineage_id("") is None
+    assert attention._normalize_optional_lineage_id("  ") is None
+    assert attention._normalize_optional_lineage_id("lineage:child:1") == "lineage:child:1"
+
+
 def test_is_suppressed_checks_entity_state_first() -> None:
     g = _DummyGame()
     g.entity_blocked.add("ent:1")
@@ -41,6 +48,17 @@ def test_is_suppressed_checks_lineage_state() -> None:
         entity_id="runtime:door:1",
         lineage_id="lineage:door:1",
     ) is True
+
+
+def test_is_suppressed_prefers_entity_state_over_legacy_lineage_lifecycle() -> None:
+    g = _DummyGame()
+    g.entity_state["runtime:door:2"] = {"removed": False}
+    g.entity_state["lineage:door:2"] = {"removed": True}
+    assert attention._is_suppressed(
+        g,
+        entity_id="runtime:door:2",
+        lineage_id="lineage:door:2",
+    ) is False
 
 
 def test_apply_persisted_entity_state_applies_runtime_fields() -> None:
@@ -108,6 +126,39 @@ def test_apply_persisted_entity_state_returns_false_when_removed() -> None:
         lineage_id="lineage:obj:dead",
     )
     assert ok is False
+
+
+def test_apply_persisted_entity_state_prefers_entity_record_over_legacy_removed() -> None:
+    class _Stats:
+        def __init__(self) -> None:
+            self.hp = 8
+            self.max_hp = 10
+            self.mana = 1
+            self.max_mana = 3
+
+        def clamp(self) -> None:
+            pass
+
+    g = _DummyGame()
+    g.entity_state["runtime:obj:live"] = {"removed": False, "last_known_hp": 6}
+    g.entity_state["lineage:obj:live"] = {"removed": True, "last_known_tags": {"legacy_flag": True}}
+    obj = SimpleNamespace(
+        tags={"lineage_id": "lineage:obj:live"},
+        glyph="+",
+        blocks_movement=True,
+        stats=_Stats(),
+        statuses={},
+        cooldowns={},
+    )
+    ok = attention._apply_persisted_entity_state(
+        g,
+        obj,
+        entity_id="runtime:obj:live",
+        lineage_id="lineage:obj:live",
+    )
+    assert ok is True
+    assert obj.stats.hp == 6
+    assert obj.tags.get("legacy_flag") is True
 
 
 def test_resolve_depth_defaults_follow_lod_curve() -> None:

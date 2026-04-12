@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from edgecaster.state.actors import Actor
 from edgecaster.state.entities import Entity
@@ -158,3 +159,65 @@ def test_blocking_entity_overlapping_rect_ignores_actor_entities() -> None:
     )
     got = entity_ops.blocking_entity_overlapping_rect(lvl, (2.0, 2.0, 3.0, 3.0))
     assert got is wall
+
+
+def test_toggle_door_updates_runtime_and_persists_open_state() -> None:
+    world = World(width=4, height=4)
+    tile = world.get_tile(1, 1)
+    tile.walkable = False
+    tile.glyph = "+"
+    door = Entity(id="runtime:door:1", name="Door", pos=(1, 1), blocks_movement=True)
+    door.glyph = "+"
+    door.tags["lineage_id"] = "site:test:door:1"
+    door.tags["door_state"] = "closed"
+    level = SimpleNamespace(world=world, need_fov=False)
+    game = SimpleNamespace(log=MagicMock(), patch_entity_state=MagicMock(), _update_fov=MagicMock())
+
+    entity_ops.toggle_door(game, door, level, notify=True)
+
+    assert door.tags["door_state"] == "open"
+    assert door.blocks_movement is False
+    assert door.glyph == "/"
+    assert tile.walkable is True
+    assert tile.glyph == "."
+    assert level.need_fov is True
+    game.patch_entity_state.assert_called_once_with(
+        door,
+        {
+            "last_known_tags": {"door_state": "open"},
+            "last_known_glyph": "/",
+            "last_known_blocks_movement": False,
+        },
+    )
+    game._update_fov.assert_called_once_with(level)
+
+
+def test_toggle_door_updates_runtime_and_persists_closed_state() -> None:
+    world = World(width=4, height=4)
+    tile = world.get_tile(1, 1)
+    tile.walkable = True
+    tile.glyph = "."
+    door = Entity(id="runtime:door:2", name="Door", pos=(1, 1), blocks_movement=False)
+    door.glyph = "/"
+    door.tags["lineage_id"] = "site:test:door:2"
+    door.tags["door_state"] = "open"
+    level = SimpleNamespace(world=world, need_fov=False)
+    game = SimpleNamespace(log=MagicMock(), patch_entity_state=MagicMock(), _update_fov=MagicMock())
+
+    entity_ops.toggle_door(game, door, level, notify=True)
+
+    assert door.tags["door_state"] == "closed"
+    assert door.blocks_movement is True
+    assert door.glyph == "+"
+    assert tile.walkable is False
+    assert tile.glyph == "+"
+    assert level.need_fov is True
+    game.patch_entity_state.assert_called_once_with(
+        door,
+        {
+            "last_known_tags": {"door_state": "closed"},
+            "last_known_glyph": "+",
+            "last_known_blocks_movement": True,
+        },
+    )
+    game._update_fov.assert_called_once_with(level)

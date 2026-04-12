@@ -9,7 +9,7 @@ Supersedes: none
 
 ## Edgecaster Vision: One Hierarchical Entity Substrate
 Updated: 2026-04-11
-Status: North Star (Design Lock v1.3)
+Status: North Star (Design Lock v1.4, Phase 1 Contract Lock)
 
 This document defines the target architecture where:
 
@@ -256,6 +256,58 @@ Examples of richer helpers/primitives that may exist now or later:
 - normalized seed patterns for fractal casting
 - other derived pattern metadata as systems demand it
 
+### First-Draft Shared Query API
+
+Conceptual entry points:
+
+- `query_geometry(root_entity_id, *, detail_level="raw", max_depth=None, include_relation_edges=True, derive=(), realize_policy="forbid")`
+- `query_normalized_pattern(root_entity_id, *, helper_id="seed_pattern", realize_policy="forbid")`
+
+`query_geometry(...)` should return a forward-extensible payload with at least:
+
+- `root_entity_id`
+- `realization_state` (`realized`, `collapsed`, or `mixed`)
+- `precision` (`exact` or `approximate`)
+- `nodes`
+- `edges`
+- `derived`
+- `warnings`
+
+Minimum node fields:
+
+- `node_or_entity_id`
+- `entity_id`
+- `abs_position`
+- `channels`
+- `active`
+- `tags`
+
+Minimum edge fields:
+
+- `src_id`
+- `dst_id`
+- `edge_kind`
+- `weight`
+- `geometry_kind`
+- `geometry_payload`
+
+Realization policy meanings:
+
+- `forbid`: must not instantiate hidden children; may return collapsed or
+  approximate geometry plus warnings
+- `allow`: may realize if the runtime already has the needed data cheaply
+- `require`: caller is asking for exact expanded geometry and accepts the cost
+
+Contract rules:
+
+1. Queries must never silently fabricate exact geometry when only an
+   approximation is known.
+2. Callers must tolerate missing derived helpers and future-added fields.
+3. Higher-level helpers are first-class, but they are helpers layered over the
+   same shared substrate, not a separate path.
+4. `query_normalized_pattern(...)` is the intended bridge for systems such as
+   fractal casting that want a canonical helper instead of raw graph assembly.
+
 -------------------------------------------------------------------------------
 
 ## Fractal Chakra Recursion
@@ -426,6 +478,103 @@ Rules:
 3. Removed/dead/destroyed entities never respawn unless explicitly resurrected.
 4. Only diffs from the deterministic base are stored.
    The base is always regenerable from seed + recipe.
+
+First-draft patch envelope:
+
+- `patch_version`
+- `entity_id`
+- `updated_tick`
+- `state_flags` (`removed`, `dead`, other lifecycle flags)
+- `tags_patch`
+- `channel_patch`
+- `geometry_patch`
+- `relation_patch`
+- `custom_payload`
+
+`geometry_patch` may include:
+
+- absolute position override
+- footprint override
+- node position overrides
+- edge geometry overrides
+
+`relation_patch` may include:
+
+- containment parent/socket override
+- typed relation additions
+- typed relation removals
+
+Migration naming rule:
+
+- `chakra_patch` remains the legacy persisted field name during migration
+- semantically it should be read as a composition/geometry patch, not as proof
+  that chakras are a second ontology
+- do not introduce a second competing patch format unless migration forces it
+
+Persistence precision rule:
+
+- If exact child geometry is unknown because a subtree is collapsed, persist
+  only the exact changes that are known.
+- Never persist fabricated exact positions for off-attention children.
+
+-------------------------------------------------------------------------------
+
+## Relation Semantics Contract
+
+Containment and typed relation edges do different jobs and should stay clearly
+separated.
+
+Containment edge responsibilities:
+
+- defines the single parent in the hierarchy
+- defines expansion/collapse scope
+- defines socket placement and deterministic child ordering
+- provides the default upward composition path
+- changes when an entity is detached, reattached, equipped, or moved
+
+Typed relation edge responsibilities:
+
+- adds cross-links such as `owns`, `influences`, `routes`, `linked_to`,
+  `resonance`
+- may connect across branches, scales, or regions
+- never creates parentage or multi-parent containment
+- never becomes the primary persistence ancestry path
+- only propagates when rules explicitly opt in
+
+Rule of thumb:
+
+- If removing the relation should change "what this thing is inside of", it is
+  a containment edge.
+- If removing the relation should change interaction without changing parentage,
+  it is a typed relation edge.
+
+-------------------------------------------------------------------------------
+
+## ChakraComponent During Migration
+
+`chakra_component` is allowed to remain as a practical runtime/cache structure
+while the refactor is in flight, but it has strict limits.
+
+Allowed:
+
+- caching geometry/composition views derived from the authoritative hierarchy
+- carrying transitional channel/node data for older systems
+- serving as the implementation surface behind shared query helpers
+
+Not allowed:
+
+- becoming the authoritative source of identity
+- becoming the authoritative source of parentage or containment
+- accumulating bespoke gameplay semantics that bypass the shared query/mutation
+  interfaces
+
+Migration intent:
+
+- the authoritative model is the hierarchical entity graph plus persisted
+  patches and deterministic recipes
+- `chakra_component` should become regenerable from that source of truth
+- new systems should prefer shared query/mutation helpers over bespoke direct
+  spelunking through component internals
 
 -------------------------------------------------------------------------------
 

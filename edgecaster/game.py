@@ -452,7 +452,8 @@ class Game:
         # Track which staged structure tiles are active per POI/site (parent_id -> set[eid])
         self._attn_active_struct_children: Dict[str, set[str]] = {}
         # Persistent per-entity runtime state (ownership, lifecycle, deltas).
-        # Keyed by stable entity_id (falls back to runtime id during migration).
+        # New writes should target stable entity_id keys. Legacy lineage-only
+        # records may still be read during migration as compatibility fallback.
         self.entity_state: Dict[str, Dict[str, Any]] = {}
         # God system state
         self.god_favor: Dict[str, Any] = {}
@@ -2357,7 +2358,7 @@ class Game:
         return None
 
     def _entity_state_keys(self, entity_or_id: Any, *, lineage_id: Any = None) -> List[str]:
-        """Return persistence keys for an entity, preferring lineage + entity id."""
+        """Return read-compat persistence keys for an entity."""
         # Unification note: dual-key merging is a migration bridge. Long-term,
         # stable entity_id should be the primary key and lineage should remain
         # provenance/context, not a competing persistence identity.
@@ -2379,22 +2380,87 @@ class Game:
             keys.insert(0, lid_kw)
         return keys
 
+    def _entity_state_write_key(self, entity_or_id: Any, *, lineage_id: Any = None) -> str:
+        """Return the single authoritative key to write for this patch.
+
+        Rules:
+        - Objects write to stable entity_id when available.
+        - Direct string patches write to the provided key verbatim. This keeps
+          explicit lineage-only compatibility writes possible while new code
+          moves toward entity_id-keyed writes.
+        - If no entity id is available, fall back to lineage as a last resort.
+        """
+        if isinstance(entity_or_id, str):
+            return self._normalize_entity_id(entity_or_id) or ""
+
+        eid = self.entity_id_for_entity(entity_or_id)
+        if eid:
+            return eid
+
+        lid_kw = self._normalize_entity_id(lineage_id)
+        if lid_kw:
+            return lid_kw
+
+        return self.lineage_id_for_entity(entity_or_id) or ""
+
+    @staticmethod
+    def _merge_entity_state_records(primary: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge fallback lineage data under an authoritative primary entity record.
+
+        Once an entity-keyed record exists, lineage remains compatibility
+        backfill only. It may provide old detail fields, but it must not
+        override lifecycle/ownership truth for the entity.
+        """
+        if not primary:
+            return dict(fallback or {})
+
+        blocked_fallback_keys = {
+            "removed",
+            "dead",
+            "removed_reason",
+            "dead_reason",
+            "updated_tick",
+            "owner_id",
+            "parent_entity_id",
+            "socket_id",
+            "in_inventory",
+        }
+        out: Dict[str, Any] = {}
+        if isinstance(fallback, dict):
+            for k, v in fallback.items():
+                if str(k) not in blocked_fallback_keys:
+                    out[str(k)] = v
+        out.update(dict(primary))
+        return out
+
     def get_effective_entity_state(self, entity_or_id: Any, *, lineage_id: Any = None) -> Dict[str, Any]:
-        """Return merged state across lineage + entity keys without creating entries."""
+        """Return effective state with entity_id authority and lineage fallback."""
         # Unification note: this helper exists so current runtime paths can read
         # both key spaces. Keep new systems biased toward entity_id-only writes.
-        out: Dict[str, Any] = {}
-        keys = self._entity_state_keys(entity_or_id, lineage_id=lineage_id)
-        if not keys:
-            return out
         store = getattr(self, "entity_state", None)
         if not isinstance(store, dict):
-            return out
-        for k in keys:
-            st = store.get(str(k))
+            return {}
+
+        primary_key = self._entity_state_write_key(entity_or_id, lineage_id=lineage_id)
+        primary: Dict[str, Any] = {}
+        if primary_key:
+            st = store.get(str(primary_key))
             if isinstance(st, dict):
-                out.update(st)
-        return out
+                primary = st
+
+        fallback_key = ""
+        if isinstance(entity_or_id, str):
+            fallback_key = self._normalize_entity_id(lineage_id)
+        else:
+            fallback_key = self._normalize_entity_id(lineage_id) or (self.lineage_id_for_entity(entity_or_id) or "")
+
+        fallback: Dict[str, Any] = {}
+        if fallback_key and fallback_key != str(primary_key or ""):
+            st = store.get(str(fallback_key))
+            if isinstance(st, dict):
+                fallback = st
+
+        return self._merge_entity_state_records(primary, fallback)
 
     def get_entity_state(self, entity_or_id: Any) -> Dict[str, Any]:
         if isinstance(entity_or_id, str):
@@ -2420,27 +2486,33 @@ class Game:
         # Unification note: once lineage compatibility is fully retired, this
         # should become a simpler entity_id-keyed delta write path, including
         # generalized chakra/component geometry patches.
-        keys = self._entity_state_keys(entity_or_id, lineage_id=lineage_id)
-        if not keys:
+        key = self._entity_state_write_key(entity_or_id, lineage_id=lineage_id)
+        if not key:
             return
         try:
             lvl = self._level()
             updated_tick = int(getattr(lvl, "current_tick", 0) or 0)
         except Exception:
             updated_tick = 0
-        for key in keys:
-            st = self.get_entity_state(str(key))
-            if not isinstance(st, dict):
-                continue
-            if isinstance(patch, dict):
-                st.update(patch)
-            if fields:
-                st.update(fields)
-            if updated_tick:
-                st["updated_tick"] = int(updated_tick)
-            else:
-                st["updated_tick"] = int(st.get("updated_tick", 0) or 0)
-            self.entity_state[str(key)] = st
+        st = self.get_entity_state(str(key))
+        if not isinstance(st, dict):
+            return
+        if isinstance(patch, dict):
+            st.update(patch)
+        if fields:
+            st.update(fields)
+
+        lid = self._normalize_entity_id(lineage_id)
+        if not lid and not isinstance(entity_or_id, str):
+            lid = self.lineage_id_for_entity(entity_or_id)
+        if lid and str(key) != lid:
+            st["lineage_id"] = str(lid)
+
+        if updated_tick:
+            st["updated_tick"] = int(updated_tick)
+        else:
+            st["updated_tick"] = int(st.get("updated_tick", 0) or 0)
+        self.entity_state[str(key)] = st
 
     def entity_is_suppressed(self, entity_or_id: Any) -> bool:
         st = self.get_effective_entity_state(entity_or_id)

@@ -235,7 +235,7 @@ class TestEntityState:
         assert st.get("dead") is True
         assert st.get("dead_reason") == "unit_test"
 
-    def test_patch_entity_state_writes_lineage_key_for_object(self, game_instance):
+    def test_patch_entity_state_prefers_entity_key_for_object_and_keeps_lineage_as_metadata(self, game_instance):
         obj = MagicMock()
         obj.id = "runtime:item:1"
         obj.entity_id = "runtime:item:1"
@@ -244,10 +244,24 @@ class TestEntityState:
         game_instance.patch_entity_state(obj, removed=True, removed_reason="unit_test")
 
         st_entity = game_instance.get_entity_state("runtime:item:1")
-        st_lineage = game_instance.get_entity_state("lineage:item:1")
         assert st_entity.get("removed") is True
-        assert st_lineage.get("removed") is True
-        assert st_lineage.get("removed_reason") == "unit_test"
+        assert st_entity.get("removed_reason") == "unit_test"
+        assert st_entity.get("lineage_id") == "lineage:item:1"
+        assert game_instance.entity_state.get("lineage:item:1") is None
+
+    def test_get_effective_entity_state_merges_legacy_lineage_fallback_with_entity_state(self, game_instance):
+        obj = MagicMock()
+        obj.id = "runtime:item:2"
+        obj.entity_id = "runtime:item:2"
+        obj.tags = {"lineage_id": "lineage:item:2"}
+
+        game_instance.entity_state["lineage:item:2"] = {"last_known_tags": {"legacy_flag": True}}
+        game_instance.patch_entity_state(obj, removed=True, removed_reason="unit_test")
+
+        st = game_instance.get_effective_entity_state(obj)
+        assert st.get("removed") is True
+        assert st.get("removed_reason") == "unit_test"
+        assert st.get("last_known_tags", {}).get("legacy_flag") is True
 
     def test_entity_is_suppressed_checks_lineage_state_for_object(self, game_instance):
         obj = MagicMock()
@@ -257,6 +271,17 @@ class TestEntityState:
 
         game_instance.patch_entity_state("lineage:npc:1", removed=True)
         assert game_instance.entity_is_suppressed(obj) is True
+
+    def test_entity_is_suppressed_prefers_entity_state_over_legacy_lineage_lifecycle(self, game_instance):
+        obj = MagicMock()
+        obj.id = "runtime:npc:2"
+        obj.entity_id = "runtime:npc:2"
+        obj.tags = {"lineage_id": "lineage:npc:2"}
+
+        game_instance.entity_state["lineage:npc:2"] = {"removed": True}
+        game_instance.patch_entity_state(obj, dead=False, removed=False)
+
+        assert game_instance.entity_is_suppressed(obj) is False
 
 
 # ---------------------------------------------------------------------------

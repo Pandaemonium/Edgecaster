@@ -51,6 +51,18 @@ _PERSIST_TAG_KEYS = (
     "opened",
 )
 
+_PRIMARY_ENTITY_STATE_KEYS = {
+    "removed",
+    "dead",
+    "removed_reason",
+    "dead_reason",
+    "updated_tick",
+    "owner_id",
+    "parent_entity_id",
+    "socket_id",
+    "in_inventory",
+}
+
 
 def _peek_entity_state(game: object, key: str) -> Dict[str, Any]:
     store = getattr(game, "entity_state", None)
@@ -70,36 +82,52 @@ def _peek_entity_state(game: object, key: str) -> Dict[str, Any]:
     return {}
 
 
+def _normalize_optional_lineage_id(raw: object) -> str | None:
+    try:
+        lineage_id = str(raw or "").strip()
+    except Exception:
+        lineage_id = ""
+    return lineage_id or None
+
+
 def _effective_entity_state(game: object, *, entity_id: str | None, lineage_id: str | None) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
     lid = str(lineage_id or "").strip()
     eid = str(entity_id or "").strip()
+    try:
+        get_effective = getattr(game, "get_effective_entity_state", None)
+        if callable(get_effective) and (eid or lid):
+            st = get_effective(eid or lid, lineage_id=lid or None)
+            if isinstance(st, dict):
+                return dict(st)
+    except Exception:
+        pass
+
+    primary: Dict[str, Any] = {}
+    fallback: Dict[str, Any] = {}
     # Unification note: lineage_id merging is still a migration bridge. Once
     # graph/persistence cutover is complete, entity_id should be authoritative
     # and lineage should survive only as contextual provenance/history.
-    if lid:
-        st = _peek_entity_state(game, lid)
-        if isinstance(st, dict):
-            out.update(st)
     if eid:
         st = _peek_entity_state(game, eid)
         if isinstance(st, dict):
-            out.update(st)
+            primary = dict(st)
+    if lid and lid != eid:
+        st = _peek_entity_state(game, lid)
+        if isinstance(st, dict):
+            fallback = dict(st)
+    if not primary:
+        return fallback
+
+    out: Dict[str, Any] = {}
+    for key, value in fallback.items():
+        if str(key) not in _PRIMARY_ENTITY_STATE_KEYS:
+            out[str(key)] = value
+    out.update(primary)
     return out
 
 
 def _entity_is_suppressed(game: object, entity_id: str, *, lineage_id: str | None = None) -> bool:
     lid = str(lineage_id or "").strip()
-    try:
-        get_effective = getattr(game, "get_effective_entity_state", None)
-        if callable(get_effective):
-            st = get_effective(str(entity_id or ""), lineage_id=lid or None)
-            if isinstance(st, dict):
-                if bool(st.get("removed")) or bool(st.get("dead")):
-                    return True
-    except Exception:
-        pass
-
     st2 = _effective_entity_state(game, entity_id=str(entity_id or ""), lineage_id=lid)
     if bool(st2.get("removed")) or bool(st2.get("dead")):
         return True
@@ -108,8 +136,6 @@ def _entity_is_suppressed(game: object, entity_id: str, *, lineage_id: str | Non
         fn = getattr(game, "entity_is_suppressed", None)
         if callable(fn):
             if entity_id and bool(fn(entity_id)):
-                return True
-            if lid and bool(fn(lid)):
                 return True
     except Exception:
         pass
@@ -162,8 +188,17 @@ def _mark_entity_live(game: object, entity_id: str, *, lineage_id: str | None = 
 def _is_suppressed(game: object, *, entity_id: str | None = None, lineage_id: str | None = None) -> bool:
     if entity_id and _entity_is_suppressed(game, str(entity_id), lineage_id=lineage_id):
         return True
-    if lineage_id and _entity_is_suppressed(game, str(lineage_id), lineage_id=lineage_id):
-        return True
+    lid = str(lineage_id or "").strip()
+    if lid and not entity_id:
+        st = _peek_entity_state(game, lid)
+        if bool(st.get("removed")) or bool(st.get("dead")):
+            return True
+        try:
+            fn = getattr(game, "entity_is_suppressed", None)
+            if callable(fn) and bool(fn(lid)):
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -997,8 +1032,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
         for slot, (lx, ly) in enumerate(pts):
             lineage_id = aggregate_system.aggregate_slot_lineage_id(agg_id, child_id, int(slot))
-            eid = lineage_id
-            if _is_suppressed(game, entity_id=eid):
+            eid = aggregate_system.entity_id_from_lineage(lineage_id)
+            if _is_suppressed(game, entity_id=eid, lineage_id=lineage_id):
                 # Keep slot locally marked harvested to avoid churn this frame.
                 harvested.add(int(slot))
                 existing_eid = slot_to_eid.get(int(slot))
@@ -1562,7 +1597,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                         continue
 
                     eid = str(intent.eid)
-                    lineage_id = str(intent.lineage_id or eid or "")
+                    lineage_id = _normalize_optional_lineage_id(intent.lineage_id)
                     if _is_suppressed(game, entity_id=eid, lineage_id=lineage_id):
                         try:
                             if eid in attn_store.entities:
@@ -1660,7 +1695,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                     if child_type == "staged" and intent.staged:
                         sd = intent.staged
                         sd_tags = dict(sd.get("tags", {}) or {})
-                        sd_tags["lineage_id"] = lineage_id
+                        if lineage_id:
+                            sd_tags["lineage_id"] = lineage_id
                         obj = _YogaStagedEntity(
                             id=eid,
                             pos=(int(lx), int(ly)),
@@ -1729,7 +1765,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             a.tags = getattr(a, "tags", {}) or {}
                             if intent.tags:
                                 a.tags.update(dict(intent.tags))
-                            a.tags["lineage_id"] = lineage_id
+                            if lineage_id:
+                                a.tags["lineage_id"] = lineage_id
                         except Exception:
                             pass
                         try:
@@ -1780,13 +1817,14 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             eid=eid,
                             pos=(int(lx), int(ly)),
                             abs_pos=(int(ax), int(ay)),
-                            overrides={
-                                "tags": {
-                                    **dict(intent.tags or {}),
-                                    "lineage_id": lineage_id,
-                                }
-                            },
+                            overrides={"tags": dict(intent.tags or {})},
                         )
+                        if lineage_id:
+                            try:
+                                obj.tags = getattr(obj, "tags", {}) or {}
+                                obj.tags["lineage_id"] = lineage_id
+                            except Exception:
+                                pass
                         try:
                             entity_graph_ops_system.attach_entity_to_parent(
                                 game, obj, parent_id, socket_id="resolve"

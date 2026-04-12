@@ -9,7 +9,7 @@ Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
 Updated: 2026-04-11
-Status: v1.8 (Ontology Simplification + Query Contract Prep)
+Status: v1.15 (Phase 2 Door Persistence Slice)
 
 This is the execution plan for:
 
@@ -24,7 +24,7 @@ work that survived the earlier POI/entity unification plan.
 
 -------------------------------------------------------------------------------
 
-## Current Snapshot (2026-02-18)
+## Current Snapshot (2026-04-11)
 
 Implemented and stable:
 
@@ -37,6 +37,24 @@ Implemented and stable:
    - `game.entity_state` exists and receives lifecycle writes.
    - Runtime removal/death/suppression now use `entity_id` only.
    - Legacy lineage write/read bridge methods were deleted from runtime codepaths.
+   - Object/entity persistence writes now target the resolved `entity_id` key
+     only. Legacy lineage data remains read-compat fallback rather than a peer
+     write target.
+   - Read compatibility now treats entity-keyed records as lifecycle- and
+     ownership-authoritative; lineage may backfill old detail fields, but it
+     no longer overrides suppression truth once an entity record exists.
+   - Deterministic resolver/aggregate children now begin separating `eid` from
+     `lineage_id` instead of treating lineage paths as runtime entity identity.
+   - Unique world-root aggregates now keep historical root `eid` values for
+     compatibility while using a distinct lineage namespace, so even parentless
+     macro entities no longer collapse ancestry and identity into one string.
+   - Attention realization no longer fabricates lineage from `eid` when a spawn
+     intent omitted provenance; absence now stays absent instead of becoming a
+     fake identity-shaped lineage.
+   - Door state mutations now write immediate entity-state deltas in the same
+     patch shape used by attention rehydration (`last_known_tags`,
+     `last_known_glyph`, `last_known_blocks_movement`) instead of relying only
+     on a later snapshot pass to preserve open/closed state.
    - Spawn and attention-stage paths initialize lifecycle flags in `entity_state`.
 
 3. Footprint substrate:
@@ -95,6 +113,14 @@ Not yet complete:
 4. Split-stack operations still create child entities in list-backed inventories.
    - Shared graph-op split is in place, but final graph-authoritative stack
      storage is not complete.
+5. Read compatibility still merges legacy lineage state where present.
+   - This is intentional for migration safety, but the long-term goal is for
+     lineage to be provenance/context only, not a fallback persistence identity.
+   - The current bridge now blocks legacy lineage lifecycle/ownership fields
+     from overriding an existing entity-keyed record.
+6. Some attention/resolver paths still carry lineage-heavy assumptions.
+   - The substrate is moving in the right direction, but more cuts are needed
+     before lineage stops leaking into runtime identity decisions entirely.
 
 ## Repo Read-Through Notes (2026-04-11)
 
@@ -150,6 +176,107 @@ land in the right places.
    - Before routing more gameplay onto data, expand those files so layouts carry
      useful geometry and rules can declare geometry-aware reducers plus composed
      propagation behavior.
+
+## Impacted Systems
+
+These are the most important system families that this migration will touch.
+They are listed in rough order of architectural importance, not implementation
+sequence.
+
+1. Identity, persistence, and canonical entity records
+   - Core files:
+     `edgecaster/state/entities.py`
+     `edgecaster/game.py`
+   - Why they matter:
+     This is where stable `entity_id`, persistence patches, and the
+     single-ontology model have to become truly authoritative.
+
+2. Containment graph operations and attachment semantics
+   - Core files:
+     `edgecaster/systems/entity_graph_ops.py`
+     `edgecaster/systems/inventory.py`
+   - Why they matter:
+     Pickup, drop, equip, detach, reattach, and subtree movement all need to
+     become graph-native rather than list/tag-native.
+
+3. Attention, realization, and de-realization
+   - Core files:
+     `edgecaster/systems/attention.py`
+     `edgecaster/systems/aggregate_resolution.py`
+     `edgecaster/systems/world_entity_index.py`
+   - Why they matter:
+     Attention chooses fidelity, so this layer must preserve canonical geometry,
+     deterministic IDs, and patch replay when entities expand/collapse.
+
+4. Geometry / chakra query substrate
+   - Core files:
+     `edgecaster/state/chakra_component.py`
+     `edgecaster/systems/chakras.py`
+     `edgecaster/systems/chakra_items.py`
+     `edgecaster/content/chakra_layouts.yaml`
+     `edgecaster/content/chakra_rules.yaml`
+   - Why they matter:
+     This is the current migration surface for the future shared geometry,
+     channels, reducers, and higher-level pattern helpers.
+
+5. Spawning and prototype hydration
+   - Core files:
+     `edgecaster/spawn_factory.py`
+   - Why they matter:
+     New actors, items, sites, and structures need to enter the world with
+     consistent identity, geometry, and hierarchical composition data.
+
+6. POI and world hierarchy realization
+   - Core files:
+     `edgecaster/systems/poi_worldgen.py`
+     `edgecaster/systems/poi_spawning.py`
+   - Why they matter:
+     These still contain some of the clearest ontology splits between world
+     proxies, realized content, and special-case spawn paths.
+
+7. Body-schema-driven gameplay and composition
+   - Core files:
+     `edgecaster/systems/chakras.py`
+     actor/body-schema consumers elsewhere in the repo
+   - Why they matter:
+     Actor anatomy is where the current chakra logic is richest, so it is also
+     where we have to be careful not to preserve actor-only assumptions in the
+     final generalized model.
+
+8. Pattern-consuming gameplay systems
+   - Core files:
+     `edgecaster/systems/chakras.py`
+     `edgecaster/systems/rune_anchor_sieges.py`
+     other rune / quest / content systems that consume derived state
+   - Why they matter:
+     The whole point of the unification is that fractal casting, runes, quests,
+     and other gameplay systems can query one shared geometry/composition model.
+
+## Phase 1 Contract Lock Outputs
+
+Phase 1 is a documentation/contract pass intended to remove ambiguity before
+the deeper code refactor begins.
+
+This phase locks four things:
+
+1. Shared geometry query API
+   - One raw query surface plus higher-level helper queries.
+   - Explicit realization policy (`forbid`, `allow`, `require`).
+   - Explicit precision reporting (`exact` vs `approximate`).
+
+2. Persistence patch envelope
+   - One `entity_id`-keyed patch shape for state, geometry, and relation diffs.
+   - `chakra_patch` remains the migration name, but semantically means
+     composition/geometry diffs.
+
+3. Containment vs typed relation semantics
+   - Containment is the one true parent/child hierarchy.
+   - Typed relations add interaction without creating parentage.
+
+4. `chakra_component` migration meaning
+   - It may remain a cache/adapter.
+   - It must not become the long-term authority for identity, parentage, or
+     bespoke bypass semantics.
 
 Execution priority (next refactor batches):
 
@@ -628,6 +755,33 @@ The shared query surface must support:
   (for example normalized seed patterns)
 - forward-extensible return shapes so new helpers/primitives can be added later
 
+First-draft conceptual entry points:
+
+- `query_geometry(root_entity_id, *, detail_level="raw", max_depth=None, include_relation_edges=True, derive=(), realize_policy="forbid")`
+- `query_normalized_pattern(root_entity_id, *, helper_id="seed_pattern", realize_policy="forbid")`
+
+Minimum result envelope:
+
+- `root_entity_id`
+- `realization_state` (`realized`, `collapsed`, or `mixed`)
+- `precision` (`exact` or `approximate`)
+- `nodes`
+- `edges`
+- `derived`
+- `warnings`
+
+Realization policy meanings:
+
+- `forbid`: do not instantiate hidden children; return collapsed or approximate
+  data plus warnings if needed
+- `allow`: may realize if the runtime already has the needed data cheaply
+- `require`: caller is explicitly asking for exact expanded geometry
+
+Contract rule:
+
+- Queries must never silently fabricate exact geometry when only approximate or
+  collapsed information is available.
+
 ### D. Persistence state
 
 - `entity_id`
@@ -637,6 +791,31 @@ The shared query surface must support:
 - `tags_patch`
 - `chakra_patch` (transitional name for channel/geometry diffs)
 - `custom_payload`
+
+First-draft patch envelope:
+
+- `patch_version`
+- `entity_id`
+- `updated_tick`
+- `state_flags`
+- `tags_patch`
+- `channel_patch`
+- `geometry_patch`
+- `relation_patch`
+- `custom_payload`
+
+`geometry_patch` may include:
+
+- absolute position override
+- footprint override
+- node position overrides
+- edge geometry overrides
+
+`relation_patch` may include:
+
+- containment parent/socket override
+- typed relation additions
+- typed relation removals
 
 Lineage state remains read-compat only during migration. `entity_id` is the
 authoritative persistence key.
@@ -650,6 +829,8 @@ authoritative persistence key.
    - `detach_entity(child)`
    - `reparent_entity(child, new_parent, socket)`
    - Must preserve `entity_id`.
+   - Only containment defines parentage, collapse scope, socket placement, and
+     deterministic child ordering.
 
 2. Geometry / composition operations:
    - The shared substrate must support operations equivalent to:
@@ -662,6 +843,11 @@ authoritative persistence key.
    - Chakra-named wrappers may survive during migration, but they should not
      imply a second ontology.
 
+   `chakra_component` migration rule:
+   - It may remain a cache/adapter behind these calls during migration.
+   - It must not become the long-term authority for identity, parentage, or
+     one-off bypass semantics.
+
 3. Reduction:
    - Parent behavior derives from child state and geometry.
    - Nearest-parent precedence applies before ancestor aggregation.
@@ -673,10 +859,16 @@ authoritative persistence key.
      content requires it.
    - Composition order and no-double-apply behavior must remain deterministic.
 
-5. Determinism:
+5. Typed relation semantics:
+   - Typed relation edges may cross branches, scales, and regions.
+   - They do not create parentage or multi-parent containment.
+   - They never replace containment as the persistence ancestry path.
+   - They only propagate when rules explicitly opt in.
+
+6. Determinism:
    - Any generated subtree/edge set must be reproducible with same seed and IDs.
 
-6. Footprint and interaction contracts:
+7. Footprint and interaction contracts:
    - `overlaps(a, b)` and `contains(a, b)` are canonical interaction primitives.
    - Cross-band interaction uses same primitives plus rule multipliers.
    - Point-only interaction helpers are compatibility wrappers and must be tagged.
