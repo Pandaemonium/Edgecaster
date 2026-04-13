@@ -270,6 +270,87 @@ def _resolve_chakra_path(
 
 
 # =============================================================================
+# ENTITY-GRAPH BODY NODE QUERY
+# =============================================================================
+
+def _body_nodes_for_actor(game: Any, actor: Any) -> List[Dict[str, Any]]:
+    """Return body-node data from the entity graph for *actor*.
+
+    Each entry is a dict with:
+        full_id           - dot-separated node id (e.g. "arm.shoulder")
+        parent_full_id    - parent's full_id, or None for top-level nodes
+        schema_rel_pos    - (x, y) relative to owner in body-graph-scale units
+        local_scale       - accumulated scale at this node (body-graph-scale)
+        node_proto_id     - prototype id of the node's entity
+        schema_proto_id   - prototype id of the schema that defines this node
+        is_schema_root    - True if this node is the root of its sub-schema
+
+    Returns an empty list when the entity tree is not expanded or the actor
+    has no entity_id (Option A: tree must always be pre-expanded by game.py).
+    """
+    from edgecaster.systems import entity_lifecycle as _elic
+
+    result: List[Dict[str, Any]] = []
+    if game is None or actor is None:
+        return result
+
+    actor_id = str(
+        getattr(actor, "entity_id", "") or getattr(actor, "id", "") or ""
+    ).strip()
+    if not actor_id:
+        return result
+
+    graph = getattr(game, "entity_graph", None)
+    if graph is None:
+        return result
+
+    # BFS over body-socket children.  All body-node entities are attached
+    # directly to their immediate parent in the graph (not all flat under actor).
+    queue: List[str] = [actor_id]
+    visited: Set[str] = set()
+
+    while queue:
+        parent_eid = queue.pop(0)
+        try:
+            child_ids = graph.get_children(parent_eid, socket_id="body")
+        except Exception:
+            child_ids = []
+        for cid in child_ids:
+            if cid in visited:
+                continue
+            visited.add(cid)
+            queue.append(cid)
+
+            obj = _elic.find_runtime_entity(game, cid)
+            if obj is None:
+                continue
+            tags = getattr(obj, "tags", None) or {}
+            if not isinstance(tags, dict) or not tags.get("body_node"):
+                continue
+            full_id = str(tags.get("body_full_id", "") or "").strip()
+            if not full_id:
+                continue
+
+            raw_rel = tags.get("body_schema_rel_pos", (0.0, 0.0))
+            try:
+                schema_rel_pos = (float(raw_rel[0]), float(raw_rel[1]))
+            except Exception:
+                schema_rel_pos = (0.0, 0.0)
+
+            result.append({
+                "full_id": full_id,
+                "parent_full_id": str(tags.get("body_parent_full_id", "") or "").strip() or None,
+                "schema_rel_pos": schema_rel_pos,
+                "local_scale": float(tags.get("body_local_scale", 1.0) or 1.0),
+                "node_proto_id": str(tags.get("body_node_proto_id", "") or ""),
+                "schema_proto_id": str(tags.get("body_schema_proto_id", "") or ""),
+                "is_schema_root": bool(tags.get("body_schema_root", False)),
+            })
+
+    return result
+
+
+# =============================================================================
 # CHAKRA POINT DATA
 # =============================================================================
 
@@ -319,6 +400,7 @@ class ChakraSilhouetteWidget(Widget):
         self,
         *,
         actor: Any = None,
+        game: Any = None,
         state_provider: Optional[Callable[[], ChakraState]] = None,
         on_chakra_click: Optional[callable] = None,
         on_chakra_hover: Optional[callable] = None,
@@ -329,6 +411,7 @@ class ChakraSilhouetteWidget(Widget):
     ) -> None:
         super().__init__()
         self.actor = actor
+        self.game = game
         self._state_provider = state_provider
         self.on_chakra_click = on_chakra_click
         self.on_chakra_hover = on_chakra_hover
@@ -424,11 +507,14 @@ class ChakraSilhouetteWidget(Widget):
         return float(self._cam_scale)
 
     def _rebuild_chakra_points(self) -> None:
-        """Rebuild chakra point data from actor's body schema.
+        """Rebuild chakra point data from body-node entities in the entity graph.
 
-        Uses recursive traversal to include sub-schema nodes when their
-        branch root is unlocked. For example, when 'arm' is unlocked,
-        shows shoulder, upper_arm, elbow, forearm, hand nodes.
+        Positions come from body_schema_rel_pos tags stored at entity creation
+        time (body-graph-scale units), scaled by CHAKRA_LAYOUT_SCALE for UI
+        display.  Alignment offsets from ChakraState are applied on top.
+
+        Falls back to the schema-walking legacy path when the entity tree is
+        not available (e.g., unit tests that construct actors without a game).
         """
         self._chakra_points.clear()
         self._connections.clear()
@@ -436,25 +522,77 @@ class ChakraSilhouetteWidget(Widget):
         if self.actor is None:
             return
 
-        body_schema = _get_body_schema(self.actor)
         chakra_state = self._get_state()
-        nodes = _get_nodes_from_schema(body_schema)
         if getattr(chakra_state, "pattern_root", None) in chakra_state.active:
             self._pattern_root = chakra_state.pattern_root
         else:
             self._pattern_root = None
 
+        node_list = _body_nodes_for_actor(self.game, self.actor)
+
+        if not node_list:
+            # Legacy fallback: schema walk (no live entity tree).
+            self._rebuild_chakra_points_schema(chakra_state)
+            return
+
+        # Scale factor from body-graph-scale units to chakra UI unit space.
+        actor_tags = getattr(self.actor, "tags", None) or {}
+        body_graph_scale = float(actor_tags.get("body_graph_scale", 1.0) or 1.0)
+        scale_factor = CHAKRA_LAYOUT_SCALE / max(1e-6, body_graph_scale)
+
+        for node_data in node_list:
+            full_id = node_data["full_id"]
+            rel = node_data["schema_rel_pos"]
+            local_scale_raw = node_data["local_scale"]
+
+            base_x = float(rel[0]) * scale_factor
+            base_y = float(rel[1]) * scale_factor
+            chakra_local_scale = local_scale_raw * scale_factor
+
+            align = chakra_state.alignments.get(full_id)
+            if align and len(align) >= 2:
+                pos_x = base_x + float(align[0]) * chakra_local_scale * 0.5
+                pos_y = base_y + float(align[1]) * chakra_local_scale * 0.5
+            else:
+                pos_x, pos_y = base_x, base_y
+
+            if full_id in chakra_state.active:
+                state_str = "active"
+            elif full_id in chakra_state.unlocked:
+                state_str = "unlocked"
+            else:
+                state_str = "locked"
+
+            self._chakra_points[full_id] = ChakraPoint(
+                node_id=full_id,
+                pos_u=(pos_x, pos_y),
+                base_pos_u=(base_x, base_y),
+                pos_px=(0, 0),
+                state=state_str,
+                local_scale=chakra_local_scale,
+                pulse_phase=hash(full_id) % 1000 / 1000.0,
+            )
+
+        # Connections: read parent_full_id from entity graph data.
+        for node_data in node_list:
+            child_id = node_data["full_id"]
+            parent_id = node_data["parent_full_id"]
+            if (parent_id and parent_id in self._chakra_points
+                    and child_id in self._chakra_points):
+                self._connections.append((parent_id, child_id))
+
+        self._refresh_focus_visibility()
+
+    def _rebuild_chakra_points_schema(self, chakra_state: ChakraState) -> None:
+        """Legacy schema-walk fallback for _rebuild_chakra_points."""
+        body_schema = _get_body_schema(self.actor)
+        nodes = _get_nodes_from_schema(body_schema)
         if not nodes:
             return
 
-        # Get ALL positions recursively (including sub-schemas)
-        # This returns {full_node_id: ((x, y), state, local_scale, base_pos)}
         all_positions = get_all_chakra_positions_recursive(
-            body_schema, chakra_state,
-            base_scale=CHAKRA_LAYOUT_SCALE,
+            body_schema, chakra_state, base_scale=CHAKRA_LAYOUT_SCALE,
         )
-
-        # Also include locked top-level nodes that aren't in positions yet
         for node_id, node in nodes.items():
             if node_id not in all_positions:
                 layout = node.get("layout", {}) if isinstance(node, dict) else {}
@@ -462,54 +600,26 @@ class ChakraSilhouetteWidget(Widget):
                 y = float(layout.get("y", 0.0)) if isinstance(layout, dict) else 0.0
                 all_positions[node_id] = ((x, y), "locked", 1.0, (x, y))
 
-        # Build chakra points from all positions
         for full_id, (pos_u, state, local_scale, base_pos) in all_positions.items():
-            # Per-chakra pulse phase offset for visual variety
-            phase_offset = hash(full_id) % 1000 / 1000.0
-
             self._chakra_points[full_id] = ChakraPoint(
                 node_id=full_id,
                 pos_u=pos_u,
                 base_pos_u=base_pos,
-                pos_px=(0, 0),  # Computed during layout
+                pos_px=(0, 0),
                 state=state,
                 local_scale=local_scale,
-                pulse_phase=phase_offset,
+                pulse_phase=hash(full_id) % 1000 / 1000.0,
             )
 
-        # Build parent-child connections for energy flow
-        # This now needs to handle prefixed IDs (e.g., arm -> arm.shoulder)
-        self._build_connections(body_schema, chakra_state, "")
-
-        # Refresh focus visibility now that nodes are rebuilt.
-        self._refresh_focus_visibility()
-
-    def _build_connections(
-        self,
-        body_schema: Dict[str, Any],
-        chakra_state: ChakraState,
-        prefix: str,
-        depth: int = 0,
-        recursion_guard: Optional[Set[str]] = None,
-    ) -> None:
-        """Build parent-child connections for energy flow lines.
-
-        Delegate to the canonical chakra graph builder so silhouette wiring
-        matches runtime/preview generator wiring exactly.
-        """
         try:
-            all_edges = get_chakra_connections_recursive(
-                body_schema,
-                chakra_state,
-                prefix=prefix,
-                depth=depth,
-                recursion_guard=recursion_guard,
-            )
+            all_edges = get_chakra_connections_recursive(body_schema, chakra_state, prefix="")
         except Exception:
             all_edges = []
         for a_id, b_id in all_edges:
             if a_id in self._chakra_points and b_id in self._chakra_points:
                 self._connections.append((a_id, b_id))
+
+        self._refresh_focus_visibility()
 
     def _compute_pixel_positions(self) -> None:
         """Convert unit positions to pixel positions based on current camera."""
@@ -1692,6 +1802,7 @@ class ChakraSelectionScene(PanelScene):
         # Create widgets
         self._silhouette = ChakraSilhouetteWidget(
             actor=self._actor,
+            game=self.game,
             state_provider=self._get_ui_state,
             on_chakra_click=self._on_chakra_click,
             on_chakra_hover=self._on_chakra_hover,
@@ -1802,17 +1913,48 @@ class ChakraSelectionScene(PanelScene):
         # Focus view disabled: keep all chakras visible.
 
     def _refresh_list_items(self) -> None:
-        """Rebuild list view entries from the current body schema."""
+        """Rebuild list view entries from body-node entities in the entity graph."""
         if not self._actor:
             self._list_widget.set_items([])
             return
         chakra_state = self._get_ui_state()
-        body_schema = _get_body_schema(self._actor)
 
-        entries: List[ChakraListEntry] = []
-        for full_id, _display, depth in collect_all_chakra_nodes(body_schema, chakra_state.unlocked):
-            label = _format_chakra_label(full_id)
-            entries.append(ChakraListEntry(full_id, label, depth))
+        node_list = _body_nodes_for_actor(self.game, self._actor)
+
+        if node_list:
+            # Build a lookup so we can walk parent chains.
+            node_by_id = {nd["full_id"]: nd for nd in node_list}
+
+            # Determine visibility: a sub-schema node (full_id contains a dot
+            # whose prefix is a branch root) is only shown when that branch root
+            # is in chakra_state.unlocked.
+            def _is_visible(full_id: str) -> bool:
+                parts = full_id.split(".")
+                for i in range(1, len(parts)):
+                    ancestor = ".".join(parts[:i])
+                    anc_data = node_by_id.get(ancestor)
+                    proto = anc_data["node_proto_id"] if anc_data else ""
+                    if is_branch_root(proto) and ancestor not in chakra_state.unlocked:
+                        return False
+                return True
+
+            entries: List[ChakraListEntry] = []
+            for nd in node_list:
+                fid = nd["full_id"]
+                if not _is_visible(fid):
+                    continue
+                # Depth = number of dot-separated segments beyond the top level.
+                depth = fid.count(".")
+                entries.append(ChakraListEntry(fid, _format_chakra_label(fid), depth))
+        else:
+            # Legacy schema-walk fallback.
+            body_schema = _get_body_schema(self._actor)
+            entries = [
+                ChakraListEntry(fid, _format_chakra_label(fid), depth)
+                for fid, _display, depth in collect_all_chakra_nodes(
+                    body_schema, chakra_state.unlocked
+                )
+            ]
 
         self._list_widget.set_items(entries)
 
@@ -2002,7 +2144,6 @@ class ChakraSelectionScene(PanelScene):
             return None
 
         chakra_state = self._get_ui_state()
-        body_schema = _get_body_schema(self._actor)
 
         title = _format_chakra_label(node_id)
         lines: List[Tuple[str, Tuple[int, int, int]]] = []
@@ -2021,15 +2162,37 @@ class ChakraSelectionScene(PanelScene):
         if getattr(chakra_state, "pattern_root", None) == node_id:
             lines.append(("Pattern Root: yes", TOOLTIP_ACCENT))
 
-        # Resolve node path and gating chain
-        path = _resolve_chakra_path(body_schema, node_id)
-        node = path[-1][1] if path else None
-        proto_id = path[-1][2] if path else node_id
+        # Resolve gating chain and node metadata from entity graph.
+        node_list = _body_nodes_for_actor(self.game, self._actor)
+        if node_list:
+            node_by_id = {nd["full_id"]: nd for nd in node_list}
+            this_node = node_by_id.get(node_id)
+            proto_id = this_node["node_proto_id"] if this_node else node_id
 
-        gating_chain: List[str] = []
-        for full_name, _node, proto in path[:-1]:
-            if is_branch_root(proto):
-                gating_chain.append(full_name)
+            # Ancestors that are branch roots form the gating chain.
+            gating_chain: List[str] = []
+            parts = node_id.split(".")
+            for i in range(1, len(parts)):
+                ancestor = ".".join(parts[:i])
+                anc_data = node_by_id.get(ancestor)
+                if anc_data and is_branch_root(anc_data["node_proto_id"]):
+                    gating_chain.append(ancestor)
+
+            # Child count from graph.
+            graph = getattr(self.game, "entity_graph", None)
+            node_eid = f"{getattr(self._actor, 'entity_id', None) or getattr(self._actor, 'id', '')}:body:{node_id}"
+            child_count = len(graph.get_children(node_eid, socket_id="body")) if graph else 0
+        else:
+            # Legacy fallback via body schema.
+            body_schema = _get_body_schema(self._actor)
+            path = _resolve_chakra_path(body_schema, node_id)
+            node_dict = path[-1][1] if path else None
+            proto_id = path[-1][2] if path else node_id
+            gating_chain = [
+                full_name for full_name, _nd, proto in path[:-1]
+                if is_branch_root(proto)
+            ]
+            child_count = len(node_dict.get("children", [])) if isinstance(node_dict, dict) else 0
 
         if gating_chain:
             missing = [g for g in gating_chain if g not in chakra_state.unlocked]
@@ -2045,10 +2208,8 @@ class ChakraSelectionScene(PanelScene):
             lines.append(("Branch Root: yes", TOOLTIP_ACCENT))
 
         # Child count hint
-        if isinstance(node, dict):
-            children = node.get("children", [])
-            if isinstance(children, list) and children:
-                lines.append((f"Children: {len(children)}", TOOLTIP_TEXT))
+        if child_count:
+            lines.append((f"Children: {child_count}", TOOLTIP_TEXT))
 
         # Charge readout (only meaningful for unlocked/active nodes)
         if node_id in chakra_state.unlocked or node_id in chakra_state.active:

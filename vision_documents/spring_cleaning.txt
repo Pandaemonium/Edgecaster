@@ -2251,3 +2251,65 @@ Owner: Claude audit (2026-02-18)
       - `tests/test_world_entity_index.py`
       - documentation that still describes ChakraState/body_schema as runtime
         authority rather than authored source + compatibility layer
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] sync_actor_chakra_state deleted (2026-04-12)
+  - File: edgecaster/systems/chakra_items.py
+  - Deleted sync_actor_chakra_state (all 4 call sites migrated).
+  - Replaced by apply_chakra_state_snapshot (full-state restore path) and
+    direct comp.tags writes in chakra_scene.py for pattern_root/alignments.
+  - game.py character-class bootstrap migrated to apply_chakra_state_snapshot.
+  - apply_chakra_state_snapshot now prunes stale compat nodes absent from the
+    snapshot so undo/redo restores are exact.
+  - Test migrated: test_sync_actor_chakra_state_mirrors_to_component_nodes_and_tags
+    → test_apply_chakra_state_snapshot_mirrors_to_component_nodes_and_tags.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] body_float_pos sub-tile tag added (2026-04-12)
+  - File: edgecaster/systems/entity_lifecycle.py, edgecaster/systems/entity_geometry.py
+  - _materialize_body_child now stores body_float_pos tag preserving sub-tile
+    float precision (integer abs_pos is tile anchor only).
+  - _link_parent_child_chakra prefers body_float_pos over integer abs_pos.
+  - entity_geometry._runtime_shape prefers body_float_pos over abs_pos.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] inventory graph authority (2026-04-12)
+  - File: edgecaster/systems/inventory.py
+  - get_inventory now queries entity_graph inventory edges first and syncs
+    result in-place into the list cache.
+  - _do_pickup tracks items in _runtime_entity_index after pickup so
+    find_runtime_entity can locate them once they leave level.entities.
+  - _inventory_graph_authority_owners tracks owners whose inventory is
+    graph-managed so get_inventory replaces (not appends) the cache for them.
+
+[ARCHITECTURAL_DECISION][ENTITY_CHAKRA][BODY_REALIZATION] (2026-04-12)
+  - Option A chosen: player body-node entity tree is always expanded at actor
+    spawn/stage time, not on demand inside scenes.
+  - C1 prerequisite: game.py player creation path must call
+    expand_entity(game, player_id) after the player is registered, before
+    the session becomes playable.
+  - ChakraSelectionScene must use realize_policy="forbid" and treat the body
+    tree as always present — never call expand_entity itself.
+  - Same contract for any NPC whose chakra scene can be opened: expand before
+    pushing the scene, not inside it.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] C1 chakra-scene body display cutover (2026-04-12)
+  - Files: edgecaster/scenes/chakra_scene.py, edgecaster/systems/entity_lifecycle.py,
+           edgecaster/game.py
+  - entity_lifecycle._materialize_body_child now stores two new tags per body-node entity:
+      body_schema_rel_pos: position relative to owner in body-graph-scale units
+      body_local_scale: accumulated scale at this node
+  - game.py player creation now recursively expands the player's body-node entity tree
+    (Option A contract: tree always present before any scene reads it).
+  - ChakraSilhouetteWidget gained a `game` param; passed from ChakraSelectionScene.
+  - _body_nodes_for_actor() module-level helper queries entity graph for all
+    body-node entities via BFS over socket_id="body" edges.
+  - _rebuild_chakra_points() replaced: reads body_schema_rel_pos/body_local_scale tags,
+    applies CHAKRA_LAYOUT_SCALE, applies alignment offsets, builds connections from
+    body_parent_full_id tags.  Legacy schema-walk kept as _rebuild_chakra_points_schema()
+    fallback for test environments.
+  - _refresh_list_items() replaced: uses entity graph + is_branch_root() filtering for
+    sub-schema visibility.  Legacy collect_all_chakra_nodes() fallback retained.
+  - _build_chakra_tooltip() replaced: derives gating chain from body_parent_full_id and
+    node_proto_id tags; child count from graph edges.  Legacy _resolve_chakra_path()
+    fallback retained.
+  - Remaining body_schema read in chakra_scene.py: _build_pattern_preview() still uses
+    build_chakra_generator_seed(body_schema, ...) — that is gameplay logic, not display,
+    and is deferred to the actor-body gameplay reader cutover step.

@@ -858,6 +858,17 @@ def _materialize_body_child(
     float_y = float(spec.abs_pos[1])
     abs_x = int(round(float_x))
     abs_y = int(round(float_y))
+
+    # body_schema_rel_pos is the position relative to the owner entity in
+    # body-graph-scale units (i.e. spec.abs_pos minus the owner's world position).
+    # Chakra-scene UI layout multiplies this by CHAKRA_LAYOUT_SCALE / body_graph_scale.
+    _owner_abs = getattr(owner_ent, "abs_pos", None)
+    if isinstance(_owner_abs, (tuple, list)) and len(_owner_abs) >= 2:
+        _schema_rel_x = float_x - float(_owner_abs[0])
+        _schema_rel_y = float_y - float(_owner_abs[1])
+    else:
+        _schema_rel_x, _schema_rel_y = float_x, float_y
+
     obj = spawn_factory.build_entity_from_spec(
         spec=resolved,
         eid=eid,
@@ -878,6 +889,13 @@ def _materialize_body_child(
                 # Sub-tile float position for geometry queries; coarser abs_pos
                 # is the tile anchor used for grid-based lookups.
                 "body_float_pos": (float_x, float_y),
+                # Layout position relative to the owner, in body-graph-scale units.
+                # Used by ChakraSilhouetteWidget to place nodes in UI space without
+                # re-walking the body schema.
+                "body_schema_rel_pos": (_schema_rel_x, _schema_rel_y),
+                # Accumulated scale at this node (body_graph_scale * parent sizes).
+                # Needed for alignment-offset math in the chakra scene.
+                "body_local_scale": float(spec.local_scale),
             }
         },
     )

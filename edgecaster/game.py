@@ -765,6 +765,25 @@ class Game:
         # This makes abs-space the source of truth for player movement/render queries later.
         player.abs_pos = self.abs_from_zone_local(self.zone_coord, player.pos)
 
+        # Body realization contract (Option A): fully expand the player's body-node
+        # entity tree now so ChakraSelectionScene can read it with realize_policy="forbid"
+        # without triggering expansion itself.  See spring_cleaning.txt for rationale.
+        try:
+            from edgecaster.systems import entity_lifecycle as _elic
+            from edgecaster.systems import entity_body as _ebod
+            _expand_queue = [player.id]
+            _expand_seen: set = set()
+            while _expand_queue:
+                _eid = _expand_queue.pop(0)
+                if _eid in _expand_seen:
+                    continue
+                _expand_seen.add(_eid)
+                _ent = _elic.find_runtime_entity(self, _eid) or (player if _eid == player.id else None)
+                if _ent is not None and _ebod.can_expand_entity(_ent):
+                    for _cid in _elic.expand_entity(self, _eid, reason="body_init"):
+                        _expand_queue.append(str(_cid))
+        except Exception:
+            pass
 
         # --- Give the player a recursive inventory test item -----------------
         #
