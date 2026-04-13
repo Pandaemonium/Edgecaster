@@ -485,75 +485,110 @@ def _build_staged_actor(
     zz: int,
     spec: Dict[str, Any],
 ):
-    """Build a resolver-spawned actor while preserving current special cases."""
+    """Build a resolver-spawned actor driven by prototype data and spec tags.
+
+    Construction path:
+    - When spec is non-empty (NPC has an enemies.yaml prototype entry), delegate to
+      enemy_factory.spawn_enemy so faction, HP, actions, and ai come from data.
+    - When spec is empty (NPC is only in content/npcs.py), fall back to a generic
+      Human actor using the name/glyph/color passed in by the caller.
+
+    Post-construction behaviors are tag-driven — no hardcoded npc_id switches:
+    - show_exact_hp: set via spec_tags["show_exact_hp"]
+    - auto-regen: set via spec_tags["auto_regen_amount"] + spec_tags["auto_regen_interval"]
+    - merchant init: triggered by spec["merchant_id"] or spec_tags["merchant_id"]
+    """
     spec_tags = (spec.get("tags") or {}) if isinstance(spec, dict) else {}
     zone_w, zone_h = _zone_dims(game)
 
-    if npc_id == "caged_demon":
+    # --- Construct base actor ---
+    # NPCs with a resolved prototype spec use the factory so all stats, actions,
+    # and faction come from data. NPCs without a prototype entry (only in npcs.py)
+    # fall back to a generic Human.
+    if spec:
         try:
-            actor = enemy_factory.spawn_enemy("caged_demon", local_pos, abs_pos=abs_pos, game=game)
+            actor = enemy_factory.spawn_enemy(npc_id, local_pos, abs_pos=abs_pos, game=game)
         except TypeError:
-            actor = enemy_factory.spawn_enemy("caged_demon", local_pos, game=game)
+            actor = enemy_factory.spawn_enemy(npc_id, local_pos, game=game)
             try:
                 actor.abs_pos = abs_pos
             except Exception:
                 pass
-        actor.id = eid
-        actor.pos = local_pos
-        actor.faction = "neutral"
-        actor.actions = ()
-        actor.ai = "idle"
-        actor.tags = getattr(actor, "tags", {}) or {}
-        actor.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
+    else:
+        try:
+            actor = Human(
+                id=eid,
+                name=name,
+                pos=local_pos,
+                abs_pos=abs_pos,
+                faction="npc",
+                stats=Stats(hp=50, max_hp=50),
+                tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
+                disposition=int(spec_tags.get("base_disposition", 0) or 0),
+                affiliations=tuple(spec_tags.get("factions", [])),
+                glyph=glyph,
+                color=color,  # type: ignore[arg-type]
+            )
+        except TypeError:
+            actor = Human(
+                id=eid,
+                name=name,
+                pos=local_pos,
+                faction="npc",
+                stats=Stats(hp=50, max_hp=50),
+                tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
+                disposition=int(spec_tags.get("base_disposition", 0) or 0),
+                affiliations=tuple(spec_tags.get("factions", [])),
+                glyph=glyph,
+                color=color,  # type: ignore[arg-type]
+            )
+            try:
+                actor.abs_pos = abs_pos
+            except Exception:
+                pass
+
+    # --- Common overrides applied to every actor regardless of construction path ---
+    actor.id = eid
+    actor.pos = local_pos
+    actor.name = name
+    try:
+        actor.glyph = glyph
+        actor.color = color  # type: ignore[assignment]
+    except Exception:
+        pass
+    actor.tags = getattr(actor, "tags", {}) or {}
+    actor.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
+    desc = spec.get("description") or getattr(actor, "description", None)
+    if desc:
+        actor.description = desc
+
+    # --- Tag-driven post-spawn behaviors ---
+
+    # show_exact_hp: display full numeric HP in the UI (e.g. training dummies).
+    if spec_tags.get("show_exact_hp"):
         actor.tags["show_exact_hp"] = True
-        actor.name = name
+
+    # Auto-regen: start a recurring heal tick (e.g. caged_demon training dummy).
+    auto_regen_amount = spec_tags.get("auto_regen_amount")
+    auto_regen_interval = spec_tags.get("auto_regen_interval")
+    if auto_regen_amount and auto_regen_interval:
         try:
-            actor.glyph = glyph
-            actor.color = color  # type: ignore[assignment]
-        except Exception:
-            pass
-        desc = spec.get("description") or getattr(actor, "description", None)
-        if desc:
-            actor.description = desc
-        try:
-            actor.regen_per_tick = (1, 10)
+            actor.regen_per_tick = (int(auto_regen_amount), int(auto_regen_interval))
             getter = getattr(game, "get_zone_for_render", None)
             level = None
             if callable(getter):
                 level = getter((abs_pos[0] // zone_w, abs_pos[1] // zone_h, int(zz)))
             if level is None:
                 level = game._level()
-            game._start_regen(level, actor.id, amount=1, interval=10)
+            game._start_regen(level, actor.id, amount=int(auto_regen_amount), interval=int(auto_regen_interval))
         except Exception:
             pass
-        return actor
 
-    if npc_id == "merchant":
-        try:
-            actor = enemy_factory.spawn_enemy("merchant", local_pos, abs_pos=abs_pos, game=game)
-        except TypeError:
-            actor = enemy_factory.spawn_enemy("merchant", local_pos, game=game)
-            try:
-                actor.abs_pos = abs_pos
-            except Exception:
-                pass
-        actor.id = eid
-        actor.pos = local_pos
-        actor.faction = "npc"
-        actor.actions = ()
-        actor.ai = "idle"
-        actor.tags = getattr(actor, "tags", {}) or {}
-        actor.tags.update({"npc": True, "npc_id": npc_id, "owner_id": owner_id})
-        actor.tags["merchant_id"] = spec_tags.get("merchant_id", "general_store")
-        actor.name = name
-        try:
-            actor.glyph = glyph
-            actor.color = color  # type: ignore[assignment]
-        except Exception:
-            pass
-        desc = spec.get("description") or getattr(actor, "description", None)
-        if desc:
-            actor.description = desc
+    # Merchant initialization: any NPC with a merchant_id kicks off stock setup.
+    # Read from top-level spec first (enemies.yaml field), then spec_tags fallback.
+    merchant_id = spec.get("merchant_id") or spec_tags.get("merchant_id")
+    if merchant_id:
+        actor.tags["merchant_id"] = merchant_id
         try:
             from edgecaster.systems import trade as trade_system
 
@@ -564,42 +599,7 @@ def _build_staged_actor(
                     trade_system.ensure_merchant_initialized(game, level, actor)
         except Exception:
             pass
-        return actor
 
-    try:
-        actor = Human(
-            id=eid,
-            name=name,
-            pos=local_pos,
-            abs_pos=abs_pos,
-            faction="npc",
-            stats=Stats(hp=50, max_hp=50),
-            tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
-            disposition=int(spec_tags.get("base_disposition", 0) or 0),
-            affiliations=tuple(spec_tags.get("factions", [])),
-            glyph=glyph,
-            color=color,  # type: ignore[arg-type]
-        )
-    except TypeError:
-        actor = Human(
-            id=eid,
-            name=name,
-            pos=local_pos,
-            faction="npc",
-            stats=Stats(hp=50, max_hp=50),
-            tags={"npc": True, "npc_id": npc_id, "owner_id": owner_id},
-            disposition=int(spec_tags.get("base_disposition", 0) or 0),
-            affiliations=tuple(spec_tags.get("factions", [])),
-            glyph=glyph,
-            color=color,  # type: ignore[arg-type]
-        )
-        try:
-            actor.abs_pos = abs_pos
-        except Exception:
-            pass
-    desc = spec.get("description")
-    if desc:
-        actor.description = desc
     return actor
 
 
@@ -976,6 +976,62 @@ def _remove_resolved_subtree(game: object, root_entity_id: str) -> None:
     expanded_children.pop(eid, None)
 
 
+def _promote_staged_children_to_zone(game: object, child_ids: List[str]) -> None:
+    """Promote children that are staged in attn_store into level.actors or level.entities.
+
+    Called from the expand_entity early-return path when the parent was already
+    expanded on a previous call (lod_state == "expanded", no missing children).
+    On that first call the zone may not have been loaded yet, so
+    _register_actor_in_loaded_zone and _mirror_entity_into_loaded_zone returned
+    early. Now that the player may have entered the zone we need to retry the
+    promotion for any child still sitting in attn_store rather than in a level
+    cache, so collision, talk detection, and wall-blocking all work correctly.
+    """
+    attn_store = getattr(game, "attn_store", None)
+    if attn_store is None:
+        return
+    staged = getattr(attn_store, "entities", {})
+    zone_w, zone_h = _zone_dims(game)
+
+    for cid in child_ids:
+        obj = staged.get(cid)
+        if obj is None:
+            # Already promoted to a level cache on a previous tick.
+            continue
+
+        # Derive absolute position and z-level from the object itself.
+        abs_pos = getattr(obj, "abs_pos", None)
+        if abs_pos is None:
+            continue
+        try:
+            ax, ay = int(abs_pos[0]), int(abs_pos[1])
+        except (TypeError, IndexError, ValueError):
+            continue
+
+        # Use eid_to_bin as a fallback for zz if the object has no z attr.
+        zz_obj = getattr(obj, "z", None) or getattr(obj, "zz", None)
+        if zz_obj is None:
+            bin_entry = getattr(attn_store, "eid_to_bin", {}).get(cid)
+            zz_obj = int(bin_entry[3]) if bin_entry is not None and len(bin_entry) >= 4 else 0
+        zz = int(zz_obj)
+
+        # Check whether the target zone is currently loaded before doing work.
+        getter = getattr(game, "get_zone_for_render", None)
+        if not callable(getter):
+            continue
+        level = getter((ax // zone_w, ay // zone_h, zz))
+        if level is None:
+            continue
+
+        # Decide actor vs non-actor entity.  Actors have a faction attribute
+        # (set by build_actor_from_spec) or are instances of Human.
+        is_actor = isinstance(obj, Human) or hasattr(obj, "faction") or hasattr(obj, "alive")
+        if is_actor:
+            _register_actor_in_loaded_zone(game, obj, abs_x=ax, abs_y=ay, zz=zz)
+        else:
+            _mirror_entity_into_loaded_zone(game, obj, abs_x=ax, abs_y=ay, zz=zz)
+
+
 def expand_entity(game: object, entity_id: str, *, reason: str = "attention") -> List[str]:
     """Expand a deterministic parent by materializing its direct children."""
     del reason  # reserved for profiling/telemetry hooks later
@@ -995,6 +1051,7 @@ def expand_entity(game: object, entity_id: str, *, reason: str = "attention") ->
         missing = [cid for cid in existing_children if find_runtime_entity(game, cid) is None]
         if not missing:
             _expanded_children_map(game)[parent_id] = set(existing_children)
+            _promote_staged_children_to_zone(game, existing_children)
             return existing_children
 
     if parent_ent is None:

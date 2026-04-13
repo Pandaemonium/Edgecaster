@@ -241,6 +241,10 @@
   tags:
     training_dummy: true
     no_random_spawn: true
+    # Attention-spawned training dummy behaviors read by _build_staged_actor.
+    show_exact_hp: true
+    auto_regen_amount: 1
+    auto_regen_interval: 10
 
 
 
@@ -282,6 +286,8 @@
   xp: 0
   parent: human
   description: A pleasure doing bismuth with you.
+  # merchant_id is read by _build_staged_actor to trigger ensure_merchant_initialized.
+  merchant_id: general_store
   tags:
     no_random_spawn: true
 

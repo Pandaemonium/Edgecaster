@@ -200,8 +200,8 @@ def handle_player_death(game: "Game", attacker: "Actor") -> None:
     """Handle player death via urgent popup."""
     cause = attacker.name
     game.set_urgent(
-        f"by way of {cause}",
-        title="You die. This world, now doomed, spirals infinitely toward decay and despair...",
+        "This world, now doomed, spirals infinitely toward decay and despair...",
+        title=f"You die, by way of {cause}.",
         choices=["Continue..."],
     )
 
@@ -375,6 +375,28 @@ def kill_actor(
     - Spawning prototype-driven item drops
     - Spawning legendary rewards
     """
+    # Player death: trigger the death popup and return.  Do not run the normal
+    # enemy-kill accounting (XP, drops, etc.) for the player's own death.
+    # This path is hit when area-effect or spell damage reduces the player to 0
+    # HP and the caller goes through _kill_actor instead of combat.attack.
+    if actor.id == game.player_id:
+        killer_actor = None
+        if killer_id is not None:
+            try:
+                killer_actor = level.actors.get(killer_id)
+                if killer_actor is None:
+                    attn = getattr(game, "attn_store", None)
+                    if attn is not None:
+                        killer_actor = getattr(attn, "entities", {}).get(killer_id)
+            except Exception:
+                pass
+        if killer_actor is None:
+            class _UnknownKiller:
+                name = "unknown forces"
+            killer_actor = _UnknownKiller()
+        handle_player_death(game, killer_actor)
+        return
+
     from edgecaster.systems import reputation as reputation_system
 
     # Award XP (handles faction check + duplicate protection)

@@ -5656,6 +5656,15 @@ class InventoryScene(PopupMenuScene):
                     # 1) Remove the container item itself from the current inventory list
                     eaten_ent = src_inv.pop(int(src_index))
                     eaten_id = getattr(eaten_ent, "id", None)
+                    try:
+                        from edgecaster.systems import entity_graph_ops as _ego_sys
+                        from edgecaster.systems.inventory import _mark_inventory_graph_authority as _mark_inv_auth
+                        src_owner_id = getattr(getattr(self, "game", None), "player_id", None)
+                        _ego_sys.detach_entity_from_parent(self.game, eaten_ent)
+                        if src_owner_id:
+                            _mark_inv_auth(self.game, src_owner_id)
+                    except Exception:
+                        pass
 
                     # 2) Walk the inventory tree, collecting effects from:
                     #    - the container itself

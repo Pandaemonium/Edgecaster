@@ -657,6 +657,13 @@ def _consume_flask(self, actor_id: str, flask_item: Any) -> None:
             inv.remove(flask_item)
         except ValueError:
             pass  # Already removed
+        try:
+            from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+            from edgecaster.systems.inventory import _mark_inventory_graph_authority
+            entity_graph_ops_system.detach_entity_from_parent(self, flask_item)
+            _mark_inventory_graph_authority(self, actor_id)
+        except Exception:
+            pass
 
         # Unequip if it was equipped
         if equipment_system.is_equipped(flask_item):

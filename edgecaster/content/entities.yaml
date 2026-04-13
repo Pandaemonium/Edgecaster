@@ -1477,6 +1477,7 @@
   - 230
   - 230
   - 230
+  faction: npc
   base_size: 1
   description: A friendly local who knows the area well.
   tags:
@@ -1500,6 +1501,7 @@
   - 220
   - 200
   - 170
+  faction: npc
   base_size: 1
   description: A nervous figure who claims to know where dangerous places lie.
   tags:
@@ -1517,6 +1519,7 @@
   - 200
   - 220
   - 255
+  faction: npc
   base_size: 1
   description: A calm sage who listens to the humming of reality.
   tags:

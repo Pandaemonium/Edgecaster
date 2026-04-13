@@ -580,6 +580,11 @@ def transfer_inventory_entity(
     except Exception:
         pass
     attach_entity_to_parent(game, ent, str(dst_owner_id), socket_id=socket_id)
+    try:
+        from edgecaster.systems.entity_lifecycle import _track_runtime_entity
+        _track_runtime_entity(game, ent)
+    except Exception:
+        pass
 
 
 def transfer_split_quantity(
@@ -608,4 +613,9 @@ def transfer_split_quantity(
     except Exception:
         pass
     attach_entity_to_parent(game, child, str(dst_owner_id), socket_id=socket_id)
+    try:
+        from edgecaster.systems.entity_lifecycle import _track_runtime_entity
+        _track_runtime_entity(game, child)
+    except Exception:
+        pass
     return child

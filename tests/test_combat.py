@@ -326,8 +326,8 @@ class TestHandlePlayerDeath:
         handle_player_death(game, attacker)
 
         game.set_urgent.assert_called_once_with(
-            "by way of Dragon",
-            title="You die. This world, now doomed, spirals infinitely toward decay and despair...",
+            "This world, now doomed, spirals infinitely toward decay and despair...",
+            title="You die, by way of Dragon.",
             choices=["Continue..."],
         )
 

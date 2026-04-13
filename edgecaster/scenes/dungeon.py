@@ -671,7 +671,7 @@ class DungeonScene(Scene):
                     stinger_key = "beggarly_vagrant"
                 elif t == "level up!":
                     stinger_key = "arpeggio"
-                elif t == "you die. this world, now doomed, spirals infinitely toward decay and despair...":
+                elif t.startswith("you die, by way of"):
                     stinger_key = "cascade"
                     stinger_scary = True
 
@@ -753,8 +753,17 @@ class DungeonScene(Scene):
             return
 
 
-        # 2) Death -> go back to main menu, discard the run
+        # 2) Death -> go back to main menu after the death popup is dismissed.
+        #
+        # The death popup (UrgentMessageScene) is pushed synchronously during
+        # handle_event via the urgent_callback path (combat.py:handle_player_death ->
+        # game.set_urgent -> show_urgent).  Without this guard, _process_transitions
+        # would immediately call set_scene(MainMenuScene) in the same frame,
+        # clearing the popup before the player ever saw it.  We wait here while
+        # the popup is on the stack, then proceed to main menu once it is dismissed.
         if not getattr(game, "player_alive", True):
+            if manager.scene_stack and isinstance(manager.scene_stack[-1], UrgentMessageScene):
+                return
             self.game = None
             manager.current_game = None
             manager.set_scene(MainMenuScene())
@@ -2433,8 +2442,10 @@ class DungeonScene(Scene):
                     if len(items) == 0:
                         game.log.add("There's nothing here to pick up.")
                     elif len(items) == 1:
-                        # Single item - pick up directly
-                        game.player_pick_up()
+                        # We already have the right entity — pass it directly to
+                        # avoid entity_at returning a non-item entity at the same tile.
+                        from edgecaster.systems import inventory as inv_system
+                        inv_system.player_pick_up_item(game, items[0])
                     else:
                         # Multiple items - show selection scene
                         from edgecaster.scenes.cache_items_scene import CacheItemsScene

@@ -206,17 +206,32 @@ def _mark_entity_removed(game: "Game", ent: Any, *, reason: str) -> None:
 # Pick Up / Drop
 # ---------------------------------------------------------------------------
 
-def _remove_ent_from_level(level: "LevelState", ent: Any) -> None:
-    """Remove *ent* from the level entity dict by identity."""
+def _remove_ent_from_level(level: "LevelState", ent: Any, game: Any = None) -> None:
+    """Remove *ent* from the level entity dict and from attn_store.
+
+    Passing *game* ensures the entity is also despawned from attn_store so the
+    attention system does not re-mirror it back into level.entities on the next
+    tick (which would make a picked-up item's glyph reappear on the ground).
+    """
     ent_id = getattr(ent, "id", None)
     if ent_id is not None and ent_id in level.entities:
         del level.entities[ent_id]
-        return
-    # Fallback: scan by identity (legacy path where id may not match key)
-    for eid, e in list(level.entities.items()):
-        if e is ent:
-            del level.entities[eid]
-            return
+    else:
+        # Fallback: scan by identity (legacy path where id may not match key)
+        for eid, e in list(level.entities.items()):
+            if e is ent:
+                ent_id = eid
+                del level.entities[eid]
+                break
+
+    # Also remove from attn_store so the attention system doesn't re-add it.
+    if game is not None and ent_id is not None:
+        try:
+            attn_store = getattr(game, "attn_store", None)
+            if attn_store is not None:
+                attn_store.despawn(str(ent_id))
+        except Exception:
+            pass
 
 
 def _do_pickup(game: "Game", level: "LevelState", ent: Any) -> bool:
@@ -234,7 +249,7 @@ def _do_pickup(game: "Game", level: "LevelState", ent: Any) -> bool:
             game.adjust_currency(amt, log=True)
             game._play_sfx("assets/sfx/chaching.mp3", volume=0.7)
         _mark_entity_removed(game, ent, reason="pickup_currency")
-        _remove_ent_from_level(level, ent)
+        _remove_ent_from_level(level, ent, game)
         return True
 
     # Don't allow picking up actors or non-item entities.
@@ -259,7 +274,7 @@ def _do_pickup(game: "Game", level: "LevelState", ent: Any) -> bool:
                 game.log.add(f"You pick up a {name.lower()} (stack full).")
         else:
             _mark_entity_removed(game, ent, reason="pickup")
-            _remove_ent_from_level(level, ent)
+            _remove_ent_from_level(level, ent, game)
             if pickup_qty > 1:
                 game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
             else:
@@ -267,7 +282,7 @@ def _do_pickup(game: "Game", level: "LevelState", ent: Any) -> bool:
                 game.log.add(f"You pick up {article} {name.lower()}.")
     else:
         _mark_entity_removed(game, ent, reason="pickup")
-        _remove_ent_from_level(level, ent)
+        _remove_ent_from_level(level, ent, game)
         set_quantity(ent, pickup_qty)
         inv.append(ent)
         # Track in _runtime_entity_index so find_runtime_entity can locate the
@@ -888,6 +903,7 @@ def equip_item_to_slot_qty(
         # Add to inventory
         inv.append(equipped_item)
         entity_graph_ops_system.attach_entity_to_parent(game, equipped_item, oid, socket_id="inventory")
+        entity_lifecycle_system._track_runtime_entity(game, equipped_item)
         _mark_inventory_graph_authority(game, oid)
 
         # Equip the new single item

@@ -561,7 +561,14 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
                 if qty > 1:
                     inventory_system.set_quantity(it, qty - 1)
                 else:
-                    inv.pop(idx)
+                    consumed = inv.pop(idx)
+                    try:
+                        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+                        entity_graph_ops_system.detach_entity_from_parent(game, consumed)
+                        from edgecaster.systems.inventory import _mark_inventory_graph_authority
+                        _mark_inventory_graph_authority(game, getattr(game, "player_id", ""))
+                    except Exception:
+                        pass
                 return True
         except Exception:
             return False
@@ -573,6 +580,15 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
             ent = game._spawn_entity_from_template("coherence_crystal", player.pos)
             inv = game.get_inventory(player.id)
             inv.append(ent)
+            try:
+                from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+                from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
+                from edgecaster.systems.inventory import _mark_inventory_graph_authority
+                entity_lifecycle_system._track_runtime_entity(game, ent)
+                entity_graph_ops_system.attach_entity_to_parent(game, ent, player.id, socket_id="inventory")
+                _mark_inventory_graph_authority(game, player.id)
+            except Exception:
+                pass
             game.log.add("You receive a Coherence Crystal.")
             game.refresh_actor_actions(player.id)
         except Exception:

@@ -360,7 +360,14 @@ def _consume_one_berry(game) -> bool:
 
             for i, e in enumerate(inv):
                 if e is ent:
-                    inv.pop(i)
+                    consumed = inv.pop(i)
+                    try:
+                        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+                        from edgecaster.systems.inventory import _mark_inventory_graph_authority
+                        entity_graph_ops_system.detach_entity_from_parent(game, consumed)
+                        _mark_inventory_graph_authority(game, owner_id)
+                    except Exception:
+                        pass
                     return True
             # If for some reason we didn't find it to pop, keep searching.
     return False

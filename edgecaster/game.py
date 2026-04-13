@@ -808,6 +808,7 @@ class Game:
 
         if recursive_item is not None:
             from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+            from edgecaster.systems.entity_lifecycle import _track_runtime_entity
 
             # Put the bag into the player's starting inventory.
             self.player_inventory.append(recursive_item)
@@ -817,6 +818,7 @@ class Game:
                 self.player_id,
                 socket_id="inventory",
             )
+            _track_runtime_entity(self, recursive_item)
 
             # Now give *that bag* its own inventory, containing itself.
             rec_inv = self.get_inventory(recursive_item.id)
@@ -849,6 +851,7 @@ class Game:
             for wid in (first, second):
                 try:
                     from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+                    from edgecaster.systems.entity_lifecycle import _track_runtime_entity
 
                     wand = self._spawn_entity_from_template(wid, player.pos)
                     self.player_inventory.append(wand)
@@ -858,6 +861,7 @@ class Game:
                         self.player_id,
                         socket_id="inventory",
                     )
+                    _track_runtime_entity(self, wand)
                 except Exception:
                     continue
         except Exception:

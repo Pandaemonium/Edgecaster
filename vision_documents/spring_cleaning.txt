@@ -1437,6 +1437,59 @@ PHASE 8 — LEGACY REMOVAL
   - File: edgecaster/systems/equipment.py
   - Flat tag-based equipment replaced by socket-typed containment edges.
 
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Transient effect ad hoc state dicts removal
+  - File: edgecaster/game.py (LevelState: choking_vines_state,
+    rune_choking_vines_state, thrown_knives_state fields)
+  - These runtime dicts hold ABS-space positions and payloads for effects
+    that have no entity identity.
+  - End-state: convert to first-class entities with TTL/state so they
+    participate in the entity lifecycle (save/load, suppression, attention).
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] _fallback_counter in enemies/factory.py
+  - File: edgecaster/enemies/factory.py
+  - Module-level fallback counter used when callers don't pass `game`.
+  - Safe to remove once every spawn_enemy caller passes `game`.
+  - Condition: grep for `spawn_enemy(` calls without `game=` argument to verify.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] entity_snapshots last_known_* payload shape
+  - File: edgecaster/systems/entity_snapshots.py (module header)
+  - The `last_known_*` dict payload is a migration bridge for collapse/restore.
+  - End-state: replace with typed entity/component persistence deltas once
+    collapse/restore and save data both flow through the unified model.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] attention persistence wrapper block
+  - File: edgecaster/systems/attention.py (near top, tagged block)
+  - Compatibility wrappers keep older attention paths working while
+    entity_state, snapshots, and attention still share logic.
+  - Condition: collapse once attention reads lifecycle state through one
+    shared authority path.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] entity_graph_ops write-through helper
+  - File: edgecaster/systems/entity_graph_ops.py
+  - A helper mirrors containment/ownership metadata into legacy entity_state
+    fields while the graph is not yet the single runtime authority.
+  - Condition: delete once graph queries become the single runtime authority
+    for containment and ownership.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] chakra_scene schema walkers
+  - File: edgecaster/scenes/chakra_scene.py (tagged block near top)
+  - ChakraScene still derives layout and interaction from body_schema +
+    ChakraState schema walkers.
+  - Condition: replace with entity_body/entity_geometry queries once the
+    actor-body graph is the UI authority.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] inventory_scene body zoom schema traversal
+  - File: edgecaster/scenes/inventory_scene.py (tagged block)
+  - Inventory body zoom still traverses authored body_schema directly.
+  - Condition: replace with graph/geometry queries once body sub-entities
+    are the authoritative runtime structure.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] chakra_items ChakraState facade helpers
+  - File: edgecaster/systems/chakra_items.py (two tagged blocks)
+  - Actor-centric helpers that cache unlocked/active sets as ChakraState.
+  - Condition: delete once gameplay/UI code reads directly from
+    ChakraComponent plus actor/body entity queries.
+
 -------------------------------------------------------------------------------
 PROGRESS NOTES (2026-02-17)
 
@@ -1915,12 +1968,20 @@ This audit covers what still needs fixing.
     heart of the chakra system.
   - FIX: populate as chakra substrate integration progresses.
 
-[MEDIUM][ENTITY_CHAKRA] Inventory list mutations bypass entity_graph_ops
-  - File: edgecaster/systems/inventory.py
-  - ~15 instances of direct `list.append()`/`list.remove()` on inventory lists
-    that bypass `attach_entity_to_parent` / `detach_entity_from_parent`.
-  - Entity graph doesn't know about these changes.
-  - FIX: audit and route all mutations through graph ops.
+[DONE][ENTITY_CHAKRA] Inventory list mutations routed through entity_graph_ops (2026-04-13)
+  - Audited all direct `list.append()`/`list.remove()` on inventory lists.
+  - All mutations in `inventory.py` itself were already paired — the bypass sites
+    were in consumers. Fixed 8 call sites:
+    - `content/dialogues.py` `_consume_item` pop → detach+mark
+    - `content/dialogues.py` `_grant_coherence_crystal` append → attach+track+mark
+    - `events.py` `_consume_one_berry` pop → detach+mark
+    - `wish.py` player wish grant append → attach+track+mark
+    - `systems/combat_actions.py` flask consume remove → detach+mark
+    - `systems/rune_anchor_sieges.py` coherence crystal pop → detach+mark
+    - `systems/seal_trials.py` coherence crystal pop → detach+mark
+    - `scenes/inventory_scene.py` eat-container pop → detach+mark
+  - Remaining known intentional bypass: `game.py` self-referential test bag
+    (explicitly a debug/test hack; not a real gameplay path).
 
 -------------------------------------------------------------------------------
 (2) LEGACY CODE FOR DELETION
@@ -2347,3 +2408,37 @@ Owner: Claude audit (2026-02-18)
     These were label-lookup-only fallbacks for log messages; find_runtime_entity covers
     inventory items via _runtime_entity_index tracked at pickup, so the list walk is no
     longer needed for those paths.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] tag-driven NPC dispatch in _build_staged_actor (2026-04-13)
+  - File: edgecaster/systems/entity_lifecycle.py
+  - Replaced hardcoded `if npc_id == "caged_demon":` / `if npc_id == "merchant":` branches
+    in `_build_staged_actor` with two-path construction:
+      - spawn_enemy path when spec is non-empty (prototype has enemies.yaml entry)
+      - Human fallback path when spec is empty (NPC only in npcs.py)
+  - Post-spawn behaviors are now tag-driven (show_exact_hp, auto_regen_amount/interval,
+    merchant_id) so adding new NPC behaviors requires only prototype data changes.
+  - Added enemies.yaml entries for caged_demon behavior tags and merchant merchant_id.
+  - All 626 tests pass.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] _track_runtime_entity coverage extension (2026-04-13)
+  - Files: edgecaster/systems/trade.py, edgecaster/systems/entity_graph_ops.py,
+           edgecaster/systems/inventory.py, edgecaster/game.py
+  - Added _track_runtime_entity calls to all inventory mutation paths that were
+    missing them, so find_runtime_entity can locate items after graph authority is set:
+      - trade._append_inventory_item (merchant restock stock items)
+      - entity_graph_ops.transfer_inventory_entity (drag-drop / container transfer)
+      - entity_graph_ops.transfer_split_quantity (split-stack child into inventory)
+      - inventory.equip_item_to_slot_qty equip-split path
+      - game.py startup wands and recursive-bag injection
+  - Root symptom that prompted the fix: merchant inventory appeared empty after
+    restock because graph authority caused get_inventory to call find_runtime_entity
+    for all graph children; untracked items returned None and were silently dropped.
+  - All 626 tests pass.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] NPC faction field in entities.yaml (2026-04-13)
+  - File: edgecaster/content/entities.yaml
+  - Added top-level `faction: npc` to local_guide, lair_informant, and chakra_sage
+    prototype entries. Without it, build_actor_from_spec defaulted to faction="neutral"
+    and _adjacent_npc() (which checks actor.faction == "npc") could not find them,
+    causing "No one nearby to talk to" when pressing 't' next to these NPCs.
+  - All 626 tests pass.

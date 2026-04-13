@@ -45,6 +45,12 @@ def _append_inventory_item(game: Any, inv: Any, owner_id: str, ent: Any) -> None
         attach_entity_to_parent(game, ent, owner_id, socket_id="inventory")
     except Exception:
         pass
+    try:
+        from edgecaster.systems.entity_lifecycle import _track_runtime_entity
+
+        _track_runtime_entity(game, ent)
+    except Exception:
+        pass
 
 
 def _safe_int(x: Any, default: int = 0) -> int:

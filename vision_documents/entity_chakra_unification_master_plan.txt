@@ -1,15 +1,15 @@
 Title: Entity + Chakra Unification Master Plan
 Purpose: define the active execution plan for converging entity, geometry/query, inventory, and POI systems toward one unified hierarchical substrate.
 Status: active-plan
-Last verified: 2026-04-12
+Last verified: 2026-04-13
 Canonical for: active entity/chakra unification work
 Related docs: `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/architecture.txt`
 Related code: `edgecaster/state/`, `edgecaster/systems/`, `edgecaster/content/`
 Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
-Updated: 2026-04-12
-Status: v1.22 (Phase 2 Reducer Runtime Wiring Slice)
+Updated: 2026-04-13
+Status: v1.24 (Phase 8 Legacy Removal Slice II — tag-driven NPC dispatch, _track_runtime_entity coverage, Phase 8 tag catalogue)
 
 This is the execution plan for:
 
@@ -24,7 +24,7 @@ work that survived the earlier POI/entity unification plan.
 
 -------------------------------------------------------------------------------
 
-## Current Snapshot (2026-04-11)
+## Current Snapshot (2026-04-13)
 
 Implemented and stable:
 
@@ -147,11 +147,11 @@ Not yet complete:
    - `chakra_layouts.yaml` + `chakra_rules.yaml` now exist, and reducer-backed
      charge evaluation has entered runtime, but most gameplay still reads
      compatibility adapters instead of shared geometry/rule queries.
-3. POI realization still has dual pathways.
-   - `poi_spawning.py` and `poi_worldgen.py` both remain active.
-   - Runtime NPC/wall realization now shares helper paths and game delegates
-     through `poi_worldgen.spawn_poi_contents(...)`, but orchestration logic
-     is still split across both modules.
+3. POI realization facade deleted; single pathway now lives in `poi_worldgen.py`.
+   - `poi_spawning.py` deleted (2026-04-13); `test_poi_spawning_cutover.py`
+     migrated to import `poi_worldgen` directly.
+   - `poi_worldgen.py` itself still carries a `[LEGACY_DELETE]` tag pending
+     full resolver/entity-graph realization pipeline convergence.
 4. Split-stack operations still create child entities in list-backed inventories.
    - Shared graph-op split is in place, but final graph-authoritative stack
      storage is not complete.
@@ -167,11 +167,36 @@ Not yet complete:
    - Rule-engine/reducer work (Phase 3), full actor-limb/body expansion,
      inventory/map authority cutover, and save/load format changes remain
      intentionally deferred.
-8. Body-schema gameplay readers are still alive.
-   - `systems/chakras.py`, `scenes/chakra_scene.py`, and `scenes/inventory_scene.py`
-     still contain compatibility traversal over authored body_schema data.
-   - The new actor-body entity tree exists, but gameplay/UI has not yet fully
-     switched to querying that hierarchy directly.
+8. Body-schema gameplay readers partially cut over.
+   - `scenes/chakra_scene.py` `_regenerate_pattern` now prefers entity path
+     when game context is available.
+   - `scenes/inventory_scene.py` body-zoom helpers now accept `game=` and
+     prefer entity-graph versions (`_build_entity_schema_at_zoom_depth`,
+     `_entity_body_view_for_zoom_path`, `_entity_body_view_chain_for_zoom_path`).
+   - `systems/chakras.py` still contains the authored `body_schema` traversal
+     as fallback; full cutover deferred until entity-body tree is fully realized
+     for all actor types.
+9. NPC inventory graph authority now set at spawn time.
+   - `register_actor` and `realize_poi_npc_spec` now call
+     `_mark_inventory_graph_authority` so `get_inventory` is graph-authoritative
+     for all spawned actors from birth. Remaining gap: save/load path migration.
+
+10. Tag-driven NPC dispatch and _track_runtime_entity coverage:
+    - `_build_staged_actor` in `entity_lifecycle.py` rewritten to use two-path
+      construction (spawn_enemy for non-empty spec, Human fallback for empty spec)
+      with tag-driven post-spawn behaviors (show_exact_hp, auto-regen, merchant_id).
+      No hardcoded npc_id switches remain in that function.
+    - `enemies.yaml` caged_demon and merchant entries now carry behavior tags
+      and the merchant_id field consumed by `_build_staged_actor`.
+    - `entities.yaml` local_guide, lair_informant, chakra_sage entries now carry
+      `faction: npc` so `_adjacent_npc()` can locate them as actors.
+    - `_track_runtime_entity` now called in all inventory mutation paths:
+      `_append_inventory_item`, `transfer_inventory_entity`,
+      `transfer_split_quantity`, equip-split path, and game.py startup items.
+      This closes the gap where `get_inventory` in graph-authority mode silently
+      dropped untracked items because `find_runtime_entity` returned None for them.
+    - Phase 8 tag catalogue in `spring_cleaning.txt` updated with 9 additional
+      tagged sites not previously documented.
 
 ## Phase 2 Slice Batch Landed (2026-04-11)
 
@@ -215,6 +240,58 @@ identity/provenance and door-persistence work.
    - Body-node entities currently live in an internal runtime registry rather
      than the visible attention store; this keeps them queryable without making
      them render as world objects.
+
+## Phase 8 Legacy Removal Slice (2026-04-13)
+
+1. poi_spawning.py facade deleted
+   - `edgecaster/systems/poi_spawning.py` (15-line re-export) deleted.
+   - `tests/test_poi_spawning_cutover.py` migrated to import `poi_worldgen` directly.
+   - `vision_documents/architecture.txt` references updated from `poi_spawning` to
+     `poi_worldgen` for POI realization.
+
+2. NPC inventory graph authority at spawn time
+   - `spawning.register_actor` now calls `_mark_inventory_graph_authority(game, actor.id)`
+     immediately after `register_entity`, so every spawned actor's inventory is
+     graph-authoritative from birth.
+   - `poi_worldgen.realize_poi_npc_spec` mirrors the same call after actor registration.
+
+3. inventory_scene.py body-zoom entity-graph helpers
+   - Added `_build_entity_schema_at_zoom_depth`, `_entity_body_view_for_zoom_path`,
+     and `_entity_body_view_chain_for_zoom_path` — entity-graph variants of the
+     inventory body-zoom transform accumulators.
+   - All call sites for `_resolve_body_schema_for_zoom_path`,
+     `_resolve_body_view_for_zoom_path`, and `_resolve_body_view_chain_for_zoom_path`
+     now accept and forward `game=` context so entity-graph path is preferred.
+
+4. chakra_scene.py _regenerate_pattern entity-path preference
+   - `ChakraSilhouetteWidget._regenerate_pattern` now passes `body_schema={}` and
+     `game=` to `build_chakra_generator_seed` when game context is available,
+     so the entity-tree path is tried first for actors with a realized body subtree.
+
+## Phase 8 Legacy Removal Slice II (2026-04-13)
+
+1. Tag-driven NPC dispatch
+   - `_build_staged_actor` in `entity_lifecycle.py` now uses data-driven two-path
+     construction: spawn_enemy when spec is non-empty, Human fallback when spec is
+     empty. Post-spawn behaviors (show_exact_hp, auto-regen, merchant) are read from
+     spec tags rather than hardcoded npc_id branches.
+   - `enemies.yaml` carries all behavior tags and merchant_id for NPC prototypes.
+   - `entities.yaml` NPC entries (local_guide, lair_informant, chakra_sage) now
+     carry `faction: npc` so actor lookup via `_adjacent_npc()` works correctly.
+
+2. _track_runtime_entity coverage audit
+   - All inventory mutation paths that were missing `_track_runtime_entity` are
+     now patched: `trade._append_inventory_item`, `entity_graph_ops.transfer_inventory_entity`,
+     `entity_graph_ops.transfer_split_quantity`, `inventory.equip_item_to_slot_qty`
+     equip-split path, `game.py` startup item injection.
+   - Closes a class of silent inventory-empty bugs in graph-authority mode.
+
+3. Phase 8 tag catalogue
+   - `spring_cleaning.txt` Phase 8 section updated with 9 additional tagged sites:
+     transient effect dicts, `_fallback_counter`, `entity_snapshots` payload shape,
+     `attention.py` persistence wrappers, `entity_graph_ops.py` write-through helper,
+     `chakra_scene.py` schema walkers, `inventory_scene.py` body zoom schema,
+     `chakra_items.py` facade helpers.
 
 ## Repo Read-Through Notes (2026-04-11)
 
