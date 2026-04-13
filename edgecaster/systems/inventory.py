@@ -595,15 +595,9 @@ def move_item_between_inventories(
         # First try level entities / actors
         dest_ent = level.entities.get(dest_owner_id) or level.actors.get(dest_owner_id)
 
-        # If not found there, search through all inventories for a matching entity id
+        # Fall back to entity registry (covers inventory items tracked at pickup).
         if dest_ent is None:
-            for inv_owner, items in game.inventories.items():
-                for it in items:
-                    if getattr(it, "id", None) == dest_owner_id:
-                        dest_ent = it
-                        break
-                if dest_ent is not None:
-                    break
+            dest_ent = entity_lifecycle_system.find_runtime_entity(game, dest_owner_id)
 
     if dest_ent is not None:
         dest_name = getattr(dest_ent, "name", None)
@@ -698,14 +692,9 @@ def move_item_between_inventories_qty(
         level = game._level()
         dest_ent = level.entities.get(dest_owner_id) or level.actors.get(dest_owner_id)
 
+        # Fall back to entity registry (covers inventory items tracked at pickup).
         if dest_ent is None:
-            for inv_owner, items in game.inventories.items():
-                for it in items:
-                    if getattr(it, "id", None) == dest_owner_id:
-                        dest_ent = it
-                        break
-                if dest_ent is not None:
-                    break
+            dest_ent = entity_lifecycle_system.find_runtime_entity(game, dest_owner_id)
 
     if dest_ent is not None:
         dest_name = getattr(dest_ent, "name", None)

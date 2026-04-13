@@ -155,13 +155,231 @@ if TYPE_CHECKING:
 # Small helpers: smooth animation
 # ---------------------------------------------------------------------------
 
+def _owner_entity_id(owner: object) -> str:
+    try:
+        return str(getattr(owner, "entity_id", "") or getattr(owner, "id", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _build_entity_schema_at_zoom_depth(
+    owner: object,
+    game: Any,
+    zoom_stack: list[str] | tuple[str, ...],
+) -> dict | None:
+    """Build a synthetic body-schema dict from entity-graph tags for the active zoom depth.
+
+    Returns a dict with the same shape as ``resolve_body_schema()``::
+
+        {"root": <local_node_id>, "nodes": {
+            <local_id>: {"layout": {"x": ..., "y": ...},
+                         "props":  {"size": ...},
+                         "proto":  <schema_proto_id or None>},
+            ...
+        }}
+
+    Returns ``None`` when the entity graph is unavailable or no body-node
+    entities exist for the owner at this zoom depth.
+
+    Positions come from the ``body_schema_rel_pos`` tag written by
+    ``entity_lifecycle._materialize_body_child`` (relative to the parent
+    entity in body-graph-scale units).  This is the same coordinate space
+    that the schema ``layout`` fields use, so callers need no conversion.
+    """
+    try:
+        from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
+        from edgecaster.systems.chakras import is_branch_root
+    except Exception:
+        return None
+
+    owner_id = _owner_entity_id(owner)
+    if not owner_id:
+        return None
+
+    graph = getattr(game, "entity_graph", None)
+    if graph is None:
+        return None
+    get_children = getattr(graph, "get_children", None)
+    if not callable(get_children):
+        return None
+
+    # Parent entity at the current zoom depth.
+    if zoom_stack:
+        parent_full_id = ".".join(str(n) for n in zoom_stack)
+        parent_eid = f"{owner_id}:body:{parent_full_id}"
+    else:
+        parent_eid = owner_id
+
+    child_ids = get_children(parent_eid, socket_id="body")
+    if not child_ids:
+        return None
+
+    nodes: dict[str, dict] = {}
+    root_local_id: str | None = None
+
+    for cid in child_ids:
+        child = entity_lifecycle_system.find_runtime_entity(game, str(cid))
+        if child is None:
+            continue
+        tags = getattr(child, "tags", {}) or {}
+
+        # full_id tag e.g. "arm.wrist"; local id is the last segment.
+        full_id_tag = str(tags.get("body_full_id", "") or "")
+        if not full_id_tag:
+            continue
+        local_id = full_id_tag.rsplit(".", 1)[-1] if "." in full_id_tag else full_id_tag
+        if not local_id:
+            continue
+
+        # Position in body-graph-scale units, relative to parent.
+        try:
+            rel = tags.get("body_schema_rel_pos", (0.0, 0.0))
+            lx, ly = float(rel[0]), float(rel[1])
+        except Exception:
+            lx, ly = 0.0, 0.0
+
+        # Local scale doubles as the "size" that controls zoom step depth.
+        try:
+            size = float(tags.get("body_local_scale", 1.0) or 1.0)
+        except Exception:
+            size = 1.0
+
+        # Only expose a "proto" (enable zoom-into) for branch-root nodes.
+        node_proto_id = str(tags.get("body_node_proto_id", "") or "")
+        schema_proto_id = str(tags.get("body_schema_proto_id", "") or "")
+        proto_for_zoom = schema_proto_id if schema_proto_id and is_branch_root(node_proto_id) else None
+
+        nodes[local_id] = {
+            "layout": {"x": lx, "y": ly},
+            "props": {"size": size},
+            "proto": proto_for_zoom,
+        }
+
+        # The entity tagged as schema root becomes the schema root.
+        if tags.get("body_schema_root", False):
+            root_local_id = local_id
+
+    if not nodes:
+        return None
+
+    # If no schema-root entity was found, use the first node as root.
+    if root_local_id is None:
+        root_local_id = next(iter(nodes))
+
+    return {"root": root_local_id, "nodes": nodes}
+
+
+def _entity_body_view_for_zoom_path(
+    owner: object,
+    game: Any,
+    zoom_stack: list[str],
+) -> tuple[dict, tuple[float, float], float] | None:
+    """Entity-graph variant of _resolve_body_view_for_zoom_path.
+
+    Walks zoom_stack using synthetic schema dicts built from entity tags rather
+    than authored body-schema data.  Returns the same (schema, offset, scale)
+    tuple, or None when entity graph data is unavailable.
+    """
+    offset_x, offset_y = 0.0, 0.0
+    scale = 1.0
+
+    for i, nid in enumerate(zoom_stack):
+        # Schema for the current level = entity children of the preceding zoom path.
+        schema_here = _build_entity_schema_at_zoom_depth(owner, game, zoom_stack[:i])
+        if not schema_here:
+            return None
+        node = (schema_here.get("nodes", {}) or {}).get(str(nid))
+        if not isinstance(node, dict):
+            return None
+
+        layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+        try:
+            nx = float(layout.get("x", 0.0) or 0.0)
+            ny = float(layout.get("y", 0.0) or 0.0)
+        except Exception:
+            nx, ny = 0.0, 0.0
+
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        try:
+            size = float(props.get("size", 1.0) or 1.0)
+        except Exception:
+            size = 1.0
+        if size <= 0.0:
+            size = 1.0
+
+        offset_x += scale * nx
+        offset_y += scale * ny
+        scale *= size
+
+    final_schema = _build_entity_schema_at_zoom_depth(owner, game, zoom_stack)
+    if not final_schema:
+        return None
+    return final_schema, (float(offset_x), float(offset_y)), float(scale)
+
+
+def _entity_body_view_chain_for_zoom_path(
+    owner: object,
+    game: Any,
+    zoom_stack: list[str],
+) -> list[tuple[dict, tuple[float, float], float]] | None:
+    """Entity-graph variant of _resolve_body_view_chain_for_zoom_path."""
+    root_schema = _build_entity_schema_at_zoom_depth(owner, game, [])
+    if not root_schema:
+        return None
+
+    chain: list[tuple[dict, tuple[float, float], float]] = [(root_schema, (0.0, 0.0), 1.0)]
+    offset_x, offset_y = 0.0, 0.0
+    scale = 1.0
+
+    for i, nid in enumerate(zoom_stack):
+        schema_here = _build_entity_schema_at_zoom_depth(owner, game, zoom_stack[:i])
+        if not schema_here:
+            return chain  # partial chain is still useful
+        node = (schema_here.get("nodes", {}) or {}).get(str(nid))
+        if not isinstance(node, dict):
+            return chain
+
+        layout = node.get("layout") if isinstance(node.get("layout"), dict) else {}
+        try:
+            nx = float(layout.get("x", 0.0) or 0.0)
+            ny = float(layout.get("y", 0.0) or 0.0)
+        except Exception:
+            nx, ny = 0.0, 0.0
+
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        try:
+            size = float(props.get("size", 1.0) or 1.0)
+        except Exception:
+            size = 1.0
+        if size <= 0.0:
+            size = 1.0
+
+        offset_x += scale * nx
+        offset_y += scale * ny
+        scale *= size
+
+        next_schema = _build_entity_schema_at_zoom_depth(owner, game, zoom_stack[:i + 1])
+        if not next_schema:
+            return chain
+        chain.append((next_schema, (float(offset_x), float(offset_y)), float(scale)))
+
+    return chain
+
+
 # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
 # Inventory body zoom still traverses authored body_schema directly. Once body
 # sub-entities are the authoritative runtime structure, replace these helpers
 # with graph/geometry queries and delete the schema-specific zoom plumbing.
-def _resolve_body_schema_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> dict:
+def _resolve_body_schema_for_zoom_path(
+    owner: object | None,
+    zoom_stack: list[str] | tuple[str, ...],
+    game: Any = None,
+) -> dict:
     """
     Resolve the *currently viewed* body schema, following the scene's zoom path.
+
+    Prefers entity-graph data (``_build_entity_schema_at_zoom_depth``) when a
+    ``game`` context is supplied; falls back to the authored body-schema walk.
 
     Minimal schema switching step:
       - Start at resolve_body_schema(owner)
@@ -170,6 +388,13 @@ def _resolve_body_schema_for_zoom_path(owner: object | None, zoom_stack: list[st
 
     Fail-soft: if any hop is missing or invalid, stop descending.
     """
+    if game is not None and owner is not None:
+        entity_schema = _build_entity_schema_at_zoom_depth(
+            owner, game, list(zoom_stack) if zoom_stack else []
+        )
+        if entity_schema is not None:
+            return entity_schema
+
     try:
         schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
     except Exception:
@@ -197,8 +422,15 @@ def _resolve_body_schema_for_zoom_path(owner: object | None, zoom_stack: list[st
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
     return schema
 
-def _resolve_body_view_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> tuple[dict, tuple[float, float], float]:
+def _resolve_body_view_for_zoom_path(
+    owner: object | None,
+    zoom_stack: list[str] | tuple[str, ...],
+    game: Any = None,
+) -> tuple[dict, tuple[float, float], float]:
     """Resolve (schema, embed_offset_u, embed_scale) for the current zoom path.
+
+    Prefers entity-graph data when a ``game`` context is supplied; falls back to
+    the authored body-schema walk.
 
     IMPORTANT invariant:
       - Each schema is defined in its own local coordinates.
@@ -208,6 +440,13 @@ def _resolve_body_view_for_zoom_path(owner: object | None, zoom_stack: list[str]
     This function accumulates those embedding transforms so the final schema can be
     rendered in the same absolute world-space as the root schema.
     """
+    if game is not None and owner is not None:
+        entity_result = _entity_body_view_for_zoom_path(
+            owner, game, list(zoom_stack) if zoom_stack else []
+        )
+        if entity_result is not None:
+            return entity_result
+
     try:
         schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
     except Exception:
@@ -266,15 +505,28 @@ def _resolve_body_view_for_zoom_path(owner: object | None, zoom_stack: list[str]
     return schema, (float(offset_x), float(offset_y)), float(scale)
 
 
-def _resolve_body_view_chain_for_zoom_path(owner: object | None, zoom_stack: list[str] | tuple[str, ...]) -> list[tuple[dict, tuple[float, float], float]]:
+def _resolve_body_view_chain_for_zoom_path(
+    owner: object | None,
+    zoom_stack: list[str] | tuple[str, ...],
+    game: Any = None,
+) -> list[tuple[dict, tuple[float, float], float]]:
     """Resolve a chain of embedded schemas along the zoom path.
 
     Returns a list of (schema, embed_offset_u, embed_scale_u) from root -> active.
     Each entry is already embedded into the same world-space chart as the root.
 
+    Prefers entity-graph data when a ``game`` context is supplied.
+
     This is intentionally *render-only* plumbing for Phase 2 (ghost layers).
     Camera fitting and interaction should still be computed from the active schema only.
     """
+    if game is not None and owner is not None:
+        entity_chain = _entity_body_view_chain_for_zoom_path(
+            owner, game, list(zoom_stack) if zoom_stack else []
+        )
+        if entity_chain is not None:
+            return entity_chain
+
     try:
         schema = resolve_body_schema(owner) if owner is not None else {"root": None, "nodes": {}}
     except Exception:
@@ -991,7 +1243,9 @@ def compute_body_view_state(
           * LoD >= 1: anchor is the current schema root node position in world units.
     """
     try:
-        schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, zoom_stack)
+        schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(
+            owner, zoom_stack, game=getattr(scene, "game", None)
+        )
     except Exception:
         schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
 
@@ -1068,7 +1322,9 @@ def compute_body_view_state(
             return (0.0, 0.0)
 
         try:
-            _schema, _embed_off_u, _embed_scale_u = _resolve_body_view_for_zoom_path(owner, list(_stack))
+            _schema, _embed_off_u, _embed_scale_u = _resolve_body_view_for_zoom_path(
+                    owner, list(_stack), game=getattr(scene, "game", None)
+                )
 
             root_id = None
             try:
@@ -2125,7 +2381,10 @@ class BodyPlanGraphWidget(Widget):
 
         # Chain (root -> ... -> active). Active schema is last.
         try:
-            chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []))
+            chain = _resolve_body_view_chain_for_zoom_path(
+                owner, getattr(scene, "_body_zoom_stack", []),
+                game=getattr(scene, "game", None),
+            )
             if not chain:
                 chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
         except Exception:
@@ -2664,7 +2923,7 @@ class BodyPlanGraphWidget(Widget):
 
         # Resolve currently-viewed schema (same as draw()).
         try:
-            chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []))
+            chain = _resolve_body_view_chain_for_zoom_path(owner, getattr(scene, "_body_zoom_stack", []), game=getattr(scene, "game", None))
             if not chain:
                 chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
         except Exception:
@@ -2860,7 +3119,7 @@ class BodyPlanGraphWidget(Widget):
                                 if owner is not None:
                                     try:
                                         schema0, _off0, _s0 = _resolve_body_view_for_zoom_path(
-                                            owner, getattr(scene, "_body_zoom_stack", [])
+                                            owner, getattr(scene, "_body_zoom_stack", []), game=getattr(scene, "game", None)
                                         )
                                     except Exception:
                                         schema0 = {"root": None, "nodes": {}}
@@ -3664,7 +3923,7 @@ class InventoryScene(PopupMenuScene):
             # IMPORTANT: match render camera inputs as closely as possible.
             # Use the same chain resolver used by the overlay, and take the active layer (last).
             try:
-                chain = _resolve_body_view_chain_for_zoom_path(owner, stack)
+                chain = _resolve_body_view_chain_for_zoom_path(owner, stack, game=getattr(self, "game", None))
                 if not chain:
                     chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
             except Exception:
@@ -3785,7 +4044,7 @@ class InventoryScene(PopupMenuScene):
 
         def _camera_for_stack(stack: list[str]) -> tuple[tuple[float, float], float]:
             try:
-                chain = _resolve_body_view_chain_for_zoom_path(owner, stack)
+                chain = _resolve_body_view_chain_for_zoom_path(owner, stack, game=getattr(self, "game", None))
                 if not chain:
                     chain = [({"root": None, "nodes": {}}, (0.0, 0.0), 1.0)]
             except Exception:
@@ -3838,7 +4097,7 @@ class InventoryScene(PopupMenuScene):
         from_stack = tuple(str(x) for x in stack_now)
         outgoing_layer: tuple[dict, tuple[float, float], float] | None = None
         try:
-            ch = _resolve_body_view_chain_for_zoom_path(owner, stack_now)
+            ch = _resolve_body_view_chain_for_zoom_path(owner, stack_now, game=getattr(self, "game", None))
             if ch:
                 outgoing_layer = ch[-1]
         except Exception:
@@ -4766,7 +5025,7 @@ class InventoryScene(PopupMenuScene):
         if owner is None:
             return []
         try:
-            schema = _resolve_body_schema_for_zoom_path(owner, getattr(self, "_body_zoom_stack", [])) or {}
+            schema = _resolve_body_schema_for_zoom_path(owner, getattr(self, "_body_zoom_stack", []), game=getattr(self, "game", None)) or {}
         except Exception:
             schema = {}
         nodes = schema.get("nodes", {}) or {}
@@ -4949,7 +5208,7 @@ class InventoryScene(PopupMenuScene):
             zoom_stack = []
 
         try:
-            schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, zoom_stack)
+            schema, embed_off_u, embed_scale_u = _resolve_body_view_for_zoom_path(owner, zoom_stack, game=getattr(self, "game", None))
         except Exception:
             schema, embed_off_u, embed_scale_u = {"root": None, "nodes": {}}, (0.0, 0.0), 1.0
 

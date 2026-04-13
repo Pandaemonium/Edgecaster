@@ -494,6 +494,13 @@ def register_actor(
     level.entities[actor.id] = actor
     _patch_spawned_entity_state(game, actor, owner_id=None, in_inventory=False)
     entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+    # Mark inventory as graph-authoritative from birth so get_inventory prefers
+    # containment edges rather than falling back to the legacy list cache.
+    try:
+        from edgecaster.systems.inventory import _mark_inventory_graph_authority
+        _mark_inventory_graph_authority(game, actor.id)
+    except Exception:
+        pass
 
     if schedule_ai:
         game._schedule(

@@ -42,6 +42,7 @@ Usage:
     from edgecaster.systems.chakras import (
         ChakraState,
         can_unlock_chakra,
+        can_unlock_chakra_for_entity,
         unlock_chakra,
         toggle_chakra_active,
         generate_chakra_pattern,
@@ -596,6 +597,54 @@ def list_unlockable_chakras_for_entity(
         for (full_id, _depth) in locked
         if can_unlock_full_chakra_id(chakra_state, full_id)
     ]
+
+
+def can_unlock_chakra_for_entity(
+    owner_ent: Any,
+    chakra_state: ChakraState,
+    full_id: str,
+) -> bool:
+    """Entity-aware unlock check using body-node specs.
+
+    This is the runtime-facing prerequisite gate for real actor/entities.
+    It uses ``entity_body.build_body_node_specs`` to verify the node exists
+    in the body tree, then delegates to ``can_unlock_full_chakra_id`` for
+    the dot-prefix prerequisite logic.
+
+    Falls back to the body-schema path (``can_unlock_chakra``) when specs
+    are unavailable so that pre-runtime and editor flows continue to work.
+
+    Args:
+        owner_ent: The actor or entity whose body tree to query.
+        chakra_state: Current chakra state.
+        full_id: The fully-qualified node id to check (e.g. ``"arm.wrist"``).
+
+    Returns:
+        True if the node exists, is not yet unlocked, and all dot-prefix
+        prerequisites are already unlocked.
+    """
+    try:
+        from edgecaster.systems import entity_body as entity_body_system
+
+        specs = entity_body_system.build_body_node_specs(owner_ent)
+    except Exception:
+        specs = {}
+
+    if not specs:
+        # Fall back to body-schema path for pre-runtime / editor contexts.
+        try:
+            from edgecaster.prototypes import resolve_body_schema
+
+            return can_unlock_chakra(resolve_body_schema(owner_ent), chakra_state, full_id)
+        except Exception:
+            return False
+
+    # Node must be present in the body tree.
+    if full_id not in specs:
+        return False
+
+    # Delegate prereq logic to the full-id helper (uses dot-prefix decomposition).
+    return can_unlock_full_chakra_id(chakra_state, full_id)
 
 
 # =============================================================================

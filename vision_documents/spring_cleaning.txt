@@ -1381,8 +1381,11 @@ PHASE 8 — LEGACY REMOVAL
   - File: edgecaster/systems/inventory.py
   - game.inventories dict replaced by containment tree queries.
   - PARTIAL (2026-04-12): get_inventory now queries entity_graph first and syncs
-    the list cache. Pickup tracks items in _runtime_entity_index. Full removal
-    of game.inventories requires migrating NPC inventories and save/load paths.
+    the list cache. Pickup tracks items in _runtime_entity_index.
+  - PARTIAL (2026-04-12): register_actor and realize_poi_npc_spec now call
+    _mark_inventory_graph_authority at spawn so get_inventory is graph-authoritative
+    for all actors from birth. Full removal of game.inventories requires
+    save/load path migration.
 
 [DONE][ENTITY_CHAKRA][PHASE_8] sync_actor_chakra_state deletion (2026-04-12)
   - Deleted from edgecaster/systems/chakra_items.py.
@@ -1591,6 +1594,12 @@ PROGRESS NOTES (2026-02-17)
     Tagged [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] for Phase 8 removal.
   - Updated test patches from `poi_spawning.*` → `poi_worldgen.*` namespace.
   - All 5 POI cutover tests pass; no new failures introduced.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] poi_spawning.py facade deleted (2026-04-12)
+  - File deleted: edgecaster/systems/poi_spawning.py
+  - test_poi_spawning_cutover.py updated to import poi_worldgen as poi_spawning.
+  - architecture.txt updated to reference poi_worldgen for POI realization.
+  - spring_cleaning.txt "delete in Phase 8" note marked done.
 
 [PROGRESS][ENTITY_CHAKRA][SLICE_2B] Chakra gameplay cutover (2026-04-11)
   - Files:
@@ -1929,7 +1938,7 @@ Should be tagged for future deletion:
     combat_actions.py and blade_runtime.py — consolidate
   - phantom_limb duplication in blade_runtime.py — consolidate
   - Dual vines systems in scheduling.py — unify
-  - poi_spawning.py is now a thin facade (see Slice 2A progress) — delete in Phase 8
+  - [DONE] poi_spawning.py deleted (2026-04-12); test_poi_spawning_cutover.py now imports from poi_worldgen directly
 
 -------------------------------------------------------------------------------
 (3) LEGIBILITY AND ORGANIZATION
@@ -2313,3 +2322,28 @@ Owner: Claude audit (2026-02-18)
   - Remaining body_schema read in chakra_scene.py: _build_pattern_preview() still uses
     build_chakra_generator_seed(body_schema, ...) — that is gameplay logic, not display,
     and is deferred to the actor-body gameplay reader cutover step.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] actor-body gameplay reader cutover (2026-04-12)
+  - Files: edgecaster/systems/chakras.py, edgecaster/systems/pattern_runtime.py,
+           tests/test_chakra_unlock_queries.py, tests/test_pattern_runtime.py
+  - Added can_unlock_chakra_for_entity(owner_ent, chakra_state, full_id): entity-aware
+    prerequisite gate using entity_body.build_body_node_specs + can_unlock_full_chakra_id.
+    Falls back to can_unlock_chakra(resolve_body_schema(...)) for pre-runtime contexts.
+  - pattern_runtime.act_chakra: separated resolve_body_schema call from import so a
+    resolve failure falls back to body_schema={} instead of aborting the action entirely.
+    Actors with chakra_component now proceed through the entity-tree path in
+    build_chakra_generator_seed even when schema resolution raises.
+  - chakra_modifiers: promoted resonance-bonus detection to use effective_active_nodes
+    instead of raw chakra_state.active, keeping resonance and charge reads consistent.
+    Equipment-granted temporary activations now feed both resonance bonuses and charge
+    averaging via the same effective_active_nodes call.
+  - Tests added: 4 new can_unlock_chakra_for_entity tests in test_chakra_unlock_queries.py;
+    1 new resonance test in test_pattern_runtime.py.  Suite: 626 passed, 0 new failures.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] inventory entity-registry lookups (2026-04-12)
+  - File: edgecaster/systems/inventory.py
+  - Replaced two game.inventories.items() fallback walks in move_item_between_inventories
+    and move_item_between_inventories_qty with find_runtime_entity(game, dest_owner_id).
+    These were label-lookup-only fallbacks for log messages; find_runtime_entity covers
+    inventory items via _runtime_entity_index tracked at pickup, so the list walk is no
+    longer needed for those paths.

@@ -1391,7 +1391,15 @@ class PatternPreviewWidget(Widget):
             self._pattern_surface = None
             return
 
-        body_schema = _get_body_schema(self.actor)
+        # When a game context is available, build_chakra_generator_seed uses
+        # the entity-tree path first (actor + game). Only resolve body_schema
+        # as a fallback for schema-only environments (tests, char creation preview).
+        _preview_game = getattr(self, "game", None)
+        if _preview_game is not None:
+            body_schema: Dict[str, Any] = {}
+        else:
+            body_schema = _get_body_schema(self.actor)
+
         if self.state_override is not None:
             chakra_state = self.state_override
         elif self._state_provider is not None:
@@ -1414,7 +1422,7 @@ class PatternPreviewWidget(Widget):
                 # Match runtime cast behavior exactly so preview is WYSIWYG.
                 require_root=True,
                 actor=self.actor,
-                game=getattr(self, "game", None),
+                game=_preview_game,
             )
         except Exception:
             self._pattern_surface = None

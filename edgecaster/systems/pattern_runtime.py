@@ -202,14 +202,16 @@ def chakra_modifiers(self, actor_id: str):
     except Exception:
         return None
 
-    bonuses = chakra_system.check_resonance_bonuses_from_active_nodes(
-        set(getattr(chakra_state, "active", set()) or set())
-    )
-    mods = chakra_system.get_resonance_modifiers(bonuses)
+    # Prefer effective_active_nodes so item-granted temporary unlocks/auto-activations
+    # feed both resonance-bonus detection and charge averaging, keeping the two reads
+    # consistent with each other.
     try:
         active_node_ids = chakra_items_system.effective_active_nodes(self, actor)
     except Exception:
         active_node_ids = set(getattr(chakra_state, "active", set()) or set())
+
+    bonuses = chakra_system.check_resonance_bonuses_from_active_nodes(active_node_ids)
+    mods = chakra_system.get_resonance_modifiers(bonuses)
     avg_charge = _average_reduced_charge(actor, active_node_ids)
     if avg_charge is None:
         avg_charge = chakra_system.get_average_charge(chakra_state)
@@ -262,16 +264,19 @@ def act_chakra(self, actor_id: str) -> None:
 
     try:
         from edgecaster.prototypes import resolve_body_schema
-        from edgecaster.systems.chakras import (
-            build_chakra_generator_seed,
-        )
-
-        body_schema = resolve_body_schema(actor)
+        from edgecaster.systems.chakras import build_chakra_generator_seed
     except Exception:
-        self.log.add("Could not resolve body schema.")
+        self.log.add("Could not import chakra modules.")
         return
 
-    if (not body_schema or not body_schema.get("nodes")) and getattr(actor, "chakra_component", None) is None:
+    # Best-effort schema resolve; entity-tree path in build_chakra_generator_seed
+    # handles actors that have a chakra_component but no resolvable schema.
+    try:
+        body_schema = resolve_body_schema(actor)
+    except Exception:
+        body_schema = {}
+
+    if not (body_schema or {}).get("nodes") and getattr(actor, "chakra_component", None) is None:
         self.log.add("No body schema to generate pattern from.")
         return
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from edgecaster.systems import poi_spawning
+from edgecaster.systems import poi_worldgen as poi_spawning
 
 
 def _level_with_pois(poi_ids: list[str]) -> object:

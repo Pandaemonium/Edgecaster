@@ -189,9 +189,9 @@ Current concern map (authoritative):
   - Mechanical zone/chunk transitions only (no gameplay rituals).
   - Explicit transitions (stairs/fast travel/edge wrap) now trigger a small prewarm slice around
     the destination to reduce first-step hitching after transition.
-- `edgecaster/systems/poi_spawning.py`
+- `edgecaster/systems/poi_worldgen.py`
   - Runtime POI realization for loaded levels (POI structures, POI NPC spawns, lair/ruin content).
-  - Keeps `Game._spawn_poi_contents` as a thin delegate.
+  - Owns `spawn_poi_contents`; `poi_spawning.py` facade deleted in Phase 8.
 - `edgecaster/systems/ambient_spawns.py`
   - Active-window ambient hostile population maintenance (tier-aware top-up over time).
   - Called from `Game._advance_time` after per-level scheduling ticks.
@@ -290,7 +290,7 @@ Key modules (non-exhaustive):
   consumed by editor/tooltip UI.
 - systems/pattern_runtime.py: extracted pattern/chakra runtime execution
   (fractal op mutation, Activate R/N, polygon/star/chakra actions, chakra charge/modifiers)
-- systems/poi_spawning.py: zone-time POI realization policy (structures/NPCs/lair ruin content)
+- systems/poi_worldgen.py: zone-time POI realization policy (structures/NPCs/lair ruin content)
 - systems/damage_policy.py: reusable damage target filtering + relation gating
 - systems/tooltips.py: action help resolver for ability-bar hover tooltips
 - systems/trade.py: trade rules and transaction commit

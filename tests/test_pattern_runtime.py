@@ -196,3 +196,49 @@ def test_chakra_modifiers_prefers_reduced_charge_snapshot(monkeypatch) -> None:
     assert mods is not None
     assert mods.damage_mult > 1.0
     assert mods.mana_cost_mult < 1.0
+
+
+def test_chakra_modifiers_resonance_uses_effective_active_nodes(monkeypatch) -> None:
+    """Resonance bonus detection must use effective_active_nodes, not raw chakra_state.
+
+    Equipment items can grant temporary node activations.  Resonance bonuses
+    (bilateral_arms, full_hand, etc.) should see those item-granted nodes the
+    same way charge averaging does, so the two reads are consistent.
+    """
+    game, actor = _make_game()
+    # Stored state only has body — arm and arm_m are equipment-granted.
+    actor.chakra_state = SimpleNamespace(
+        unlocked={"body"},
+        active={"body"},
+        charges={},
+        alignments={},
+        generators={},
+        pattern_root="body",
+    )
+
+    monkeypatch.setattr(
+        pattern_runtime.chakra_items_system,
+        "ensure_actor_chakra_state",
+        lambda _actor: actor.chakra_state,
+    )
+    # Equipment grants arm + arm_m — enough to trigger bilateral_arms resonance.
+    monkeypatch.setattr(
+        pattern_runtime.chakra_items_system,
+        "effective_active_nodes",
+        lambda _game, _actor: {"body", "arm", "arm_m"},
+    )
+
+    import edgecaster.prototypes as prototypes
+
+    monkeypatch.setattr(
+        prototypes,
+        "resolve_body_schema",
+        lambda _actor: {"root": "body", "nodes": {"body": {}}},
+    )
+
+    mods = pattern_runtime.chakra_modifiers(game, "player")
+
+    assert mods is not None
+    # bilateral_arms grants damage_mult=1.05 and mana_cost_mult=0.90.
+    assert mods.damage_mult >= 1.05, "bilateral_arms resonance bonus not applied"
+    assert mods.mana_cost_mult <= 0.90, "bilateral_arms mana discount not applied"
