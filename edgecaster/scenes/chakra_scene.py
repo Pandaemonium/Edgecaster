@@ -46,7 +46,7 @@ from edgecaster.ui.widgets import Widget, WidgetContext, ButtonWidget
 from edgecaster.math_utils import lerp, smoothstep, lerp_rgb
 from edgecaster.systems.chakras import (
     ChakraState,
-    check_resonance_bonuses,
+    check_resonance_bonuses_from_active_nodes,
     get_all_chakra_positions_recursive,
     get_chakra_connections_recursive,
     collect_all_chakra_nodes,
@@ -1780,9 +1780,8 @@ class ChakraSelectionScene(PanelScene):
 
         self._info.set_chakra(node_id, state)
 
-        # Update resonances
-        body_schema = _get_body_schema(self._actor)
-        resonances = check_resonance_bonuses(body_schema, chakra_state)
+        # Update resonances using active-node set (no body_schema walk needed).
+        resonances = check_resonance_bonuses_from_active_nodes(chakra_state.active)
         self._info.set_resonances(resonances)
 
     def _set_selection(self, nodes: Set[str], primary: Optional[str]) -> None:
@@ -1862,7 +1861,7 @@ class ChakraSelectionScene(PanelScene):
         if hasattr(state, "pattern_root"):
             state.pattern_root = getattr(snap, "pattern_root", None)
         try:
-            chakra_items_system.sync_actor_chakra_state(self._actor, game=self.game)
+            chakra_items_system.apply_chakra_state_snapshot(self._actor, state, game=self.game)
         except Exception:
             pass
 
@@ -1977,10 +1976,9 @@ class ChakraSelectionScene(PanelScene):
 
         self._push_undo()
         state.pattern_root = primary
-        try:
-            chakra_items_system.sync_actor_chakra_state(self._actor, game=self.game)
-        except Exception:
-            pass
+        comp = chakra_items_system._coerce_actor_chakra_component(self._actor)
+        if comp is not None:
+            comp.tags["compat_pattern_root"] = primary
         self._preview.mark_dirty()
         self._refresh_list_items()
         self._update_info_for_chakra(primary)
@@ -2054,7 +2052,7 @@ class ChakraSelectionScene(PanelScene):
 
         # Charge readout (only meaningful for unlocked/active nodes)
         if node_id in chakra_state.unlocked or node_id in chakra_state.active:
-            bonuses = check_resonance_bonuses(body_schema, chakra_state)
+            bonuses = check_resonance_bonuses_from_active_nodes(chakra_state.active)
             mods = get_resonance_modifiers(bonuses)
             cap = max(0.01, CHARGE_MAX_BASE + mods.charge_cap_bonus)
             charge = float(chakra_state.charges.get(node_id, 0.0))
@@ -2068,7 +2066,7 @@ class ChakraSelectionScene(PanelScene):
 
         # Resonance summary
         if node_id in chakra_state.active:
-            resonances = check_resonance_bonuses(body_schema, chakra_state)
+            resonances = check_resonance_bonuses_from_active_nodes(chakra_state.active)
             if resonances:
                 res_label = ", ".join(r.replace("_", " ").title() for r in resonances[:2])
                 if len(resonances) > 2:
@@ -2233,10 +2231,9 @@ class ChakraSelectionScene(PanelScene):
             if changed:
                 self._push_undo()
             state.alignments = dict(self._pending_alignments)
-            try:
-                chakra_items_system.sync_actor_chakra_state(self._actor, game=self.game)
-            except Exception:
-                pass
+            comp = chakra_items_system._coerce_actor_chakra_component(self._actor)
+            if comp is not None:
+                comp.tags["compat_alignments"] = dict(self._pending_alignments)
             if changed:
                 self._apply_realign_time_cost()
 

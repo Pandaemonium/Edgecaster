@@ -308,6 +308,43 @@ def _component_state_overrides(comp: Any) -> tuple[dict[str, tuple[float, float]
     return (alignments, generators, pattern_root)
 
 
+def _is_compat_component_node(node: Any) -> bool:
+    """Return True for actor-side compat nodes mirrored from ChakraState."""
+    if node is None:
+        return False
+    if isinstance(node, dict):
+        kind = str(node.get("kind") or "")
+        tags = node.get("tags")
+    else:
+        kind = str(getattr(node, "kind", "") or "")
+        tags = getattr(node, "tags", None)
+    if kind == "compat":
+        return True
+    return isinstance(tags, dict) and bool(tags.get("compat_unlocked"))
+
+
+def _remove_component_node(comp: Any, node_id: str) -> None:
+    """Delete a compat node plus any incident edges from a ChakraComponent."""
+    nodes = getattr(comp, "nodes", None)
+    if isinstance(nodes, dict):
+        nodes.pop(str(node_id), None)
+    edges = getattr(comp, "edges", None)
+    if not isinstance(edges, dict):
+        return
+    doomed_edge_ids: list[str] = []
+    for edge_id, edge in edges.items():
+        if isinstance(edge, dict):
+            src = str(edge.get("src_node_id") or "")
+            dst = str(edge.get("dst_node_id") or "")
+        else:
+            src = str(getattr(edge, "src_node_id", "") or "")
+            dst = str(getattr(edge, "dst_node_id", "") or "")
+        if src == str(node_id) or dst == str(node_id):
+            doomed_edge_ids.append(str(edge_id))
+    for edge_id in doomed_edge_ids:
+        edges.pop(edge_id, None)
+
+
 # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
 # The ChakraState facade below exists for actor-centric callers that still
 # expect cached unlocked/active sets. Once gameplay/UI code reads directly from
@@ -355,92 +392,92 @@ def ensure_actor_chakra_state(actor: Any) -> Any:
     return state
 
 
-def sync_actor_chakra_state(actor: Any, game: Any = None) -> None:
-    """Mirror legacy ChakraState into ChakraComponent for migration cutover.
 
-    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] — Phase 2B reversed write authority
-    so ChakraComponent drives mutations. New code should use unlock_actor_chakra,
-    toggle_actor_chakra, set_actor_chakra_charge, and flush_charges_to_component
-    instead of calling this function directly.
+def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> None:
+    """Apply a full ChakraState snapshot to the actor's ChakraComponent.
+
+    This is the forward-looking replacement for sync_actor_chakra_state in
+    paths that must apply a complete state (e.g. undo/redo in the chakra
+    scene, character-class initialisation).  It routes through the public
+    wrapper functions so dirty-flag propagation happens correctly.
+
+    Unlike sync_actor_chakra_state, this function does NOT mutate the state
+    object itself — it reads from `state` and writes to the component.
     """
-    # Unification note: keep this mirror narrow. New geometry, propagation, and
-    # reducer semantics should live on ChakraComponent/rule evaluation, not as
-    # ever-growing compat_* payloads.
-    state = getattr(actor, "chakra_state", None)
     if state is None:
         return
     comp = _coerce_actor_chakra_component(actor)
     if comp is None:
         return
-    nodes = getattr(comp, "nodes", None)
-    if not isinstance(nodes, dict):
-        return
 
     unlocked = _normalize_nodes(getattr(state, "unlocked", set()) or set())
     active = _normalize_nodes(getattr(state, "active", set()) or set())
+    managed_node_ids = set(unlocked)
+    managed_node_ids.update(active)
     root = _baseline_chakra_root(actor)
     if root:
         unlocked.add(root)
         active.add(root)
+        managed_node_ids.add(root)
+
+    charge_values: dict[str, float] = {}
     charges_raw = getattr(state, "charges", {}) or {}
-    charges: dict[str, float] = {}
     if isinstance(charges_raw, dict):
         for key, value in charges_raw.items():
             nid = _normalize_node_id(str(key))
             if not nid:
                 continue
             try:
-                charges[nid] = float(value)
+                charge_values[nid] = float(value)
+                managed_node_ids.add(nid)
             except Exception:
                 continue
 
-    key_by_node_id: dict[str, str] = {}
-    for key, node in nodes.items():
-        if isinstance(node, dict):
-            node_id = str(node.get("node_id") or key or "")
+    # Ensure every unlocked node exists in the component and has correct
+    # active state.  We call the public wrappers so B2 mirrors and dirty
+    # flags are applied even for bulk restores.
+    for nid in sorted(managed_node_ids):
+        is_active = nid in active
+        if nid not in comp.nodes:
+            unlock_actor_chakra(actor, nid, auto_activate=is_active, game=game)
         else:
-            node_id = str(getattr(node, "node_id", "") or key or "")
-        nid = _normalize_node_id(node_id)
-        if nid and nid not in key_by_node_id:
-            key_by_node_id[nid] = str(key)
+            toggle_actor_chakra(actor, nid, active=is_active, game=game)
 
-    for nid in sorted(unlocked | set(charges.keys())):
-        node_key = key_by_node_id.get(nid)
-        if node_key is None:
-            node_key = nid
-            nodes[node_key] = chakra_component_state.ChakraNode(
-                node_id=nid,
-                kind="compat",
-                active=(nid in active),
-                channels={},
-                tags={"compat_unlocked": True},
-            )
-            key_by_node_id[nid] = node_key
+    # Full-state restore means compat nodes absent from the snapshot should
+    # disappear instead of lingering after undo/redo or bootstrap restores.
+    existing_nodes = getattr(comp, "nodes", None)
+    if isinstance(existing_nodes, dict):
+        stale_compat_ids = [
+            str(node_id)
+            for node_id, node in existing_nodes.items()
+            if _is_compat_component_node(node) and _normalize_node_id(str(node_id)) not in managed_node_ids
+        ]
+        for nid in stale_compat_ids:
+            _remove_component_node(comp, nid)
+            if game is not None:
+                _mark_actor_chakra_dirty(game, actor, nid)
 
-        node = nodes[node_key]
-        if isinstance(node, dict):
-            channels = node.get("channels")
+    # Clear stale compat charges before applying the new snapshot values.
+    nodes = getattr(comp, "nodes", None)
+    if isinstance(nodes, dict):
+        for nid in sorted(managed_node_ids):
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            channels = getattr(node, "channels", None)
             if not isinstance(channels, dict):
-                channels = {}
-                node["channels"] = channels
-            node["node_id"] = str(node.get("node_id") or nid)
-            node["active"] = bool(nid in active)
-            if nid in charges:
-                channels["charge"] = float(charges[nid])
-            else:
+                continue
+            if nid not in charge_values:
                 channels.pop("charge", None)
-                channels.pop("chakra_charge", None)
-        else:
-            node.node_id = str(getattr(node, "node_id", "") or nid)
-            node.active = bool(nid in active)
-            if not isinstance(getattr(node, "channels", None), dict):
-                node.channels = {}
-            if nid in charges:
-                node.channels["charge"] = float(charges[nid])
-            else:
-                node.channels.pop("charge", None)
-                node.channels.pop("chakra_charge", None)
 
+    # Apply charges.
+    for nid, value in sorted(charge_values.items()):
+        try:
+            set_actor_chakra_charge(actor, nid, value, game=game)
+        except Exception:
+            pass
+
+    # Write compat metadata tags for pattern root, alignments, generators.
     tags = getattr(comp, "tags", None)
     if not isinstance(tags, dict):
         tags = {}
@@ -448,39 +485,34 @@ def sync_actor_chakra_state(actor: Any, game: Any = None) -> None:
             comp.tags = tags
         except Exception:
             pass
+
     tags["compat_unlocked_nodes"] = sorted(unlocked)
     tags["compat_active_nodes"] = sorted(active)
-    root_choice = _normalize_node_id(str(getattr(state, "pattern_root", "") or ""))
-    tags["compat_pattern_root"] = root_choice if root_choice in active else None
+    pattern_root_raw = _normalize_node_id(str(getattr(state, "pattern_root", "") or ""))
+    tags["compat_pattern_root"] = pattern_root_raw if pattern_root_raw in active else None
 
     alignments_raw = getattr(state, "alignments", {}) or {}
-    alignments_out: dict[str, list[float]] = {}
+    alignments_out: dict = {}
     if isinstance(alignments_raw, dict):
-        for key, value in alignments_raw.items():
-            nid = _normalize_node_id(str(key))
-            if not nid:
-                continue
-            if not isinstance(value, (list, tuple)) or len(value) < 2:
-                continue
-            try:
-                alignments_out[nid] = [float(value[0]), float(value[1])]
-            except Exception:
-                continue
+        for k, v in alignments_raw.items():
+            nid = _normalize_node_id(str(k))
+            if nid and isinstance(v, (list, tuple)) and len(v) >= 2:
+                try:
+                    alignments_out[nid] = [float(v[0]), float(v[1])]
+                except Exception:
+                    pass
     tags["compat_alignments"] = alignments_out
 
     gens_raw = getattr(state, "generators", {}) or {}
-    gens_out: dict[str, str] = {}
+    gens_out: dict = {}
     if isinstance(gens_raw, dict):
-        for key, value in gens_raw.items():
-            nid = _normalize_node_id(str(key))
-            if not nid:
-                continue
-            sval = str(value or "").strip()
-            if sval:
-                gens_out[nid] = sval
+        for k, v in gens_raw.items():
+            nid = _normalize_node_id(str(k))
+            if nid:
+                sval = str(v or "").strip()
+                if sval:
+                    gens_out[nid] = sval
     tags["compat_generators"] = gens_out
-    if game is not None:
-        _mark_actor_chakra_dirty(game, actor, str(getattr(comp, "root_node_id", "") or "body"))
 
 
 def flush_charges_to_component(actor: Any, game: Any = None) -> None:

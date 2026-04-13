@@ -305,6 +305,20 @@ class TestCoherenceTick:
         assert level.activation_points == []
         mock_game.log.add.assert_called_with("Your pattern loses coherence and unravels.")
 
+    def test_skips_when_player_missing_from_level(self, mock_game):
+        """Missing player membership should not crash coherence ticking."""
+        mock_game.player_id = "player"
+        mock_game._player.side_effect = AssertionError("coherence_tick should not call game._player() here")
+        level = MagicMock()
+        level.actors = {}
+        level.entities = {}
+        level.pattern = MagicMock()
+        level.pattern.vertices = list(range(40))
+
+        coherence_tick(mock_game, level, 10)
+
+        assert mock_game.log.add.call_count == 0
+
 
 class TestCooldownTick:
     """Tests for cooldown_tick function."""

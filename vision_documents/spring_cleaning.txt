@@ -1380,6 +1380,16 @@ PHASE 8 — LEGACY REMOVAL
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Flat inventory list removal
   - File: edgecaster/systems/inventory.py
   - game.inventories dict replaced by containment tree queries.
+  - PARTIAL (2026-04-12): get_inventory now queries entity_graph first and syncs
+    the list cache. Pickup tracks items in _runtime_entity_index. Full removal
+    of game.inventories requires migrating NPC inventories and save/load paths.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] sync_actor_chakra_state deletion (2026-04-12)
+  - Deleted from edgecaster/systems/chakra_items.py.
+  - Replaced by apply_chakra_state_snapshot (full-state restore path) and
+    direct comp.tags writes in chakra_scene.py for pattern_root/alignments.
+  - game.py bootstrap migrated to apply_chakra_state_snapshot.
+  - Test migrated to cover apply_chakra_state_snapshot instead.
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] BladeState parallel storage removal
   - File: edgecaster/game.py (line ~508), edgecaster/systems/blade_runtime.py

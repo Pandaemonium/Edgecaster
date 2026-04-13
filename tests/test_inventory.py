@@ -60,6 +60,28 @@ class TestGetInventory:
 
         assert game.inventories["player"] == [item]
 
+    def test_graph_authoritative_inventory_replaces_stale_cache_in_place(self):
+        """Graph-backed owners should drop stale cache entries when edges are gone."""
+        class _Graph:
+            def get_children(self, owner_id, socket_id=None):
+                return []
+
+        stale = MagicMock()
+        stale.id = "item:stale"
+        stale.parent_entity_id = None
+        stale.socket_id = None
+
+        game = MagicMock()
+        game.inventories = {"player": [stale]}
+        game.entity_graph = _Graph()
+        game._inventory_graph_authority_owners = {"player"}
+
+        inv = game.inventories["player"]
+        result = get_inventory(game, "player")
+
+        assert result is inv
+        assert result == []
+
 
 class TestGetPlayerInventory:
     """Tests for get_player_inventory."""

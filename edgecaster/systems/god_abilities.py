@@ -97,6 +97,26 @@ def act_knife_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
         if actor.stats.hp <= 0:
             kills += 1
             try:
+                killer_is_player = bool(actor_id == getattr(game, "player_id", None))
+                kill_actor = getattr(game, "_kill_actor", None)
+                if callable(kill_actor):
+                    kill_actor(
+                        level,
+                        actor,
+                        killer_id=actor_id,
+                        killer_is_player=killer_is_player,
+                    )
+            except Exception:
+                pass
+            # Test harnesses and a few lightweight callers still use bare mocks
+            # without a real kill pipeline. Ensure the target does not linger as
+            # "alive" once the rune has reduced it to 0 HP.
+            try:
+                if getattr(actor, "alive", True):
+                    actor.alive = False
+            except Exception:
+                pass
+            try:
                 game.log.add(f"The Death Rune claims {getattr(actor, 'name', 'an enemy')}.")
             except Exception:
                 pass

@@ -281,7 +281,25 @@ def coherence_tick(game: "Game", level: "LevelState", delta: int) -> None:
     """Drain coherence each tick based on vertex count beyond INT*4."""
     from edgecaster.patterns import builder
 
-    player = game._player()
+    player_id = getattr(game, "player_id", None)
+    actors = getattr(level, "actors", None)
+    entities = getattr(level, "entities", None)
+    player = actors.get(player_id) if isinstance(actors, dict) else None
+    if player is None:
+        maybe_ent = entities.get(player_id) if isinstance(entities, dict) else None
+        if maybe_ent is not None and hasattr(maybe_ent, "stats"):
+            player = maybe_ent
+            try:
+                level.actors[player_id] = maybe_ent
+            except Exception:
+                pass
+    if player is None:
+        if isinstance(actors, dict) or isinstance(entities, dict):
+            return
+        try:
+            player = game._player()
+        except Exception:
+            return
     stats = player.stats
     intel = game.character.stats.get("int", 0)
     discount = intel * 4

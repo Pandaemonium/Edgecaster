@@ -26,6 +26,7 @@ class TestGetZone:
         """Create a mock game."""
         game = MagicMock()
         game.levels = {}
+        game.allow_render_zone_creation = False
 
         player = MagicMock()
         player.stats = MagicMock()
@@ -68,44 +69,44 @@ class TestGetZone:
         mock_game._make_zone.assert_not_called()
         assert result is cached_level
 
-    def test_resets_pattern_state(self, mock_game):
-        """Should reset pattern state when entering zone."""
+    def test_does_not_reset_pattern_state(self, mock_game):
+        """get_zone is now pure retrieval and must not reset pattern state."""
+        coord = (1, 2, 0)
+        level = MagicMock()
+        level.world = MagicMock()
+        level.world.is_lab = False
+        level.pattern_anchor = (5, 5)
+        level.activation_points = [(1, 2)]
+        level.activation_ttl = 100
+        level.pattern_motion = MagicMock()
+        mock_game.levels[coord] = level
+
+        get_zone(mock_game, coord)
+
+        assert level.pattern_anchor == (5, 5)
+        assert level.activation_points == [(1, 2)]
+        assert level.activation_ttl == 100
+        assert level.pattern_motion is not None
+
+    def test_does_not_reset_player_coherence(self, mock_game):
+        """Chunk lookup must not perform coherence rituals."""
         coord = (1, 2, 0)
         level = MagicMock()
         level.world = MagicMock()
         level.world.is_lab = False
         mock_game.levels[coord] = level
 
-        with patch("edgecaster.patterns.builder.Pattern") as mock_pattern:
-            mock_pattern.return_value = MagicMock()
-            get_zone(mock_game, coord)
+        get_zone(mock_game, coord)
 
-        assert level.pattern_anchor is None
-        assert level.activation_points == []
-        assert level.activation_ttl == 0
-        assert level.pattern_motion is None
+        assert mock_game._player().stats.coherence == 50
 
-    def test_resets_player_coherence(self, mock_game):
-        """Should reset player coherence to max."""
-        coord = (1, 2, 0)
-        level = MagicMock()
-        level.world = MagicMock()
-        level.world.is_lab = False
-        mock_game.levels[coord] = level
-
-        with patch("edgecaster.patterns.builder.Pattern"):
-            get_zone(mock_game, coord)
-
-        assert mock_game._player().stats.coherence == 100
-
-    def test_spawns_enemies_in_normal_zone(self, mock_game):
-        """Should spawn enemies in normal zones."""
+    def test_does_not_spawn_enemies_on_get_zone(self, mock_game):
+        """Spawning is no longer a side effect of get_zone."""
         coord = (1, 2, 0)
 
-        with patch("edgecaster.patterns.builder.Pattern"):
-            get_zone(mock_game, coord)
+        get_zone(mock_game, coord)
 
-        mock_game._spawn_enemies.assert_called_once()
+        mock_game._spawn_enemies.assert_not_called()
 
     def test_skips_enemy_spawn_in_special_zone(self, mock_game):
         """Should not spawn enemies in lab/lair zones."""
@@ -121,26 +122,26 @@ class TestGetZone:
 
         mock_game._spawn_enemies.assert_not_called()
 
-    def test_discovers_pois(self, mock_game):
-        """Should discover POIs for the level."""
+    def test_does_not_discover_pois_on_get_zone(self, mock_game):
+        """POI discovery now lives outside raw zone retrieval."""
         coord = (1, 2, 0)
         level = MagicMock()
         level.world = MagicMock()
         level.world.is_lab = False
         mock_game.levels[coord] = level
 
-        with patch("edgecaster.patterns.builder.Pattern"):
-            get_zone(mock_game, coord)
+        get_zone(mock_game, coord)
 
-        mock_game._discover_pois_for_level.assert_called_once_with(level)
+        mock_game._discover_pois_for_level.assert_not_called()
 
 
 class TestGetZoneForRender:
     """Tests for get_zone_for_render function."""
 
-    def test_creates_zone_without_side_effects(self):
-        """Should create zone without resetting pattern state."""
+    def test_returns_none_without_opt_in_creation(self):
+        """Render peeks should not instantiate zones by default."""
         game = MagicMock()
+        game.allow_render_zone_creation = False
         game.levels = {}
         level = MagicMock()
         level.pattern_anchor = (5, 5)
@@ -149,9 +150,21 @@ class TestGetZoneForRender:
         coord = (1, 2, 0)
         result = get_zone_for_render(game, coord)
 
-        # Pattern should not be reset
-        assert level.pattern_anchor == (5, 5)
+        assert result is None
+        game._make_zone.assert_not_called()
+
+    def test_creates_zone_when_opt_in_enabled(self):
+        """Explicit opt-in should still allow render-side creation."""
+        game = MagicMock()
+        game.allow_render_zone_creation = True
+        game.levels = {}
+        level = MagicMock()
+        game._make_zone.return_value = level
+
+        result = get_zone_for_render(game, (1, 2, 0))
+
         assert result is level
+        game._make_zone.assert_called_once_with((1, 2, 0), up_pos=None)
 
     def test_returns_cached_zone(self):
         """Should return cached zone."""

@@ -106,7 +106,16 @@ def test_ensure_actor_chakra_state_reads_component_compat_payload() -> None:
     assert state.generators.get("arm.hand") == "koch"
 
 
-def test_sync_actor_chakra_state_mirrors_to_component_nodes_and_tags() -> None:
+def test_apply_chakra_state_snapshot_mirrors_to_component_nodes_and_tags() -> None:
+    """apply_chakra_state_snapshot replaces the deleted sync_actor_chakra_state."""
+    state = ChakraState(
+        unlocked={"body", "arm.hand"},
+        active={"body", "arm.hand"},
+        charges={"arm.hand": 1.0},
+        alignments={"arm.hand": (0.2, -0.3)},
+        generators={"arm.hand": "branch"},
+        pattern_root="arm.hand",
+    )
     actor = SimpleNamespace(
         id="actor:test:6",
         entity_id="actor:test:6",
@@ -116,25 +125,53 @@ def test_sync_actor_chakra_state_mirrors_to_component_nodes_and_tags() -> None:
             nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
             tags={},
         ),
-        chakra_state=ChakraState(
-            unlocked={"body", "arm.hand"},
-            active={"body", "arm.hand"},
-            charges={"arm.hand": 1.0},
-            alignments={"arm.hand": (0.2, -0.3)},
-            generators={"arm.hand": "branch"},
-            pattern_root="arm.hand",
-        ),
+        chakra_state=state,
     )
-    chakra_items_system.sync_actor_chakra_state(actor)
+    chakra_items_system.apply_chakra_state_snapshot(actor, state)
 
     comp = actor.chakra_component
     assert comp is not None
     assert "arm.hand" in comp.nodes
     hand = comp.nodes["arm.hand"]
     assert bool(getattr(hand, "active", False)) is True
-    assert float(getattr(hand, "channels", {}).get("charge", 0.0)) == 1.0
     assert comp.tags.get("compat_pattern_root") == "arm.hand"
     assert "arm.hand" in set(comp.tags.get("compat_active_nodes", []))
+
+
+def test_apply_chakra_state_snapshot_prunes_stale_compat_nodes_and_charge() -> None:
+    state = ChakraState(
+        unlocked={"body"},
+        active={"body"},
+        charges={},
+    )
+    actor = SimpleNamespace(
+        id="actor:test:6b",
+        entity_id="actor:test:6b",
+        body_schema={"root": "body"},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={
+                "body": ChakraNode(node_id="body", kind="core", active=True, channels={"charge": 0.5}),
+                "arm.hand": ChakraNode(
+                    node_id="arm.hand",
+                    kind="compat",
+                    active=True,
+                    channels={"charge": 1.0},
+                    tags={"compat_unlocked": True},
+                ),
+            },
+            tags={"compat_unlocked_nodes": ["body", "arm.hand"]},
+        ),
+        chakra_state=state,
+    )
+
+    chakra_items_system.apply_chakra_state_snapshot(actor, state)
+
+    comp = actor.chakra_component
+    assert comp is not None
+    assert "arm.hand" not in comp.nodes
+    assert comp.nodes["body"].channels.get("charge") is None
+    assert comp.tags.get("compat_unlocked_nodes") == ["body"]
 
 
 def test_set_actor_chakra_charge_updates_state_and_component() -> None:

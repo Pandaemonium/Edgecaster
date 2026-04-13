@@ -6,7 +6,10 @@ Tests Julia grid building, corruption management, and zone coordinate mapping.
 
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
+from types import SimpleNamespace
 
+from edgecaster.state.pois import ABSRect, POISpec, StructureSpec
+from edgecaster.systems.poi_registry import POIRegistry
 
 from edgecaster.systems.overmap import (
     build_tile_julia_grid,
@@ -22,6 +25,35 @@ from edgecaster.systems.overmap import (
     add_corruption_anchor,
     refresh_corruption_visuals,
 )
+
+
+def _make_poi_registry(zone_w: int = 40, zone_h: int = 40) -> POIRegistry:
+    return POIRegistry(zone_w=zone_w, zone_h=zone_h)
+
+
+def _add_registry_poi(
+    registry: POIRegistry,
+    poi_id: str,
+    *,
+    kind: str,
+    coord: tuple[int, int, int],
+) -> None:
+    zx, zy, zz = coord
+    footprint = ABSRect.from_zone_coord(zx, zy, registry.zone_w, registry.zone_h)
+    registry.add(
+        POISpec(
+            id=poi_id,
+            kind=kind,
+            name=poi_id,
+            footprint=footprint,
+            depth=zz,
+            anchor_abs=footprint.center,
+            npc_specs=[],
+            structure_specs=[StructureSpec(kind=kind, relative_offset=(0, 0), tags={})],
+            seed=0,
+            tags={},
+        )
+    )
 
 
 class TestBuildTileJuliaGrid:
@@ -149,10 +181,9 @@ class TestInitRuneAnchors:
         """Should not reinitialize if anchors already exist."""
         game = MagicMock()
         game.corruption_anchors = [(0.0, 0.0, 0.1, 1.0)]
+        game.poi_registry = _make_poi_registry()
 
-        with patch("edgecaster.content.pois") as mock_poi:
-            mock_poi.POIS = {}
-            init_rune_anchors(game)
+        init_rune_anchors(game)
 
         # Should not have been modified
         assert len(game.corruption_anchors) == 1
@@ -162,10 +193,9 @@ class TestInitRuneAnchors:
         game = MagicMock()
         game.corruption_anchors = []
         game.tile_julia_grid = None
+        game.poi_registry = _make_poi_registry()
 
-        with patch("edgecaster.content.pois") as mock_poi:
-            mock_poi.POIS = {}
-            init_rune_anchors(game)
+        init_rune_anchors(game)
 
         assert len(game.corruption_anchors) == 0
 
@@ -179,6 +209,7 @@ class TestInitRuneAnchors:
         game.cfg.world_width = 40
         game.cfg.world_height = 40
         game.overmap_params = {}
+        game.poi_registry = _make_poi_registry()
 
         # Build valid grid
         total_x = 10 * 40
@@ -188,10 +219,7 @@ class TestInitRuneAnchors:
             "y": [i * 0.01 for i in range(total_y)],
         }
 
-        with patch("edgecaster.content.pois") as mock_poi:
-            mock_poi.POIS = {}
-            mock_poi.POI = MagicMock()
-            init_rune_anchors(game)
+        init_rune_anchors(game)
 
         # Should have created some anchors (target is max(12, screens * 0.6))
         assert len(game.corruption_anchors) >= 6
@@ -412,20 +440,18 @@ class TestAllocRuneAnchorPoiId:
     def test_allocates_unique_id(self):
         """Should allocate unique POI id."""
         game = MagicMock()
-
-        with patch("edgecaster.content.pois") as mock_poi:
-            mock_poi.POIS = {}
-            pid = alloc_rune_anchor_poi_id(game)
+        game.poi_registry = _make_poi_registry()
+        pid = alloc_rune_anchor_poi_id(game)
 
         assert pid == "rune_anchor_000"
 
     def test_skips_existing_ids(self):
         """Should skip existing POI ids."""
         game = MagicMock()
-
-        with patch("edgecaster.content.pois") as mock_poi:
-            mock_poi.POIS = {"rune_anchor_000": MagicMock(), "rune_anchor_001": MagicMock()}
-            pid = alloc_rune_anchor_poi_id(game)
+        game.poi_registry = _make_poi_registry()
+        _add_registry_poi(game.poi_registry, "rune_anchor_000", kind="rune_anchor", coord=(0, 0, 0))
+        _add_registry_poi(game.poi_registry, "rune_anchor_001", kind="rune_anchor", coord=(1, 0, 0))
+        pid = alloc_rune_anchor_poi_id(game)
 
         assert pid == "rune_anchor_002"
 
@@ -440,10 +466,10 @@ class TestAddCorruptionAnchor:
         game.corruption_version = 0
         game.overmap_params = {}
         game.levels = {}
+        game.poi_registry = _make_poi_registry()
 
-        with patch("edgecaster.content.pois"):
-            with patch("edgecaster.systems.overmap.start_world_map_thread"):
-                add_corruption_anchor(game, 0.5, 0.5, sigma=0.1, strength=1.0)
+        with patch("edgecaster.systems.overmap.start_world_map_thread"):
+            add_corruption_anchor(game, 0.5, 0.5, sigma=0.1, strength=1.0)
 
         assert len(game.corruption_anchors) == 1
         assert game.corruption_anchors[0] == (0.5, 0.5, 0.1, 1.0)
@@ -456,15 +482,17 @@ class TestAddCorruptionAnchor:
         game.overmap_params = {}
         game.levels = {}
         game.poi_locations = {}
+        game.cfg = SimpleNamespace(world_width=40, world_height=40)
+        game.poi_registry = _make_poi_registry()
+        game.refresh_poi_locations = MagicMock()
 
-        with patch("edgecaster.content.pois") as mock_poi:
-            mock_poi.POIS = {}
-            mock_poi.POI = MagicMock()
-            with patch("edgecaster.systems.overmap.start_world_map_thread"):
-                pid = add_corruption_anchor(game, 0.5, 0.5, sigma=0.1, coord=(5, 5, 0))
+        with patch("edgecaster.systems.overmap.start_world_map_thread"):
+            pid = add_corruption_anchor(game, 0.5, 0.5, sigma=0.1, coord=(5, 5, 0))
 
         assert pid == "rune_anchor_000"
-        mock_poi.POI.assert_called_once()
+        poi = game.poi_registry.get(pid)
+        assert poi is not None
+        assert poi.kind == "rune_anchor"
 
     def test_returns_none_for_zero_strength(self):
         """Should return None for zero strength."""

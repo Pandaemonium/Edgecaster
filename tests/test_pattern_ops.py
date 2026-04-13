@@ -256,6 +256,8 @@ class TestTryPlaceTerminus:
         """Should reject targets outside place_range."""
         game = MagicMock()
         game.place_range = 3
+        game.zone_coord = (0, 0, 0)
+        game.abs_from_zone_local.side_effect = lambda coord, pos: (int(pos[0]), int(pos[1]))
         level = MagicMock()
         level.awaiting_terminus = True
         game._level.return_value = level
@@ -267,13 +269,15 @@ class TestTryPlaceTerminus:
         try_place_terminus(game, (10, 10))  # Way beyond range 3
 
         game.log.add.assert_called_with("Out of range.")
-        level.awaiting_terminus = True  # Should still be awaiting
+        assert level.awaiting_terminus is True
 
     def test_schedules_placement(self):
         """Should schedule pattern placement for valid target."""
         game = MagicMock()
         game.place_range = 10
         game.cfg.place_time_ticks = 5
+        game.zone_coord = (0, 0, 0)
+        game.abs_from_zone_local.side_effect = lambda coord, pos: (int(pos[0]), int(pos[1]))
         level = MagicMock()
         level.awaiting_terminus = True
         game._level.return_value = level
@@ -295,8 +299,22 @@ class TestResetPattern:
     def test_clears_pattern_state(self):
         """Should clear pattern, anchor, and activation state."""
         game = MagicMock()
+        game.zone_coord = (0, 0, 0)
         level = MagicMock()
+        level.pattern_anchor = (5, 5)
+        level.activation_points = [(1, 2)]
+        level.activation_ttl = 50
         game._level.return_value = level
+        state = {}
+        game._pattern_state.return_value = state
+
+        def _sync_level_pattern_view(lvl):
+            lvl.pattern = state.get("pattern")
+            lvl.pattern_anchor = state.get("anchor_abs")
+            lvl.activation_points = list(state.get("activation_points", []))
+            lvl.activation_ttl = state.get("activation_ttl", 0)
+
+        game._sync_level_pattern_view.side_effect = _sync_level_pattern_view
 
         player = MagicMock()
         player.stats.coherence = 50
@@ -307,6 +325,7 @@ class TestResetPattern:
             mock_builder.Pattern.return_value = MagicMock()
             reset_pattern(game)
 
+        assert state["anchor_abs"] is None
         assert level.pattern_anchor is None
         assert level.activation_points == []
         assert level.activation_ttl == 0

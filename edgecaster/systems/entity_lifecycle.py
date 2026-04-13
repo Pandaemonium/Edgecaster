@@ -190,9 +190,16 @@ def _link_parent_child_chakra(parent: object, child: object) -> None:
             # can read positions without needing a separate entity lookup.
             child_abs_pos = None
             try:
-                raw_pos = getattr(child, "abs_pos", None)
-                if isinstance(raw_pos, (tuple, list)) and len(raw_pos) >= 2:
-                    child_abs_pos = (float(raw_pos[0]), float(raw_pos[1]))
+                # Prefer body_float_pos tag for sub-tile precision; fall back to
+                # integer abs_pos which is only the tile anchor.
+                child_tags = getattr(child, "tags", None) or {}
+                float_pos = child_tags.get("body_float_pos") if isinstance(child_tags, dict) else None
+                if isinstance(float_pos, (tuple, list)) and len(float_pos) >= 2:
+                    child_abs_pos = (float(float_pos[0]), float(float_pos[1]))
+                else:
+                    raw_pos = getattr(child, "abs_pos", None)
+                    if isinstance(raw_pos, (tuple, list)) and len(raw_pos) >= 2:
+                        child_abs_pos = (float(raw_pos[0]), float(raw_pos[1]))
             except Exception:
                 pass
             nodes[dst] = chakra_component_state.ChakraNode(
@@ -846,8 +853,11 @@ def _materialize_body_child(
         return None
 
     owner_id = _entity_id(owner_ent)
-    abs_x = int(round(float(spec.abs_pos[0])))
-    abs_y = int(round(float(spec.abs_pos[1])))
+    # Preserve sub-tile float precision in a tag; integer pos is the tile anchor.
+    float_x = float(spec.abs_pos[0])
+    float_y = float(spec.abs_pos[1])
+    abs_x = int(round(float_x))
+    abs_y = int(round(float_y))
     obj = spawn_factory.build_entity_from_spec(
         spec=resolved,
         eid=eid,
@@ -865,6 +875,9 @@ def _materialize_body_child(
                 "body_schema_root": bool(spec.is_schema_root),
                 "body_mirrored": bool(spec.mirrored),
                 "internal_entity": True,
+                # Sub-tile float position for geometry queries; coarser abs_pos
+                # is the tile anchor used for grid-based lookups.
+                "body_float_pos": (float_x, float_y),
             }
         },
     )

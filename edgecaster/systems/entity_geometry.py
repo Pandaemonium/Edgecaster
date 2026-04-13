@@ -46,9 +46,16 @@ def _coerce_component(root_entity_id: str, runtime_obj: object):
 def _runtime_shape(obj: object) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     try:
-        abs_pos = getattr(obj, "abs_pos", None)
-        if isinstance(abs_pos, (tuple, list)) and len(abs_pos) >= 2:
-            out["abs_pos"] = (float(abs_pos[0]), float(abs_pos[1]))
+        # Prefer body_float_pos tag for sub-tile precision on body-node entities.
+        # Fall back to abs_pos which is the integer tile anchor.
+        tags = getattr(obj, "tags", None)
+        float_pos = tags.get("body_float_pos") if isinstance(tags, dict) else None
+        if isinstance(float_pos, (tuple, list)) and len(float_pos) >= 2:
+            out["abs_pos"] = (float(float_pos[0]), float(float_pos[1]))
+        else:
+            abs_pos = getattr(obj, "abs_pos", None)
+            if isinstance(abs_pos, (tuple, list)) and len(abs_pos) >= 2:
+                out["abs_pos"] = (float(abs_pos[0]), float(abs_pos[1]))
     except Exception:
         pass
     try:

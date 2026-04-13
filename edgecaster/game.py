@@ -739,16 +739,13 @@ class Game:
             player.tags.setdefault("class", player_class)
 
         # Apply any character-defined chakra initialization (e.g., Monk setup).
-        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-        # Character creation still seeds a legacy ChakraState cache. Once class
-        # setup writes directly into ChakraComponent/body entities, delete this
-        # bridge and the mirror sync call.
         chakra_init = getattr(self.character, "chakra_init", None)
         if chakra_init:
             try:
                 from edgecaster.systems.chakras import ChakraState
-                player.chakra_state = ChakraState.from_dict(chakra_init)
-                chakra_items_system.sync_actor_chakra_state(player, game=self)
+                _state = ChakraState.from_dict(chakra_init)
+                player.chakra_state = _state
+                chakra_items_system.apply_chakra_state_snapshot(player, _state, game=self)
             except Exception:
                 pass
 
@@ -2580,8 +2577,53 @@ class Game:
     def _level(self) -> LevelState:
         return self.levels[self.zone_coord]
 
+    def _ensure_player_level_binding(self) -> LevelState:
+        """Recover the current host actor when zone membership drifts.
+
+        During the ongoing zone/attention refactor there are still a few paths
+        where the player actor can momentarily exist in `level.entities` or a
+        neighboring loaded level before all helpers agree on `zone_coord`.
+        Prefer recovering that binding over crashing on a hard dict lookup.
+        """
+        level = self._level()
+        player_id = str(getattr(self, "player_id", "") or "").strip()
+        if not player_id:
+            return level
+        if player_id in level.actors:
+            return level
+
+        maybe_ent = level.entities.get(player_id)
+        if isinstance(maybe_ent, Actor):
+            level.actors[player_id] = maybe_ent
+            return level
+
+        for coord, other_level in self.levels.items():
+            if coord == self.zone_coord:
+                continue
+            actor = other_level.actors.get(player_id)
+            if actor is None:
+                maybe_ent = other_level.entities.get(player_id)
+                if isinstance(maybe_ent, Actor):
+                    actor = maybe_ent
+                    other_level.actors[player_id] = actor
+            if actor is None:
+                continue
+            self.zone_coord = coord
+            try:
+                other_level.entities[player_id] = actor
+            except Exception:
+                pass
+            try:
+                other_level.need_fov = True
+            except Exception:
+                pass
+            return other_level
+
+        return level
+
     def _player(self) -> Actor:
-        return self._level().actors[self.player_id]
+        level = self._ensure_player_level_binding()
+        return level.actors[self.player_id]
     @property
     def player_alive(self) -> bool:
         """True if the player is still present and has positive HP."""
@@ -4694,15 +4736,15 @@ class Game:
 
     @property
     def world(self) -> World:
-        return self._level().world
+        return self._ensure_player_level_binding().world
 
     @property
     def actors(self) -> Dict[str, Actor]:
-        return self._level().actors
+        return self._ensure_player_level_binding().actors
 
     @property
     def entities(self) -> Dict[str, Entity]:
-        return self._level().entities
+        return self._ensure_player_level_binding().entities
 
     @property
     def activation_points(self) -> List[Tuple[float, float]]:

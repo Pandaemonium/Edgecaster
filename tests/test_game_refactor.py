@@ -362,6 +362,25 @@ class TestZones:
         assert hasattr(player, 'pos')
         assert hasattr(player, 'stats')
 
+    def test_player_accessor_recovers_player_from_other_loaded_level(self, game_instance):
+        """_player() should recover if zone_coord drifts away from the host level."""
+        from edgecaster.systems import zones as zones_system
+
+        current_level = game_instance._level()
+        player = current_level.actors.pop(game_instance.player_id)
+        current_level.entities.pop(game_instance.player_id, None)
+
+        dest_coord = (1, 0, game_instance.zone_coord[2])
+        dest_level = zones_system.get_zone(game_instance, dest_coord, up_pos=None)
+        dest_level.actors[game_instance.player_id] = player
+        dest_level.entities[game_instance.player_id] = player
+
+        recovered = game_instance._player()
+
+        assert recovered is player
+        assert game_instance.zone_coord == dest_coord
+        assert game_instance.actors[game_instance.player_id] is player
+
 
 # ---------------------------------------------------------------------------
 # PHASE 7: Combat Tests

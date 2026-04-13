@@ -25,6 +25,7 @@ from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import item_grants
 from edgecaster.systems import equip_rules
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
 
 
 # ---------------------------------------------------------------------------
@@ -103,18 +104,84 @@ def _add_to_stack(target: Any, amount: int) -> int:
 # Inventory Access
 # ---------------------------------------------------------------------------
 
-def get_inventory(game: "Game", owner_id: str) -> List["Entity"]:
-    """Return the inventory list for a given owner id, creating it if needed.
+def _inventory_graph_authority_owners(game: "Game") -> set[str]:
+    """Return the set of owners whose inventory is graph-backed."""
+    raw = getattr(game, "_inventory_graph_authority_owners", None)
+    if isinstance(raw, set):
+        return raw
+    owners: set[str] = set()
+    try:
+        setattr(game, "_inventory_graph_authority_owners", owners)
+    except Exception:
+        pass
+    return owners
 
-    This keeps all inventories in a single registry on the Game object,
-    while still conceptually treating them as per-entity state.
+
+def _mark_inventory_graph_authority(game: "Game", *owner_ids: str) -> None:
+    """Remember that an owner's inventory should mirror graph edges exactly."""
+    owners = _inventory_graph_authority_owners(game)
+    for owner_id in owner_ids:
+        oid = str(owner_id or "").strip()
+        if oid:
+            owners.add(oid)
+
+
+def _cache_looks_graph_managed(cache: List["Entity"], owner_id: str) -> bool:
+    """Best-effort detection for caches already populated via graph attaches."""
+    oid = str(owner_id or "")
+    for item in cache:
+        try:
+            parent_id = str(getattr(item, "parent_entity_id", "") or "")
+        except Exception:
+            parent_id = ""
+        try:
+            socket_id = str(getattr(item, "socket_id", "") or "")
+        except Exception:
+            socket_id = ""
+        if parent_id == oid and socket_id == "inventory":
+            return True
+    return False
+
+
+def get_inventory(game: "Game", owner_id: str) -> List["Entity"]:
+    """Return the inventory list for a given owner id.
+
+    Queries containment edges from entity_graph when available, then syncs
+    the result back into the list cache so callers that hold direct references
+    to game.inventories[oid] continue to reflect live state.
+
+    Falls back to the legacy list cache when the graph has no inventory edges
+    (e.g., before the first pickup or for NPCs that were not graph-registered).
     """
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # Unification note: this list-backed registry is a compatibility cache.
-    # The final authoritative inventory should be a query/materialized view
-    # over containment edges in the shared entity graph.
     oid = str(owner_id)
-    return game.inventories.setdefault(oid, [])
+    cache = game.inventories.setdefault(oid, [])
+    graph = getattr(game, "entity_graph", None)
+    if graph is not None:
+        try:
+            if _cache_looks_graph_managed(cache, oid):
+                _mark_inventory_graph_authority(game, oid)
+            get_children = getattr(graph, "get_children", None)
+            if not callable(get_children):
+                return cache
+            raw_child_ids = get_children(oid, socket_id="inventory")
+            if not isinstance(raw_child_ids, (list, tuple, set)):
+                return cache
+            child_ids = list(raw_child_ids)
+            graph_authoritative = bool(child_ids) or oid in _inventory_graph_authority_owners(game)
+            if graph_authoritative:
+                resolved: List[Any] = []
+                for cid in child_ids:
+                    obj = entity_lifecycle_system.find_runtime_entity(game, cid)
+                    if obj is not None:
+                        resolved.append(obj)
+                # Replace in-place to preserve direct references held by UI code.
+                cache[:] = resolved
+                _mark_inventory_graph_authority(game, oid)
+                return cache
+        except Exception:
+            pass
+    # Legacy list-backed fallback.
+    return cache
 
 
 def get_player_inventory(game: "Game") -> List["Entity"]:
@@ -203,7 +270,11 @@ def _do_pickup(game: "Game", level: "LevelState", ent: Any) -> bool:
         _remove_ent_from_level(level, ent)
         set_quantity(ent, pickup_qty)
         inv.append(ent)
+        # Track in _runtime_entity_index so find_runtime_entity can locate the
+        # item after it leaves level.entities during pickup.
+        entity_lifecycle_system._track_runtime_entity(game, ent)
         entity_graph_ops_system.attach_entity_to_parent(game, ent, game.player_id, socket_id="inventory")
+        _mark_inventory_graph_authority(game, game.player_id)
 
         if pickup_qty > 1:
             game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
@@ -285,6 +356,7 @@ def drop_inventory_item(game: "Game", index: int) -> None:
         pass
     ent = inv.pop(index)
     entity_graph_ops_system.detach_entity_from_parent(game, ent)
+    _mark_inventory_graph_authority(game, game.player_id)
 
     # Place the entity at the player's current position in the world.
     ent.pos = player.pos
@@ -348,6 +420,7 @@ def drop_inventory_item_qty(game: "Game", index: int, qty: Optional[int] = None)
         clear_equipped_tags=False,
     )
     entity_graph_ops_system.detach_entity_from_parent(game, dropped)
+    _mark_inventory_graph_authority(game, game.player_id)
     dropped.pos = player.pos
     level.entities[dropped.id] = dropped
 
@@ -412,6 +485,7 @@ def eat_item_from_inventory(game: "Game", owner_id: str, index: int) -> None:
         # Last one - remove from inventory
         consumed = inv.pop(index)
         entity_graph_ops_system.detach_entity_from_parent(game, consumed)
+        _mark_inventory_graph_authority(game, owner_id)
         try:
             mark = getattr(game, "mark_entity_removed", None)
             if callable(mark):
@@ -504,6 +578,7 @@ def move_item_between_inventories(
         dst_owner_id=dest_owner_id,
         socket_id="inventory",
     )
+    _mark_inventory_graph_authority(game, src_owner_id, dest_owner_id)
 
     name = getattr(ent, "name", None) or "item"
     article = "an" if name and name[0].lower() in "aeiou" else "a"
@@ -607,6 +682,7 @@ def move_item_between_inventories_qty(
         clear_equipped_tags=True,
         socket_id="inventory",
     )
+    _mark_inventory_graph_authority(game, src_owner_id, dest_owner_id)
 
     # Logging
     name = getattr(ent, "name", None) or "item"
@@ -823,6 +899,7 @@ def equip_item_to_slot_qty(
         # Add to inventory
         inv.append(equipped_item)
         entity_graph_ops_system.attach_entity_to_parent(game, equipped_item, oid, socket_id="inventory")
+        _mark_inventory_graph_authority(game, oid)
 
         # Equip the new single item
         equip_item_to_slot(game, oid, str(equipped_item.id), sid)
