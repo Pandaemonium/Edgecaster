@@ -502,6 +502,30 @@ def register_actor(
     except Exception:
         pass
 
+    # Body expansion at birth: materialize body-node child entities now so that
+    # chakra-scene queries and geometry lookups find them without triggering lazy
+    # realization themselves.  Mirrors the realize_policy="require" queue in
+    # query_geometry; uses lazy imports to avoid the entity_lifecycle→spawning
+    # circular import that would occur at module level.
+    try:
+        from edgecaster.systems import entity_body as _eb_sys
+        from edgecaster.systems import entity_lifecycle as _elc_sys
+        if _eb_sys.can_expand_entity(actor):
+            _expand_queue = [actor.id]
+            _expand_seen: set = set()
+            while _expand_queue:
+                _cid = _expand_queue.pop(0)
+                if _cid in _expand_seen:
+                    continue
+                _expand_seen.add(_cid)
+                _child_ids = _elc_sys.expand_entity(game, _cid, reason="spawn")
+                for _child_id in _child_ids:
+                    _child_obj = _elc_sys.find_runtime_entity(game, str(_child_id))
+                    if _child_obj is not None and _eb_sys.can_expand_entity(_child_obj):
+                        _expand_queue.append(str(_child_id))
+    except Exception:
+        pass
+
     if schedule_ai:
         game._schedule(
             level,

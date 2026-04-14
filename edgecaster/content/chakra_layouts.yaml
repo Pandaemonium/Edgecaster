@@ -3,6 +3,9 @@
 #   geometry queries directly, not just mark which nodes exist.
 # - Keep defaults tiny, but grow new layouts toward shared actor/item/building/
 #   site geometry rather than actor-only special cases.
+# - Positions are normalized to [-1, 1] relative to the entity's bounding box.
+# - Channel defaults express the node's contribution when no runtime value
+#   overrides them (mass = physical weight, resonance = baseline sensitivity).
 layouts:
   default_core:
     component:
@@ -23,3 +26,214 @@ layouts:
           active: true
           channels:
             mass: 1.0
+
+  # Humanoid actor layout — top two levels of the anatomy.yaml body schema.
+  # Node positions mirror the anatomy.yaml layout coords so geometry queries
+  # and the pattern renderer can use this layout without a full body expansion.
+  # Children: torso (body root), head, arm (right), arm_m (left), leg (right), leg_m (left).
+  # Each limb entry covers the segment root only; deeper expansion (fingers, toes)
+  # is realized on demand by entity_lifecycle.expand_entity.
+  humanoid_actor:
+    component:
+      nodes:
+        torso:
+          node_id: torso
+          kind: body_root
+          active: true
+          abs_pos: [0.0, 0.0]
+          channels:
+            mass: 0.45
+            resonance: 0.5
+        chest:
+          node_id: chest
+          kind: body_segment
+          active: true
+          abs_pos: [-0.2, 0.2]
+          channels:
+            mass: 0.35
+            resonance: 0.3
+        back:
+          node_id: back
+          kind: body_segment
+          active: true
+          abs_pos: [0.2, -0.2]
+          channels:
+            mass: 0.35
+            resonance: 0.3
+        abdomen:
+          node_id: abdomen
+          kind: body_segment
+          active: true
+          abs_pos: [0.0, 0.3]
+          channels:
+            mass: 0.4
+            resonance: 0.3
+        hips:
+          node_id: hips
+          kind: body_segment
+          active: true
+          abs_pos: [0.0, 0.5]
+          channels:
+            mass: 0.38
+            resonance: 0.25
+        # Head chain
+        neck:
+          node_id: neck
+          kind: body_segment
+          active: true
+          abs_pos: [0.0, -0.6]
+          channels:
+            mass: 0.2
+            resonance: 0.4
+        skull:
+          node_id: skull
+          kind: body_segment
+          active: true
+          abs_pos: [0.0, -0.85]
+          channels:
+            mass: 0.35
+            resonance: 0.6
+        # Right arm
+        shoulder:
+          node_id: shoulder
+          kind: limb_root
+          active: true
+          abs_pos: [-0.55, -0.1]
+          channels:
+            mass: 0.25
+            resonance: 0.3
+        elbow:
+          node_id: elbow
+          kind: limb_joint
+          active: true
+          abs_pos: [-0.65, 0.15]
+          channels:
+            mass: 0.2
+            resonance: 0.35
+        hand:
+          node_id: hand
+          kind: limb_end
+          active: true
+          abs_pos: [-0.72, 0.45]
+          channels:
+            mass: 0.18
+            resonance: 0.5
+        # Left arm (mirror)
+        shoulder_m:
+          node_id: shoulder_m
+          kind: limb_root
+          active: true
+          abs_pos: [0.55, -0.1]
+          channels:
+            mass: 0.25
+            resonance: 0.3
+        elbow_m:
+          node_id: elbow_m
+          kind: limb_joint
+          active: true
+          abs_pos: [0.65, 0.15]
+          channels:
+            mass: 0.2
+            resonance: 0.35
+        hand_m:
+          node_id: hand_m
+          kind: limb_end
+          active: true
+          abs_pos: [0.72, 0.45]
+          channels:
+            mass: 0.18
+            resonance: 0.5
+        # Right leg
+        thigh:
+          node_id: thigh
+          kind: limb_root
+          active: true
+          abs_pos: [-0.2, 0.7]
+          channels:
+            mass: 0.4
+            resonance: 0.2
+        knee:
+          node_id: knee
+          kind: limb_joint
+          active: true
+          abs_pos: [-0.22, 0.85]
+          channels:
+            mass: 0.3
+            resonance: 0.2
+        foot:
+          node_id: foot
+          kind: limb_end
+          active: true
+          abs_pos: [-0.22, 1.0]
+          channels:
+            mass: 0.15
+            resonance: 0.2
+        # Left leg (mirror)
+        thigh_m:
+          node_id: thigh_m
+          kind: limb_root
+          active: true
+          abs_pos: [0.2, 0.7]
+          channels:
+            mass: 0.4
+            resonance: 0.2
+        knee_m:
+          node_id: knee_m
+          kind: limb_joint
+          active: true
+          abs_pos: [0.22, 0.85]
+          channels:
+            mass: 0.3
+            resonance: 0.2
+        foot_m:
+          node_id: foot_m
+          kind: limb_end
+          active: true
+          abs_pos: [0.22, 1.0]
+          channels:
+            mass: 0.15
+            resonance: 0.2
+
+  # Minimal item layout: a core node plus an optional socket for attachments.
+  item_default:
+    component:
+      nodes:
+        core:
+          node_id: core
+          kind: core
+          active: true
+          channels:
+            mass: 1.0
+            resonance: 0.1
+        socket:
+          node_id: socket
+          kind: attachment_socket
+          active: false
+          channels:
+            mass: 0.0
+
+  # Minimal site layout: core plus entrance and interior attachment points.
+  site_default:
+    component:
+      nodes:
+        core:
+          node_id: core
+          kind: core
+          active: true
+          channels:
+            mass: 10.0
+            resonance: 0.3
+        entrance:
+          node_id: entrance
+          kind: attachment_socket
+          active: true
+          channels:
+            mass: 0.5
+            resonance: 0.5
+        interior:
+          node_id: interior
+          kind: attachment_socket
+          active: true
+          channels:
+            mass: 2.0
+            resonance: 0.2

@@ -1386,6 +1386,9 @@ PHASE 8 — LEGACY REMOVAL
     _mark_inventory_graph_authority at spawn so get_inventory is graph-authoritative
     for all actors from birth. Full removal of game.inventories requires
     save/load path migration.
+  - PARTIAL (2026-04-13): Batch 1 B1 — game.py startup inventory items (recursive
+    debug bag and starting wands) now go through attach_entity_to_parent only; the
+    redundant self.player_inventory.append() calls removed.
 
 [DONE][ENTITY_CHAKRA][PHASE_8] sync_actor_chakra_state deletion (2026-04-12)
   - Deleted from edgecaster/systems/chakra_items.py.
@@ -1414,24 +1417,33 @@ PHASE 8 — LEGACY REMOVAL
   - File: edgecaster/game.py (line ~459), edgecaster/systems/pattern_runtime.py
   - Pattern becomes entity. Vertex/edge state is chakra graph.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Item clone helpers removal
+[DONE][ENTITY_CHAKRA][PHASE_8] Item clone helpers removal (pre-Slice V)
   - File: edgecaster/systems/inventory.py
-  - clone_entity, _clone_entity_for_drop, _clone_entity_for_trade deleted.
+  - clone_entity, _clone_entity_for_drop, _clone_entity_for_trade already deleted.
   - Replaced by reparent operations that preserve entity_id.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] POI special-case spawn paths removal
+[DONE][ENTITY_CHAKRA][PHASE_8] POI special-case spawn paths removal (2026-04-13)
   - Files: edgecaster/systems/poi_spawning.py, edgecaster/systems/poi_worldgen.py
   - Merged into single entity-based realization pipeline.
+  - Slice IV: poi_id == "starting_zone" merchant check removed; flags moved to pois.yaml NPC tags.
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Zone-owned entity storage removal
   - File: edgecaster/game.py (LevelState)
   - Zones become pure render/cache caches. Entity storage moves to graph.
   - Zone loading/unloading no longer creates/destroys entity identity.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Hardcoded body schema removal
+[DONE][ENTITY_CHAKRA][PHASE_8] Hardcoded body schema removal (2026-04-13)
   - File: edgecaster/spawn_factory.py
-  - ChakraState({"body"}) hardcoded default replaced by prototype-driven
-    chakra component initialization.
+  - Removed birth-time body_schema baking from both build_entity_from_spec and
+    build_actor_from_spec.  The baked instance copy was a compatibility bridge
+    while body/entity expansion was incomplete.  With A1 body expansion at
+    spawn and the entity-geometry path authoritative, all callers now resolve
+    body_schema on-demand via prototypes.resolve_body_schema (cached) or skip
+    it entirely when game context is available (chakra_scene, pattern_runtime).
+    The bake_instance_body_schema import removed from spawn_factory.py and
+    the now-unreachable bake_instance_body_schema function deleted from
+    prototypes.py.
+  - Slice VII (2026-04-13).
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Tag-based equipment system removal
   - File: edgecaster/systems/equipment.py
@@ -1445,11 +1457,29 @@ PHASE 8 — LEGACY REMOVAL
   - End-state: convert to first-class entities with TTL/state so they
     participate in the entity lifecycle (save/load, suppression, attention).
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] _fallback_counter in enemies/factory.py
-  - File: edgecaster/enemies/factory.py
-  - Module-level fallback counter used when callers don't pass `game`.
-  - Safe to remove once every spawn_enemy caller passes `game`.
-  - Condition: grep for `spawn_enemy(` calls without `game=` argument to verify.
+[DONE][ENTITY_CHAKRA][PHASE_8] _fallback_counter in enemies/factory.py (2026-04-13)
+  - Removed _fallback_counter, _fallback_next_id, and the fallback branch.
+  - game is now a required parameter on spawn_enemy; all callers already passed it.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] humanoid_actor layout wired to humanoid prototype (2026-04-13)
+  - Added chakra_layout_id: humanoid_actor to the humanoid entry in biology.yaml.
+  - All actors with parent: humanoid now resolve to the humanoid_actor chakra layout
+    at spawn time through the prototype inheritance chain in spawn_factory.py.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] NPCSpawnSpecV2.tags loading from YAML (2026-04-13)
+  - pois.py now reads tags from NPC YAML data in both V2 and legacy parse paths.
+  - Starting-zone merchant flags moved from poi_id check in poi_worldgen.py into
+    pois.yaml merchant spec tags (merchant_all_items, merchant_refresh_on_talk).
+  - extra_tags application in realize_poi_npc_spec moved before merchant init so
+    POI-level tags are visible when ensure_merchant_initialized stocks the merchant.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Entity-hierarchy layout wiring (2026-04-13)
+  - entities.yaml entity root: chakra_layout_id: item_default (cascades to all entity subtypes).
+  - entities.yaml settlement: chakra_layout_id: site_default (overrides item_default for
+    settlement, world_continent, world_region, world_state, world_city, world_neighborhood,
+    and all Starttsgard aggregate prototypes).
+  - spawn_factory.py entity fallback comment updated: "default_core" now correctly described
+    as an emergency backstop for protoless construction; prototypes carry the real layout.
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] entity_snapshots last_known_* payload shape
   - File: edgecaster/systems/entity_snapshots.py (module header)
@@ -2442,3 +2472,89 @@ Owner: Claude audit (2026-02-18)
     and _adjacent_npc() (which checks actor.faction == "npc") could not find them,
     causing "No one nearby to talk to" when pressing 't' next to these NPCs.
   - All 626 tests pass.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_3] Batch 1 — body-geometry front (A1 + A2) + inventory front (B1) (2026-04-13)
+  - Files: edgecaster/systems/spawning.py, edgecaster/game.py,
+           tests/test_spawning.py
+  - A1 (body expansion at birth): register_actor now runs a recursive expand_entity
+    queue (mirroring query_geometry's realize_policy="require" loop) for any actor
+    where can_expand_entity returns True.  Uses lazy imports inside the function to
+    avoid the entity_lifecycle → spawning module-level circular import.
+    Body nodes are guaranteed to exist in the entity graph by the time any caller
+    after register_actor runs — chakra-scene and geometry queries can use
+    realize_policy="forbid" safely.
+  - A2 (body expansion invariant test): test_register_actor_expands_body_nodes_at_birth
+    added to tests/test_spawning.py.  Patches can_expand_entity=True and asserts
+    expand_entity is called during register_actor for actor-like roots.
+  - B1 (startup inventory graph authority): removed self.player_inventory.append()
+    calls for the debug recursive bag and starting wands in game.py.  Both items
+    now reach the inventory exclusively via attach_entity_to_parent + _track_runtime_entity
+    so the player's inventory is fully graph-backed from session start.
+  - 627 tests pass (one new test added).
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_3] Batch 2 — A3 active-state sync + A4 test + B2 player graph registration (2026-04-13)
+  - Files: edgecaster/systems/entity_lifecycle.py, edgecaster/game.py,
+           tests/test_entity_geometry.py
+  - A3 (external_child_root active-state sync): _materialize_body_child now syncs
+    the `active` flag of the external_child_root node added to parent_ent's
+    chakra_component from owner_ent.chakra_state.  If spec.full_id is not in
+    chakra_state.active, the node is set to active=False.  Without this, all body
+    nodes appeared active regardless of ChakraState, so the entity geometry path
+    produced a different (wrong) active-set than the body-schema traversal.
+  - A4 (active-state test): test_external_child_root_active_state_follows_chakra_state
+    added to test_entity_geometry.py.  Builds an actor chakra_component with one
+    inactive external_child_root (tail_core) and one active one (head_core), then
+    asserts query_normalized_pattern includes head but excludes tail.
+  - B2 (player graph registration): game.py now calls register_entity +
+    _mark_inventory_graph_authority for the player after the body-expansion block.
+    The player was previously never explicitly registered; entity_geometry lazily
+    auto-registered it on first query, but inventory authority was never set.
+  - 628 tests pass (one new test added).
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_3] Batch 3 — A5 pre-warm removed, A6 entity-path test, B3 find_runtime_entity (2026-04-13)
+  - Files: edgecaster/systems/chakras.py, edgecaster/systems/entity_lifecycle.py,
+           tests/test_entity_body_expansion.py
+  - A5 (pre-warm removal): The `expand_entity("chakra_seed")` pre-warm block in
+    `build_chakra_generator_seed` deleted.  Batch 1 A1 expanded body nodes at spawn;
+    the pre-warm was a no-op after register_actor.  The entity tree path now calls
+    `query_normalized_pattern` directly without any expansion.  The stale "B2 pre-warm"
+    comment and unused entity_body_system / entity_lifecycle_system lazy imports
+    inside that block removed.  The existing pre-warm guard test updated to assert
+    the new contract: body nodes are absent after seed build for unexpanded actors,
+    and the body-schema path still produces valid geometry in that case.
+  - A6 (entity-path integration test): `test_build_chakra_generator_seed_entity_path_wins_after_expansion`
+    added.  Fully expands the body tree (simulating A1 register_actor), wires
+    ChakraState body+head active, then calls `build_chakra_generator_seed` and
+    asserts ≥2 nodes, non-empty verts/edges/node_order/base_len via entity path.
+  - B3 (targeted world_entity_index lookup): `find_runtime_entity` world_entity_index
+    scan replaced from O(all_zones × refs_per_zone) to O(entity_zones) using
+    `WorldEntityIndex._ent_cells` (entity-key → zone-set dict).  Only the zones
+    the target entity occupies are checked; the full scan is preserved as fallback
+    for index instances that lack `_ent_cells`.
+  - 629 tests pass (two new tests: one test updated, one test added).
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice VII — body_schema runtime baking removed (2026-04-13)
+  - File: edgecaster/spawn_factory.py
+  - Removed the birth-time body_schema baking blocks from build_entity_from_spec
+    (entity path) and build_actor_from_spec (actor path).  Both blocks set
+    obj.body_schema = bake_instance_body_schema(proto_id), which was a migration
+    bridge while body/entity expansion was incomplete.  With Batch 1 A1 ensuring
+    body nodes are fully realized at spawn and the entity-geometry path being
+    authoritative for the main cast flow, the cached instance attribute is no
+    longer needed.
+  - Callers that still need a body_schema dict (pattern_runtime, entity_body
+    can_expand_entity, _baseline_chakra_root) already have fallbacks to
+    prototypes.resolve_body_schema(), which is itself cached in
+    _RESOLVED_BODY_CACHE and produces an equivalent mirrored result.
+  - chakra_scene already passes body_schema={} when game context is present,
+    trusting the entity path entirely.
+  - The bake_instance_body_schema import removed from spawn_factory.py.
+    The now-unreachable bake_instance_body_schema function deleted from
+    prototypes.py.
+  - chakras.py module docstring updated to show entity-path API as preferred,
+    body-schema path as fallback.  can_unlock_chakra and generate_chakra_pattern
+    docstring examples updated to use resolve_body_schema(actor).
+  - prototypes.py resolve_body_schema docstring clarified: cached result,
+    body_schema fast-path is for test doubles only.
+  - 629 tests pass (no new tests needed; no test read actor.body_schema directly
+    without a resolve_body_schema fallback).

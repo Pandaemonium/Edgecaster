@@ -6,8 +6,8 @@ Creates world entities for POI contents (NPCs, structures, walls) and stores the
 in WorldEntityIndex so they're visible when zooming around the map.
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-This module overlaps with `systems/poi_spawning.py` during migration.
-End-state is a single resolver/entity-graph realization pipeline.
+`poi_spawning.py` was deleted (2026-04-13); this module is now the unified
+realization entrypoint. End-state is a single resolver/entity-graph pipeline.
 
 Follows the same pattern as aggregate_resolution.py for berry patches:
 - World entities exist in ABS space independent of zone loading
@@ -569,10 +569,17 @@ def realize_poi_npc_spec(
     spec_index: int,
     spawn_pos: Tuple[int, int],
 ) -> Optional[Any]:
-    """Realize one POI NPC spec at a chosen local position."""
-    # Unification note: this still contains bespoke POI realization branches.
-    # The end-state should route observed POI content through the canonical
-    # spawn/entity-graph path instead of hand-maintaining special NPC cases here.
+    """Realize one POI NPC spec at a chosen local position.
+
+    Construction is data-driven — no hardcoded npc_id switches:
+    - NPCs with an enemies.yaml prototype entry use enemy_factory.spawn_enemy so
+      faction, HP, actions, and ai come from data.
+    - NPCs without a prototype entry fall back to a generic Human using
+      name/glyph/color from npcs.py.
+    - Post-construction behaviors (show_exact_hp, auto-regen, merchant init) are
+      read from prototype spec tags, matching _build_staged_actor in entity_lifecycle.py.
+    """
+    from edgecaster import prototypes as proto_system
     from edgecaster.content import npcs
     from edgecaster.enemies import factory as enemy_factory
     from edgecaster.state.actors import Human, Stats
@@ -596,90 +603,117 @@ def realize_poi_npc_spec(
     name = npc_spec.name or npc_def.get("name", npc_spec.npc_id.title())
     glyph = npc_spec.glyph or npc_def.get("glyph", "@")
     color = npc_spec.color or tuple(npc_def.get("color", (255, 255, 255)))
+    abs_pos = game.abs_from_zone_local(coord, spawn_pos)
 
+    # --- Resolve prototype spec for tag-driven behaviors ---
+    try:
+        proto_spec = proto_system.resolve_proto(npc_spec.npc_id) or {}
+    except Exception:
+        proto_spec = {}
+    spec_tags = (proto_spec.get("tags") or {}) if isinstance(proto_spec, dict) else {}
+
+    # --- Construct base actor ---
+    # NPCs with a prototype entry use the factory so all stats/faction come from data.
+    # NPCs without a prototype entry fall back to a generic Human.
     actor = None
-    if npc_spec.npc_id == "caged_demon":
-        actor = enemy_factory.spawn_enemy(
-            "caged_demon",
-            spawn_pos,
-            abs_pos=game.abs_from_zone_local(coord, spawn_pos),
-            game=game,
-        )
-        actor.faction = "neutral"
-        actor.actions = ()
-        actor.ai = "idle"
-        actor.tags = getattr(actor, "tags", {}) or {}
-        actor.tags["npc_id"] = npc_spec.npc_id
-        actor.tags["show_exact_hp"] = True
-        actor.show_exact_hp = True
-        desc = npc_spec.description or npc_def.get("description") or actor.description
-        if desc:
-            actor.description = desc
-        actor.regen_per_tick = (1, 10)
-        game._start_regen(level, actor.id, amount=1, interval=10)
-    elif npc_spec.npc_id == "merchant":
-        actor = enemy_factory.spawn_enemy(
-            "merchant",
-            spawn_pos,
-            abs_pos=game.abs_from_zone_local(coord, spawn_pos),
-            game=game,
-        )
-        actor.faction = "npc"
-        actor.actions = ()
-        actor.ai = "idle"
-        actor.tags = getattr(actor, "tags", {}) or {}
-        actor.tags["npc_id"] = npc_spec.npc_id
-        actor.tags["merchant_id"] = npc_def.get("merchant_id", "general_store")
-        if poi_id == "starting_zone":
-            actor.tags["merchant_all_items"] = True
-            actor.tags["merchant_refresh_on_talk"] = True
-        actor.name = name
-        actor.glyph = glyph
-        actor.color = color
-        desc = npc_spec.description or npc_def.get("description") or actor.description
-        if desc:
-            actor.description = desc
+    if proto_spec:
         try:
-            from edgecaster.systems import trade as trade_system
-
-            trade_system.ensure_merchant_initialized(game, level, actor)
+            actor = enemy_factory.spawn_enemy(npc_spec.npc_id, spawn_pos, abs_pos=abs_pos, game=game)
         except Exception:
-            pass
-    else:
-        aid = game._new_id()
-        actor = Human(
-            id=aid,
-            name=name,
-            pos=spawn_pos,
-            abs_pos=game.abs_from_zone_local(coord, spawn_pos),
-            faction="npc",
-            stats=Stats(hp=50, max_hp=50),
-            tags={"npc_id": npc_spec.npc_id},
-            disposition=npc_def.get("base_disposition", 0),
-            affiliations=tuple(npc_def.get("factions", [])),
-            glyph=glyph,
-            color=color,
-        )
-        desc = npc_spec.description or npc_def.get("description")
-        if desc:
-            actor.description = desc
-        actor.tags.setdefault("npc_id", npc_spec.npc_id)
-        if npc_def.get("show_exact_hp", False):
-            actor.tags["show_exact_hp"] = True
-            actor.show_exact_hp = True
+            actor = None
 
     if actor is None:
-        return None
+        aid = game._new_id()
+        try:
+            actor = Human(
+                id=aid,
+                name=name,
+                pos=spawn_pos,
+                abs_pos=abs_pos,
+                faction="npc",
+                stats=Stats(hp=50, max_hp=50),
+                tags={"npc_id": npc_spec.npc_id},
+                disposition=int(npc_def.get("base_disposition", 0) or 0),
+                affiliations=tuple(npc_def.get("factions", [])),
+                glyph=glyph,
+                color=color,
+            )
+        except TypeError:
+            actor = Human(
+                id=aid,
+                name=name,
+                pos=spawn_pos,
+                faction="npc",
+                stats=Stats(hp=50, max_hp=50),
+                tags={"npc_id": npc_spec.npc_id},
+                disposition=int(npc_def.get("base_disposition", 0) or 0),
+                affiliations=tuple(npc_def.get("factions", [])),
+                glyph=glyph,
+                color=color,
+            )
+            try:
+                actor.abs_pos = abs_pos
+            except Exception:
+                pass
 
+    # --- Common overrides applied to every actor regardless of construction path ---
+    actor.tags = getattr(actor, "tags", {}) or {}
+    actor.tags["npc_id"] = npc_spec.npc_id
+    actor.name = name
+    try:
+        actor.glyph = glyph
+        actor.color = color  # type: ignore[assignment]
+    except Exception:
+        pass
+    desc = npc_spec.description or npc_def.get("description") or getattr(actor, "description", None)
+    if desc:
+        actor.description = desc
+
+    # --- Apply extra tags from the npc_spec (POI-level overrides) ---
+    # These must be applied before tag-driven post-spawn behaviors so that
+    # POI-level flags (e.g. merchant_all_items) are visible when merchants are
+    # initialized and stocked.
     extra_tags = getattr(npc_spec, "tags", None) or {}
     if isinstance(extra_tags, dict):
         try:
             actor.tags.update(extra_tags)
         except Exception:
             pass
-    actor.tags = getattr(actor, "tags", {}) or {}
     actor.tags["poi_id"] = poi_id
     actor.tags["poi_spec_key"] = spec_key
+
+    # --- Tag-driven post-spawn behaviors ---
+
+    # show_exact_hp: display full numeric HP in the UI (e.g. training dummies).
+    if spec_tags.get("show_exact_hp") or npc_def.get("show_exact_hp"):
+        actor.tags["show_exact_hp"] = True
+        try:
+            actor.show_exact_hp = True
+        except Exception:
+            pass
+
+    # Auto-regen: start a recurring heal tick (e.g. caged_demon training dummy).
+    auto_regen_amount = spec_tags.get("auto_regen_amount")
+    auto_regen_interval = spec_tags.get("auto_regen_interval")
+    if auto_regen_amount and auto_regen_interval:
+        try:
+            actor.regen_per_tick = (int(auto_regen_amount), int(auto_regen_interval))
+            game._start_regen(level, actor.id, amount=int(auto_regen_amount), interval=int(auto_regen_interval))
+        except Exception:
+            pass
+
+    # Merchant initialization: any NPC with a merchant_id kicks off stock setup.
+    # Read from top-level proto_spec first (enemies.yaml field), then spec_tags fallback.
+    # POI-level merchant flags (merchant_all_items, merchant_refresh_on_talk) must be
+    # in actor.tags before this call; they are applied above via extra_tags.
+    merchant_id = proto_spec.get("merchant_id") or spec_tags.get("merchant_id")
+    if merchant_id:
+        actor.tags["merchant_id"] = merchant_id
+        try:
+            from edgecaster.systems import trade as trade_system
+            trade_system.ensure_merchant_initialized(game, level, actor)
+        except Exception:
+            pass
 
     spawning_system.register_actor(game, level, actor, schedule_ai=False)
     # register_actor already marks inventory graph authority; repeat here for
@@ -771,13 +805,12 @@ def spawn_poi_contents(
     """Unified runtime POI realization entrypoint.
 
     Owns the full orchestration of runtime POI content spawning for a loaded
-    level.  Previously split between this module and poi_spawning.py;
-    poi_spawning.py is now a thin re-export facade tagged for removal in
-    Phase 8.  [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] covers poi_spawning.py.
+    level.  (`poi_spawning.py` deleted 2026-04-13; this is now the sole owner.)
 
-    Unification note: this orchestration logic still lives outside the canonical
-    attention/entity-graph resolver.  Fold it into that path as the dual-pathway
-    migration finishes.
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    This orchestration logic still lives outside the canonical
+    attention/entity-graph resolver.  Fold it into that path as the unified
+    realization pipeline matures.
     """
     poi_ids = list(getattr(level.world, "poi_ids", []) or [])
     if bool(getattr(game, "starttsgard_cutover_enabled", False)):

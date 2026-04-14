@@ -2,14 +2,17 @@
 Chakra System - Body-Based Fractal Pattern Generation
 ======================================================
 
-This module implements a chakra system where body schema nodes act as energy
+This module implements a chakra system where body nodes act as energy
 centers that can be unlocked, activated, and aligned to generate unique
 fractal patterns for spellcasting.
 
 Core Concepts:
 --------------
-1. **Chakras**: Each node in an actor's body schema (torso, hand, finger, etc.)
-   can function as a chakra - an energy point that contributes to pattern generation.
+1. **Chakras**: Each node in an actor's body entity tree (torso, hand, finger,
+   etc.) can function as a chakra — an energy point that contributes to pattern
+   generation.  The authoritative runtime representation is ChakraComponent on
+   each body-node entity; the legacy body_schema dict is a fallback path for
+   contexts where the entity tree has not been realized.
 
 2. **Unlocking**: Chakras must be unlocked before they can be activated. Unlocking
    is gated by "branch roots" - nodes that are the entry points to sub-schemas.
@@ -37,32 +40,38 @@ Example gating chain for "knuckle_2" (second finger joint):
 
 So knuckle_2 requires: {torso, shoulder, wrist} unlocked, but NOT knuckle_1.
 
-Usage:
-------
-    from edgecaster.systems.chakras import (
-        ChakraState,
-        can_unlock_chakra,
-        can_unlock_chakra_for_entity,
-        unlock_chakra,
-        toggle_chakra_active,
-        generate_chakra_pattern,
-    )
+Runtime Usage (entity path, preferred for spawned actors):
+----------------------------------------------------------
+    from edgecaster.systems import chakra_items
+    from edgecaster.systems.chakras import can_unlock_chakra_for_entity
 
     # Check if player can unlock "wrist" chakra
-    if can_unlock_chakra(actor.body_schema, actor.chakra_state, "wrist"):
-        unlock_chakra(actor.chakra_state, "wrist")
+    if can_unlock_chakra_for_entity(actor, actor.chakra_state, "arm.wrist"):
+        chakra_items.unlock_actor_chakra(actor, "arm.wrist", game=game)
 
-    # Activate it
-    toggle_chakra_active(actor.chakra_state, "wrist", active=True)
+    # Deactivate it
+    chakra_items.toggle_actor_chakra(actor, "arm.wrist", active=False, game=game)
 
-    # Generate pattern from active chakras
-    pattern = generate_chakra_pattern(actor.body_schema, actor.chakra_state)
+    # Generate pattern seed (entity path used when actor + game are present)
+    from edgecaster.systems.chakras import build_chakra_generator_seed
+    seed = build_chakra_generator_seed({}, actor.chakra_state, actor=actor, game=game)
+
+Fallback Usage (body-schema path, for pre-runtime / editor contexts):
+----------------------------------------------------------------------
+    from edgecaster.prototypes import resolve_body_schema
+    from edgecaster.systems.chakras import can_unlock_chakra, ChakraState
+
+    body_schema = resolve_body_schema(actor)
+    chakra_state = ChakraState(unlocked={"body"}, active={"body"}, pattern_root="body")
+    if can_unlock_chakra(body_schema, chakra_state, "wrist"):
+        ...
 
 Migration note:
 - The geometry/pattern code in this module is still valuable, but it is too
   actor/body-schema specific to be the final substrate.
-- During unification, extract the geometry/pattern builders so any entity's
-  ChakraComponent can feed them; keep ChakraState here as a compatibility layer.
+- The entity path (ChakraComponent + entity_geometry) is now the preferred
+  runtime substrate. The body-schema path remains as a fallback for contexts
+  without a realized entity tree (e.g. character creation preview).
 """
 
 from __future__ import annotations
@@ -675,8 +684,9 @@ def can_unlock_chakra(
         True if the chakra can be unlocked
 
     Example:
-        # Can we unlock the "wrist" chakra?
-        if can_unlock_chakra(actor.body_schema, actor.chakra_state, "wrist"):
+        # Fallback / pre-runtime: use can_unlock_chakra_for_entity for spawned actors.
+        schema = resolve_body_schema(actor)
+        if can_unlock_chakra(schema, actor.chakra_state, "wrist"):
             print("Yes! All prerequisites met.")
     """
     nodes = _get_nodes(body_schema)
@@ -1317,15 +1327,14 @@ def build_chakra_generator_seed(
     - active compact graph extraction
     - normalized custom-graph conversion
     """
-    # Phase B1: Entity tree path.
-    # Step 1 — Pre-warm: if this actor has an expandable body schema, realize
-    # body-node children now so B2 unlock/active lookups find them in the graph.
-    # Body-anatomy node offsets are sub-tile floats (< 0.5 tile) that collapse
-    # to the same integer grid cell, so entity abs_pos cannot serve as geometry.
-    # Step 2 — Geometry query: try query_normalized_pattern for entities that
-    # have explicit, world-scale chakra_component abs_pos (sites, structures,
-    # non-body actors).  Coincident positions cause normalization to fail, which
-    # is caught internally; the legacy body-schema path below handles that case.
+    # Entity tree path: try query_normalized_pattern for entities whose
+    # chakra_component carries positioned nodes.  For body-anatomy actors this
+    # works when body nodes were expanded at spawn (Batch 1 A1) and the
+    # external_child_root active flags were synced from ChakraState (Batch 2 A3).
+    # Actors with only one active chakra (< 2 nodes) fall through to the
+    # body-schema path below; so do actors with deeper body trees (>1 level).
+    # Body-anatomy node offsets are sub-tile floats that collapse to the same
+    # integer grid cell — entity abs_pos alone is not sufficient geometry.
     if actor is not None and game is not None:
         try:
             root_entity_id = str(getattr(actor, "entity_id", "") or getattr(actor, "id", "") or "").strip()
@@ -1338,18 +1347,10 @@ def build_chakra_generator_seed(
                 has_component = False
             if has_component:
                 try:
-                    from edgecaster.systems import entity_body as entity_body_system
                     from edgecaster.systems import entity_geometry as entity_geometry_system
-                    from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
 
-                    # Pre-warm: realize body-node children for B2 state reads.
-                    if entity_body_system.can_expand_entity(actor):
-                        entity_lifecycle_system.expand_entity(
-                            game, root_entity_id, reason="chakra_seed"
-                        )
-
-                    # Geometry query: succeeds for explicit world-scale components;
-                    # silently returns empty for sub-tile body anatomy.
+                    # Geometry query: succeeds when the chakra_component has ≥2 active
+                    # nodes with distinct positions; returns empty if not (falls through).
                     query = entity_geometry_system.query_normalized_pattern(
                         game,
                         root_entity_id,
@@ -1382,12 +1383,11 @@ def build_chakra_generator_seed(
                 except Exception:
                     pass
 
-    # Body-schema geometry path: authoritative source for chakra pattern positions.
-    # Body anatomy offsets are sub-tile floats; these float positions are what
-    # the pattern generator requires.  This path remains the geometry source for
-    # body-anatomy actors until B2 wires unlock/active authority to body-node
-    # entity channels and a float-resolution geometry query replaces the schema
-    # traversal.
+    # Body-schema geometry path: fallback for contexts where the entity path
+    # returns <2 active nodes (e.g. callers with no game context, pre-runtime
+    # character creation previews, or body trees not yet realized).  Batch 1
+    # A1 guarantees body nodes exist at spawn for all register_actor paths;
+    # the body-schema path is now rarely reached in production.
     # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
     positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph(
         body_schema,
@@ -1615,8 +1615,10 @@ def generate_chakra_pattern(
         A Pattern with fractally-iterated vertices and edges
 
     Example:
+        # body_schema resolved on-demand; entity path preferred when game= is available.
+        from edgecaster.prototypes import resolve_body_schema
         pattern = generate_chakra_pattern(
-            actor.body_schema,
+            resolve_body_schema(actor),
             actor.chakra_state,
             iterations=2,
             generator_id="koch"

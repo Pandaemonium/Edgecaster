@@ -673,17 +673,34 @@ def find_runtime_entity(game: object, entity_id: str) -> Optional[object]:
     except Exception:
         pass
 
+    # WorldEntityIndex lookup.  Use _ent_cells (entity-key → zone-set) for a
+    # targeted search rather than scanning all zone buckets — O(entity_zones)
+    # instead of O(all_zones * refs_per_zone).  Fall back to the full scan if
+    # _ent_cells is absent (old index instances or test doubles).
     try:
         index = getattr(game, "world_entity_index", None)
         buckets = getattr(index, "_by_zone", None)
         if isinstance(buckets, dict):
-            for refs in buckets.values():
-                for ref in refs:
-                    ent = getattr(ref, "ent", None)
-                    if ent is None:
-                        continue
-                    if _entity_id(ent) == eid:
-                        return ent
+            ent_cells = getattr(index, "_ent_cells", None)
+            if isinstance(ent_cells, dict):
+                # Fast path: look up only the zones this entity occupies.
+                entity_key = f"id:{eid}"
+                zones = ent_cells.get(entity_key)
+                if zones:
+                    for zc in zones:
+                        for ref in buckets.get(zc, ()):
+                            ent = getattr(ref, "ent", None)
+                            if ent is not None and _entity_id(ent) == eid:
+                                return ent
+            else:
+                # Fallback: full scan for index instances without _ent_cells.
+                for refs in buckets.values():
+                    for ref in refs:
+                        ent = getattr(ref, "ent", None)
+                        if ent is None:
+                            continue
+                        if _entity_id(ent) == eid:
+                            return ent
     except Exception:
         pass
     return None
@@ -938,6 +955,29 @@ def _materialize_body_child(
     except Exception:
         pass
     _link_parent_child_chakra(parent_ent, obj)
+
+    # A3: Sync ChakraState active flag into the external_child_root node that
+    # _link_parent_child_chakra just added to parent_ent.chakra_component.
+    # external_child_root nodes default to active=True, but the entity geometry
+    # path must respect the owner's ChakraState so query_normalized_pattern
+    # produces the same active-node set as the legacy body-schema traversal.
+    # Without this, all body nodes appear active even when only "body" is unlocked,
+    # producing a different (wrong) seed than the body-schema path.
+    try:
+        chakra_state = getattr(owner_ent, "chakra_state", None)
+        if chakra_state is not None:
+            full_id = str(spec.full_id)
+            is_active = full_id in (getattr(chakra_state, "active", set()) or set())
+            pcomp = getattr(parent_ent, "chakra_component", None)
+            ccomp = getattr(obj, "chakra_component", None)
+            if pcomp is not None and ccomp is not None:
+                dst = str(getattr(ccomp, "root_node_id", "") or "")
+                nodes = getattr(pcomp, "nodes", None)
+                if dst and isinstance(nodes, dict) and dst in nodes:
+                    nodes[dst].active = is_active
+    except Exception:
+        pass
+
     _track_runtime_entity(game, obj)
     _mark_entity_live(game, eid)
     return obj

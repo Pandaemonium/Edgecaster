@@ -211,6 +211,9 @@ def can_expand_entity(ent: object) -> bool:
         return False
     if explicit_root is None and not _is_actor_like_root(ent):
         return False
+    # body_schema is no longer baked onto production actors at spawn (Slice VII).
+    # The attribute still works as an escape hatch for test doubles that set it
+    # manually; production code reaches the resolve_body_schema fallback instead.
     try:
         schema = getattr(ent, "body_schema", None)
     except Exception:

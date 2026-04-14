@@ -516,6 +516,52 @@ class TestRegisterActor:
         register_actor(game, level, actor, schedule_ai=False)
         game.patch_entity_state.assert_called()
 
+    def test_register_actor_expands_body_nodes_at_birth(self):
+        """Body-expandable actors should have expand_entity called during register_actor.
+
+        A2 invariant: body nodes are materialized at spawn time, not lazily on
+        first geometry query.  Chakra-scene and geometry callers can safely use
+        realize_policy='forbid' after a register_actor call.
+        """
+        from unittest.mock import patch as _patch
+        from types import SimpleNamespace
+
+        game = MagicMock()
+        level = MagicMock()
+        level.actors = {}
+        level.entities = {}
+        level.coord = (0, 0, 0)
+
+        # Build a minimal actor-like root: needs faction + actions attributes
+        # plus a body_schema with at least one node so can_expand_entity → True.
+        actor = SimpleNamespace(
+            id="actor_body_test",
+            pos=(3, 3),
+            abs_pos=(3, 3),
+            faction="neutral",
+            actions=("move",),
+            tags={},
+            body_schema={"nodes": {"head": {"proto_id": "body_head"}}},
+        )
+
+        expand_calls = []
+
+        def fake_expand(g, eid, *, reason):
+            expand_calls.append(eid)
+            return []  # no children for this test
+
+        def fake_find(g, eid):
+            return actor if eid == actor.id else None
+
+        with _patch("edgecaster.systems.entity_body.can_expand_entity", return_value=True):
+            with _patch("edgecaster.systems.entity_lifecycle.expand_entity", side_effect=fake_expand):
+                with _patch("edgecaster.systems.entity_lifecycle.find_runtime_entity", side_effect=fake_find):
+                    register_actor(game, level, actor, schedule_ai=False)
+
+        assert actor.id in expand_calls, (
+            "register_actor must call expand_entity for body-expandable actors (A2 invariant)"
+        )
+
 
 class TestSpawnEntitiesNear:
     """Tests for generic entity spawning."""

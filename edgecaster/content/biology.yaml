@@ -155,6 +155,7 @@
   name: Humanoid
   parent: ape
   description: A roughly bipedal ape in a paper-doll orientation.
+  chakra_layout_id: humanoid_actor
   body_patch:
   - op: replace_node
     node: body

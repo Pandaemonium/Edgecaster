@@ -70,9 +70,8 @@ Supersedes: none
 
 - `spawning.py`
 - `ambient_spawns.py`
-- `poi_spawning.py`
 - `poi_registry.py`
-- `poi_worldgen.py` *(legacy — migration pending; tagged [LEGACY_DELETE]; overlaps with `poi_spawning.py`; do not add new logic here)*
+- `poi_worldgen.py` *(unified POI realization entrypoint; `poi_spawning.py` deleted 2026-04-13; tagged [LEGACY_DELETE] pending full resolver/entity-graph pipeline convergence)*
 - `site_placement.py`
 - `sites.py` *(legacy — no longer the main source of truth for prototype-driven site placement; prefer `site_placement.py` + `content/site_types.yaml`)*
 - `overmap.py`
@@ -109,7 +108,6 @@ These modules are especially worth reading carefully before editing:
 - `actions.py`
 - `blade_runtime.py`
 - `pattern_runtime.py`
-- `poi_spawning.py`
 - `seal_trials.py`
 - `rune_anchor_sieges.py`
 

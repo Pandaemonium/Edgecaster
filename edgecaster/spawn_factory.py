@@ -9,7 +9,6 @@ import os
 from edgecaster.state.entities import Entity
 from edgecaster.state.actors import Actor, Stats
 from edgecaster.state import chakra_component as chakra_component_state
-from edgecaster.prototypes import bake_instance_body_schema
 from edgecaster.systems import chakra_content as chakra_content_system
 from edgecaster.systems import footprints as footprints_system
 
@@ -259,10 +258,9 @@ def build_entity_from_spec(
         core_hp = float(s.get("max_hp", s.get("base_hp", 1)) or 1)
     except Exception:
         core_hp = 1.0
-    # Unification note: this is still a bootstrap layout choice. The eventual
-    # factory should hydrate geometry-rich chakra layouts from the same
-    # recipe/body-schema source used for realization so items, buildings, and
-    # sites do not drift into parallel shape definitions.
+    # Layout selection: prototype carries chakra_layout_id (e.g. item_default for
+    # items, site_default for settlements). The "default_core" fallback only fires
+    # for entities whose prototype chain predates content-driven layout wiring.
     layout_id = str(s.get("chakra_layout_id") or "default_core")
     raw_component = s.get("chakra_component")
     if raw_component is None:
@@ -329,17 +327,6 @@ def build_entity_from_spec(
             ent.description = desc
         except Exception:
             pass
-
-    # Birth-time bilateral symmetry baking.
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # body_schema remains authored source data, but storing a runtime copy on
-    # every entity is a compatibility bridge while body/entity expansion is
-    # still incomplete.
-    try:
-        if getattr(ent, "proto_id", None):
-            ent.body_schema = bake_instance_body_schema(str(ent.proto_id))
-    except Exception:
-        pass
 
     # Finally, hydrate any remaining YAML keys onto the instance.
     _hydrate_entity_extras(ent, s)
@@ -515,16 +502,6 @@ def build_actor_from_spec(
             actor.description = desc
         except Exception:
             pass
-
-    # Birth-time bilateral symmetry baking
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # This actor-level runtime body_schema copy should disappear once body
-    # entity expansion and geometry queries are the authoritative runtime view.
-    try:
-        if getattr(actor, "proto_id", None):
-            actor.body_schema = bake_instance_body_schema(str(actor.proto_id))
-    except Exception:
-        pass
 
     # Hydrate remaining YAML keys onto the instance.
     _hydrate_entity_extras(actor, s)

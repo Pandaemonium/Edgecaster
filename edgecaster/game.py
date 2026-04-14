@@ -785,6 +785,19 @@ class Game:
         except Exception:
             pass
 
+        # B2: Register the player in the entity graph and mark inventory authority.
+        # The player bypasses register_actor (which does this for NPCs), so without
+        # this block the player has no graph node and _mark_inventory_graph_authority
+        # is never called — meaning get_inventory falls back to the legacy list cache
+        # even when graph-attached items exist.
+        try:
+            from edgecaster.systems import entity_graph_ops as _egops
+            from edgecaster.systems.inventory import _mark_inventory_graph_authority as _miga
+            _egops.register_entity(self, player, lod_state="expanded")
+            _miga(self, self.player_id)
+        except Exception:
+            pass
+
         # --- Give the player a recursive inventory test item -----------------
         #
         # This uses the normal debug_inventory template (a container item),
@@ -810,8 +823,9 @@ class Game:
             from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
             from edgecaster.systems.entity_lifecycle import _track_runtime_entity
 
-            # Put the bag into the player's starting inventory.
-            self.player_inventory.append(recursive_item)
+            # Put the bag into the player's starting inventory via the graph;
+            # no direct list append — get_inventory queries the graph for all
+            # owners that have been graph-registered (B1 migration).
             entity_graph_ops_system.attach_entity_to_parent(
                 self,
                 recursive_item,
@@ -854,7 +868,7 @@ class Game:
                     from edgecaster.systems.entity_lifecycle import _track_runtime_entity
 
                     wand = self._spawn_entity_from_template(wid, player.pos)
-                    self.player_inventory.append(wand)
+                    # Register via graph only — no legacy list append (B1 migration).
                     entity_graph_ops_system.attach_entity_to_parent(
                         self,
                         wand,

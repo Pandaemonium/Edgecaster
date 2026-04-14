@@ -199,6 +199,7 @@ def _load_poi_spec_from_yaml(
             offsets = [tuple(o) for o in npc_data.get("offsets", [])]
             color_raw = npc_data.get("color")
             color = tuple(color_raw) if color_raw else None
+            npc_tags = dict(npc_data.get("tags") or {})
             npc_specs.append(
                 NPCSpawnSpecV2(
                     npc_id=npc_data.get("npc_id", ""),
@@ -208,6 +209,7 @@ def _load_poi_spec_from_yaml(
                     description=npc_data.get("description"),
                     abs_positions=abs_pos,
                     offsets=offsets,
+                    tags=npc_tags,
                 )
             )
         else:
@@ -215,6 +217,7 @@ def _load_poi_spec_from_yaml(
             offsets = [tuple(o) for o in npc_data.get("offsets", [])]
             color_raw = npc_data.get("color")
             color = tuple(color_raw) if color_raw else None
+            npc_tags = dict(npc_data.get("tags") or {})
             legacy_spec = NPCSpawnSpec(
                 npc_id=npc_data.get("npc_id", ""),
                 name=npc_data.get("name"),
@@ -223,7 +226,9 @@ def _load_poi_spec_from_yaml(
                 offsets=offsets,
                 description=npc_data.get("description"),
             )
-            npc_specs.append(_convert_npc_spec_to_v2(legacy_spec, anchor_abs))
+            v2 = _convert_npc_spec_to_v2(legacy_spec, anchor_abs)
+            v2.tags = npc_tags
+            npc_specs.append(v2)
 
     # Load structure specs
     structure_specs: List[StructureSpec] = []

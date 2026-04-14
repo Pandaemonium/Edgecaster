@@ -125,3 +125,68 @@ def test_query_normalized_pattern_is_deterministic_and_seed_builder_uses_it() ->
     assert seed.node_order == pattern_a["node_order"]
     assert seed.verts == pattern_a["verts"]
     assert seed.edges == pattern_a["edges"]
+
+
+def test_external_child_root_active_state_follows_chakra_state() -> None:
+    """A4 invariant: _link_parent_child_chakra respects owner ChakraState active flags.
+
+    After A3 (active-state sync in _materialize_body_child), external_child_root
+    nodes in the parent's chakra_component must have their `active` field set from
+    the owner's ChakraState.  This test verifies that query_normalized_pattern
+    returns only the chakra-state-active nodes — not all body nodes — so the entity
+    path produces the same active-node set as the legacy body-schema traversal.
+    """
+    from edgecaster.state import chakra_component as cc_state
+    from edgecaster.systems import entity_lifecycle as elc_system
+
+    game = _DummyGame()
+
+    # Build an actor whose chakra_component already mirrors a post-expansion state:
+    # root "body" node (active) plus two external_child_root nodes ("head" active,
+    # "tail" inactive).  This directly tests the query layer; the _materialize_body_child
+    # sync is tested separately via the spawning integration.
+    body_node = cc_state.ChakraNode(node_id="body", kind="body_root", active=True, abs_pos=(10.0, 10.0))
+    head_node = cc_state.ChakraNode(node_id="head_core", kind="external_child_root", active=True, abs_pos=(10.0, 11.5))
+    tail_node = cc_state.ChakraNode(node_id="tail_core", kind="external_child_root", active=False, abs_pos=(10.0, 8.5))
+    comp = cc_state.ChakraComponent(
+        root_node_id="body",
+        nodes={
+            "body": body_node,
+            "head_core": head_node,
+            "tail_core": tail_node,
+        },
+        edges={
+            "body->head": cc_state.ChakraEdge("body->head", "body", "head_core"),
+            "body->tail": cc_state.ChakraEdge("body->tail", "body", "tail_core"),
+        },
+    )
+    actor = Entity(
+        id="actor:a3_test",
+        entity_id="actor:a3_test",
+        name="A3 Test Actor",
+        pos=(10, 10),
+        abs_pos=(10, 10),
+        kind="actor",
+        chakra_component=comp,
+        tags={},
+    )
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+    game.attn_store.stage(actor, abs_x=10, abs_y=10, zz=0)
+
+    result = entity_geometry_system.query_normalized_pattern(game, actor.id)
+
+    # Pattern should succeed (body + head active → 2 nodes)
+    assert "insufficient_active_nodes" not in result.get("warnings", []), (
+        "Expected a usable pattern from body+head; got: " + str(result.get("warnings"))
+    )
+    assert result.get("verts"), "Expected non-empty verts from body+head active nodes"
+
+    # Inactive tail node must NOT appear in the active node set
+    assert "tail_core" not in result.get("node_order", []), (
+        "tail_core is inactive; it must not appear in node_order"
+    )
+
+    # Active head node MUST appear
+    assert "head_core" in result.get("node_order", []), (
+        "head_core is active; it must appear in node_order"
+    )

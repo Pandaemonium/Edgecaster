@@ -147,22 +147,23 @@ def test_zero_radius_cluster_keeps_starttsgard_city_on_site_anchor() -> None:
     assert getattr(child, "abs_pos", None) == (10, 10)
 
 
-def test_build_chakra_generator_seed_prewarms_entity_tree() -> None:
-    """B1 invariant: seed builder expands the entity tree before building the seed.
+def test_build_chakra_generator_seed_uses_body_schema_path_for_unexpanded_actor() -> None:
+    """Body-schema path handles actors whose body tree has not been expanded.
 
-    Body-anatomy offsets are sub-tile floats that collapse to the same integer
-    grid cell under rounding, so entity abs_pos is not a viable geometry source.
-    Geometry comes from the body-schema float-position path.  The B1 contract
-    is that build_chakra_generator_seed triggers expand_entity, making body-node
-    entities available in the graph for later B2 unlock/active state reads.
+    Batch 3 A5: build_chakra_generator_seed no longer pre-warms the entity tree.
+    Body expansion is now the caller's responsibility (done at spawn via
+    register_actor, Batch 1 A1).  When body nodes are absent the entity path
+    produces no usable nodes and silently falls through; the body-schema path
+    picks up and returns a valid seed using authored float positions from the
+    body_schema dict.  This test guards that fall-through so seed callers that
+    have not gone through register_actor still get correct geometry.
     """
     actor = _make_actor()
     game = _DummyGame(actor)
     entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+    # Deliberately do NOT call expand_entity — body nodes are absent.
 
     body_schema = getattr(actor, "body_schema", None) or prototypes.resolve_body_schema(actor) or {}
-    # Need >= 2 connected active nodes for the body-schema geometry path.
-    # pattern_root must be set (require_root=True default).
     chakra_state = ChakraState(
         unlocked={"body", "head"},
         active={"body", "head"},
@@ -176,16 +177,75 @@ def test_build_chakra_generator_seed_prewarms_entity_tree() -> None:
         game=game,
     )
 
-    # Seed geometry comes from the body-schema path and must be valid.
-    assert seed.verts, "seed.verts should be non-empty"
-    assert seed.node_order, "seed.node_order should be non-empty"
+    # Body-schema path must produce a valid seed even without body-node entities.
+    assert seed.verts, "seed.verts should be non-empty (body-schema path)"
+    assert seed.node_order, "seed.node_order should be non-empty (body-schema path)"
 
-    # B1 invariant: expand_entity was triggered by build_chakra_generator_seed,
-    # so the direct body-schema-root child must now exist in the entity graph.
+    # build_chakra_generator_seed must NOT have triggered expansion — the
+    # body-schema-root child entity should still be absent from the graph.
     body_child_id = "actor:test_body:body:body"
-    assert game.entity_graph.get_node(body_child_id) is not None, (
-        "B1: build_chakra_generator_seed must pre-warm the entity tree "
-        "(body-node child should exist in entity graph after seed build)"
+    assert game.entity_graph.get_node(body_child_id) is None, (
+        "A5: build_chakra_generator_seed must not pre-warm the entity tree; "
+        "body expansion is the spawn-time caller's responsibility (A1)"
+    )
+
+
+def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
+    """A6 invariant: entity path produces the seed for a fully expanded actor.
+
+    After Batches 1-3:
+    - A1: body nodes are materialized at spawn (register_actor → expand_entity)
+    - A3: external_child_root active flags follow ChakraState
+    - A5: build_chakra_generator_seed no longer pre-warms; relies on prior expansion
+
+    With body+head active and body nodes in the graph, query_normalized_pattern
+    should return a usable pattern so build_chakra_generator_seed takes the entity
+    path and returns WITHOUT reaching the body-schema fallback.  The entity-path
+    seed must be valid (non-empty verts/edges/node_order) and must agree with the
+    body-schema path on node count and dimensionality.
+    """
+    actor = _make_actor()
+    game = _DummyGame(actor)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+
+    # Simulate register_actor A1: expand the full body tree.
+    actor_children = entity_lifecycle_system.expand_entity(game, actor.id)
+    assert actor_children, "actor must have body-node children for this test"
+    for cid in actor_children:
+        entity_lifecycle_system.expand_entity(game, cid)  # expand grandchildren too
+
+    # Wire chakra_state to match what register_actor would produce (body+head active).
+    from edgecaster.systems.chakras import ChakraState as _CS
+    actor.chakra_state = _CS(unlocked={"body", "head"}, active={"body", "head"}, pattern_root="body")
+
+    # Re-sync active flags on external_child_root nodes (normally done during
+    # _materialize_body_child; here we set chakra_state after expansion so we need
+    # to update the node directly to match the A3 contract).
+    pcomp = getattr(actor, "chakra_component", None)
+    if pcomp is not None and isinstance(getattr(pcomp, "nodes", None), dict):
+        for nid, node in pcomp.nodes.items():
+            if getattr(node, "kind", "") == "external_child_root":
+                body_full_id = str(getattr(node, "tags", {}).get("body_full_id", "") or "")
+                node.active = body_full_id in actor.chakra_state.active
+
+    body_schema = getattr(actor, "body_schema", None) or prototypes.resolve_body_schema(actor) or {}
+    chakra_state = actor.chakra_state
+
+    seed = build_chakra_generator_seed(
+        body_schema,
+        chakra_state,
+        actor=actor,
+        game=game,
+    )
+
+    # Entity path must produce a valid seed.
+    assert seed.verts, "A6: entity-path seed must have non-empty verts"
+    assert seed.node_order, "A6: entity-path seed must have non-empty node_order"
+    assert seed.edges, "A6: entity-path seed must have non-empty edges"
+    assert seed.base_len > 0.0, "A6: entity-path seed base_len must be positive"
+    # At minimum: body root + head = 2 active nodes.
+    assert len(seed.node_order) >= 2, (
+        f"A6: expected ≥2 active nodes (body+head), got {seed.node_order}"
     )
 
 

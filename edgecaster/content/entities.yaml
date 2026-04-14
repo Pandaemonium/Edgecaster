@@ -11,6 +11,7 @@
   parent: null
   description: A thing. In a place. Don't like it? Try a new place. At a different
     time.
+  chakra_layout_id: item_default
   tags: {}
 - id: physical_object
   name: Physical Object
@@ -43,6 +44,7 @@
   base_size: 64
   description: A settlement-scale overmap entity. Resolves into structures and inhabitants
     when observed closely.
+  chakra_layout_id: site_default
   tags:
     world_entity: true
     site: true
