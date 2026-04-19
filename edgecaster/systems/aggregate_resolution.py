@@ -1,4 +1,3 @@
-# edgecaster/systems/aggregate_resolution.py
 """
 Aggregate / Detail Resolution System (first pass)
 

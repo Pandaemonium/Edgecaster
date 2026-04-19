@@ -285,31 +285,39 @@ def _iter_all_inventory_items(game, owner_id: Optional[str] = None, _visited: Op
     including items inside containers, recursively.
 
     - Starts from the current player’s inventory by default.
-    - Walks through container inventories via game.inventories[entity.id].
+    - Walks through container inventories via ``game.get_inventory(owner_id)``
+      when available, falling back to legacy list fields only as a shim.
     - Uses a visited set of owner_ids to avoid infinite loops
       (e.g. recursive Inventory that contains itself).
     """
     if _visited is None:
         _visited = set()
 
+    def _inventory_for(owner_key: Optional[str]):
+        if owner_key is None:
+            return []
+        if hasattr(game, "get_inventory"):
+            try:
+                queried = game.get_inventory(owner_key)
+                if isinstance(queried, (list, tuple)):
+                    return queried or []
+            except Exception:
+                pass
+        inventories = getattr(game, "inventories", {}) or {}
+        if owner_key in inventories:
+            return inventories.get(owner_key, []) or []
+        return getattr(game, "inventory", []) or []
+
     # Initial root: the current host (player) inventory
     if owner_id is None:
         owner_id = getattr(game, "player_id", None)
         if owner_id is None:
             return
-        # Use the new per-player inventory property if available
-        root_inv = getattr(game, "player_inventory", None)
-        if root_inv is None:
-            # Fallback for any legacy paths
-            root_inv = getattr(game, "inventory", []) or []
+        root_inv = _inventory_for(owner_id)
     else:
         if owner_id in _visited:
             return
-        # Use the unified inventory registry if present
-        if hasattr(game, "get_inventory"):
-            root_inv = game.get_inventory(owner_id)
-        else:
-            root_inv = getattr(game, "inventory", []) or []
+        root_inv = _inventory_for(owner_id)
 
     if owner_id in _visited:
         return
@@ -320,8 +328,10 @@ def _iter_all_inventory_items(game, owner_id: Optional[str] = None, _visited: Op
 
         # If this item itself owns an inventory, recurse into it.
         eid = getattr(ent, "id", None)
-        if eid and hasattr(game, "inventories") and eid in getattr(game, "inventories", {}):
-            yield from _iter_all_inventory_items(game, eid, _visited)
+        if eid:
+            child_inv = _inventory_for(eid)
+            if child_inv:
+                yield from _iter_all_inventory_items(game, eid, _visited)
 
 
 def _player_has_berry(game) -> bool:
@@ -360,12 +370,10 @@ def _consume_one_berry(game) -> bool:
 
             for i, e in enumerate(inv):
                 if e is ent:
-                    consumed = inv.pop(i)
                     try:
-                        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-                        from edgecaster.systems.inventory import _mark_inventory_graph_authority
-                        entity_graph_ops_system.detach_entity_from_parent(game, consumed)
-                        _mark_inventory_graph_authority(game, owner_id)
+                        from edgecaster.systems import inventory as inventory_system
+
+                        inventory_system.remove_inventory_item_at(game, owner_id, i)
                     except Exception:
                         pass
                     return True
@@ -526,4 +534,3 @@ MYSTERIOUS_STRANGER_DIALOGUE = DialogueTree(
         ),
     },
 )
-

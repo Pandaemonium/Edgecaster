@@ -12,8 +12,8 @@ This file applies to `tests/`.
   ```bash
   python -m pytest
   ```
-- Verified on 2026-04-10:
-  - `python -m pytest --collect-only -q` collected 515 tests
+- Verified on 2026-04-19:
+  - `python -m pytest --collect-only -q` collected 650 tests
 
 ## What Belongs Here
 

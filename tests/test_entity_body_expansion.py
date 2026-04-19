@@ -26,7 +26,7 @@ class _DummyGame:
             spatial_dirty=False,
         )
         self.levels = {(0, 0, 0): self.level}
-        self._attn_active_resolved_children: dict[str, set[str]] = {}
+        self._expanded_entity_children: dict[str, set[str]] = {}
 
     def patch_entity_state(self, entity_or_id, patch=None, *, lineage_id=None, **fields) -> None:
         key = str(entity_or_id)

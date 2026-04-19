@@ -652,18 +652,8 @@ def _consume_flask(self, actor_id: str, flask_item: Any) -> None:
         self.log.add(f"Flask thrown. {qty - 1} remaining.")
     else:
         # Last flask - remove from inventory and unequip
-        inv = self.get_inventory(actor_id)
-        try:
-            inv.remove(flask_item)
-        except ValueError:
-            pass  # Already removed
-        try:
-            from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-            from edgecaster.systems.inventory import _mark_inventory_graph_authority
-            entity_graph_ops_system.detach_entity_from_parent(self, flask_item)
-            _mark_inventory_graph_authority(self, actor_id)
-        except Exception:
-            pass
+        from edgecaster.systems import inventory as inventory_system
+        inventory_system.remove_inventory_item(self, actor_id, flask_item)
 
         # Unequip if it was equipped
         if equipment_system.is_equipped(flask_item):

@@ -66,18 +66,18 @@ def _make_game(effect_map: dict[str, float] | None = None):
 
 
 def _patch_chakra_seed_runtime(monkeypatch):
-    dummy_state = SimpleNamespace(
-        unlocked={"body"},
-        active={"body"},
-        charges={},
-        alignments={},
-        generators={},
-        pattern_root="body",
-    )
+    dummy_projection = {
+        "unlocked": {"body"},
+        "active": {"body"},
+        "charges": {},
+        "alignments": {},
+        "generators": {},
+        "pattern_root": "body",
+    }
     monkeypatch.setattr(
         pattern_runtime.chakra_items_system,
-        "effective_chakra_state",
-        lambda _game, _actor: dummy_state,
+        "effective_chakra_projection",
+        lambda _game, _actor: dict(dummy_projection),
     )
 
     import edgecaster.prototypes as prototypes
@@ -153,14 +153,14 @@ def test_act_chakra_applies_amp_bonus(monkeypatch) -> None:
 
 
 def test_act_chakra_skips_schema_resolve_for_component_backed_actor(monkeypatch) -> None:
-    dummy_state = SimpleNamespace(
-        unlocked={"body"},
-        active={"body"},
-        charges={},
-        alignments={},
-        generators={},
-        pattern_root="body",
-    )
+    dummy_projection = {
+        "unlocked": {"body"},
+        "active": {"body"},
+        "charges": {},
+        "alignments": {},
+        "generators": {},
+        "pattern_root": "body",
+    }
     captured_body_schemas: list[dict] = []
 
     game, actor = _make_game()
@@ -168,10 +168,9 @@ def test_act_chakra_skips_schema_resolve_for_component_backed_actor(monkeypatch)
 
     monkeypatch.setattr(
         pattern_runtime.chakra_items_system,
-        "effective_chakra_state",
-        lambda _game, _actor: dummy_state,
+        "effective_chakra_projection",
+        lambda _game, _actor: dict(dummy_projection),
     )
-
     import edgecaster.prototypes as prototypes
     import edgecaster.systems.chakras as chakra_system
 

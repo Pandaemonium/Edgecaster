@@ -1,4 +1,15 @@
-# edgecaster/systems/rune_audio.py
+"""Rune audio synthesis.
+
+Design intent:
+  - Geometry drives a multiscale harmonic drone.
+  - Color nudges pitch in a Newton-ish / just-intonation direction.
+  - Runtime recolors should invalidate the signature and retrigger synthesis.
+
+Engineering intent:
+  - Fail soft, but log exceptions.
+  - Match pygame mixer channel count.
+  - Avoid obvious phase/perf traps.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -9,21 +20,6 @@ from typing import List
 
 import numpy as np
 import pygame
-
-
-# -----------------------------------------------------------------------------
-# Rune audio synthesis
-#
-# Design intent:
-#   - Geometry drives a multiscale harmonic drone.
-#   - Color nudges pitch in a Newton-ish / just-intonation direction.
-#   - Runtime recolors should invalidate the signature and retrigger synthesis.
-#
-# Engineering intent:
-#   - Fail soft, but log exceptions.
-#   - Match pygame mixer channel count.
-#   - Avoid obvious phase/perf traps.
-# -----------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

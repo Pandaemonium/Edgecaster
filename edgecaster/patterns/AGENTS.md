@@ -59,7 +59,7 @@ Use `apply_chain(initial, [(gen, repeats), ...])` to sequence generators.
 - `vertices[-1]` as the **terminus** (maps onto `segment.b`).
 - All other vertices are normalized relative to the `vertices[0]`→`vertices[-1]` vector.
 
-**Getting the ordering wrong causes size explosion.** When the root and terminus are far apart relative to the pattern's current scale, the mapping amplifies dimensions. The chakra pipeline avoids this by explicitly selecting the vertex closest to the pattern origin as index 0 before calling the generator (see `game.py act_chakra` and `systems/chakras.py chakras_to_seed_pattern`).
+**Getting the ordering wrong causes size explosion.** When the root and terminus are far apart relative to the pattern's current scale, the mapping amplifies dimensions. The chakra pipeline avoids this by explicitly selecting the vertex closest to the pattern origin as index 0 before calling the generator (see `game.py act_chakra` and `systems/chakras.py build_chakra_generator_seed_for_actor`).
 
 When `vertex_labels` is provided, generated `Segment` objects have `src_kind="chakra"` and `src_node_a/src_node_b` set from the labels. This provenance is used by coloring helpers and the acidic pattern tick.
 
@@ -80,7 +80,7 @@ Rule: always use the normalized `(min(a, b), max(a, b))` key when reading `edge_
 
 ## Gameplay Connections
 
-- `systems/chakras.py` — `chakras_to_seed_pattern()` generates a `Pattern` from active chakra positions, using the body schema topology as vertices and edges.
+- `systems/chakras.py` — `build_chakra_generator_seed_for_actor()` builds a `ChakraGeneratorSeed` from active chakra positions using the realized entity tree (entity path) or body schema (fallback).
 - `systems/pattern_ops.py` — fractal op placement and activation.
 - `systems/pattern_runtime.py` — runtime fractal op mutation (Activate R/N, polygon/star/chakra actions).
 - `game.py act_chakra` — applies `CustomGraphGenerator` with explicit root/terminus alignment.

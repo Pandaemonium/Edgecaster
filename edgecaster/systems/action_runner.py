@@ -39,14 +39,11 @@ def _telemetry(game: "Game", event: str, **payload: Any) -> None:
 
 
 def _actor_inventory(game: "Game", actor_id: str) -> list[Any]:
-    """Read actor inventory via inventory system with legacy fallback."""
+    """Read actor inventory through the shared inventory query surface."""
     try:
         return list(inventory_system.get_inventory(game, str(actor_id)))
     except Exception:
-        try:
-            return list(getattr(game, "inventories", {}).get(str(actor_id), []) or [])
-        except Exception:
-            return []
+        return []
 
 
 # ---------------------------------------------------------------------------

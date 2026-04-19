@@ -742,10 +742,7 @@ class Game:
         chakra_init = getattr(self.character, "chakra_init", None)
         if chakra_init:
             try:
-                from edgecaster.systems.chakras import ChakraState
-                _state = ChakraState.from_dict(chakra_init)
-                player.chakra_state = _state
-                chakra_items_system.apply_chakra_state_snapshot(player, _state, game=self)
+                chakra_items_system.apply_chakra_state_snapshot(player, chakra_init, game=self)
             except Exception:
                 pass
 
@@ -820,23 +817,14 @@ class Game:
             recursive_item = None
 
         if recursive_item is not None:
-            from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-            from edgecaster.systems.entity_lifecycle import _track_runtime_entity
+            from edgecaster.systems import inventory as inventory_system
 
-            # Put the bag into the player's starting inventory via the graph;
-            # no direct list append — get_inventory queries the graph for all
-            # owners that have been graph-registered (B1 migration).
-            entity_graph_ops_system.attach_entity_to_parent(
-                self,
-                recursive_item,
-                self.player_id,
-                socket_id="inventory",
-            )
-            _track_runtime_entity(self, recursive_item)
+            # Put the bag into the player's starting inventory through the
+            # shared graph-backed helper so caches stay aligned.
+            inventory_system.add_inventory_item(self, self.player_id, recursive_item)
 
             # Now give *that bag* its own inventory, containing itself.
-            rec_inv = self.get_inventory(recursive_item.id)
-            rec_inv.append(recursive_item)
+            inventory_system.add_inventory_item(self, recursive_item.id, recursive_item)
 
             recursive_item.description = (
                 "A Platonic bag that appears to contain, among other things, itself."
@@ -1141,10 +1129,8 @@ class Game:
         """Return currently unlockable chakra ids for the active player."""
         try:
             player = self._player()
-            chakra_state = chakra_items_system.effective_chakra_state(self, player)
-            if chakra_state is None:
-                return []
-            return chakras_system.list_unlockable_chakras_for_entity(player, chakra_state)
+            unlocked = chakra_items_system.effective_unlocked_nodes(self, player)
+            return chakras_system.list_unlockable_chakras_for_entity_from_unlocked(player, unlocked)
         except Exception:
             return []
 

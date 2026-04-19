@@ -1,4 +1,3 @@
-# edgecaster/systems/world_entity_index.py
 """
 WorldEntityIndex
 

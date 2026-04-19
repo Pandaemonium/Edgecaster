@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple
 
 from edgecaster.character import Character, default_character
-from edgecaster.systems.chakras import ChakraState, collect_all_chakra_nodes
+from edgecaster.systems.chakras import ChakraState
 from edgecaster.prototypes import resolve_body_schema
 
 from .base import (
@@ -541,18 +541,35 @@ class CharacterCreationScene(PanelScene):
         state = st.monk_state or ChakraState(unlocked=set(), active=set())
         unlocked = set(state.unlocked)
 
-        # All nodes that are currently visible per gating rules.
-        all_nodes = collect_all_chakra_nodes(body_schema, unlocked)
+        # Build the node list from shared entity_body specs rather than
+        # walking body_schema directly. A minimal dummy entity carries the
+        # resolved schema so build_body_node_specs returns the full flat
+        # node map. The prefix-gating in _monk_can_unlock then decides
+        # which nodes are actually selectable.
+        from types import SimpleNamespace
+        from edgecaster.systems import entity_body as entity_body_system
+
+        dummy = SimpleNamespace(id="char_creation_preview", body_schema=body_schema)
+        specs = entity_body_system.build_body_node_specs(dummy)
+
+        def _display(full_id: str) -> str:
+            local = full_id.split(".")[-1]
+            if local.endswith("_m"):
+                return local[:-2].replace("_", " ").title() + " (Mirror)"
+            return local.replace("_", " ").title()
 
         results: List[Tuple[str, str, int]] = []
-        for node_id, display, depth in all_nodes:
-            if node_id == st.monk_base:
+        # Depth-first order: shallower nodes first, alphabetical within depth.
+        for full_id in sorted(specs, key=lambda fid: (fid.count("."), fid)):
+            if full_id == st.monk_base:
                 continue
-            if node_id in st.monk_picks:
-                results.append((node_id, display, depth))
+            depth = full_id.count(".")
+            display = _display(full_id)
+            if full_id in st.monk_picks:
+                results.append((full_id, display, depth))
                 continue
-            if self._monk_can_unlock(node_id, unlocked):
-                results.append((node_id, display, depth))
+            if self._monk_can_unlock(full_id, unlocked):
+                results.append((full_id, display, depth))
 
         return results
 
@@ -596,7 +613,12 @@ class CharacterCreationScene(PanelScene):
         if st.is_monk():
             self._sync_monk_state()
             if st.monk_state is not None:
-                st.char.chakra_init = st.monk_state.to_dict()
+                from edgecaster.systems import chakra_items as chakra_items_system
+
+                st.char.chakra_init = chakra_items_system.snapshot_chakra_state(
+                    st.monk_state,
+                    default_root=st.monk_base or "body",
+                )
         else:
             st.char.chakra_init = None
 

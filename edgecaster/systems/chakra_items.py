@@ -11,6 +11,7 @@ runtime modules while staying data-driven for content authoring.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Sequence, Set
 
 from edgecaster.state import chakra_component as chakra_component_state
@@ -18,6 +19,136 @@ from edgecaster.systems import equipment as equipment_system
 
 # Debug throttle: actor_id -> last effective-state signature.
 _LAST_EFFECTIVE_SIG: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {}
+
+
+@dataclass
+class ChakraViewState:
+    """Thin runtime/query view over chakra state for UI and gameplay reads.
+
+    This is intentionally not a persistence or editing authority. It is a
+    consumer-shaped snapshot built from authoritative component/item state.
+    """
+
+    unlocked: set[str] = field(default_factory=set)
+    active: set[str] = field(default_factory=set)
+    alignments: dict[str, tuple[float, float]] = field(default_factory=dict)
+    generators: dict[str, Any] = field(default_factory=dict)
+    charges: dict[str, float] = field(default_factory=dict)
+    pattern_root: Optional[str] = None
+
+    @classmethod
+    def from_projection(cls, projection: Optional[dict[str, Any]]) -> "ChakraViewState":
+        if not isinstance(projection, dict):
+            return cls()
+        return cls(
+            unlocked=set(projection.get("unlocked", set()) or set()),
+            active=set(projection.get("active", set()) or set()),
+            alignments=dict(projection.get("alignments", {}) or {}),
+            generators=dict(projection.get("generators", {}) or {}),
+            charges=dict(projection.get("charges", {}) or {}),
+            pattern_root=projection.get("pattern_root"),
+        )
+
+
+def _normalized_chakra_snapshot_payload(
+    state: Any,
+    *,
+    default_root: Optional[str] = None,
+) -> dict[str, Any]:
+    """Normalize ChakraState-like or dict-like snapshot payloads."""
+    if isinstance(state, dict):
+        unlocked_raw = state.get("unlocked", set()) or set()
+        active_raw = state.get("active", set()) or set()
+        alignments_raw = state.get("alignments", {}) or {}
+        generators_raw = state.get("generators", {}) or {}
+        charges_raw = state.get("charges", {}) or {}
+        pattern_root_raw = state.get("pattern_root")
+    else:
+        unlocked_raw = getattr(state, "unlocked", set()) or set()
+        active_raw = getattr(state, "active", set()) or set()
+        alignments_raw = getattr(state, "alignments", {}) or {}
+        generators_raw = getattr(state, "generators", {}) or {}
+        charges_raw = getattr(state, "charges", {}) or {}
+        pattern_root_raw = getattr(state, "pattern_root", None)
+
+    unlocked = _normalize_nodes(unlocked_raw)
+    active = _normalize_nodes(active_raw)
+
+    root = _normalize_node_id(str(default_root or ""))
+    if root:
+        unlocked.add(root)
+        active.add(root)
+
+    alignments: dict[str, tuple[float, float]] = {}
+    if isinstance(alignments_raw, dict):
+        for key, value in alignments_raw.items():
+            nid = _normalize_node_id(str(key))
+            if not nid or not isinstance(value, (list, tuple)) or len(value) < 2:
+                continue
+            try:
+                alignments[nid] = (float(value[0]), float(value[1]))
+            except Exception:
+                continue
+
+    generators: dict[str, str] = {}
+    if isinstance(generators_raw, dict):
+        for key, value in generators_raw.items():
+            nid = _normalize_node_id(str(key))
+            if not nid:
+                continue
+            try:
+                text = str(value or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                generators[nid] = text
+
+    charges: dict[str, float] = {}
+    if isinstance(charges_raw, dict):
+        for key, value in charges_raw.items():
+            nid = _normalize_node_id(str(key))
+            if not nid:
+                continue
+            try:
+                charges[nid] = float(value)
+            except Exception:
+                continue
+
+    pattern_root = _normalize_node_id(str(pattern_root_raw or ""))
+    if pattern_root not in active:
+        pattern_root = None
+
+    return {
+        "unlocked": unlocked,
+        "active": active,
+        "alignments": alignments,
+        "generators": generators,
+        "charges": charges,
+        "pattern_root": pattern_root,
+    }
+
+
+def snapshot_chakra_state(
+    state: Any,
+    *,
+    default_root: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return a JSON-friendly chakra snapshot payload."""
+    snapshot = _normalized_chakra_snapshot_payload(state, default_root=default_root)
+    return {
+        "unlocked": sorted(snapshot["unlocked"]),
+        "active": sorted(snapshot["active"]),
+        "alignments": {
+            key: [float(value[0]), float(value[1])]
+            for key, value in sorted(snapshot["alignments"].items())
+        },
+        "generators": dict(sorted(snapshot["generators"].items())),
+        "charges": {
+            key: float(value)
+            for key, value in sorted(snapshot["charges"].items())
+        },
+        "pattern_root": snapshot["pattern_root"],
+    }
 
 
 def _debug(game: Any, msg: str) -> None:
@@ -323,6 +454,33 @@ def _is_compat_component_node(node: Any) -> bool:
     return isinstance(tags, dict) and bool(tags.get("compat_unlocked"))
 
 
+def _component_chakra_projection(actor: Any) -> Optional[dict[str, Any]]:
+    """Return component-backed chakra primitives without constructing ChakraState."""
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
+        return None
+
+    root = _baseline_chakra_root(actor)
+    unlocked, active = _component_node_sets(actor)
+    charges = _component_charge_map(comp)
+    alignments, generators, pattern_root = _component_state_overrides(comp)
+
+    if root:
+        unlocked.add(root)
+        active.add(root)
+    if pattern_root and pattern_root not in active:
+        pattern_root = None
+
+    return {
+        "unlocked": set(unlocked),
+        "active": set(active),
+        "alignments": dict(alignments),
+        "generators": dict(generators),
+        "charges": dict(charges),
+        "pattern_root": pattern_root,
+    }
+
+
 def _remove_component_node(comp: Any, node_id: str) -> None:
     """Delete a compat node plus any incident edges from a ChakraComponent."""
     nodes = getattr(comp, "nodes", None)
@@ -357,37 +515,26 @@ def _rebuild_chakra_state_from_component(actor: Any) -> Any:
     except Exception:
         return None
 
-    comp = _coerce_actor_chakra_component(actor)
-    if comp is None:
+    projection = _component_chakra_projection(actor)
+    if projection is None:
         return None
 
-    root = _baseline_chakra_root(actor)
-    unlocked, active = _component_node_sets(actor)
-    charges = _component_charge_map(comp)
-    alignments, generators, pattern_root = _component_state_overrides(comp)
-
-    if root:
-        unlocked.add(root)
-        active.add(root)
-    if pattern_root and pattern_root not in active:
-        pattern_root = None
-
     return ChakraState(
-        unlocked=set(unlocked),
-        active=set(active),
-        alignments=dict(alignments),
-        generators=dict(generators),
-        charges=dict(charges),
-        pattern_root=pattern_root,
+        unlocked=set(projection.get("unlocked", set()) or set()),
+        active=set(projection.get("active", set()) or set()),
+        alignments=dict(projection.get("alignments", {}) or {}),
+        generators=dict(projection.get("generators", {}) or {}),
+        charges=dict(projection.get("charges", {}) or {}),
+        pattern_root=projection.get("pattern_root"),
     )
 
 
 
 def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> None:
-    """Apply a full ChakraState snapshot to the actor's ChakraComponent.
+    """Apply a full chakra snapshot payload to the actor's ChakraComponent.
 
-    Used for character-class initialisation paths that produce a ChakraState
-    object to apply (e.g. Monk setup from ``chakra_init`` dict).  Routes
+    Used for character-class initialisation paths that apply a saved/bootstrap
+    snapshot (e.g. Monk setup from ``chakra_init``). Routes
     through the public wrapper functions so dirty-flag propagation happens
     correctly.  Does NOT mutate ``state`` — reads from it and writes to the
     component.
@@ -398,28 +545,16 @@ def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> 
     if comp is None:
         return
 
-    unlocked = _normalize_nodes(getattr(state, "unlocked", set()) or set())
-    active = _normalize_nodes(getattr(state, "active", set()) or set())
+    snapshot = _normalized_chakra_snapshot_payload(
+        state,
+        default_root=_baseline_chakra_root(actor),
+    )
+    unlocked = set(snapshot["unlocked"])
+    active = set(snapshot["active"])
     managed_node_ids = set(unlocked)
     managed_node_ids.update(active)
-    root = _baseline_chakra_root(actor)
-    if root:
-        unlocked.add(root)
-        active.add(root)
-        managed_node_ids.add(root)
-
-    charge_values: dict[str, float] = {}
-    charges_raw = getattr(state, "charges", {}) or {}
-    if isinstance(charges_raw, dict):
-        for key, value in charges_raw.items():
-            nid = _normalize_node_id(str(key))
-            if not nid:
-                continue
-            try:
-                charge_values[nid] = float(value)
-                managed_node_ids.add(nid)
-            except Exception:
-                continue
+    charge_values = dict(snapshot["charges"])
+    managed_node_ids.update(charge_values)
 
     # Ensure every unlocked node exists in the component and has correct
     # active state.  We call the public wrappers so B2 mirrors and dirty
@@ -476,31 +611,19 @@ def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> 
 
     tags["compat_unlocked_nodes"] = sorted(unlocked)
     tags["compat_active_nodes"] = sorted(active)
-    pattern_root_raw = _normalize_node_id(str(getattr(state, "pattern_root", "") or ""))
-    tags["compat_pattern_root"] = pattern_root_raw if pattern_root_raw in active else None
+    tags["compat_pattern_root"] = snapshot["pattern_root"] if snapshot["pattern_root"] in active else None
+    tags["compat_alignments"] = {
+        key: [float(value[0]), float(value[1])]
+        for key, value in sorted(snapshot["alignments"].items())
+    }
+    tags["compat_generators"] = dict(sorted(snapshot["generators"].items()))
 
-    alignments_raw = getattr(state, "alignments", {}) or {}
-    alignments_out: dict = {}
-    if isinstance(alignments_raw, dict):
-        for k, v in alignments_raw.items():
-            nid = _normalize_node_id(str(k))
-            if nid and isinstance(v, (list, tuple)) and len(v) >= 2:
-                try:
-                    alignments_out[nid] = [float(v[0]), float(v[1])]
-                except Exception:
-                    pass
-    tags["compat_alignments"] = alignments_out
-
-    gens_raw = getattr(state, "generators", {}) or {}
-    gens_out: dict = {}
-    if isinstance(gens_raw, dict):
-        for k, v in gens_raw.items():
-            nid = _normalize_node_id(str(k))
-            if nid:
-                sval = str(v or "").strip()
-                if sval:
-                    gens_out[nid] = sval
-    tags["compat_generators"] = gens_out
+    rebuilt_state = _rebuild_chakra_state_from_component(actor)
+    if rebuilt_state is not None:
+        try:
+            actor.chakra_state = rebuilt_state
+        except Exception:
+            pass
 
 
 def tick_actor_chakra_charge(
@@ -878,80 +1001,69 @@ def effective_active_nodes(game: Any, actor: Any) -> set[str]:
     return active
 
 
-def effective_chakra_state(game: Any, actor: Any) -> Any:
-    """Return an ephemeral ChakraState that includes equipped-item effects.
+def effective_chakra_projection(game: Any, actor: Any) -> Optional[dict[str, Any]]:
+    """Return rich runtime chakra primitives without constructing ChakraState.
 
-    The returned state is *not* persisted; it is used as a runtime view for
-    systems that need a coherent unlocked/active snapshot without mutating the
-    actor's stored chakra state.
-
-    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    Replace this temporary projected ChakraState with a graph/component query
-    result once items, bodies, and other entity hierarchies all share one
-    runtime evaluation path.
+    This is the preferred runtime read for gameplay code that needs more than
+    just active/unlocked sets but does not need the legacy ChakraState facade
+    itself.  The payload shape intentionally stays simple so more fields can be
+    added later without forcing another actor-centric compatibility class.
     """
-    # Unification note: this currently projects item effects onto legacy actor
-    # state. The final version should build the effective view from graph edges
-    # plus ChakraComponent channels so items, limbs, buildings, and sites all
-    # use the same evaluation path.
-    # _rebuild_chakra_state_from_component always returns a non-None state in
-    # normal operation. See effective_unlocked_nodes for the reasoning.
-    state = _rebuild_chakra_state_from_component(actor)
-    if state is None:
+    projection = _component_chakra_projection(actor)
+    if projection is None:
         return None
 
     actor_id = str(getattr(actor, "id", ""))
-    base_unlocked = _normalize_nodes(getattr(state, "unlocked", set()) or set())
-    base_active = _normalize_nodes(getattr(state, "active", set()) or set())
+    base_unlocked = _normalize_nodes(projection.get("unlocked", set()) or set())
+    base_active = _normalize_nodes(projection.get("active", set()) or set())
 
-    # Layer item effects on top of the base state.  Avoid calling
-    # effective_unlocked_nodes / effective_active_nodes here — those would each
-    # call _component_node_sets again, tripling the node-iteration cost.
     unlocked = set(base_unlocked)
     unlocked.update(temporary_unlocked_nodes(game, actor_id))
     active = set(base_active)
     active.update(auto_active_nodes(game, actor_id))
-    # Active must always be a subset of unlocked in the effective view.
     unlocked.update(active)
 
-    # Preserve chosen root only when still active in the effective set.
-    pattern_root = getattr(state, "pattern_root", None)
+    pattern_root = projection.get("pattern_root")
     if pattern_root not in active:
         pattern_root = None
 
-    try:
-        from edgecaster.systems.chakras import ChakraState
+    eff = {
+        "unlocked": set(unlocked),
+        "active": set(active),
+        "alignments": dict(projection.get("alignments", {}) or {}),
+        "generators": dict(projection.get("generators", {}) or {}),
+        "charges": dict(projection.get("charges", {}) or {}),
+        "pattern_root": pattern_root,
+    }
 
-        eff = ChakraState(
-            unlocked=set(unlocked),
-            active=set(active),
-            alignments=dict(getattr(state, "alignments", {}) or {}),
-            generators=dict(getattr(state, "generators", {}) or {}),
-            charges=dict(getattr(state, "charges", {}) or {}),
-            pattern_root=pattern_root,
+    # Log only when effective unlocked/active state changes, to avoid spam.
+    try:
+        sig = (
+            tuple(sorted(eff["unlocked"])),
+            tuple(sorted(eff["active"])),
+            str(eff.get("pattern_root", "") or ""),
         )
-        # Log only when effective unlocked/active state changes, to avoid spam.
-        try:
-            sig = (
-                tuple(sorted(eff.unlocked)),
-                tuple(sorted(eff.active)),
-                str(getattr(eff, "pattern_root", "") or ""),
+        prev = _LAST_EFFECTIVE_SIG.get(actor_id)
+        if sig != prev:
+            _LAST_EFFECTIVE_SIG[actor_id] = sig
+            _debug(
+                game,
+                f"[chakra_items] effective actor={actor_id} unlocked={len(eff['unlocked'])} active={len(eff['active'])} "
+                f"item_unlocked={sorted(unlocked - base_unlocked)} item_active={sorted(active - base_active)} root={eff.get('pattern_root')!r}",
             )
-            prev = _LAST_EFFECTIVE_SIG.get(actor_id)
-            if sig != prev:
-                _LAST_EFFECTIVE_SIG[actor_id] = sig
-                _debug(
-                    game,
-                    f"[chakra_items] effective actor={actor_id} unlocked={len(eff.unlocked)} active={len(eff.active)} "
-                    f"item_unlocked={sorted(unlocked - base_unlocked)} item_active={sorted(active - base_active)} root={eff.pattern_root!r}",
-                )
-        except Exception:
-            pass
-        return eff
     except Exception:
-        _debug(game, f"[chakra_items] effective_chakra_state fallback actor={actor_id}")
-        # Graceful fallback for call sites that can operate on the original state.
-        return state
+        pass
+
+    return eff
+
+
+def effective_chakra_view(game: Any, actor: Any) -> Optional[ChakraViewState]:
+    """Return the preferred runtime/query view for chakra consumers."""
+    projection = effective_chakra_projection(game, actor)
+    if projection is None:
+        return None
+    return ChakraViewState.from_projection(projection)
+
 
 
 def _iter_hit_mod_entries(item: Any) -> list[dict[str, Any]]:

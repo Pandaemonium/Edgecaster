@@ -1242,14 +1242,7 @@ def _consume_coherence_crystals(game: "Game", actor_id: str, amount: int) -> boo
             inventory_system.set_quantity(item, remain)
         else:
             try:
-                consumed = inv.pop(idx)
-                try:
-                    from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-                    from edgecaster.systems.inventory import _mark_inventory_graph_authority
-                    entity_graph_ops_system.detach_entity_from_parent(game, consumed)
-                    _mark_inventory_graph_authority(game, actor_id)
-                except Exception:
-                    pass
+                inventory_system.remove_inventory_item_at(game, actor_id, idx)
             except Exception:
                 pass
         left -= take

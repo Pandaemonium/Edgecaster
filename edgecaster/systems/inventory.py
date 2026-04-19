@@ -192,6 +192,92 @@ def get_player_inventory(game: "Game") -> List["Entity"]:
     return get_inventory(game, game.player_id)
 
 
+def add_inventory_item(game: "Game", owner_id: str, ent: Any) -> None:
+    """Attach an item to an owner's inventory through graph-first plumbing."""
+    oid = str(owner_id or "")
+    if not oid or ent is None:
+        return
+
+    try:
+        entity_lifecycle_system._track_runtime_entity(game, ent)
+    except Exception:
+        pass
+
+    try:
+        entity_graph_ops_system.attach_entity_to_parent(game, ent, oid, socket_id="inventory")
+    except Exception:
+        pass
+
+    _mark_inventory_graph_authority(game, oid)
+
+    cache = get_inventory(game, oid)
+    if not any(existing is ent for existing in cache):
+        cache.append(ent)
+
+
+def remove_inventory_item(game: "Game", owner_id: str, ent: Any, *, reason: Optional[str] = None) -> bool:
+    """Detach a specific inventory item and keep the list cache in sync."""
+    oid = str(owner_id or "")
+    if not oid or ent is None:
+        return False
+
+    cache = get_inventory(game, oid)
+    found = False
+    found_index: Optional[int] = None
+    ent_id = str(getattr(ent, "id", "") or "")
+    for idx, existing in enumerate(list(cache)):
+        if existing is ent:
+            found = True
+            found_index = idx
+            break
+        if ent_id and str(getattr(existing, "id", "") or "") == ent_id:
+            found = True
+            found_index = idx
+            ent = existing
+            break
+    if not found:
+        return False
+
+    try:
+        entity_graph_ops_system.detach_entity_from_parent(game, ent)
+    except Exception:
+        pass
+    _mark_inventory_graph_authority(game, oid)
+
+    # Graph-backed caches will be refreshed by the next get_inventory() call,
+    # but remove the local reference immediately so current callers do not keep
+    # stale direct-list state.
+    if found_index is not None and 0 <= found_index < len(cache):
+        if cache[found_index] is ent:
+            cache.pop(found_index)
+        else:
+            for idx, existing in enumerate(list(cache)):
+                if existing is ent:
+                    cache.pop(idx)
+                    break
+
+    if reason:
+        _mark_entity_removed(game, ent, reason=reason)
+    return True
+
+
+def remove_inventory_item_at(
+    game: "Game",
+    owner_id: str,
+    index: int,
+    *,
+    reason: Optional[str] = None,
+) -> Optional["Entity"]:
+    """Detach and return the item at ``index`` from an inventory."""
+    inv = get_inventory(game, owner_id)
+    if not (0 <= index < len(inv)):
+        return None
+    ent = inv[index]
+    if remove_inventory_item(game, owner_id, ent, reason=reason):
+        return ent
+    return None
+
+
 def _mark_entity_removed(game: "Game", ent: Any, *, reason: str) -> None:
     """Best-effort persistence write keyed by entity id."""
     try:
@@ -284,12 +370,7 @@ def _do_pickup(game: "Game", level: "LevelState", ent: Any) -> bool:
         _mark_entity_removed(game, ent, reason="pickup")
         _remove_ent_from_level(level, ent, game)
         set_quantity(ent, pickup_qty)
-        inv.append(ent)
-        # Track in _runtime_entity_index so find_runtime_entity can locate the
-        # item after it leaves level.entities during pickup.
-        entity_lifecycle_system._track_runtime_entity(game, ent)
-        entity_graph_ops_system.attach_entity_to_parent(game, ent, game.player_id, socket_id="inventory")
-        _mark_inventory_graph_authority(game, game.player_id)
+        add_inventory_item(game, game.player_id, ent)
 
         if pickup_qty > 1:
             game.log.add(f"You pick up {pickup_qty} {name.lower()}s.")
@@ -369,9 +450,9 @@ def drop_inventory_item(game: "Game", index: int) -> None:
             unequip_item(game, game.player_id, str(getattr(ent, "id", "")))
     except Exception:
         pass
-    ent = inv.pop(index)
-    entity_graph_ops_system.detach_entity_from_parent(game, ent)
-    _mark_inventory_graph_authority(game, game.player_id)
+    ent = remove_inventory_item_at(game, game.player_id, index)
+    if ent is None:
+        return
 
     # Place the entity at the player's current position in the world.
     ent.pos = player.pos
@@ -498,15 +579,7 @@ def eat_item_from_inventory(game: "Game", owner_id: str, index: int) -> None:
         set_quantity(ent, qty - 1)
     else:
         # Last one - remove from inventory
-        consumed = inv.pop(index)
-        entity_graph_ops_system.detach_entity_from_parent(game, consumed)
-        _mark_inventory_graph_authority(game, owner_id)
-        try:
-            mark = getattr(game, "mark_entity_removed", None)
-            if callable(mark):
-                mark(consumed, reason="consumed")
-        except Exception:
-            pass
+        remove_inventory_item_at(game, owner_id, index, reason="consumed")
 
     # Heal the player a bit for eating a berry.
     player = game._player()
@@ -900,11 +973,8 @@ def equip_item_to_slot_qty(
             clear_equipped_tags=True,
         )
 
-        # Add to inventory
-        inv.append(equipped_item)
-        entity_graph_ops_system.attach_entity_to_parent(game, equipped_item, oid, socket_id="inventory")
-        entity_lifecycle_system._track_runtime_entity(game, equipped_item)
-        _mark_inventory_graph_authority(game, oid)
+        # Add to inventory through the shared graph-backed helper.
+        add_inventory_item(game, oid, equipped_item)
 
         # Equip the new single item
         equip_item_to_slot(game, oid, str(equipped_item.id), sid)

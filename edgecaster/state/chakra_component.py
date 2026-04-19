@@ -175,7 +175,7 @@ def default_core_component(
 # Unification note (Phase 2B → Phase 8):
 # Writing through these helpers makes ChakraComponent the sole write authority.
 # ChakraState is now a read-only derived view: rebuilt on demand by
-# effective_chakra_state via _rebuild_chakra_state_from_component.
+# effective_chakra_view / effective_chakra_projection in chakra_items.py.
 # =============================================================================
 
 def unlock_node(comp: ChakraComponent, node_id: str, *, active: bool = False) -> bool:

@@ -366,12 +366,12 @@ AUDIT NOTES (2026-02-01) - ADDITIONAL REFACTOR CANDIDATES
   - Ensure all "known but not discovered" POIs are handled consistently.
 
 [CLEANUP] Retire systems/poi_worldgen.py (LEGACY_DELETE marker already present)
-  - The module is tagged [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] and overlaps
-    with systems/poi_spawning.py.
+  - The module is tagged [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8].
+  - Note: poi_spawning.py was deleted 2026-04-13; poi_worldgen.py is now the
+    unified realization entrypoint (see master plan entry 56).
   - End-state: a single resolver/entity-graph realization pipeline.
-  - Before removal: verify all callers have migrated to poi_spawning.py or
-    attention.py staging helpers; add a test asserting the legacy code path
-    is no longer exercised.
+  - Before removal: fold this module's orchestration into the attention/entity-graph
+    resolver path; add a test asserting the legacy code path is no longer exercised.
 
 [CLEANUP] Retire systems/sites.py once site registry migration is complete
   - architecture.txt notes: "older site-registry path; still present, but no
@@ -379,14 +379,10 @@ AUDIT NOTES (2026-02-01) - ADDITIONAL REFACTOR CANDIDATES
   - Confirm all site placement goes through systems/site_placement.py and
     content/site_types.yaml; then remove the old registry module.
 
-[CLEANUP] Replace file-path comment headers with real module docstrings
-  - Several files open with a redundant `# edgecaster/systems/X.py` comment
-    instead of a proper module docstring.  Affected files (as of 2026-04-10):
-      - edgecaster/systems/aggregate_resolution.py (comment block, not docstring)
-      - edgecaster/systems/world_entity_index.py
-      - edgecaster/systems/rune_audio.py
-  - Replace the comment header with a `"""..."""` module docstring that
-    captures the design intent already in the comments.
+[DONE 2026-04-19] Replace file-path comment headers with real module docstrings
+  - aggregate_resolution.py, world_entity_index.py: redundant `# path` comment
+    removed (proper docstrings were already present).
+  - rune_audio.py: comment block promoted to `"""..."""` module docstring.
 
 [CLEANUP] systems/attention.py — extract sync_attention_instantiation
   - `sync_attention_instantiation()` still lives in game.py (see SLICE 5
@@ -1389,6 +1385,15 @@ PHASE 8 — LEGACY REMOVAL
   - PARTIAL (2026-04-13): Batch 1 B1 — game.py startup inventory items (recursive
     debug bag and starting wands) now go through attach_entity_to_parent only; the
     redundant self.player_inventory.append() calls removed.
+  - PARTIAL (2026-04-18): Slice XXXIII — add_inventory_item / remove_inventory_item /
+    remove_inventory_item_at shared helpers added; dialogues.py, events.py, wish.py,
+    game.py debug bag, trade.py, rune_anchor_sieges.py, seal_trials.py migrated.
+  - PARTIAL (2026-04-19): Slice XXXVII — inventory_scene.py "eat a bag" direct list
+    mutation replaced with remove_inventory_item_at.
+  - PARTIAL (2026-04-19): Slice XLIX — combat_actions.py flask-consume last-flask path
+    replaced with remove_inventory_item; last open-coded list-mutation + graph-patch pair
+    in a gameplay system eliminated. Remaining work: full game.inventories removal requires
+    save/load migration.
 
 [DONE][ENTITY_CHAKRA][PHASE_8] sync_actor_chakra_state deletion (2026-04-12)
   - Deleted from edgecaster/systems/chakra_items.py.
@@ -1487,6 +1492,22 @@ PHASE 8 — LEGACY REMOVAL
   - End-state: replace with typed entity/component persistence deltas once
     collapse/restore and save data both flow through the unified model.
 
+[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Footprint tag fallback removal
+  - File: edgecaster/systems/footprints.py
+  - Compatibility fallback for footprint_local/footprint_abs checks using tags
+    instead of explicit runtime fields.
+  - Target: remove the tag-based fallback once all spawn paths populate runtime fields.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][RUNTIME_REGISTRY] Entity lifecycle compatibility bridge
+  - File: edgecaster/systems/entity_lifecycle.py
+  - Bridge code related to runtime registry tracking that bypasses unified paths.
+  - Target: unify the registry code and remove this specific bridge.
+
+[LEGACY_DELETE][ENTITY_CHAKRA][BODY_SCHEMA] Body-schema recursive walkers
+  - File: edgecaster/systems/chakras.py
+  - These recursive body-schema readers are now a compatibility bridge.
+  - Target: replace with long-term runtime/query path from realized actor/body entities.
+
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] attention persistence wrapper block
   - File: edgecaster/systems/attention.py (near top, tagged block)
   - Compatibility wrappers keep older attention paths working while
@@ -1501,12 +1522,12 @@ PHASE 8 — LEGACY REMOVAL
   - Condition: delete once graph queries become the single runtime authority
     for containment and ownership.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] chakra_scene schema walkers
-  - File: edgecaster/scenes/chakra_scene.py (tagged block near top)
-  - ChakraScene still derives layout and interaction from body_schema +
-    ChakraState schema walkers.
-  - Condition: replace with entity_body/entity_geometry queries once the
-    actor-body graph is the UI authority.
+[DONE][ENTITY_CHAKRA][PHASE_8] chakra_scene schema walkers (Slices XXXIV, XLI, XLVI)
+  - File: edgecaster/scenes/chakra_scene.py
+  - Schema walkers deleted: `_rebuild_chakra_points_schema`, `_get_nodes_from_schema`,
+    `_resolve_chakra_path`, `_get_body_schema`.
+  - ChakraScene now reads layout exclusively through `body_view_queries.body_nodes_for_owner`
+    (entity graph + entity_body fallback). No body_schema walk remains in the scene.
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] inventory_scene body zoom schema traversal
   - File: edgecaster/scenes/inventory_scene.py (tagged block)
@@ -1514,38 +1535,16 @@ PHASE 8 — LEGACY REMOVAL
   - Condition: replace with graph/geometry queries once body sub-entities
     are the authoritative runtime structure.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] chakra_items ChakraState facade helpers
-  - File: edgecaster/systems/chakra_items.py (two tagged blocks)
-  - Actor-centric helpers that cache unlocked/active sets as ChakraState.
-  - Condition: delete once gameplay/UI code reads directly from
-    ChakraComponent plus actor/body entity queries.
-  - Progress (2026-04-14, Slice VIII): gods.py and scheduling.py migrated off
-    ensure_actor_chakra_state. Remaining callers still include chakra_scene.py,
-    pattern_runtime.py, and other UI/gameplay sites.
-  - Progress (2026-04-18, Slice IX): pattern_runtime.py migrated — all three
-    direct calls replaced with effective_chakra_state (which already falls back
-    internally). chakra_scene.py _get_chakra_state helper annotated
-    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]; both schema-walk else-branches
-    annotated. Remaining direct callers: game.py (x2), dialogues.py (x3),
-    actions.py (x1), chakra_scene.py _get_chakra_state legacy helper (x1).
-    Inside effective_* wrappers in chakra_items.py: three intentional fallbacks.
-  - Progress (2026-04-18, Slice XIII): game.py (x2), dialogues.py (x3),
-    actions.py (x1) all migrated. Two were real migrations to
-    effective_chakra_state; four were unnecessary null-guards removed entirely
-    (unlock_actor_chakra and set_actor_chakra_charge are already defensive).
-    Only remaining live callers: three internal fallbacks in effective_* wrappers
-    in chakra_items.py, and the annotated _get_chakra_state legacy helper in
-    chakra_scene.py. The function is now effectively isolated to its own
-    wrapper chain.
-  - Progress (2026-04-18, Slice XIV): effective_unlocked_nodes,
-    effective_active_nodes, effective_chakra_state internal fallbacks to
-    ensure_actor_chakra_state removed — they were dead code because
-    _rebuild_chakra_state_from_component never returns None in normal operation.
-  - Progress (2026-04-18, Slices XVIII-XX): _get_chakra_state deleted from
-    chakra_scene.py. ensure_actor_chakra_state now has zero production callers;
-    tagged [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8].
-  - Condition: delete the function and its direct unit tests
-    (test_chakra_items_state_bridge.py) in Phase 8.
+[DONE][ENTITY_CHAKRA][PHASE_8] chakra_items ensure_actor_chakra_state removal
+  - File: edgecaster/systems/chakra_items.py
+  - `ensure_actor_chakra_state` deleted (zero production callers after Slices VIII-XX).
+  - `_get_chakra_state` deleted from chakra_scene.py (Slices XVIII-XX).
+  - `test_chakra_items_state_bridge.py` repurposed to test `effective_chakra_view`
+    and `apply_chakra_state_snapshot` — no longer tests ensure_actor_chakra_state.
+  - Remaining: `ChakraState` class itself still needed as accumulator/facade
+    (character_creation_scene.py, chakra seed generation fallback path).
+    Condition for full ChakraState removal: gameplay/UI code reads directly
+    from ChakraComponent + actor/body entity queries at all sites.
 
 -------------------------------------------------------------------------------
 PROGRESS NOTES (2026-02-17)
@@ -2043,18 +2042,20 @@ This audit covers what still needs fixing.
 
 [DONE][ENTITY_CHAKRA] Inventory list mutations routed through entity_graph_ops (2026-04-13)
   - Audited all direct `list.append()`/`list.remove()` on inventory lists.
-  - All mutations in `inventory.py` itself were already paired — the bypass sites
-    were in consumers. Fixed 8 call sites:
-    - `content/dialogues.py` `_consume_item` pop → detach+mark
-    - `content/dialogues.py` `_grant_coherence_crystal` append → attach+track+mark
-    - `events.py` `_consume_one_berry` pop → detach+mark
-    - `wish.py` player wish grant append → attach+track+mark
-    - `systems/combat_actions.py` flask consume remove → detach+mark
-    - `systems/rune_anchor_sieges.py` coherence crystal pop → detach+mark
-    - `systems/seal_trials.py` coherence crystal pop → detach+mark
-    - `scenes/inventory_scene.py` eat-container pop → detach+mark
-  - Remaining known intentional bypass: `game.py` self-referential test bag
-    (explicitly a debug/test hack; not a real gameplay path).
+  - The first cleanup pass paired inventory mutations with graph attach/detach,
+    but several callers were still open-coding list-cache mutation afterward.
+  - Follow-up progress (2026-04-18, Slice XXXIII): shared
+    `inventory.add_inventory_item(...)` / `remove_inventory_item_at(...)`
+    helpers now own those graph-first mutations for:
+    - `content/dialogues.py`
+    - `events.py`
+    - `wish.py`
+    - `systems/rune_anchor_sieges.py`
+    - `systems/seal_trials.py`
+    - `systems/trade.py`
+    - `game.py` recursive debug bag bootstrap
+  - `scenes/inventory_scene.py` eat-a-bag path: migrated in Slice XXXVII (2026-04-19)
+    via `remove_inventory_item_at`; no remaining list-direct inventory mutation.
 
 -------------------------------------------------------------------------------
 (2) LEGACY CODE FOR DELETION
@@ -2062,7 +2063,7 @@ This audit covers what still needs fixing.
 Already tagged [LEGACY_DELETE]:
   - poi_spawning.py (file header) — PHASE_8
   - trade.py apply_proposal_with_qty() — PHASE_8
-  - footprints.py compatibility fallback — PHASE_8
+  - footprints.py compatibility fallback — PHASE_8 [DONE Slice XLIII, 2026-04-19]
   - game.py (9 tagged locations) — various phases
 
 Should be tagged for future deletion:
@@ -2371,6 +2372,12 @@ Owner: Claude audit (2026-02-18)
       - `edgecaster/systems/entity_snapshots.py`
         - `last_known_*` snapshot payload shape once typed persistence deltas
           exist
+      - edgecaster/systems/footprints.py
+        - tag-based footprint fallback queries
+      - edgecaster/systems/entity_lifecycle.py
+        - RUNTIME_REGISTRY compatibility bridge
+      - edgecaster/systems/chakras.py
+        - BODY_SCHEMA compatibility bridge
       - `edgecaster/systems/attention.py`
         - suppression/persistence wrapper block near the top of the file
         - `_attn_active_resolved_children` sidecar map
@@ -2699,3 +2706,93 @@ Owner: Claude audit (2026-02-18)
       - unchanged signature + already-playing loop => no resynthesis
       - same signature after stop => synth + replay occurs
       - pattern absent => cached signature cleared
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XXVIII - Chakra Scene body-node fallback uses entity_body specs (2026-04-18)
+  - Files: edgecaster/scenes/chakra_scene.py, tests/test_chakra_scene.py
+  - `_body_nodes_for_actor(...)` now falls back to
+    `entity_body.build_body_node_specs(...)` when no realized body-node graph is
+    available, instead of immediately dropping to schema-walker logic.
+  - This keeps Chakra Scene point layout, list entries, and tooltip ancestry
+    reads on the shared actor-body shape in tests and other non-realized
+    contexts.
+  - Added regression:
+      - graph absent => Chakra Scene body-node reads still return shared
+        body-node rows from deterministic entity-body specs
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XXIX - Inventory Scene labels use entity zoom metadata (2026-04-18)
+  - Files: edgecaster/scenes/inventory_scene.py, tests/test_inventory_scene.py
+  - Synthetic entity-backed zoom schemas now include explicit `zoomable`
+    metadata.
+  - `_display_body_node_label(...)` now uses that metadata directly instead of
+    re-resolving authored schemas just to decide whether the node should carry
+    the `*` branch marker.
+  - `_body_slot_targets(...)` now passes the current node spec into the label
+    helper so body-slot menus stay on the same entity-backed view they already
+    queried for layout.
+  - Added regression:
+      - entity-backed label rendering does not call `resolve_body_schema(...)`
+        just to decide whether a node is zoomable
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XXX - Inventory Scene zoom schemas fall back to entity_body specs (2026-04-18)
+  - Files: edgecaster/scenes/inventory_scene.py, tests/test_inventory_scene.py
+  - `_build_entity_schema_at_zoom_depth(...)` now falls back to deterministic
+    `entity_body.child_specs_for_entity(...)` output when the realized graph is
+    unavailable.
+  - This keeps `_resolve_body_schema_for_zoom_path(...)`,
+    `_resolve_body_view_for_zoom_path(...)`, and
+    `_resolve_body_view_chain_for_zoom_path(...)` on the shared body-node
+    substrate in more non-realized/test contexts before any authored-schema
+    fallback is needed.
+  - Added regression:
+      - graph absent => inventory synthetic zoom schema still builds from
+        deterministic body specs without resolving authored schema
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XXXI - thinner unlock-candidate query path (2026-04-18)
+  - Files: edgecaster/systems/chakras.py, edgecaster/game.py,
+           edgecaster/content/dialogues.py, tests/test_chakra_unlock_queries.py
+  - Added `list_unlockable_chakras_for_entity_from_unlocked(...)` so callers
+    that only need the current unlocked-node set do not have to materialize a
+    full effective `ChakraState`.
+  - Monk unlock prompt path in `game.py` now uses
+    `effective_unlocked_nodes(...)` plus the thinner unlock helper.
+  - Chakra Sage dialogue builder now uses
+    `effective_unlocked_nodes(...)` / `effective_active_nodes(...)` for counts
+    and `list_unlockable_chakras_for_entity_from_unlocked(...)` for candidate
+    unlock choices.
+  - Added regression:
+      - thinner unlock query returns the same candidates as the older
+        ChakraState-based entity unlock query
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XXXII - richer runtime chakra projection (2026-04-18)
+  - Files: edgecaster/systems/chakra_items.py, edgecaster/systems/pattern_runtime.py,
+           edgecaster/scenes/chakra_scene.py, tests/test_chakra_items_state_bridge.py,
+           tests/test_pattern_runtime.py, tests/test_chakra_scene.py
+  - Added `effective_chakra_projection(...)`, which reads unlocked/active sets,
+    charge channels, alignments, generators, and pattern root directly from
+    `ChakraComponent` plus item overlays without first materializing a full
+    effective `ChakraState`.
+  - `pattern_runtime.act_chakra(...)` now uses that richer projection for live
+    casts.
+  - Chakra Scene's live pattern preview now uses the same projection when no
+    explicit override/provider is active.
+  - Added regressions:
+      - projection exposes rich component payload without ChakraState
+      - live preview prefers effective_chakra_projection
+      - act_chakra prefers effective_chakra_projection
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XXXIII - shared graph-first inventory helpers (2026-04-18)
+  - Files: edgecaster/systems/inventory.py, edgecaster/content/dialogues.py,
+           edgecaster/events.py, edgecaster/wish.py, edgecaster/game.py,
+           edgecaster/systems/trade.py, edgecaster/systems/rune_anchor_sieges.py,
+           edgecaster/systems/seal_trials.py, tests/test_inventory.py
+  - Added `inventory.add_inventory_item(...)`, `remove_inventory_item(...)`,
+    and `remove_inventory_item_at(...)`.
+  - Pickup/drop/eat/equip-split logic in `inventory.py` now uses those helpers
+    instead of hand-rolled list append/pop plus attach/detach.
+  - Dialogue rewards/turn-ins, wish grants, recursive debug-bag bootstrap, and
+    coherence-crystal consumption sites now route inventory mutation through
+    the shared helper layer instead of mutating cache lists inline.
+  - `inventory_scene.py` recursive eat-container path migrated in Slice XXXVII (2026-04-19).
+  - Added regressions:
+      - helper add path syncs cache and owner metadata
+      - helper remove path detaches and persists removal reason

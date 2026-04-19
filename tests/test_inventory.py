@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from edgecaster.state.entities import Entity
 from edgecaster.systems.inventory import (
+    add_inventory_item,
     get_inventory,
     get_player_inventory,
     player_pick_up,
@@ -20,6 +21,7 @@ from edgecaster.systems.inventory import (
     move_item_between_inventories,
     move_item_between_inventories_qty,
     get_equipped_in_slot,
+    remove_inventory_item_at,
     unequip_slot,
     unequip_item,
     equip_item_to_slot,
@@ -109,6 +111,45 @@ class TestGetPlayerInventory:
 
         game.player_id = "new_body"
         assert get_player_inventory(game) == ["dagger"]
+
+
+class TestGraphBackedInventoryHelpers:
+    """Tests for the graph-first add/remove helper layer."""
+
+    def test_add_inventory_item_syncs_cache_and_owner_metadata(self):
+        game = MagicMock()
+        game.inventories = {"player": []}
+        item = MagicMock()
+        item.id = "item_1"
+        item.tags = {}
+
+        add_inventory_item(game, "player", item)
+
+        assert item in game.inventories["player"]
+        assert getattr(item, "parent_entity_id", None) == "player"
+        assert getattr(item, "socket_id", None) == "inventory"
+        assert item.tags.get("inventory_owner_id") == "player"
+        assert item.tags.get("in_inventory") is True
+
+    def test_remove_inventory_item_at_detaches_and_marks_reason(self):
+        game = MagicMock()
+        item = MagicMock()
+        item.id = "item_2"
+        item.tags = {"inventory_owner_id": "player", "in_inventory": True}
+        item.parent_entity_id = "player"
+        item.socket_id = "inventory"
+        game.inventories = {"player": [item]}
+        game.mark_entity_removed = MagicMock()
+
+        removed = remove_inventory_item_at(game, "player", 0, reason="consumed")
+
+        assert removed is item
+        assert game.inventories["player"] == []
+        assert getattr(item, "parent_entity_id", None) is None
+        assert getattr(item, "socket_id", None) is None
+        assert "inventory_owner_id" not in item.tags
+        assert "in_inventory" not in item.tags
+        game.mark_entity_removed.assert_called_once_with(item, reason="consumed")
 
 
 class TestPlayerPickUp:

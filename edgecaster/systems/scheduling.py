@@ -368,7 +368,14 @@ def cooldown_tick(game: "Game", level: "LevelState", delta: int) -> None:
         tick_entity(act)
     for ent in level.entities.values():
         tick_entity(ent)
-    for items in getattr(game, "inventories", {}).values():
+    for owner_id in getattr(game, "inventories", {}).keys():
+        cache_items = getattr(game, "inventories", {}).get(owner_id, []) or []
+        try:
+            items = game.get_inventory(owner_id)
+            if not isinstance(items, (list, tuple)):
+                items = cache_items
+        except Exception:
+            items = cache_items
         for ent in items:
             tick_entity(ent)
 

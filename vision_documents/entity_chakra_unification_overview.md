@@ -1,7 +1,7 @@
 Title: Entity + Chakra Unification Overview
 Purpose: explain the entity/chakra unification strategy to human collaborators in plain language, including what is changing in the game and what the refactor is intended to unlock.
 Status: active-plan
-Last verified: 2026-04-12
+Last verified: 2026-04-19
 Canonical for: human-facing overview of the entity/chakra migration
 Related docs: `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/entity_chakra_unification_master_plan.txt`, `vision_documents/architecture.txt`, `vision_documents/the_yoga.txt`
 Related code: `edgecaster/state/`, `edgecaster/systems/`, `edgecaster/content/`
@@ -9,7 +9,7 @@ Supersedes: none
 
 # Entity + Chakra Unification Overview
 
-Updated: 2026-04-12
+Updated: 2026-04-19
 Audience: human collaborators
 
 ## Why this document exists
@@ -38,6 +38,107 @@ We are moving Edgecaster toward one shared world model where:
 4. simulation, persistence, attention, and fractal/rune interactions can all read from that same shared framework
 
 In plain English: we want the game to stop having one system for actors, one for body parts, one for buildings, one for map objects, one for inventory, and another for chakras. We want one underlying model that all of those systems can use.
+
+## Current doctrinal snapshot
+
+This is the short version of the plan as it currently stands:
+
+- authoritative structure should converge toward one containment tree plus
+  typed relation edges, rather than leaving a permanent second topology hidden
+  inside chakra components
+- `ChakraComponent` is still useful during migration, but it should trend
+  toward channel payloads, adapters, and query-facing data rather than
+  long-term structural authority
+- persistent graph edges should represent stable structure or interaction;
+  high-churn overlap/contact should usually come from geometry queries or
+  ephemeral contact indexes instead
+- universal channels should stay minimal and extensible rather than being
+  frozen too early into one closed schema
+- the "everything becomes entities/channels" ideas are real, but they should
+  land as later slices with explicit authority/query/persistence contracts, not
+  as one giant vague endgame phase
+
+## Core design principles
+
+These are the rules that should stay true even as individual implementation
+slices change.
+
+### 1. One authority, many caches
+
+The long-term source of truth is the shared entity/graph/component substrate.
+
+Other structures can exist, but only as caches, indexes, or projections. They
+should not quietly become peer truth stores.
+
+It also helps to be explicit about how much lag a cache is allowed to have:
+
+- `event-consistent`: updated when the underlying event happens
+- `tick-stale`: allowed to lag until the next game tick
+- `query-consistent`: revalidated or rebuilt when read
+
+### 2. Stable query surfaces over storage leakage
+
+Systems should ask stable helper/query APIs for the payload they need instead
+of reaching directly into whatever storage layout happens to exist today.
+
+That applies both to:
+
+- runtime projection helpers used by simulation
+- scene/view-model helpers used by UI
+
+They are the same boundary problem at two different altitudes.
+
+### 3. Structural state is not the same as streaming state
+
+Some facts are structural:
+
+- topology
+- ownership
+- unlocks
+- active/inactive structure
+- persistent geometry relationships
+
+Those are the kinds of changes that should dirty caches or trigger hierarchy
+reduction work.
+
+Other values are streaming:
+
+- charge
+- resonance
+- timers
+- other frequently changing live gauges
+
+Those should usually be read live without forcing full subtree invalidation on
+every tick.
+
+### 4. Runtime truth is not the same as UI editing state
+
+The old danger with `ChakraState` was that it drifted toward being both a live
+cache of gameplay truth and an editing surface.
+
+The cleaner model is:
+
+- runtime truth lives in entities/components/graph-derived outputs
+- scene edit sessions start from a snapshot
+- the scene mutates that session locally for preview/undo/drag
+- the scene commits changes back through explicit write operations
+
+That avoids rebuilding another long-lived mirror object that slowly drifts out
+of sync.
+
+### 5. Layout resolution should be generic
+
+Actor anatomy is just the first real example.
+
+The pattern we want is:
+
+- authored source data
+- deterministic child specs
+- optional runtime realization
+- shared geometry/query access
+
+That same pattern should eventually work for buildings, districts, cities,
+rune structures, and other composed entities.
 
 ## The current problem
 
@@ -157,7 +258,7 @@ That graph records things like:
 This is the backbone that lets bodies, inventories, buildings, and world
 structures all behave in a comparable way.
 
-### 3. Make geometry first-class
+### 3. Make geometry and query surfaces first-class
 
 We want one shared geometry/query layer that can answer questions like:
 
@@ -167,6 +268,10 @@ We want one shared geometry/query layer that can answer questions like:
 - can this system query shape data without inventing fake runtime objects?
 
 This matters for future rune and fractal gameplay.
+
+We also want stable query surfaces around that data, so gameplay and scenes can
+ask for useful payloads without knowing whether the answer came from realized
+entities, reducer outputs, or a migration bridge.
 
 ### 4. Use attention to control detail, not ontology
 
@@ -185,6 +290,14 @@ state across the hierarchy.
 
 For chakras, this means channel values can propagate and combine through the
 graph in deterministic ways.
+
+Conceptually, the reducer should stay a pure transform:
+
+- authoritative topology + channels + rules go in
+- derived channel state comes out
+
+Dirty flags, cache invalidation, and scheduling decide when to run it, but they
+should not define what the reducer is.
 
 That reducer layer is what eventually lets the game say:
 
@@ -243,6 +356,11 @@ and toward:
 
 - "the actor is a hierarchy of meaningful sub-entities with channels and geometry"
 
+For scene/UI work, that does not mean "no temporary editing object is ever
+allowed." It means any such object should be an explicit edit session built
+from a snapshot and written back through deliberate commit operations, not a
+live mirror that tries to stay silently synced forever.
+
 ### The reducer is entering real runtime flow
 
 The reducer is no longer just a speculative side system.
@@ -255,6 +373,9 @@ It is beginning to participate in live gameplay by:
 
 This is an early step, but it is an important one, because it means the new
 substrate is starting to matter for actual play behavior.
+
+The design goal, though, is still to keep the reducer logic itself pure and let
+the scheduling/cache layers decide when recomputation is needed.
 
 ### Attention and lifecycle are becoming more unified
 

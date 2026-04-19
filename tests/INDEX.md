@@ -2,7 +2,7 @@
 
 Purpose: map the major test clusters in `tests/` so agents can find the right regression surface quickly.
 Status: active-plan
-Last verified: 2026-04-12
+Last verified: 2026-04-19
 Canonical for: tests-folder navigation
 Related docs: `tests/AGENTS.md`, `vision_documents/architecture.txt`, `vision_documents/spring_cleaning.txt`
 Related code: `tests/`
@@ -34,6 +34,7 @@ Supersedes: none
 
 - `test_combat.py`
 - `test_inventory.py`
+- `test_inventory_scene.py`
 - `test_trade.py`
 
 ### Spawning, POIs, And World Structure

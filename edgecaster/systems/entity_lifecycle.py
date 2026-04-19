@@ -475,15 +475,13 @@ def _set_parent_lod_state(game: object, entity_id: str, lod_state: str) -> None:
 
 
 def _expanded_children_map(game: object) -> Dict[str, set[str]]:
-    # [LEGACY_DELETE][ENTITY_CHAKRA][ATTENTION]
-    # The name is attention-specific historical baggage. After the broader
-    # lifecycle cutover, rename this to a neutral expanded-children registry.
-    raw = getattr(game, "_attn_active_resolved_children", None)
+    """Return the shared expanded-children registry keyed by parent entity id."""
+    raw = getattr(game, "_expanded_entity_children", None)
     if isinstance(raw, dict):
         return raw
     raw = {}
     try:
-        setattr(game, "_attn_active_resolved_children", raw)
+        setattr(game, "_expanded_entity_children", raw)
     except Exception:
         pass
     return raw

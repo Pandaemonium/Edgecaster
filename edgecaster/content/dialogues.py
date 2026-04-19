@@ -561,14 +561,11 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
                 if qty > 1:
                     inventory_system.set_quantity(it, qty - 1)
                 else:
-                    consumed = inv.pop(idx)
-                    try:
-                        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-                        entity_graph_ops_system.detach_entity_from_parent(game, consumed)
-                        from edgecaster.systems.inventory import _mark_inventory_graph_authority
-                        _mark_inventory_graph_authority(game, getattr(game, "player_id", ""))
-                    except Exception:
-                        pass
+                    inventory_system.remove_inventory_item_at(
+                        game,
+                        getattr(game, "player_id", ""),
+                        idx,
+                    )
                 return True
         except Exception:
             return False
@@ -578,17 +575,7 @@ def _build_inventor(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialogue
         try:
             player = game._player()
             ent = game._spawn_entity_from_template("coherence_crystal", player.pos)
-            inv = game.get_inventory(player.id)
-            inv.append(ent)
-            try:
-                from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-                from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
-                from edgecaster.systems.inventory import _mark_inventory_graph_authority
-                entity_lifecycle_system._track_runtime_entity(game, ent)
-                entity_graph_ops_system.attach_entity_to_parent(game, ent, player.id, socket_id="inventory")
-                _mark_inventory_graph_authority(game, player.id)
-            except Exception:
-                pass
+            inventory_system.add_inventory_item(game, player.id, ent)
             game.log.add("You receive a Coherence Crystal.")
             game.refresh_actor_actions(player.id)
         except Exception:
@@ -770,10 +757,9 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
             from edgecaster.systems import chakra_items as chakra_items_system
 
             player = game._player()
-            cs = chakra_items_system.effective_chakra_state(game, player)
-            if cs is None:
-                return (1, 1)  # Default: torso only
-            return (len(cs.unlocked), len(cs.active))
+            unlocked = chakra_items_system.effective_unlocked_nodes(game, player)
+            active = chakra_items_system.effective_active_nodes(game, player)
+            return (len(unlocked), len(active))
         except Exception:
             return (1, 1)
 
@@ -782,15 +768,12 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
         Return all currently unlockable chakra ids based on shared gating rules.
         """
         try:
-            from edgecaster.systems.chakras import list_unlockable_chakras_for_entity
+            from edgecaster.systems.chakras import list_unlockable_chakras_for_entity_from_unlocked
             from edgecaster.systems import chakra_items as chakra_items_system
 
             player = game._player()
-            chakra_state = chakra_items_system.effective_chakra_state(game, player)
-            if chakra_state is None:
-                return []
-
-            return list_unlockable_chakras_for_entity(player, chakra_state)
+            unlocked = chakra_items_system.effective_unlocked_nodes(game, player)
+            return list_unlockable_chakras_for_entity_from_unlocked(player, unlocked)
         except Exception:
             return []
 

@@ -6,8 +6,8 @@ from edgecaster.systems.chakras import (
     can_unlock_chakra_for_entity,
     check_resonance_bonuses,
     check_resonance_bonuses_from_active_nodes,
-    list_unlockable_chakras,
     list_unlockable_chakras_for_entity,
+    list_unlockable_chakras_for_entity_from_unlocked,
 )
 
 
@@ -23,25 +23,14 @@ def _make_actor():
     return actor
 
 
-def test_entity_unlock_query_matches_legacy_body_schema_at_root_state() -> None:
-    actor = _make_actor()
-    chakra_state = ChakraState(unlocked={"body"}, active={"body"})
-
-    legacy = list_unlockable_chakras(prototypes.resolve_body_schema(actor), chakra_state)
-    runtime = list_unlockable_chakras_for_entity(actor, chakra_state)
-
-    assert runtime == legacy
-
-
-def test_entity_unlock_query_matches_legacy_body_schema_after_branch_unlock() -> None:
+def test_entity_unlock_query_from_unlocked_matches_chakra_state_variant() -> None:
     actor = _make_actor()
     chakra_state = ChakraState(unlocked={"body", "arm"}, active={"body", "arm"})
 
-    legacy = list_unlockable_chakras(prototypes.resolve_body_schema(actor), chakra_state)
     runtime = list_unlockable_chakras_for_entity(actor, chakra_state)
+    thinner = list_unlockable_chakras_for_entity_from_unlocked(actor, chakra_state.unlocked)
 
-    assert runtime == legacy
-    assert any(node_id.startswith("arm.") for node_id in runtime)
+    assert thinner == runtime
 
 
 def test_can_unlock_chakra_for_entity_accepts_unlockable_node() -> None:

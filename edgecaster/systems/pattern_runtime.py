@@ -180,10 +180,6 @@ def act_star(self, actor_id: str) -> None:
     self.log.add(f"Star ({num_points} points, outer {outer_radius}, inner {inner_radius}) placed.")
 
 
-# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-# These chakra runtime helpers still read actor body_schema/ChakraState
-# directly. Move them to shared entity_geometry/entity_body queries so pattern
-# gameplay stops depending on actor-only schema walkers.
 def chakra_modifiers(self, actor_id: str):
     """Return ChakraModifiers for the given actor (resonance + charge)."""
     try:
@@ -237,43 +233,18 @@ def act_chakra(self, actor_id: str) -> None:
         self.log.add("No pattern to modify. Place a terminus first.")
         return
 
-    # Runtime chakra view includes temporary equipped-item unlocks/auto-activations.
-    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
-    if chakra_state is None:
-        self.log.add("No chakra state found.")
-        return
-
     try:
-        from edgecaster.systems.chakras import build_chakra_generator_seed
+        from edgecaster.systems.chakras import build_chakra_generator_seed_for_actor
     except Exception:
         self.log.add("Could not import chakra modules.")
         return
 
-    # Component-backed actors should stay on the entity/body runtime path and
-    # avoid paying the authored-schema resolve cost on every cast.  Schema is
-    # still the fallback for pre-runtime/test actors that do not yet have a
-    # realized chakra component.
-    body_schema = {}
-    if getattr(actor, "chakra_component", None) is None:
-        try:
-            from edgecaster.prototypes import resolve_body_schema
-
-            body_schema = resolve_body_schema(actor)
-        except Exception:
-            body_schema = {}
-
-    if not (body_schema or {}).get("nodes") and getattr(actor, "chakra_component", None) is None:
-        self.log.add("No body schema to generate pattern from.")
-        return
-
     try:
-        seed = build_chakra_generator_seed(
-            body_schema,
-            chakra_state,
+        seed = build_chakra_generator_seed_for_actor(
+            actor,
             base_scale=1.0,
-            require_root=True,
-            actor=actor,
             game=self,
+            require_root=True,
         )
     except ValueError as e:
         self.log.add(str(e))

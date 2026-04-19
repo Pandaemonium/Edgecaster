@@ -18,7 +18,7 @@ class _DummyGame:
         self.entity_state: dict[str, dict] = {}
         self.attn_store = attention.AttentionCellStore(bin_size=16)
         self.levels: dict[tuple[int, int, int], object] = {}
-        self._attn_active_resolved_children: dict[str, set[str]] = {}
+        self._expanded_entity_children: dict[str, set[str]] = {}
 
     def patch_entity_state(self, entity_or_id, patch=None, *, lineage_id=None, **fields) -> None:
         key = str(entity_or_id)

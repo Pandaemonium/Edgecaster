@@ -185,7 +185,7 @@ def _is_suppressed(game: object, *, entity_id: str | None = None, lineage_id: st
         return True
     lid = str(lineage_id or "").strip()
     if lid and not entity_id:
-        st = _peek_entity_state(game, lid)
+        st = _effective_entity_state(game, entity_id=None, lineage_id=lid)
         if bool(st.get("removed")) or bool(st.get("dead")):
             return True
         try:
@@ -854,8 +854,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
     if attn_store is None:
         return
 
-    if not hasattr(game, "_attn_active_resolved_children"):
-        game._attn_active_resolved_children = {}  # parent_eid -> set[child_eid]
+    if not hasattr(game, "_expanded_entity_children"):
+        game._expanded_entity_children = {}  # parent_eid -> set[child_eid]
 
 
     # -----------------------------
@@ -1283,8 +1283,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
     # attention.py decides *when/where* to resolve; aggregate_resolution decides *what/how*.
     # -----------------------------
     try:
-        if not hasattr(game, "_attn_active_resolved_children"):
-            game._attn_active_resolved_children = {}  # parent_eid -> set[child_eid]
+        if not hasattr(game, "_expanded_entity_children"):
+            game._expanded_entity_children = {}  # parent_eid -> set[child_eid]
 
         in_scope_parents: set[str] = set()
 
@@ -1418,7 +1418,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                         continue
 
         # Evict parents that left scope entirely or no longer qualify for detail.
-        for parent_id in list(getattr(game, "_attn_active_resolved_children", {}).keys()):
+        for parent_id in list(getattr(game, "_expanded_entity_children", {}).keys()):
             if parent_id in in_scope_parents:
                 continue
             entity_lifecycle_system.collapse_entity(

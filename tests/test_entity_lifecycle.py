@@ -16,7 +16,7 @@ class _DummyGame:
         self.entity_state: dict[str, dict] = {}
         self.attn_store = attention.AttentionCellStore(bin_size=16)
         self.levels: dict[tuple[int, int, int], object] = {}
-        self._attn_active_resolved_children: dict[str, set[str]] = {}
+        self._expanded_entity_children: dict[str, set[str]] = {}
 
     def patch_entity_state(self, entity_or_id, patch=None, *, lineage_id=None, **fields) -> None:
         key = str(entity_or_id)
@@ -82,7 +82,7 @@ def test_expand_and_collapse_are_idempotent_and_persist_snapshots() -> None:
     assert len(child_ids_a) == 1
     assert game.entity_graph.get_node(parent.id).lod_state == "expanded"
     assert set(game.entity_graph.get_children(parent.id, socket_id="resolve")) == set(child_ids_a)
-    assert game._attn_active_resolved_children[parent.id] == set(child_ids_a)
+    assert game._expanded_entity_children[parent.id] == set(child_ids_a)
 
     child_id = child_ids_a[0]
     child = entity_lifecycle_system.find_runtime_entity(game, child_id)

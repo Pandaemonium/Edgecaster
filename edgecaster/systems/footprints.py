@@ -347,33 +347,6 @@ def entity_footprint_local(ent: object) -> RectF:
     if explicit is not None:
         return explicit
 
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # Compatibility fallback for entities that have not been migrated to explicit
-    # runtime footprint fields yet.
-    tags = getattr(ent, "tags", None)
-    if not isinstance(tags, dict):
-        tags = {}
-
-    # Preferred explicit keys (attribute first, then tags payload).
-    for key in ("footprint_local", "footprint"):
-        rect = _rect_from_value(getattr(ent, key, None))
-        if rect is not None:
-            return rect
-        rect = _rect_from_value(tags.get(key))
-        if rect is not None:
-            return rect
-
-    # Optional width/height encoding from origin tile.
-    fw = tags.get("footprint_w", None)
-    fh = tags.get("footprint_h", None)
-    if isinstance(fw, (int, float)) and isinstance(fh, (int, float)):
-        px, py = getattr(ent, "pos", (0, 0))
-        x0 = float(int(px))
-        y0 = float(int(py))
-        x1 = x0 + max(0.0, float(fw))
-        y1 = y0 + max(0.0, float(fh))
-        return normalize_rect((x0, y0, x1, y1))
-
     return tile_rect(getattr(ent, "pos", (0, 0)))
 
 

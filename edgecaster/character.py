@@ -23,7 +23,7 @@ class Character:
     species: str | None = None
     # Optional actor template override for the player (e.g., species base body).
     template_id: str | None = None
-    # Optional chakra initialization payload (dict from ChakraState.to_dict()).
+    # Optional chakra initialization payload (generic chakra snapshot dict).
     chakra_init: dict | None = None
     # Per-character ability bar layout (ordering + grouping); built lazily by AbilityBarState.
     ability_layout: dict | None = None

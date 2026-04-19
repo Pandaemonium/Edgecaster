@@ -232,20 +232,9 @@ def apply_wish(game: Any, text: str) -> tuple[bool, str]:
     try:
         # Grant directly to inventory (avoid needing to pick it up).
         player_id = getattr(game, "player_id", "")
-        try:
-            game.player_inventory.append(ent)
-        except Exception:
-            inv = game.get_inventory(player_id)
-            inv.append(ent)
-        try:
-            from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-            from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
-            from edgecaster.systems.inventory import _mark_inventory_graph_authority
-            entity_lifecycle_system._track_runtime_entity(game, ent)
-            entity_graph_ops_system.attach_entity_to_parent(game, ent, player_id, socket_id="inventory")
-            _mark_inventory_graph_authority(game, player_id)
-        except Exception:
-            pass
+        from edgecaster.systems import inventory as inventory_system
+
+        inventory_system.add_inventory_item(game, player_id, ent)
     except Exception:
         pass
 

@@ -2,7 +2,7 @@
 
 Purpose: map the main module clusters in `edgecaster/systems/` so agents can find the right ownership area quickly.
 Status: active-plan
-Last verified: 2026-04-11
+Last verified: 2026-04-19
 Canonical for: systems-folder navigation and ownership hints
 Related docs: `edgecaster/systems/AGENTS.md`, `vision_documents/architecture.txt`, `vision_documents/spring_cleaning.txt`
 Related code: `edgecaster/systems/`
@@ -40,9 +40,9 @@ Supersedes: none
 
 ### Chakra, Gods, And Rune Systems
 
-- `chakras.py`
+- `chakras.py` *(legacy body-schema math still lives here, but `build_chakra_generator_seed_for_actor(...)` is now the preferred actor-oriented entrypoint for runtime/scene generator seed reads)*
 - `chakra_effects.py`
-- `chakra_items.py`
+- `chakra_items.py` *(component-first chakra read/write helpers; `effective_chakra_view(...)` / `effective_chakra_projection(...)` are the preferred runtime query surfaces while `ChakraState` remains compatibility vocabulary)*
 - `chakra_content.py`
 - `gods.py`
 - `god_abilities.py`
@@ -56,6 +56,7 @@ Supersedes: none
 - `entity_ops.py`
 - `entity_identity.py`
 - `entity_body.py`
+- `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders)*
 - `entity_graph_ops.py`
 - `entity_snapshots.py`
 - `entity_lifecycle.py`
@@ -80,7 +81,7 @@ Supersedes: none
 
 ### Inventory, Equipment, Economy, And Social Systems
 
-- `inventory.py`
+- `inventory.py` *(graph-first inventory queries and shared add/remove helpers; list caches remain a compatibility bridge)*
 - `equipment.py`
 - `equip_rules.py`
 - `item_grants.py`

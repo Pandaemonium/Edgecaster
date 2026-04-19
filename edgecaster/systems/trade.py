@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from edgecaster.content import merchants as merchant_content
 from edgecaster.systems import equipment as equipment_system
+from edgecaster.systems import inventory as inventory_system
 
 
 MERCHANT_ID_TAG = "merchant_id"
@@ -37,20 +38,9 @@ class ProposalSummary:
 
 
 def _append_inventory_item(game: Any, inv: Any, owner_id: str, ent: Any) -> None:
-    """Append item to list-backed inventory and sync containment metadata."""
-    inv.append(ent)
-    try:
-        from edgecaster.systems.entity_graph_ops import attach_entity_to_parent
-
-        attach_entity_to_parent(game, ent, owner_id, socket_id="inventory")
-    except Exception:
-        pass
-    try:
-        from edgecaster.systems.entity_lifecycle import _track_runtime_entity
-
-        _track_runtime_entity(game, ent)
-    except Exception:
-        pass
+    """Attach an item to inventory through the shared graph-first helper."""
+    del inv
+    inventory_system.add_inventory_item(game, owner_id, ent)
 
 
 def _safe_int(x: Any, default: int = 0) -> int:
@@ -652,9 +642,6 @@ def apply_proposal_with_qty(
         transfer_inventory_entity,
         transfer_split_quantity,
     )
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # Trade still targets list-backed inventory stores; final cutover should
-    # target graph-authoritative inventory storage directly.
 
     summary = proposal_summary_with_qty(game, merchant_actor_id, buy_items, sell_items)
     if not (buy_items or sell_items):
