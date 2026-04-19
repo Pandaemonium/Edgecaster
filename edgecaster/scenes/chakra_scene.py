@@ -189,25 +189,6 @@ def _get_body_schema(actor: Any) -> Dict[str, Any]:
     return {"root": None, "nodes": {}}
 
 
-def _get_chakra_state(actor: Any) -> ChakraState:
-    """Extract chakra state from an actor, creating default if missing.
-
-    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    Callers should migrate to effective_chakra_state(game, actor) so item effects
-    and ChakraComponent data are included. This helper stays as a no-game fallback.
-    """
-    state = getattr(actor, "chakra_state", None)
-    if state and isinstance(state, ChakraState):
-        return state
-    try:
-        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] ensure_actor_chakra_state facade.
-        state = chakra_items_system.ensure_actor_chakra_state(actor)
-        if state and isinstance(state, ChakraState):
-            return state
-    except Exception:
-        pass
-    return ChakraState()
-
 
 def _get_nodes_from_schema(body_schema: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Extract nodes dict from body schema (handles nesting)."""
@@ -1149,7 +1130,7 @@ class ChakraSilhouetteWidget(Widget):
                 pass
         if self.actor is None:
             return ChakraState()
-        return _get_chakra_state(self.actor)
+        return chakra_items_system.effective_chakra_state(None, self.actor) or ChakraState()
 
     def screen_to_unit(self, pos_px: Tuple[int, int]) -> Tuple[float, float]:
         """Convert a pixel position to unit coordinates in chakra space."""
@@ -1414,9 +1395,9 @@ class PatternPreviewWidget(Widget):
             try:
                 chakra_state = self._state_provider()
             except Exception:
-                chakra_state = _get_chakra_state(self.actor)
+                chakra_state = chakra_items_system.effective_chakra_state(None, self.actor) or ChakraState()
         else:
-            chakra_state = _get_chakra_state(self.actor)
+            chakra_state = chakra_items_system.effective_chakra_state(None, self.actor) or ChakraState()
 
         try:
             # Canonical seed builder used by runtime cast as well.
@@ -1793,14 +1774,6 @@ class ChakraSelectionScene(PanelScene):
             except Exception:
                 pass
 
-        # Ensure chakra state exists so edits persist.
-        if self._actor is not None:
-            try:
-                self._actor.chakra_state = _get_chakra_state(self._actor)
-            except Exception:
-                if not isinstance(getattr(self._actor, "chakra_state", None), ChakraState):
-                    self._actor.chakra_state = ChakraState()
-
         # Mode state: "activate" (toggle) or "realign" (drag/commit)
         self._mode: str = "activate"
         self._pending_alignments: Optional[Dict[str, Tuple[float, float]]] = None
@@ -1809,7 +1782,7 @@ class ChakraSelectionScene(PanelScene):
 
         # Selection + undo
         self._selected_nodes: Set[str] = set()
-        self._undo_stack: List[ChakraState] = []
+        self._undo_stack: List[dict] = []  # ChakraComponent snapshots (from comp.to_dict())
 
         # Optional list view state
         self._list_view_enabled: bool = False
@@ -1979,32 +1952,16 @@ class ChakraSelectionScene(PanelScene):
 
         self._list_widget.set_items(entries)
 
-    def _snapshot_state(self, state: ChakraState) -> ChakraState:
-        """Deep copy a ChakraState for undo snapshots."""
-        try:
-            return ChakraState.from_dict(state.to_dict())
-        except Exception:
-            return ChakraState(
-                unlocked=set(state.unlocked),
-                active=set(state.active),
-                alignments=dict(state.alignments),
-                generators=dict(state.generators),
-                charges=dict(state.charges),
-                pattern_root=getattr(state, "pattern_root", None),
-            )
-
     def _push_undo(self) -> None:
-        """Push current actor state onto the undo stack (if distinct)."""
+        """Push current ChakraComponent state onto the undo stack (if distinct)."""
         if self._actor is None:
             return
-        state = self._get_actor_state()
-        snap = self._snapshot_state(state)
-        if self._undo_stack:
-            try:
-                if self._undo_stack[-1].to_dict() == snap.to_dict():
-                    return
-            except Exception:
-                pass
+        comp = chakra_items_system._coerce_actor_chakra_component(self._actor)
+        if comp is None:
+            return
+        snap = comp.to_dict()
+        if self._undo_stack and self._undo_stack[-1] == snap:
+            return
         self._undo_stack.append(snap)
         # Keep the stack bounded.
         if len(self._undo_stack) > 40:
@@ -2015,19 +1972,9 @@ class ChakraSelectionScene(PanelScene):
         if self._actor is None or not self._undo_stack:
             return
         snap = self._undo_stack.pop()
-        state = self._get_actor_state()
-        state.unlocked = set(snap.unlocked)
-        state.active = set(snap.active)
-        state.alignments = dict(snap.alignments)
-        state.generators = dict(snap.generators)
-        state.charges = dict(snap.charges)
-        if hasattr(state, "pattern_root"):
-            state.pattern_root = getattr(snap, "pattern_root", None)
-        try:
-            chakra_items_system.apply_chakra_state_snapshot(self._actor, state, game=self.game)
-        except Exception:
-            pass
-
+        chakra_items_system.restore_actor_chakra_component_snapshot(
+            self._actor, snap, game=self.game
+        )
         self._silhouette.refresh_points()
         self._preview.mark_dirty()
         primary = self._silhouette.get_selected_chakra()
@@ -2043,7 +1990,7 @@ class ChakraSelectionScene(PanelScene):
             self._set_selection(set(), None)
             return
 
-        state = self._get_actor_state()
+        state = chakra_items_system.effective_chakra_state(self.game, self._actor) or ChakraState()
         targets = set(self._selected_nodes)
         if not targets:
             primary = self._silhouette.get_selected_chakra()
@@ -2126,7 +2073,7 @@ class ChakraSelectionScene(PanelScene):
             return
         if self._actor is None:
             return
-        state = self._get_actor_state()
+        state = chakra_items_system.effective_chakra_state(self.game, self._actor) or ChakraState()
         primary = self._silhouette.get_selected_chakra()
         if not primary:
             return
@@ -2138,7 +2085,6 @@ class ChakraSelectionScene(PanelScene):
             return
 
         self._push_undo()
-        state.pattern_root = primary
         comp = chakra_items_system._coerce_actor_chakra_component(self._actor)
         if comp is not None:
             comp.tags["compat_pattern_root"] = primary
@@ -2345,13 +2291,7 @@ class ChakraSelectionScene(PanelScene):
                 return eff
         except Exception:
             pass
-        return _get_chakra_state(self._actor)
-
-    def _get_actor_state(self) -> ChakraState:
-        """Return the actor's actual chakra state (for persistent edits)."""
-        if self._actor is None:
-            return ChakraState()
-        return _get_chakra_state(self._actor)
+        return ChakraState()
 
     def _clone_state(self, state: ChakraState, alignments: Dict[str, Tuple[float, float]]) -> ChakraState:
         """Clone a ChakraState but replace alignments (used for realign preview)."""
@@ -2389,7 +2329,7 @@ class ChakraSelectionScene(PanelScene):
             return
 
         self._mode = "realign"
-        state = self._get_actor_state()
+        state = chakra_items_system.effective_chakra_state(self.game, self._actor) or ChakraState()
 
         self._original_alignments = dict(state.alignments)
         self._pending_alignments = dict(state.alignments)
@@ -2409,11 +2349,9 @@ class ChakraSelectionScene(PanelScene):
             return
 
         if commit and self._actor is not None and self._pending_alignments is not None:
-            state = self._get_actor_state()
             changed = (self._pending_alignments != (self._original_alignments or {}))
             if changed:
                 self._push_undo()
-            state.alignments = dict(self._pending_alignments)
             comp = chakra_items_system._coerce_actor_chakra_component(self._actor)
             if comp is not None:
                 comp.tags["compat_alignments"] = dict(self._pending_alignments)
@@ -2535,7 +2473,7 @@ class ChakraSelectionScene(PanelScene):
         self._set_selection({node_id}, node_id)
 
         # Only unlocked chakras can be realigned.
-        state = self._get_actor_state()
+        state = chakra_items_system.effective_chakra_state(self.game, self._actor) or ChakraState()
         if node_id not in state.unlocked:
             return True  # Consume drag attempt but do nothing
 
@@ -2566,9 +2504,11 @@ class ChakraSelectionScene(PanelScene):
 
         # Ensure working alignments exist
         if self._pending_alignments is None:
-            self._pending_alignments = dict(self._get_actor_state().alignments)
+            eff = chakra_items_system.effective_chakra_state(self.game, self._actor) or ChakraState()
+            self._pending_alignments = dict(eff.alignments)
         if self._working_state is None:
-            self._working_state = self._clone_state(self._get_actor_state(), self._pending_alignments)
+            eff = chakra_items_system.effective_chakra_state(self.game, self._actor) or ChakraState()
+            self._working_state = self._clone_state(eff, self._pending_alignments)
             self._silhouette.set_state_override(self._working_state)
             self._preview.set_state_override(self._working_state)
 
@@ -2605,7 +2545,7 @@ class ChakraSelectionScene(PanelScene):
         if not self._actor:
             return
 
-        chakra_state = _get_chakra_state(self._actor)
+        chakra_state = chakra_items_system.effective_chakra_state(self.game, self._actor) or ChakraState()
 
         # Can only toggle if unlocked
         if node_id not in chakra_state.unlocked:

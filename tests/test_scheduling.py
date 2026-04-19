@@ -550,3 +550,25 @@ class TestChakraReducerTick:
 
         assert actor._chakra_effective_channels["head"]["charge"] == pytest.approx(1.1)
         assert game.entity_graph.get_node(actor.entity_id).dirty is False
+
+    def test_reduces_clean_cached_player_while_pattern_is_active(self):
+        actor = _make_reducer_actor()
+        game = SimpleNamespace(
+            entity_graph=EntityGraphStore(),
+            player_id=actor.id,
+        )
+        level = SimpleNamespace(
+            actors={actor.id: actor},
+            pattern=None,
+        )
+        game.entity_graph.register(actor.entity_id, kind="actor")
+
+        chakra_reducer_tick(game, level)
+        assert game.entity_graph.get_node(actor.entity_id).dirty is False
+
+        level.pattern = SimpleNamespace(vertices=[(0.0, 0.0)])
+        actor.chakra_component.nodes["head"].channels["charge"] = 0.9
+        chakra_reducer_tick(game, level)
+
+        assert actor._chakra_effective_channels["head"]["charge"] == pytest.approx(1.1)
+        assert game.entity_graph.get_node(actor.entity_id).dirty is False

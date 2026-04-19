@@ -1398,15 +1398,16 @@ class Game:
         skip_confirm = bool(kwargs.pop("__skip_confirm", False))
         skip_wand_confirm = bool(kwargs.pop("__skip_wand_confirm", False))
 
-        result = action_runner.run_action(
-            self,
-            actor_id,
-            action_name,
-            skip_confirm=skip_confirm,
-            skip_wand_confirm=skip_wand_confirm,
-            is_ai=False,
-            **kwargs,
-        )
+        with perf_profiler.measure(self, f"action.run_action.{action_name}"):
+            result = action_runner.run_action(
+                self,
+                actor_id,
+                action_name,
+                skip_confirm=skip_confirm,
+                skip_wand_confirm=skip_wand_confirm,
+                is_ai=False,
+                **kwargs,
+            )
 
         # If action executed (not blocked or pending confirmation), advance time
         if result.executed:

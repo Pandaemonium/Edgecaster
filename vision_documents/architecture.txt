@@ -1,7 +1,7 @@
 Title: Edgecaster Architecture Guide
 Purpose: orient contributors and AI agents to the current code structure, responsibility boundaries, and major module ownership.
 Status: current-state reference
-Last verified: 2026-04-14
+Last verified: 2026-04-18
 Canonical for: current architecture map and responsibility boundaries
 Related docs: `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/map_generation_strategy.txt`, `ARCHITECTURE.md`
 Related code: `edgecaster/`, `tests/`
@@ -335,11 +335,13 @@ Key modules (non-exhaustive):
     path for editor/pre-runtime callers.
 - systems/chakra_effects.py: centralized chakra passive-rule evaluation
 - systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers).
-  [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] `ensure_actor_chakra_state` and related
-  ChakraState facade helpers are marked for deletion; callers should migrate to
-  `effective_active_nodes`, `effective_chakra_state`, or direct ChakraComponent reads.
-  Runtime `effective_*` helpers now rebuild from `ChakraComponent` first instead of
-  depending on cached `actor.chakra_state` bootstrap side effects.
+  `ChakraComponent` is now the sole write authority; `ChakraState` is a read-only
+  derived view rebuilt on demand by `effective_chakra_state`.  All legacy facade
+  helpers (`ensure_actor_chakra_state`, `flush_charges_to_component`,
+  `sync_actor_chakra_state`) have been deleted.  Public API entry points are
+  `effective_chakra_state`, `effective_active_nodes`, `effective_unlocked_nodes`,
+  `toggle_actor_chakra`, `unlock_actor_chakra`, `set_actor_chakra_charge`,
+  `tick_actor_chakra_charge`, `consume_actor_chakra_charge`.
 - systems/chakra_reducer.py: [ENTITY_CHAKRA] channel reducer pipeline (R1-R3)
   - reduce_component(comp, rules, dirty_node_ids) computes effective channel values
     (mass, hp, coherence, resonance, corruption, flow, charge) per ChakraComponent node.
@@ -347,8 +349,15 @@ Key modules (non-exhaustive):
     clamp bounds, edge propagation policies: automatic/none/opt_in).
   - scheduling.chakra_reducer_tick runs this per-tick; result stored as
     actor._chakra_effective_channels for downstream consumers.
+  - Active player pattern-channeling is a special hot path: the reducer now
+    recomputes directly from component state each tick without paying the usual
+    per-tick dirty-mark / subtree-clean graph bookkeeping cost on the expanded
+    actor body hierarchy.
   - dirty_node_ids optimization (R2): EntityGraphNode.dirty + mark_dirty_up/
     mark_clean/mark_subtree_clean allow skipping clean edges on future passes.
+- systems/rune_audio.py: looped rune drone synthesis for active patterns.
+  `sync_rune_drone(...)` now short-circuits when the current pattern signature
+  is already playing, instead of re-synthesizing the same loop every frame.
 - systems/rune_anchor_sieges.py: failing Rune Anchor gauntlet runtime
   (fracture channeling, wave pacing, stabilize hold, catastrophe pulses, sapper sabotage,
    persistent backlash, corruption dampening completion)

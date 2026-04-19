@@ -1,7 +1,7 @@
 Title: Spring Cleaning - Actionable Plan
 Purpose: track active cleanup, migration, and correctness work that should continue shaping near-term implementation.
 Status: active-plan
-Last verified: 2026-04-14
+Last verified: 2026-04-18
 Canonical for: active cleanup and refactor follow-up work
 Related docs: `vision_documents/the_yoga.txt`, `vision_documents/architecture.txt`, `vision_documents/entity_chakra_unification_master_plan.txt`, `vision_documents/documentation_review_plan.md`
 Related code: `edgecaster/`, `tests/`
@@ -1369,9 +1369,9 @@ PHASE 8 — LEGACY REMOVAL
   - body_schema dict tree replaced by chakra node hierarchy.
   - O(n) parent lookups eliminated by graph edge traversal.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] lineage_state dict removal
-  - File: edgecaster/game.py (line ~444)
-  - After entity_id persistence is complete, remove lineage_state entirely.
+[DONE][ENTITY_CHAKRA][PHASE_8] lineage_state dict removal (already complete)
+  - lineage_state was removed from game.py; confirmed no references in codebase.
+  - Noted at spring_cleaning.txt line 2122: "No lineage_state references remain."
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Separate actors/entities dicts removal
   - File: edgecaster/game.py (LevelState lines ~225-226)
@@ -1537,6 +1537,15 @@ PHASE 8 — LEGACY REMOVAL
     in chakra_items.py, and the annotated _get_chakra_state legacy helper in
     chakra_scene.py. The function is now effectively isolated to its own
     wrapper chain.
+  - Progress (2026-04-18, Slice XIV): effective_unlocked_nodes,
+    effective_active_nodes, effective_chakra_state internal fallbacks to
+    ensure_actor_chakra_state removed — they were dead code because
+    _rebuild_chakra_state_from_component never returns None in normal operation.
+  - Progress (2026-04-18, Slices XVIII-XX): _get_chakra_state deleted from
+    chakra_scene.py. ensure_actor_chakra_state now has zero production callers;
+    tagged [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8].
+  - Condition: delete the function and its direct unit tests
+    (test_chakra_items_state_bridge.py) in Phase 8.
 
 -------------------------------------------------------------------------------
 PROGRESS NOTES (2026-02-17)
@@ -1724,12 +1733,28 @@ PROGRESS NOTES (2026-02-17)
     Replaces the full sync in hot paths.
   - Updated `scheduling.py` and `pattern_runtime.py` to call
     `flush_charges_to_component` instead of `sync_actor_chakra_state`.
-  - Deprecated `sync_actor_chakra_state` with
-    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] — function remains functional for
-    back-compat callers; delete in Phase 8.
-  - Done criteria met: ChakraComponent drives mutations; ChakraState is now a
-    derived cache that is updated in place but never the first writer.
-  - All 9 chakra bridge tests pass; no new failures introduced.
+  - Progress (2026-04-18, Slice XIV): `scheduling.chakra_charge_tick` migrated
+    to `tick_actor_chakra_charge` — component is now the read/write authority
+    for the charge tick. `flush_charges_to_component` removed from tick path.
+  - Progress (2026-04-18, Slice XV): `pattern_runtime.consume_chakra_charge`
+    migrated to `consume_actor_chakra_charge` (new helper in `chakra_items.py`).
+    `flush_charges_to_component` now has no production callers; safe to delete
+    in Phase 8 once its unit test is also removed.
+    `chakras.consume_chakra_charge` and `chakras.tick_chakra_charge` both tagged
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] — no production callers remain.
+  - (`sync_actor_chakra_state` was already deleted in a prior slice.)
+  - Progress (2026-04-18, Slices XVIII-XX): `chakra_scene.py` undo system fully
+    migrated to `ChakraComponent` snapshots.  `_get_chakra_state`,
+    `_get_actor_state`, `_snapshot_state` deleted.  All chakra-scene read paths
+    now use `effective_chakra_state`.
+  - Progress (2026-04-18, Slices XXI-XXV): All bridge syncs removed.
+    `flush_charges_to_component`, `ensure_actor_chakra_state`,
+    `chakras.tick_chakra_charge`, `chakras.consume_chakra_charge` deleted.
+    Undo-path unit tests added for `restore_actor_chakra_component_snapshot`.
+  - [DONE] ChakraComponent is the sole write authority; ChakraState is a
+    derived read-only view built fresh by `effective_chakra_state`.
+    All legacy write bridges have been removed.
+  - 637 tests pass; no new failures introduced.
 
 [PROGRESS][ENTITY_CHAKRA][SLICE_2C] Authoritative entity graph store (2026-04-11)
   - Files:
@@ -2642,3 +2667,35 @@ Owner: Claude audit (2026-02-18)
         schema input
       - unexpanded actors recovering via schema-on-demand fallback when schema
         input is omitted
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XXVI - charging-path dirty/clean churn removed (2026-04-18)
+  - Files: edgecaster/systems/chakra_items.py, edgecaster/systems/scheduling.py,
+           tests/test_chakra_items_state_bridge.py, tests/test_scheduling.py
+  - `tick_actor_chakra_charge(...)` now skips `_mark_actor_chakra_dirty(...)`
+    during active live-pattern charging, so the expanded actor body graph is not
+    re-dirtied every tick just to be recomputed immediately anyway.
+  - `scheduling.chakra_reducer_tick(...)` now forces reducer recomputation for
+    the charging player even if the actor subtree is graph-clean, which keeps
+    reduced channels current without depending on per-tick graph dirtiness.
+  - The same charging path now skips `mark_subtree_clean(actor_id)`, removing
+    the per-tick subtree BFS over the realized body hierarchy from the movement
+    hot path while a pattern is active.
+  - Focused regressions added for:
+      - charging ticks staying graph-clean
+      - non-charging decay still marking graph dirtiness conservatively
+      - reducer recomputing for a clean cached charging player
+
+[PROGRESS][PERF] Slice XXVII - rune drone signature cache fixed (2026-04-18)
+  - Files: edgecaster/systems/rune_audio.py, tests/test_rune_audio.py
+  - `DungeonScene.update()` calls `rune_audio.sync_rune_drone(...)` every frame.
+    The sync helper already computed a pattern signature but still called
+    `synth_rune_drone(...)` every frame, which created a pattern-only render
+    hitch even after the reducer-path cleanup.
+  - `sync_rune_drone(...)` now returns early when the current signature is
+    already playing on the dedicated SFX lane.
+  - When the pattern disappears, `_rune_audio_sig` is now cleared so the same
+    rune can be replayed correctly after a stop.
+  - Added regressions for:
+      - unchanged signature + already-playing loop => no resynthesis
+      - same signature after stop => synth + replay occurs
+      - pattern absent => cached signature cleared

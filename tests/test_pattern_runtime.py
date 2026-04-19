@@ -76,11 +76,6 @@ def _patch_chakra_seed_runtime(monkeypatch):
     )
     monkeypatch.setattr(
         pattern_runtime.chakra_items_system,
-        "ensure_actor_chakra_state",
-        lambda _actor: dummy_state,
-    )
-    monkeypatch.setattr(
-        pattern_runtime.chakra_items_system,
         "effective_chakra_state",
         lambda _game, _actor: dummy_state,
     )
@@ -176,11 +171,6 @@ def test_act_chakra_skips_schema_resolve_for_component_backed_actor(monkeypatch)
         "effective_chakra_state",
         lambda _game, _actor: dummy_state,
     )
-    monkeypatch.setattr(
-        pattern_runtime.chakra_items_system,
-        "ensure_actor_chakra_state",
-        lambda _actor: dummy_state,
-    )
 
     import edgecaster.prototypes as prototypes
     import edgecaster.systems.chakras as chakra_system
@@ -235,11 +225,6 @@ def test_chakra_modifiers_prefers_reduced_charge_snapshot(monkeypatch) -> None:
 
     monkeypatch.setattr(
         pattern_runtime.chakra_items_system,
-        "ensure_actor_chakra_state",
-        lambda _actor: actor.chakra_state,
-    )
-    monkeypatch.setattr(
-        pattern_runtime.chakra_items_system,
         "effective_active_nodes",
         lambda _game, _actor: {"body", "head"},
     )
@@ -277,11 +262,6 @@ def test_chakra_modifiers_resonance_uses_effective_active_nodes(monkeypatch) -> 
         pattern_root="body",
     )
 
-    monkeypatch.setattr(
-        pattern_runtime.chakra_items_system,
-        "ensure_actor_chakra_state",
-        lambda _actor: actor.chakra_state,
-    )
     # Equipment grants arm + arm_m — enough to trigger bilateral_arms resonance.
     monkeypatch.setattr(
         pattern_runtime.chakra_items_system,

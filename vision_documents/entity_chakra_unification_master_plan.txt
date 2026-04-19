@@ -9,7 +9,7 @@ Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
 Updated: 2026-04-18
-Status: v1.37 (Phase 8 Slice XIII - game.py, dialogues.py, actions.py migrated off ensure_actor_chakra_state; only annotated legacy helper and effective_* internal fallbacks remain)
+Status: v1.53 (Phase 8 Slice XXVII - rune drone sync now honors pattern signature cache instead of resynthesizing every frame)
 
 This is the execution plan for:
 
@@ -126,6 +126,14 @@ Implemented and stable:
    - When the entity path is unavailable or insufficient, the seed builder now
      re-resolves authored `body_schema` on demand for actor callers that passed
      `body_schema={}`, instead of failing with a misleading root-not-found error.
+   - Active live-pattern charging no longer re-dirties and re-cleans the actor
+     body subtree every tick. `tick_actor_chakra_charge(...)` now skips routine
+     dirty-mark churn while charging, and `scheduling.chakra_reducer_tick(...)`
+     forces recomputation for the charging player without paying the subtree
+     `mark_subtree_clean(...)` graph walk in that hot path.
+   - `rune_audio.sync_rune_drone(...)` now actually honors its cached pattern
+     signature. When the current rune signature is already playing, it returns
+     early instead of re-synthesizing the looped drone on every frame.
    - `AttentionCellStore` now uses a hierarchical rect index keyed by
      `entity_id`, and `sync_attention_instantiation(...)` now expands/collapses
      resolver-backed parents through the lifecycle module instead of owning the
@@ -283,6 +291,180 @@ Not yet complete:
       `getattr(actor, "chakra_state", None)`; the `is None: continue` guard
       is preserved.  By Phase 8, players have `chakra_state` set at spawn and
       the creation-fallback path in `ensure_actor_chakra_state` is never needed.
+
+25. Phase 8 Legacy Removal Slice XIV (2026-04-18):
+    - `effective_unlocked_nodes`, `effective_active_nodes`, `effective_chakra_state`
+      internal `ensure_actor_chakra_state` fallbacks removed. They were dead code:
+      `_rebuild_chakra_state_from_component` never returns None in normal operation
+      because `_coerce_actor_chakra_component` always coerces (even None) into an
+      empty component. The early-exit `return set()` / `return None` now fires only
+      on import failure or coercion exception.
+    - `lineage_state` spring_cleaning entry marked DONE (code was already gone;
+      no references found in codebase).
+    - `scheduling.chakra_charge_tick` migrated to `tick_actor_chakra_charge`
+      (new function in `chakra_items.py`). ChakraComponent is now the
+      read/write authority for the per-tick charge path. Active nodes come from
+      `effective_active_nodes` (includes item auto-activations). A `[LEGACY_DELETE]`
+      bridge keeps `chakra_state.charges` in sync for remaining legacy readers.
+    - `flush_charges_to_component` removed from the charge tick path; it stays
+      only in `pattern_runtime.consume_chakra_charge` and is tagged
+      `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]` pending consume-path migration.
+    - `ensure_actor_chakra_state` now has a single live caller: the annotated
+      `_get_chakra_state` legacy helper in `chakra_scene.py`.
+    - 636 tests pass.
+
+35. Phase 8 Legacy Removal Slice XXV (2026-04-18):
+    - New tests added to `test_chakra_items_state_bridge.py`:
+      - `test_restore_actor_chakra_component_snapshot_restores_component_and_state`:
+        verifies round-trip to/from dict, component active flags, charge values,
+        and `chakra_state` rebuild.
+      - `test_restore_actor_chakra_component_snapshot_fires_dirty_marks`: verifies
+        entity graph dirty mark fires on restore.
+    - 637 tests pass.
+
+36. Phase 8 Legacy Removal Slice XXVI (2026-04-18):
+    - Performance fix for active-pattern movement lag:
+      `tick_actor_chakra_charge(...)` no longer calls
+      `_mark_actor_chakra_dirty(...)` for routine charge updates while the
+      player is actively charging a live pattern.
+    - `scheduling.chakra_reducer_tick(...)` now treats the charging player as a
+      forced recompute path even when the actor subtree is graph-clean, so
+      reduced channels stay current without depending on per-tick dirty marks.
+    - The same charging path now skips `graph.mark_subtree_clean(actor_id)`,
+      removing the per-tick subtree BFS over the realized body hierarchy from
+      the movement hot path while a pattern is active.
+    - Added focused regressions for:
+      - charging ticks staying graph-clean
+      - non-charging decay still marking graph dirtiness conservatively
+      - reducer recomputing for a clean cached charging player
+    - Targeted tests green:
+      - `tests/test_chakra_items_state_bridge.py`
+      - `tests/test_scheduling.py`
+      - `tests/test_pattern_runtime.py`
+      - `tests/test_chakra_scene.py`
+
+37. Phase 8 Legacy Removal Slice XXVII (2026-04-18):
+    - Fixed a second active-pattern lag source in `rune_audio.sync_rune_drone(...)`.
+      The function already computed a pattern signature but ignored it and still
+      called `synth_rune_drone(...)` every frame while a rune existed.
+    - The sync path now returns early when the current rune signature is already
+      playing on the dedicated SFX lane.
+    - When the rune disappears, the cached `_rune_audio_sig` is now cleared so
+      the same pattern can be replayed correctly later instead of being
+      mistaken for an already-live loop.
+    - Added regressions for:
+      - skipping re-synthesis when the same rune signature is already playing
+      - replaying the same signature after a prior stop
+      - clearing cached signature when no rune pattern is present
+    - Targeted tests green:
+      - `tests/test_rune_audio.py`
+      - `tests/test_chakra_items_state_bridge.py`
+      - `tests/test_scheduling.py`
+      - `tests/test_pattern_runtime.py`
+      - `tests/test_chakra_scene.py`
+
+34. Phase 8 Legacy Removal Slice XXIV (2026-04-18):
+    - `chakras.tick_chakra_charge` and `chakras.consume_chakra_charge` deleted.
+      No production callers remained after Slices XIV and XV.
+    - Stale "Replaces ..." references cleaned from `tick_actor_chakra_charge`
+      and `consume_actor_chakra_charge` docstrings.
+
+33. Phase 8 Legacy Removal Slice XXIII (2026-04-18):
+    - `ensure_actor_chakra_state` deleted from `chakra_items.py`.
+    - `test_chakra_items_state_bridge.py`: four `ensure_actor_chakra_state`
+      tests replaced with equivalent `effective_chakra_state` tests
+      (`test_effective_chakra_state_uses_body_root_when_no_component`,
+      `test_effective_chakra_state_reads_component_root_node_id`,
+      `test_effective_chakra_state_reads_component_nodes`,
+      `test_effective_chakra_state_reads_component_compat_payload`).
+    - `test_pattern_runtime.py`: four redundant `ensure_actor_chakra_state`
+      patches removed (function no longer exists).
+    - `test_set_actor_chakra_charge_updates_state_and_component` renamed to
+      `test_set_actor_chakra_charge_writes_to_component` and updated to check
+      only the component (no bridge sync to `chakra_state.charges` remains).
+
+32. Phase 8 Legacy Removal Slice XXII (2026-04-18):
+    - `flush_charges_to_component` deleted from `chakra_items.py`.
+    - `test_flush_charges_to_component_marks_actor_graph_dirty_when_game_provided`
+      deleted from `test_chakra_items_state_bridge.py`.
+
+31. Phase 8 Legacy Removal Slice XXI (2026-04-18):
+    - Bridge syncs removed from all three charge-write helpers:
+      `tick_actor_chakra_charge`, `set_actor_chakra_charge`, and the inline
+      loop in `consume_actor_chakra_charge`.
+    - No production code reads `actor.chakra_state.charges` directly; all live
+      charge reads go through `effective_chakra_state` which builds charges
+      fresh from `ChakraComponent`.
+
+30. Phase 8 Legacy Removal Slice XX (2026-04-18):
+    - `chakra_scene.py` undo system fully migrated to `ChakraComponent` snapshots:
+      - `_push_undo`: snapshots `comp.to_dict()` (plain dict) instead of ChakraState.
+      - `_undo_last`: restores via `restore_actor_chakra_component_snapshot`
+        (new helper in `chakra_items.py`) which calls `ChakraComponent.from_dict`,
+        assigns the restored comp to the actor, rebuilds `chakra_state` from the
+        component, and fires dirty marks for all restored nodes.
+      - `_undo_stack` type changed from `List[ChakraState]` to `List[dict]`.
+      - `_snapshot_state` helper deleted (no longer needed).
+    - All `_get_actor_state()` non-undo callers migrated to
+      `effective_chakra_state(self.game, self._actor) or ChakraState()`:
+      `_apply_selection_action`, `_set_pattern_root`, `_enter_realign_mode`,
+      `_exit_realign_mode`, `_on_chakra_drag_start`, `_update_alignment_from_mouse`.
+    - `_toggle_chakra` migrated: `_get_chakra_state(actor)` replaced with
+      `effective_chakra_state(game, actor)`.
+    - Remaining `_get_chakra_state` calls at `_state_provider` fallback,
+      `_refresh_list_items` exception branch, and `_get_ui_state` exception
+      branch replaced with `effective_chakra_state(None/game, actor) or ChakraState()`.
+    - Scene `__init__` `ensure_actor_chakra_state` initializer removed.
+    - `_get_actor_state` and `_get_chakra_state` deleted.
+    - `ensure_actor_chakra_state` tagged `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`
+      — no production callers remain; only direct unit tests in
+      `test_chakra_items_state_bridge.py`.
+    - `test_chakra_scene.py` test for deleted `_get_chakra_state` replaced with
+      a test verifying `effective_chakra_state` returns a valid ChakraState.
+    - 636 tests pass.
+
+29. Phase 8 Legacy Removal Slice XIX (2026-04-18):
+    - All `_get_actor_state()` callers in chakra_scene undo path migrated.
+      (Merged into Slice XX above.)
+
+28. Phase 8 Legacy Removal Slice XVIII (2026-04-18):
+    - `restore_actor_chakra_component_snapshot(actor, snap_dict, *, game)` added
+      to `chakra_items.py` — restores a full `ChakraComponent` from a snapshot
+      dict, rebuilds the `ChakraState` view, and fires dirty marks.
+      (Merged into Slice XX above.)
+
+27. Phase 8 Legacy Removal Slice XVII (2026-04-18):
+    - `chakra_scene.py` undo-path `_get_chakra_state` call sites (lines ~1799,
+      ~2354, ~2608) annotated `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]` as
+      blocked on undo-system migration.  Annotation notes that migrating
+      `_push_undo`/`_pop_undo` to snapshot `ChakraComponent` would unblock
+      deleting `_get_chakra_state` entirely (Step 5).
+    - 636 tests pass.
+
+26. Phase 8 Legacy Removal Slice XVI (2026-04-18):
+    - `chakra_modifiers` in `pattern_runtime.py`: average-charge fallback
+      replaced — `chakra_system.get_average_charge(chakra_state)` replaced by
+      `chakra_items_system.get_actor_average_charge(self, actor)`, a new
+      component-backed helper in `chakra_items.py`.  `chakra_modifiers` no
+      longer needs `effective_chakra_state` as a guard.
+    - `get_actor_average_charge` reads from `ChakraComponent` via
+      `effective_active_nodes` + `get_node_charge`.
+    - 636 tests pass.
+
+25. Phase 8 Legacy Removal Slice XV (2026-04-18):
+    - `pattern_runtime.consume_chakra_charge` migrated: the
+      `chakra_system.consume_chakra_charge(chakra_state, amount)` +
+      `flush_charges_to_component` round-trip replaced by new helper
+      `consume_actor_chakra_charge(actor, amount, game)` in `chakra_items.py`.
+      ChakraComponent is now the write authority for the consume path.
+    - A `[LEGACY_DELETE]` bridge in `consume_actor_chakra_charge` keeps
+      `chakra_state.charges` in sync for any remaining legacy readers.
+    - `flush_charges_to_component` now has no production callers; tagged
+      `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`.
+    - `chakras.consume_chakra_charge` and `chakras.tick_chakra_charge` both
+      tagged `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]` — no production callers
+      remain.
+    - 636 tests pass.
 
 24. Phase 8 Legacy Removal Slice XIII (2026-04-18):
     - `game.py` `_unlockable_chakras_for_player`: `ensure_actor_chakra_state`

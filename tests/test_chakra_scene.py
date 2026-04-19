@@ -14,23 +14,28 @@ def _import_chakra_scene_module():
         return importlib.reload(chakra_scene_module)
 
 
-def test_get_chakra_state_prefers_cached_actor_state() -> None:
+def test_effective_chakra_state_returns_chakra_state_type() -> None:
+    """effective_chakra_state returns a ChakraState (or None) for any actor.
+
+    The concrete routing (cached vs component-backed) is tested in
+    test_chakra_items_state_bridge.py; this test just confirms chakra_scene
+    imports and calls through correctly without blowing up.
+    """
     chakra_scene_module = _import_chakra_scene_module()
-    cached_state = chakra_scene_module.ChakraState(
-        unlocked={"body", "arm.hand"},
-        active={"body"},
-        pattern_root="body",
+    from edgecaster.state.chakra_component import ChakraComponent, ChakraNode
+    from edgecaster.state.chakra_component import coerce_chakra_component
+
+    node = ChakraNode(node_id="body", kind="compat", active=True)
+    comp = ChakraComponent(root_node_id="body", nodes={"body": node})
+    actor = SimpleNamespace(
+        chakra_component=comp,
+        body_schema={"root": "body"},
+        chakra_state=None,
     )
-    actor = SimpleNamespace(chakra_state=cached_state)
 
-    with patch.object(
-        chakra_scene_module.chakra_items_system,
-        "ensure_actor_chakra_state",
-        side_effect=AssertionError("cached actor state should win before compat bootstrap"),
-    ):
-        state = chakra_scene_module._get_chakra_state(actor)
-
-    assert state is cached_state
+    state = chakra_scene_module.chakra_items_system.effective_chakra_state(None, actor)
+    assert state is not None
+    assert "body" in state.active
 
 
 def test_pattern_preview_widget_uses_game_context_for_entity_path() -> None:

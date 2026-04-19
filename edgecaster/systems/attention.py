@@ -1522,7 +1522,9 @@ def renderables_in_abs_rect(
                 pass
 
             try:
-                game.sync_attention_instantiation((ax0, ay0, ax1, ay1), cam_lod=float(cam_lod))
+                from edgecaster.systems import perf_profiler
+                with perf_profiler.measure(game, "render.sync_attention"):
+                    game.sync_attention_instantiation((ax0, ay0, ax1, ay1), cam_lod=float(cam_lod))
             except Exception:
                 # Never fail rendering because attention sync hiccuped.
                 pass

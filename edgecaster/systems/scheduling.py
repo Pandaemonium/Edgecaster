@@ -53,27 +53,32 @@ def advance_time(
     - Pattern motion
     """
     
+    from edgecaster.systems import perf_profiler
+
     # Yoga safety net: ensure staged ontology matches last known view before ticking
-    try:
-        abs_rect = getattr(game, "_last_view_abs_rect", None)
-        cam_lod = getattr(game, "_last_view_cam_lod", None)
-        if abs_rect is not None and cam_lod is not None:
-            game.sync_attention_instantiation(abs_rect, cam_lod=float(cam_lod))
-    except Exception:
-        pass
+    with perf_profiler.measure(game, "tick.sync_attention"):
+        try:
+            abs_rect = getattr(game, "_last_view_abs_rect", None)
+            cam_lod = getattr(game, "_last_view_cam_lod", None)
+            if abs_rect is not None and cam_lod is not None:
+                game.sync_attention_instantiation(abs_rect, cam_lod=float(cam_lod))
+        except Exception:
+            pass
 
     # Import here to avoid circular imports
     from edgecaster.patterns import motion as pattern_motion
 
     target = level.current_tick + delta
-    while level.events and level.events[0][0] <= target:
-        tick, _, action = heapq.heappop(level.events)
-        level.current_tick = tick
-        action()
+    with perf_profiler.measure(game, "tick.scheduled_events"):
+        while level.events and level.events[0][0] <= target:
+            tick, _, action = heapq.heappop(level.events)
+            level.current_tick = tick
+            action()
     level.current_tick = target
 
     # Cooldowns tick down (always, for active zones)
-    cooldown_tick(game, level, delta)
+    with perf_profiler.measure(game, "tick.cooldowns"):
+        cooldown_tick(game, level, delta)
     # Cleanup deferred (telegraphed) actions whose caster has died.
     from edgecaster.systems import deferred as _deferred_mod
     _deferred_mod.tick_deferred_actions(level)
@@ -90,33 +95,39 @@ def advance_time(
             level.activation_points = []
 
     # FOV update if needed
-    if level.need_fov:
-        game._update_fov(level)
+    with perf_profiler.measure(game, "tick.fov"):
+        if level.need_fov:
+            game._update_fov(level)
 
     # Advance the Lorenz aura in game-time
-    game._advance_lorenz(level, delta)
+    with perf_profiler.measure(game, "tick.lorenz"):
+        game._advance_lorenz(level, delta)
 
     # Coherence drain based on vertices
     coherence_tick(game, level, delta)
 
     # Chakra charge + resonance tick
-    chakra_charge_tick(game, level, delta)
+    with perf_profiler.measure(game, "tick.chakra_charge"):
+        chakra_charge_tick(game, level, delta)
 
     # R3: Channel reducer pass — compute effective channel values for actors.
     # Runs after charge flush so channel state is current before reduction.
-    chakra_reducer_tick(game, level)
+    with perf_profiler.measure(game, "tick.chakra_reducer"):
+        chakra_reducer_tick(game, level)
 
     # God system tick (favor decay + status cleanup)
-    try:
-        from edgecaster.systems import gods as gods_system
-        from edgecaster.systems import god_abilities as god_abilities_system
-        gods_system.tick_gods(game, delta)
-        god_abilities_system.tick_god_statuses(game, level, delta)
-    except Exception:
-        pass
+    with perf_profiler.measure(game, "tick.gods"):
+        try:
+            from edgecaster.systems import gods as gods_system
+            from edgecaster.systems import god_abilities as god_abilities_system
+            gods_system.tick_gods(game, delta)
+            god_abilities_system.tick_god_statuses(game, level, delta)
+        except Exception:
+            pass
 
     # Pattern motion tick
-    pattern_motion.step_motion(game, level, delta)
+    with perf_profiler.measure(game, "tick.pattern_motion"):
+        pattern_motion.step_motion(game, level, delta)
 
     # Acidic pattern damage (corrosive melt)
     acidic_pattern_tick(game, level)
@@ -197,6 +208,11 @@ def chakra_reducer_tick(game: "Game", level: "LevelState") -> None:
     except Exception:
         return
 
+    pattern = getattr(level, "pattern", None)
+    pattern_active = bool(pattern and getattr(pattern, "vertices", None))
+    player_id = getattr(game, "player_id", None)
+    graph = getattr(game, "entity_graph", None)
+
     for actor in list(level.actors.values()):
         raw_comp = getattr(actor, "chakra_component", None)
         if raw_comp is None:
@@ -206,12 +222,12 @@ def chakra_reducer_tick(game: "Game", level: "LevelState") -> None:
             comp = chakra_component_state.coerce_chakra_component(raw_comp, entity_id=actor_id)
             if not comp or not comp.nodes:
                 continue
-            if _actor_chakra_snapshot_is_clean(game, actor):
+            is_charging = pattern_active and getattr(actor, "id", None) == player_id
+            if not is_charging and _actor_chakra_snapshot_is_clean(game, actor):
                 continue
             effective = chakra_reducer_system.reduce_component(comp, rules)
             actor._chakra_effective_channels = effective
-            graph = getattr(game, "entity_graph", None)
-            if graph is not None and actor_id:
+            if graph is not None and actor_id and not is_charging:
                 graph.mark_subtree_clean(actor_id)
         except Exception:
             # Reduction failures must never interrupt the tick loop.
@@ -219,12 +235,11 @@ def chakra_reducer_tick(game: "Game", level: "LevelState") -> None:
 
 
 def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
-    """Update chakra charge for actors with chakra_state."""
+    """Update chakra charge for actors.  ChakraComponent is the write authority."""
     if delta <= 0:
         return
 
     try:
-        from edgecaster.systems import chakras as chakra_system
         from edgecaster.systems import chakra_items as chakra_items_system
     except Exception:
         return
@@ -233,8 +248,8 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
     charging = bool(getattr(level, "pattern", None) and level.pattern.vertices)
 
     for actor in level.actors.values():
-        chakra_state = getattr(actor, "chakra_state", None)
-        if chakra_state is None:
+        # Component is the write authority; skip actors without one.
+        if getattr(actor, "chakra_component", None) is None:
             continue
 
         # Only the player currently builds charge from the shared pattern.
@@ -246,14 +261,13 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
         except Exception:
             dex = 0
 
-        chakra_system.tick_chakra_charge(
-            chakra_state,
+        chakra_items_system.tick_actor_chakra_charge(
+            actor,
+            game,
             delta,
             charging=charging,
             dex=dex,
         )
-        # Phase 2B: push charge values into ChakraComponent (charges only, no full mirror).
-        chakra_items_system.flush_charges_to_component(actor, game=game)
 
 
 def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, interval: int) -> None:

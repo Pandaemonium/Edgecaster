@@ -193,11 +193,6 @@ def chakra_modifiers(self, actor_id: str):
     if actor is None:
         return None
 
-    # effective_chakra_state already falls back to ensure_actor_chakra_state internally.
-    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
-    if chakra_state is None:
-        return None
-
     try:
         from edgecaster.systems import chakras as chakra_system
     except Exception:
@@ -206,16 +201,14 @@ def chakra_modifiers(self, actor_id: str):
     # Prefer effective_active_nodes so item-granted temporary unlocks/auto-activations
     # feed both resonance-bonus detection and charge averaging, keeping the two reads
     # consistent with each other.
-    try:
-        active_node_ids = chakra_items_system.effective_active_nodes(self, actor)
-    except Exception:
-        active_node_ids = set(getattr(chakra_state, "active", set()) or set())
+    active_node_ids = chakra_items_system.effective_active_nodes(self, actor)
 
     bonuses = chakra_system.check_resonance_bonuses_from_active_nodes(active_node_ids)
     mods = chakra_system.get_resonance_modifiers(bonuses)
     avg_charge = _average_reduced_charge(actor, active_node_ids)
     if avg_charge is None:
-        avg_charge = chakra_system.get_average_charge(chakra_state)
+        # Reducer snapshot absent — read directly from ChakraComponent.
+        avg_charge = chakra_items_system.get_actor_average_charge(self, actor)
     mods = chakra_system.apply_charge_to_modifiers(mods, avg_charge)
     return mods
 
@@ -230,17 +223,7 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
         actor = None
     if actor is None:
         return
-    # effective_chakra_state already falls back to ensure_actor_chakra_state internally.
-    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
-    if chakra_state is None:
-        return
-    try:
-        from edgecaster.systems import chakras as chakra_system
-    except Exception:
-        return
-    chakra_system.consume_chakra_charge(chakra_state, amount)
-    # Phase 2B: push charge values into ChakraComponent (charges only, no full mirror).
-    chakra_items_system.flush_charges_to_component(actor, game=self)
+    chakra_items_system.consume_actor_chakra_charge(actor, amount, game=self)
 
 
 def act_chakra(self, actor_id: str) -> None:
@@ -255,7 +238,6 @@ def act_chakra(self, actor_id: str) -> None:
         return
 
     # Runtime chakra view includes temporary equipped-item unlocks/auto-activations.
-    # effective_chakra_state already falls back to ensure_actor_chakra_state internally.
     chakra_state = chakra_items_system.effective_chakra_state(self, actor)
     if chakra_state is None:
         self.log.add("No chakra state found.")

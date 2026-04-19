@@ -172,11 +172,10 @@ def default_core_component(
 # component.nodes directly so every write follows consistent node
 # initialization and the presence-equals-unlocked invariant is upheld.
 #
-# Unification note (Phase 2B):
-# Writing through these helpers makes ChakraComponent the primary store.
-# ChakraState becomes a derived cache: rebuilt from the component by
-# ensure_actor_chakra_state when absent, and kept in sync by the mutation
-# wrappers in chakra_items.py after each write.
+# Unification note (Phase 2B → Phase 8):
+# Writing through these helpers makes ChakraComponent the sole write authority.
+# ChakraState is now a read-only derived view: rebuilt on demand by
+# effective_chakra_state via _rebuild_chakra_state_from_component.
 # =============================================================================
 
 def unlock_node(comp: ChakraComponent, node_id: str, *, active: bool = False) -> bool:

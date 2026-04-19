@@ -1978,14 +1978,6 @@ def get_resonance_modifiers(bonuses: List[str]) -> ChakraModifiers:
     return mods
 
 
-def get_average_charge(chakra_state: ChakraState, nodes: Optional[Set[str]] = None) -> float:
-    """Average charge across the given nodes (defaults to active)."""
-    targets = nodes or chakra_state.active
-    if not targets:
-        return 0.0
-    vals = [float(chakra_state.charges.get(n, 0.0)) for n in targets]
-    return sum(vals) / max(1, len(vals))
-
 
 def apply_charge_to_modifiers(mods: ChakraModifiers, avg_charge: float) -> ChakraModifiers:
     """Apply charge-based scaling to modifiers (returns new object)."""
@@ -2000,61 +1992,3 @@ def apply_charge_to_modifiers(mods: ChakraModifiers, avg_charge: float) -> Chakr
     return out
 
 
-def tick_chakra_charge(
-    chakra_state: ChakraState,
-    delta: int,
-    *,
-    charging: bool,
-    dex: int = 0,
-) -> None:
-    """Update chakra charge values in-place."""
-    if delta <= 0:
-        return
-
-    active_nodes = set(getattr(chakra_state, "active", set()) or set())
-    bonuses = check_resonance_bonuses_from_active_nodes(active_nodes)
-    mods = get_resonance_modifiers(bonuses)
-
-    gain = CHARGE_GAIN_PER_TICK * mods.charge_gain_mult
-    decay = CHARGE_DECAY_PER_TICK
-    if dex > 0:
-        gain *= 1.0 + float(dex) * 0.01
-
-    cap = CHARGE_MAX_BASE + mods.charge_cap_bonus
-
-    # Ensure dictionary exists
-    if chakra_state.charges is None:
-        chakra_state.charges = {}
-
-    if charging:
-        for node_id in chakra_state.active:
-            cur = float(chakra_state.charges.get(node_id, 0.0))
-            chakra_state.charges[node_id] = min(cap, cur + gain * delta)
-        # Decay inactive nodes to zero
-        for node_id in list(chakra_state.charges.keys()):
-            if node_id not in chakra_state.active:
-                cur = float(chakra_state.charges.get(node_id, 0.0))
-                cur = max(0.0, cur - decay * delta)
-                chakra_state.charges[node_id] = cur
-    else:
-        # No charging state: decay all
-        for node_id in list(chakra_state.charges.keys()):
-            cur = float(chakra_state.charges.get(node_id, 0.0))
-            cur = max(0.0, cur - decay * delta)
-            chakra_state.charges[node_id] = cur
-
-
-def consume_chakra_charge(
-    chakra_state: ChakraState,
-    amount: float,
-    nodes: Optional[Set[str]] = None,
-) -> None:
-    """Consume charge from the given nodes (defaults to active)."""
-    if amount <= 0:
-        return
-    targets = nodes or chakra_state.active
-    if not targets:
-        return
-    for node_id in targets:
-        cur = float(chakra_state.charges.get(node_id, 0.0))
-        chakra_state.charges[node_id] = max(0.0, cur - amount)

@@ -954,6 +954,10 @@ def sync_rune_drone(game, audio_manager, *, cfg: RuneAudioConfig | None = None) 
             audio_manager.stop_sfx("rune_drone")
         except Exception:
             pass
+        try:
+            setattr(game, "_rune_audio_sig", None)
+        except Exception:
+            pass
         return
 
     verts = getattr(pattern, "vertices", None) or []
@@ -963,10 +967,24 @@ def sync_rune_drone(game, audio_manager, *, cfg: RuneAudioConfig | None = None) 
             audio_manager.stop_sfx("rune_drone")
         except Exception:
             pass
+        try:
+            setattr(game, "_rune_audio_sig", None)
+        except Exception:
+            pass
         return
 
     sig = _signature(pattern)
     prev = getattr(game, "_rune_audio_sig", None)
+    playing_sig = None
+    try:
+        playing_sig = (getattr(audio_manager, "_sfx_playing_sig", None) or {}).get("rune_drone")
+    except Exception:
+        playing_sig = None
+
+    # Keep the per-frame sync actually cheap: if the current rune signature is
+    # already playing, do not resynthesize the drone again.
+    if prev == sig and playing_sig == sig:
+        return
 
 
     snd, sig2 = synth_rune_drone(pattern, cfg)
@@ -975,6 +993,10 @@ def sync_rune_drone(game, audio_manager, *, cfg: RuneAudioConfig | None = None) 
     if snd is None:
         try:
             audio_manager.stop_sfx("rune_drone")
+        except Exception:
+            pass
+        try:
+            setattr(game, "_rune_audio_sig", None)
         except Exception:
             pass
         return

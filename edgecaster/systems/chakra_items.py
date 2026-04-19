@@ -345,53 +345,6 @@ def _remove_component_node(comp: Any, node_id: str) -> None:
         edges.pop(edge_id, None)
 
 
-# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-# The ChakraState facade below exists for actor-centric callers that still
-# expect cached unlocked/active sets. Once gameplay/UI code reads directly from
-# ChakraComponent plus actor/body entity queries, delete these facade helpers
-# and the compat_* payload mirrors they maintain.
-def ensure_actor_chakra_state(actor: Any) -> Any:
-    """Return legacy ChakraState, creating a baseline state when missing."""
-    # Unification note: this is a compatibility adapter for actor-only callers.
-    # The long-term target is ChakraComponent-backed runtime state for every
-    # entity, with ChakraState surviving only as a thin facade or disappearing.
-    state = getattr(actor, "chakra_state", None)
-    if state is not None:
-        return state
-
-    try:
-        from edgecaster.systems.chakras import ChakraState
-    except Exception:
-        return None
-
-    comp = _coerce_actor_chakra_component(actor)
-    root = _baseline_chakra_root(actor)
-    unlocked, active = _component_node_sets(actor)
-    charges = _component_charge_map(comp)
-    alignments, generators, pattern_root = _component_state_overrides(comp)
-    unlocked.add(root)
-    if not active:
-        active = {root}
-    else:
-        active.add(root)
-    if pattern_root and pattern_root not in active:
-        pattern_root = None
-    state = ChakraState(
-        unlocked=set(unlocked),
-        active=set(active),
-        alignments=dict(alignments),
-        generators=dict(generators),
-        charges=dict(charges),
-        pattern_root=pattern_root,
-    )
-    try:
-        actor.chakra_state = state
-    except Exception:
-        pass
-    # Phase 2B: component is already the source here; no sync needed.
-    return state
-
-
 def _rebuild_chakra_state_from_component(actor: Any) -> Any:
     """Build a fresh ChakraState view from ChakraComponent data when available.
 
@@ -433,13 +386,11 @@ def _rebuild_chakra_state_from_component(actor: Any) -> Any:
 def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> None:
     """Apply a full ChakraState snapshot to the actor's ChakraComponent.
 
-    This is the forward-looking replacement for sync_actor_chakra_state in
-    paths that must apply a complete state (e.g. undo/redo in the chakra
-    scene, character-class initialisation).  It routes through the public
-    wrapper functions so dirty-flag propagation happens correctly.
-
-    Unlike sync_actor_chakra_state, this function does NOT mutate the state
-    object itself — it reads from `state` and writes to the component.
+    Used for character-class initialisation paths that produce a ChakraState
+    object to apply (e.g. Monk setup from ``chakra_init`` dict).  Routes
+    through the public wrapper functions so dirty-flag propagation happens
+    correctly.  Does NOT mutate ``state`` — reads from it and writes to the
+    component.
     """
     if state is None:
         return
@@ -552,37 +503,82 @@ def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> 
     tags["compat_generators"] = gens_out
 
 
-def flush_charges_to_component(actor: Any, game: Any = None) -> None:
-    """Push current ChakraState.charges into ChakraComponent after a tick or consume.
+def tick_actor_chakra_charge(
+    actor: Any,
+    game: Any,
+    delta: int,
+    *,
+    charging: bool,
+    dex: int = 0,
+) -> None:
+    """Component-backed charge tick.  ChakraComponent is the read/write authority.
 
-    Call this after tick_chakra_charge or consume_chakra_charge mutate
-    state.charges in place. Replaces sync_actor_chakra_state in the hot
-    tick and consume paths — charge writes only, no full state mirror.
+    Active nodes are determined from ``effective_active_nodes`` so item
+    auto-activations are included.
 
-    [ENTITY_CHAKRA][PHASE_2B]
+    [ENTITY_CHAKRA][PHASE_3]
     """
-    state = getattr(actor, "chakra_state", None)
-    if state is None:
-        return
-    charges_raw = getattr(state, "charges", {}) or {}
-    if not isinstance(charges_raw, dict):
+    if delta <= 0:
         return
     comp = _coerce_actor_chakra_component(actor)
     if comp is None:
         return
-    dirtied_node_ids: set[str] = set()
-    for key, value in charges_raw.items():
-        nid = _normalize_node_id(str(key))
-        if not nid:
-            continue
-        try:
-            chakra_component_state.set_node_charge(comp, nid, float(value))
-            dirtied_node_ids.add(nid)
-        except Exception:
-            continue
-    if game is not None:
-        for node_id in sorted(dirtied_node_ids):
-            _mark_actor_chakra_dirty(game, actor, node_id)
+
+    try:
+        from edgecaster.systems.chakras import (
+            check_resonance_bonuses_from_active_nodes,
+            get_resonance_modifiers,
+            CHARGE_GAIN_PER_TICK,
+            CHARGE_DECAY_PER_TICK,
+            CHARGE_MAX_BASE,
+        )
+        from edgecaster.state import chakra_component as chakra_component_state
+    except Exception:
+        return
+
+    active = effective_active_nodes(game, actor)
+    bonuses = check_resonance_bonuses_from_active_nodes(active)
+    mods = get_resonance_modifiers(bonuses)
+
+    gain = CHARGE_GAIN_PER_TICK * mods.charge_gain_mult
+    decay = CHARGE_DECAY_PER_TICK
+    if dex > 0:
+        gain *= 1.0 + float(dex) * 0.01
+    cap = CHARGE_MAX_BASE + mods.charge_cap_bonus
+
+    # Normalize active IDs to the form used in component nodes.
+    normalized_active = _normalize_nodes(active)
+
+    dirtied: set[str] = set()
+    all_node_ids = list(getattr(comp, "nodes", {}).keys())
+    if charging:
+        for nid in normalized_active:
+            cur = chakra_component_state.get_node_charge(comp, nid)
+            new_val = min(cap, cur + gain * delta)
+            chakra_component_state.set_node_charge(comp, nid, new_val)
+            dirtied.add(nid)
+        # Decay nodes not in the active set.
+        for nid in all_node_ids:
+            if nid not in normalized_active:
+                cur = chakra_component_state.get_node_charge(comp, nid)
+                if cur > 0.0:
+                    new_val = max(0.0, cur - decay * delta)
+                    chakra_component_state.set_node_charge(comp, nid, new_val)
+                    dirtied.add(nid)
+    else:
+        # No charging state: decay all nodes.
+        for nid in all_node_ids:
+            cur = chakra_component_state.get_node_charge(comp, nid)
+            if cur > 0.0:
+                new_val = max(0.0, cur - decay * delta)
+                chakra_component_state.set_node_charge(comp, nid, new_val)
+                dirtied.add(nid)
+
+    # Active pattern channeling already forces reducer recomputation every tick,
+    # so re-dirtying the expanded body subtree here only adds graph-walk churn.
+    if game is not None and not charging:
+        for nid in sorted(dirtied):
+            _mark_actor_chakra_dirty(game, actor, nid)
 
 
 def set_actor_chakra_charge(actor: Any, node_id: str, amount: float, game: Any = None) -> None:
@@ -594,14 +590,84 @@ def set_actor_chakra_charge(actor: Any, node_id: str, amount: float, game: Any =
     if comp is None:
         return
     chakra_component_state.set_node_charge(comp, nid, float(amount))
-    # Keep cached ChakraState in sync when present.
-    state = getattr(actor, "chakra_state", None)
-    if state is not None:
-        charges = getattr(state, "charges", None)
-        if isinstance(charges, dict):
-            charges[nid] = float(amount)
     if game is not None:
         _mark_actor_chakra_dirty(game, actor, nid)
+
+
+def restore_actor_chakra_component_snapshot(
+    actor: Any,
+    snap_dict: dict,
+    *,
+    game: Any = None,
+) -> None:
+    """Restore a full ChakraComponent from a snapshot dict.
+
+    Used by the chakra-scene undo system.  Assigns the restored component to
+    the actor, rebuilds the ChakraState view, and fires dirty marks for every
+    node in the restored component so the renderer refreshes.
+
+    [ENTITY_CHAKRA][PHASE_3]
+    """
+    try:
+        from edgecaster.state.chakra_component import ChakraComponent as _CC
+        restored = _CC.from_dict(snap_dict)
+        actor.chakra_component = restored
+    except Exception:
+        return
+    state = _rebuild_chakra_state_from_component(actor)
+    if state is not None:
+        try:
+            actor.chakra_state = state
+        except Exception:
+            pass
+    if game is not None:
+        try:
+            nodes = getattr(restored, "nodes", None)
+            if isinstance(nodes, dict):
+                for nid in sorted(nodes):
+                    _mark_actor_chakra_dirty(game, actor, nid)
+        except Exception:
+            pass
+
+
+def consume_actor_chakra_charge(actor: Any, amount: float, game: Any = None) -> None:
+    """Deduct ``amount`` from every active chakra node.  ChakraComponent is the write authority.
+
+    [ENTITY_CHAKRA][PHASE_3]
+    """
+    if amount <= 0:
+        return
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
+        return
+    active = effective_active_nodes(game, actor)
+    if not active:
+        return
+    normalized_active = _normalize_nodes(active)
+    for nid in normalized_active:
+        cur = chakra_component_state.get_node_charge(comp, nid)
+        new_val = max(0.0, cur - amount)
+        chakra_component_state.set_node_charge(comp, nid, new_val)
+        if game is not None:
+            _mark_actor_chakra_dirty(game, actor, nid)
+
+
+def get_actor_average_charge(game: Any, actor: Any) -> float:
+    """Return average charge across all active nodes, reading from ChakraComponent.
+
+    Used as a component-backed fallback when the reducer snapshot is absent.
+
+    [ENTITY_CHAKRA][PHASE_3]
+    """
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
+        return 0.0
+    active = effective_active_nodes(game, actor)
+    if not active:
+        return 0.0
+    normalized_active = _normalize_nodes(active)
+    vals = [chakra_component_state.get_node_charge(comp, nid) for nid in normalized_active]
+    return sum(vals) / max(1, len(vals))
 
 
 def _write_active_to_body_node_entity(game: Any, actor: Any, nid: str, *, active: bool) -> None:
@@ -783,21 +849,31 @@ def auto_active_nodes(game: Any, actor_id: str) -> set[str]:
 
 
 def effective_unlocked_nodes(game: Any, actor: Any) -> set[str]:
-    """Return actor unlocked chakras including temporary equipped unlocks."""
-    state = _rebuild_chakra_state_from_component(actor)
-    if state is None:
-        state = ensure_actor_chakra_state(actor)
-    base = _normalize_nodes(getattr(state, "unlocked", set()) or set())
-    base.update(temporary_unlocked_nodes(game, str(getattr(actor, "id", ""))))
-    return base
+    """Return actor unlocked chakras including temporary equipped unlocks.
+
+    Reads directly from the component node list rather than building a full
+    ChakraState, so this is safe to call on hot paths like the per-tick charge
+    loop without per-tick ChakraState allocation overhead.
+    """
+    unlocked, _ = _component_node_sets(actor)
+    root = _baseline_chakra_root(actor)
+    if root:
+        unlocked.add(root)
+    unlocked.update(temporary_unlocked_nodes(game, str(getattr(actor, "id", ""))))
+    return unlocked
 
 
 def effective_active_nodes(game: Any, actor: Any) -> set[str]:
-    """Return active chakras including explicit item auto-activations."""
-    state = _rebuild_chakra_state_from_component(actor)
-    if state is None:
-        state = ensure_actor_chakra_state(actor)
-    active = _normalize_nodes(getattr(state, "active", set()) or set())
+    """Return active chakras including explicit item auto-activations.
+
+    Reads directly from the component node list rather than building a full
+    ChakraState, so this is safe to call on hot paths like the per-tick charge
+    loop without per-tick ChakraState allocation overhead.
+    """
+    _, active = _component_node_sets(actor)
+    root = _baseline_chakra_root(actor)
+    if root:
+        active.add(root)
     active.update(auto_active_nodes(game, str(getattr(actor, "id", ""))))
     return active
 
@@ -818,17 +894,23 @@ def effective_chakra_state(game: Any, actor: Any) -> Any:
     # state. The final version should build the effective view from graph edges
     # plus ChakraComponent channels so items, limbs, buildings, and sites all
     # use the same evaluation path.
+    # _rebuild_chakra_state_from_component always returns a non-None state in
+    # normal operation. See effective_unlocked_nodes for the reasoning.
     state = _rebuild_chakra_state_from_component(actor)
-    if state is None:
-        state = ensure_actor_chakra_state(actor)
     if state is None:
         return None
 
     actor_id = str(getattr(actor, "id", ""))
     base_unlocked = _normalize_nodes(getattr(state, "unlocked", set()) or set())
     base_active = _normalize_nodes(getattr(state, "active", set()) or set())
-    unlocked = effective_unlocked_nodes(game, actor)
-    active = effective_active_nodes(game, actor)
+
+    # Layer item effects on top of the base state.  Avoid calling
+    # effective_unlocked_nodes / effective_active_nodes here — those would each
+    # call _component_node_sets again, tripling the node-iteration cost.
+    unlocked = set(base_unlocked)
+    unlocked.update(temporary_unlocked_nodes(game, actor_id))
+    active = set(base_active)
+    active.update(auto_active_nodes(game, actor_id))
     # Active must always be a subset of unlocked in the effective view.
     unlocked.update(active)
 
