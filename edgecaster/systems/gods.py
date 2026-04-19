@@ -279,10 +279,7 @@ def sync_all_god_abilities(game: "Game") -> None:
         player = level.actors.get(game.player_id)
         if player is None or not getattr(player, "alive", False):
             return
-        chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
-        if chakra_state is None:
-            return
-        active = set(chakra_state.active)
+        active = chakra_items_system.effective_active_nodes(game, player)
     except Exception:
         return
 

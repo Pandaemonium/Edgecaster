@@ -21,6 +21,7 @@ Supersedes: none
 
 - `test_pattern_ops.py`
 - `test_pattern_runtime.py`
+- `test_chakra_scene.py`
 - `test_chakra_component.py`
 - `test_chakra_items_state_bridge.py`
 - `test_chakra_unlock_queries.py`

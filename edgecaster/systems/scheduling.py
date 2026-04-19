@@ -233,7 +233,7 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
     charging = bool(getattr(level, "pattern", None) and level.pattern.vertices)
 
     for actor in level.actors.values():
-        chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
+        chakra_state = getattr(actor, "chakra_state", None)
         if chakra_state is None:
             continue
 

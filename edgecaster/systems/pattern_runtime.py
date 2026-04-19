@@ -193,7 +193,8 @@ def chakra_modifiers(self, actor_id: str):
     if actor is None:
         return None
 
-    chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
+    # effective_chakra_state already falls back to ensure_actor_chakra_state internally.
+    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
     if chakra_state is None:
         return None
 
@@ -229,7 +230,8 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
         actor = None
     if actor is None:
         return
-    chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
+    # effective_chakra_state already falls back to ensure_actor_chakra_state internally.
+    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
     if chakra_state is None:
         return
     try:
@@ -252,29 +254,31 @@ def act_chakra(self, actor_id: str) -> None:
         self.log.add("No pattern to modify. Place a terminus first.")
         return
 
-    stored_chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
-    if stored_chakra_state is None:
+    # Runtime chakra view includes temporary equipped-item unlocks/auto-activations.
+    # effective_chakra_state already falls back to ensure_actor_chakra_state internally.
+    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
+    if chakra_state is None:
         self.log.add("No chakra state found.")
         return
 
-    # Runtime chakra view includes temporary equipped-item unlocks/auto-activations.
-    chakra_state = chakra_items_system.effective_chakra_state(self, actor)
-    if chakra_state is None:
-        chakra_state = stored_chakra_state
-
     try:
-        from edgecaster.prototypes import resolve_body_schema
         from edgecaster.systems.chakras import build_chakra_generator_seed
     except Exception:
         self.log.add("Could not import chakra modules.")
         return
 
-    # Best-effort schema resolve; entity-tree path in build_chakra_generator_seed
-    # handles actors that have a chakra_component but no resolvable schema.
-    try:
-        body_schema = resolve_body_schema(actor)
-    except Exception:
-        body_schema = {}
+    # Component-backed actors should stay on the entity/body runtime path and
+    # avoid paying the authored-schema resolve cost on every cast.  Schema is
+    # still the fallback for pre-runtime/test actors that do not yet have a
+    # realized chakra component.
+    body_schema = {}
+    if getattr(actor, "chakra_component", None) is None:
+        try:
+            from edgecaster.prototypes import resolve_body_schema
+
+            body_schema = resolve_body_schema(actor)
+        except Exception:
+            body_schema = {}
 
     if not (body_schema or {}).get("nodes") and getattr(actor, "chakra_component", None) is None:
         self.log.add("No body schema to generate pattern from.")

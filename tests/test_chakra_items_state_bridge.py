@@ -39,7 +39,7 @@ def test_ensure_actor_chakra_state_falls_back_to_component_root() -> None:
     assert "ent.test.core" in state.active
 
 
-def test_effective_active_nodes_bootstraps_when_missing_state() -> None:
+def test_effective_active_nodes_works_without_cached_state_bootstrap() -> None:
     actor = SimpleNamespace(
         id="actor:test:3",
         body_schema={"root": "body", "nodes": {"body": {}}},
@@ -50,7 +50,7 @@ def test_effective_active_nodes_bootstraps_when_missing_state() -> None:
 
     active = chakra_items_system.effective_active_nodes(game, actor)
     assert "body" in active
-    assert getattr(actor, "chakra_state", None) is not None
+    assert getattr(actor, "chakra_state", None) is None
 
 
 def test_ensure_actor_chakra_state_reads_component_nodes() -> None:
@@ -99,6 +99,45 @@ def test_ensure_actor_chakra_state_reads_component_compat_payload() -> None:
     )
     state = chakra_items_system.ensure_actor_chakra_state(actor)
     assert state is not None
+    assert state.charges.get("body") == 0.25
+    assert state.charges.get("arm.hand") == 0.75
+    assert state.pattern_root == "body"
+    assert state.alignments.get("arm.hand") == (0.1, -0.2)
+    assert state.generators.get("arm.hand") == "koch"
+
+
+def test_effective_chakra_state_prefers_component_view_over_stale_cached_state() -> None:
+    actor = SimpleNamespace(
+        id="actor:test:5b",
+        entity_id="actor:test:5b",
+        body_schema={"root": "body"},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={
+                "body": ChakraNode(node_id="body", active=True, channels={"charge": 0.25}),
+                "arm.hand": ChakraNode(node_id="arm.hand", active=False, channels={"charge": 0.75}),
+            },
+            tags={
+                "compat_pattern_root": "body",
+                "compat_alignments": {"arm.hand": [0.1, -0.2]},
+                "compat_generators": {"arm.hand": "koch"},
+            },
+        ),
+        chakra_state=ChakraState(
+            unlocked={"body", "stale.node"},
+            active={"body", "stale.node"},
+            charges={"stale.node": 1.0},
+            pattern_root="stale.node",
+        ),
+    )
+    game = SimpleNamespace(get_inventory=lambda _actor_id: [])
+
+    state = chakra_items_system.effective_chakra_state(game, actor)
+
+    assert state is not None
+    assert "arm.hand" in state.unlocked
+    assert "arm.hand" not in state.active
+    assert "stale.node" not in state.unlocked
     assert state.charges.get("body") == 0.25
     assert state.charges.get("arm.hand") == 0.75
     assert state.pattern_root == "body"

@@ -1310,6 +1310,172 @@ class ChakraGeneratorSeed:
     base_len: float
 
 
+def _build_seed_from_realized_body_tree(
+    chakra_state: ChakraState,
+    *,
+    actor: Any,
+    game: Any,
+    require_root: bool,
+) -> Optional[ChakraGeneratorSeed]:
+    """Build a seed directly from the realized body-node entity tree.
+
+    This path keeps the live entity tree authoritative for geometry while still
+    using the explicit ChakraState argument for active-node and alignment
+    semantics. That avoids preview/runtime drift while the actor-side
+    ChakraState facade is still being migrated away elsewhere.
+    """
+    if actor is None or game is None:
+        return None
+
+    graph = getattr(game, "entity_graph", None)
+    if graph is None:
+        return None
+
+    actor_id = str(getattr(actor, "entity_id", "") or getattr(actor, "id", "") or "").strip()
+    if not actor_id:
+        return None
+
+    try:
+        from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
+    except Exception:
+        return None
+
+    try:
+        root_child_ids = list(graph.get_children(actor_id, socket_id="body"))
+    except Exception:
+        root_child_ids = []
+    if not root_child_ids:
+        return None
+
+    alignments = getattr(chakra_state, "alignments", {}) or {}
+    if not isinstance(alignments, dict):
+        alignments = {}
+
+    positions_all: Dict[str, Vec2] = {}
+    full_edges: List[Tuple[str, str]] = []
+    queue = list(root_child_ids)
+    visited: Set[str] = set()
+
+    while queue:
+        entity_id = str(queue.pop(0))
+        if not entity_id or entity_id in visited:
+            continue
+        visited.add(entity_id)
+
+        try:
+            child_ids = list(graph.get_children(entity_id, socket_id="body"))
+        except Exception:
+            child_ids = []
+        queue.extend(child_ids)
+
+        runtime_obj = entity_lifecycle_system.find_runtime_entity(game, entity_id)
+        if runtime_obj is None:
+            continue
+
+        tags = getattr(runtime_obj, "tags", None) or {}
+        if not isinstance(tags, dict) or not tags.get("body_node"):
+            continue
+
+        full_id = str(tags.get("body_full_id", "") or "").strip()
+        if not full_id:
+            continue
+
+        pos: Optional[Vec2] = None
+        raw_float_pos = tags.get("body_float_pos")
+        if isinstance(raw_float_pos, (tuple, list)) and len(raw_float_pos) >= 2:
+            try:
+                pos = (float(raw_float_pos[0]), float(raw_float_pos[1]))
+            except Exception:
+                pos = None
+        if pos is None:
+            raw_abs_pos = getattr(runtime_obj, "abs_pos", None)
+            if isinstance(raw_abs_pos, (tuple, list)) and len(raw_abs_pos) >= 2:
+                try:
+                    pos = (float(raw_abs_pos[0]), float(raw_abs_pos[1]))
+                except Exception:
+                    pos = None
+        if pos is None:
+            continue
+
+        try:
+            local_scale = float(tags.get("body_local_scale", 1.0) or 1.0)
+        except Exception:
+            local_scale = 1.0
+
+        raw_align = alignments.get(full_id)
+        if isinstance(raw_align, (tuple, list)) and len(raw_align) >= 2:
+            try:
+                pos = (
+                    float(pos[0]) + float(raw_align[0]) * local_scale * 0.5,
+                    float(pos[1]) + float(raw_align[1]) * local_scale * 0.5,
+                )
+            except Exception:
+                pass
+
+        positions_all[full_id] = pos
+
+        parent_full_id = str(tags.get("body_parent_full_id", "") or "").strip()
+        if parent_full_id:
+            full_edges.append((parent_full_id, full_id))
+
+    if not positions_all:
+        return None
+
+    active_set = set(getattr(chakra_state, "active", set()) or set())
+    root_id = getattr(chakra_state, "pattern_root", None)
+    if root_id not in active_set:
+        if require_root:
+            raise ValueError("Select an active chakra as the pattern root first.")
+        active_sorted = sorted(active_set)
+        if not active_sorted:
+            raise ValueError("Need at least 2 active chakras to form a generator.")
+        root_id = active_sorted[0]
+
+    active_nodes, compact_edges = get_compact_active_graph(
+        full_edges,
+        active_set,
+        root_id=root_id,
+    )
+    positions = {
+        node_id: positions_all[node_id]
+        for node_id in active_nodes
+        if node_id in positions_all
+    }
+
+    if root_id not in positions:
+        raise ValueError("Pattern root not found in chakra pattern.")
+
+    candidates = [node_id for node_id in active_nodes if node_id != root_id and node_id in positions]
+    if not candidates:
+        raise ValueError("Need at least 2 connected chakras to form a generator.")
+
+    rx, ry = positions[root_id]
+
+    def _distance_squared(node_id: str) -> float:
+        px, py = positions[node_id]
+        dx = px - rx
+        dy = py - ry
+        return dx * dx + dy * dy
+
+    terminus_id = max(candidates, key=_distance_squared)
+    verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
+        positions,
+        compact_edges,
+        root_id=str(root_id),
+        terminus_id=str(terminus_id),
+    )
+    return ChakraGeneratorSeed(
+        positions=positions,
+        compact_edges=compact_edges,
+        root_id=str(root_id),
+        terminus_id=str(terminus_id),
+        verts=verts,
+        edges=edges,
+        node_order=node_order,
+        base_len=base_len,
+    )
+
+
 def build_chakra_generator_seed(
     body_schema: Dict[str, Any],
     chakra_state: ChakraState,
@@ -1327,6 +1493,26 @@ def build_chakra_generator_seed(
     - active compact graph extraction
     - normalized custom-graph conversion
     """
+    # Realized actor-body tree path: prefer body-node entities when available.
+    # This keeps runtime casts and the chakra-scene preview on the shared entity
+    # substrate, while still honoring the explicit ChakraState argument for
+    # active nodes, alignments, and pattern-root choice.
+    if actor is not None and game is not None:
+        try:
+            body_tree_seed = _build_seed_from_realized_body_tree(
+                chakra_state,
+                actor=actor,
+                game=game,
+                require_root=require_root,
+            )
+            if body_tree_seed is not None:
+                return body_tree_seed
+        except ValueError:
+            # If the live body tree cannot satisfy the request yet, keep falling
+            # through so generic component or schema-based fallback can still
+            # rescue partially migrated actors.
+            pass
+
     # Entity tree path: try query_normalized_pattern for entities whose
     # chakra_component carries positioned nodes.  For body-anatomy actors this
     # works when body nodes were expanded at spawn (Batch 1 A1) and the
@@ -1382,6 +1568,16 @@ def build_chakra_generator_seed(
                         )
                 except Exception:
                     pass
+
+    if not (body_schema or {}).get("nodes") and actor is not None:
+        try:
+            from edgecaster.prototypes import resolve_body_schema
+
+            resolved_schema = resolve_body_schema(actor)
+            if isinstance(resolved_schema, dict):
+                body_schema = resolved_schema
+        except Exception:
+            pass
 
     # Body-schema geometry path: fallback for contexts where the entity path
     # returns <2 active nodes (e.g. callers with no game context, pre-runtime

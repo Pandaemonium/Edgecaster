@@ -3152,9 +3152,8 @@ def _action_spinal_surge(game: Any, actor_id: str, **kwargs: Any) -> None:
         return
 
     # Recharge all active chakras to full (1.0).
-    chakra_state = chakra_items_system.ensure_actor_chakra_state(actor)
-    if chakra_state is None:
-        return
+    # set_actor_chakra_charge is defensive; no null-guard needed here since
+    # len(active) >= 3 already confirms the actor has an active chakra state.
     for node_id in active:
         chakra_items_system.set_actor_chakra_charge(actor, node_id, 1.0, game=game)
 

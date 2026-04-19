@@ -1,7 +1,7 @@
 Title: Spring Cleaning - Actionable Plan
 Purpose: track active cleanup, migration, and correctness work that should continue shaping near-term implementation.
 Status: active-plan
-Last verified: 2026-04-12
+Last verified: 2026-04-14
 Canonical for: active cleanup and refactor follow-up work
 Related docs: `vision_documents/the_yoga.txt`, `vision_documents/architecture.txt`, `vision_documents/entity_chakra_unification_master_plan.txt`, `vision_documents/documentation_review_plan.md`
 Related code: `edgecaster/`, `tests/`
@@ -1519,6 +1519,24 @@ PHASE 8 — LEGACY REMOVAL
   - Actor-centric helpers that cache unlocked/active sets as ChakraState.
   - Condition: delete once gameplay/UI code reads directly from
     ChakraComponent plus actor/body entity queries.
+  - Progress (2026-04-14, Slice VIII): gods.py and scheduling.py migrated off
+    ensure_actor_chakra_state. Remaining callers still include chakra_scene.py,
+    pattern_runtime.py, and other UI/gameplay sites.
+  - Progress (2026-04-18, Slice IX): pattern_runtime.py migrated — all three
+    direct calls replaced with effective_chakra_state (which already falls back
+    internally). chakra_scene.py _get_chakra_state helper annotated
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]; both schema-walk else-branches
+    annotated. Remaining direct callers: game.py (x2), dialogues.py (x3),
+    actions.py (x1), chakra_scene.py _get_chakra_state legacy helper (x1).
+    Inside effective_* wrappers in chakra_items.py: three intentional fallbacks.
+  - Progress (2026-04-18, Slice XIII): game.py (x2), dialogues.py (x3),
+    actions.py (x1) all migrated. Two were real migrations to
+    effective_chakra_state; four were unnecessary null-guards removed entirely
+    (unlock_actor_chakra and set_actor_chakra_charge are already defensive).
+    Only remaining live callers: three internal fallbacks in effective_* wrappers
+    in chakra_items.py, and the annotated _get_chakra_state legacy helper in
+    chakra_scene.py. The function is now effectively isolated to its own
+    wrapper chain.
 
 -------------------------------------------------------------------------------
 PROGRESS NOTES (2026-02-17)
@@ -2558,3 +2576,69 @@ Owner: Claude audit (2026-02-18)
     body_schema fast-path is for test doubles only.
   - 629 tests pass (no new tests needed; no test read actor.body_schema directly
     without a resolve_body_schema fallback).
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice IX - component-first runtime chakra reads (2026-04-18)
+  - Files: edgecaster/systems/chakra_items.py, edgecaster/systems/pattern_runtime.py,
+           tests/test_chakra_items_state_bridge.py, tests/test_pattern_runtime.py
+  - Added `_rebuild_chakra_state_from_component(actor)` in `chakra_items.py`.
+    Runtime read helpers (`effective_unlocked_nodes`, `effective_active_nodes`,
+    `effective_chakra_state`) now prefer a fresh ChakraComponent-backed view
+    before falling back to the cached `actor.chakra_state` bridge.
+  - `effective_active_nodes(...)` no longer needs to bootstrap and persist a
+    cached `actor.chakra_state` just to answer a runtime read; component state
+    can answer directly.
+  - `pattern_runtime.chakra_modifiers(...)` now prefers the effective component-
+    backed view for fallback charge averaging.
+  - `pattern_runtime.act_chakra(...)` now skips `resolve_body_schema(actor)` for
+    actors that already expose `chakra_component`, keeping casts on the
+    entity/body path unless they are actually schema-only fallback actors.
+  - Added regression coverage for:
+      - component view beating stale cached ChakraState data
+      - component-backed `act_chakra(...)` avoiding schema resolve
+  - Targeted tests green:
+      - `tests/test_chakra_items_state_bridge.py`
+      - `tests/test_pattern_runtime.py`
+      - `tests/test_entity_geometry.py`
+      - `tests/test_entity_body_expansion.py`
+      - `tests/test_gods.py`
+      - `tests/test_scheduling.py`
+      - `tests/test_game_refactor.py`
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice X - chakra scene preview uses live game context (2026-04-18)
+  - Files: edgecaster/scenes/chakra_scene.py, tests/test_chakra_scene.py, tests/INDEX.md
+  - `PatternPreviewWidget` now accepts `game` and ChakraSelectionScene passes the
+    live scene game through, so `_regenerate_pattern()` can actually stay on the
+    entity/component seed-builder path during normal gameplay.
+  - `_get_chakra_state(actor)` now prefers an existing cached `actor.chakra_state`
+    before falling back to `ensure_actor_chakra_state(...)`, which trims one more
+    unnecessary compat bootstrap from the scene read path.
+  - Added focused scene regressions for:
+      - cached scene state beating compat bootstrap
+      - preview widget using `game` and skipping `_get_body_schema(...)`
+  - Remaining ChakraScene legacy surface is narrower now:
+      - `_get_body_schema(...)`
+      - `_resolve_chakra_path(...)`
+      - `_rebuild_chakra_points_schema(...)`
+      - list/tooltip fallback branches that still walk authored schema when the
+        body-entity tree is unavailable
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Slice XI - body-tree seed builder + schema-on-demand fallback (2026-04-18)
+  - Files: edgecaster/systems/chakras.py, tests/test_entity_body_expansion.py
+  - Added `_build_seed_from_realized_body_tree(...)` so actor anatomy now
+    prefers the realized body-node entity tree for generator seed geometry.
+    This path uses the explicit ChakraState argument for active-node,
+    alignment, and pattern-root semantics instead of trying to infer those
+    choices back out of the compat layer.
+  - `build_chakra_generator_seed(...)` now tries the paths in this order:
+      1. realized body-node entity tree
+      2. generic component/query helper
+      3. authored body_schema fallback
+  - When callers pass `body_schema={}` for a component-backed actor and the
+    entity path cannot produce a usable seed yet, the helper now resolves the
+    authored schema on demand instead of failing with "Pattern root not found
+    in the chakra pattern."
+  - Added regressions for:
+      - expanded actors building a seed from realized body nodes with empty
+        schema input
+      - unexpanded actors recovering via schema-on-demand fallback when schema
+        input is omitted

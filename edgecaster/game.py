@@ -1141,7 +1141,7 @@ class Game:
         """Return currently unlockable chakra ids for the active player."""
         try:
             player = self._player()
-            chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
+            chakra_state = chakra_items_system.effective_chakra_state(self, player)
             if chakra_state is None:
                 return []
             return chakras_system.list_unlockable_chakras_for_entity(player, chakra_state)
@@ -1175,9 +1175,8 @@ class Game:
             node_id = unlockable[i]
             try:
                 p = g._player()
-                chakra_state = chakra_items_system.ensure_actor_chakra_state(p)
-                if chakra_state is None:
-                    return
+                # unlock_actor_chakra is defensive via _coerce_actor_chakra_component;
+                # no separate null-guard needed.
                 if chakra_items_system.unlock_actor_chakra(p, node_id, auto_activate=True, game=g):
                     display_name = chakras_system.chakra_display_name(node_id)
                     g.log.add(f"You awaken your {display_name} chakra.")

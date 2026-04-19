@@ -1,14 +1,14 @@
 Title: Edgecaster Architecture Guide
 Purpose: orient contributors and AI agents to the current code structure, responsibility boundaries, and major module ownership.
 Status: current-state reference
-Last verified: 2026-04-10
+Last verified: 2026-04-14
 Canonical for: current architecture map and responsibility boundaries
 Related docs: `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/map_generation_strategy.txt`, `ARCHITECTURE.md`
 Related code: `edgecaster/`, `tests/`
 Supersedes: none
 
 EDGECASTER ARCHITECTURE GUIDE
-Updated: 2026-02-06
+Updated: 2026-04-14
 
 This document orients new contributors to the current structure.
 Goal: keep responsibilities clean and make new features easy to add.
@@ -44,6 +44,10 @@ INVENTORY / LOOK SCENES (edgecaster/scenes/inventory_scene.py)
   2) Deep body zoom (subnode dive):
      - Double-click body nodes to "dive" (body -> arm -> hand -> finger...) with smooth camera center/scale animation.
      - Invariant: preview glyph/sprite and node skeleton must remain aligned across zoom depth.
+     - [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] This zoom path currently traverses
+       authored `body_schema` directly. Migration target: replace with entity-graph
+       geometry queries (`entity_body.py` / `entity_geometry.py`) so the body subtree
+       and the UI view share one authoritative layout source.
 
 - Key internal contract:
   - BodyViewState: single authoritative bundle of body-view camera state + projected node positions.
@@ -78,7 +82,16 @@ SYSTEMS (edgecaster/systems/)
 STATE (edgecaster/state/)
 - Dataclasses / persistent state containers (World, Actor, Entity, etc.).
 - `Entity.abs_pos` is canonical. `Entity.pos` is a loaded-zone/local cache.
-- `World` is a local tile cache for a loaded level, not the whole-world ontology.
+- `Entity.footprint_local` and `Entity.footprint_abs` are the canonical footprint fields
+  (float64 tile-coordinate rectangles). These replace point-based geometry for entities that
+  occupy area. `footprint_follows_pos` keeps them in sync with `abs_pos` automatically.
+- `World` is a local tile cache for a loaded level, not the whole-world ontology. Legacy
+  rectangular zones are cache/projection structures, not the ground truth for what exists.
+- The unified hierarchical entity graph (`edgecaster/state/entity_graph.py`) is the
+  write-first authority for containment and ownership relationships between entities.
+  Other parallel stores (zone entity dicts, inventory lists, attention bins) are transitional
+  caches that read from or are kept in sync with the graph; they are marked `[LEGACY_DELETE]`
+  and will be removed once graph queries are the sole authority path.
 - `POISpec` / `ABSRect` in `state/pois.py` are ABS-space truth for POI definitions.
 - `LevelState` still lives in `game.py` as a migration holdout rather than in `edgecaster/state/`.
 
@@ -185,6 +198,9 @@ Current concern map (authoritative):
   - `sync_attention_instantiation(...)` now short-circuits when the camera view and
     LoD are unchanged and no loaded level is `spatial_dirty`, which keeps the
     advance-time safety-net call from redoing the full realization walk every tick.
+  - [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] `AttentionCellStore` and the delegate
+    methods on `Game` are a transitional bridge. The end-state is a shared
+    realization/index path driven directly by entity-graph queries.
 - `edgecaster/systems/zones.py`
   - Mechanical zone/chunk transitions only (no gameplay rituals).
   - Explicit transitions (stairs/fast travel/edge wrap) now trigger a small prewarm slice around
@@ -192,6 +208,8 @@ Current concern map (authoritative):
 - `edgecaster/systems/poi_worldgen.py`
   - Runtime POI realization for loaded levels (POI structures, POI NPC spawns, lair/ruin content).
   - Owns `spawn_poi_contents`; `poi_spawning.py` facade deleted in Phase 8.
+  - Its orchestration logic currently sits outside the canonical entity-graph resolver and is
+    slated to be folded into the unified realization pipeline in a future phase.
 - `edgecaster/systems/ambient_spawns.py`
   - Active-window ambient hostile population maintenance (tier-aware top-up over time).
   - Called from `Game._advance_time` after per-level scheduling ticks.
@@ -260,13 +278,18 @@ Delegation note:
   `edgecaster/systems/entity_lifecycle.py` for expand/collapse and uses
   `AttentionCellStore`'s hierarchical rect index instead of the older
   single-level ABS bin grid.
+- `AttentionCellStore` and these delegate methods are transitional bridges
+  marked `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`.
 
 Key modules (non-exhaustive):
 - systems/actions.py: ActionDef registry (labels, cooldown, cost, etc.)
 - systems/action_runner.py: unified action execution (cooldowns, charges, confirmations, delay)
 - systems/scheduling.py: event queue and time advance helpers
 - systems/combat.py: attack resolution + on-death hooks
-- systems/inventory.py + systems/equipment.py: inventory, equip/unequip, stat mods
+- systems/inventory.py + systems/equipment.py: inventory, equip/unequip, stat mods.
+  `inventory.py` now queries the entity containment graph as the primary path and falls
+  back to legacy list storage for owners not yet in the graph. Flat list storage is a
+  `[LEGACY_DELETE]` bridge; the end-state is graph-authoritative containment queries only.
 - systems/equip_rules.py: item->slot compatibility policy (allowed/blocked slots, prefixes, kinds)
 - systems/pattern_ops.py: pattern placement, activation, and pattern-related effects
 - systems/targeting.py: aim prediction data (used by renderer only to draw)
@@ -299,13 +322,24 @@ Key modules (non-exhaustive):
 - systems/legendaries.py: legendary registry, lairs, POI discovery/rumors
 - systems/lorenz_aura.py: Strange Attractor aura simulation (game-side)
 - systems/lighting.py: light emission from entities (illumination, visibility)
-- systems/chakras.py: body-based chakra system for fractal pattern generation
+- systems/chakras.py: chakra unlock/activation logic, pattern generation
+  - [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] `ChakraState` (unlocked/active sets) is a
+    compatibility facade. Entity-centric callers should query `entity_geometry.py` and
+    `entity_body.py` directly; `ChakraState` will be removed once all callers migrate.
+  - [LEGACY_DELETE][ENTITY_CHAKRA][BODY_SCHEMA] Recursive body-schema readers inside
+    this module are a compatibility bridge; the entity graph backed by
+    `entity_body.py` is the forward path.
   - Runtime unlock queries now have a body-node-spec path
     (`list_unlockable_chakras_for_entity`) used by monk level-up and Chakra
     Sage unlock flows, while body-schema traversal remains as a compatibility
     path for editor/pre-runtime callers.
 - systems/chakra_effects.py: centralized chakra passive-rule evaluation
-- systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers)
+- systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers).
+  [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] `ensure_actor_chakra_state` and related
+  ChakraState facade helpers are marked for deletion; callers should migrate to
+  `effective_active_nodes`, `effective_chakra_state`, or direct ChakraComponent reads.
+  Runtime `effective_*` helpers now rebuild from `ChakraComponent` first instead of
+  depending on cached `actor.chakra_state` bootstrap side effects.
 - systems/chakra_reducer.py: [ENTITY_CHAKRA] channel reducer pipeline (R1-R3)
   - reduce_component(comp, rules, dirty_node_ids) computes effective channel values
     (mass, hp, coherence, resonance, corruption, flow, charge) per ChakraComponent node.
@@ -444,11 +478,24 @@ Lab / spell-forge hook:
 ===============================================================================
 11) CHAKRA SYSTEM (BODY-BASED PATTERN GENERATION)
 
+Architectural direction:
+- Every chakra IS an entity. The long-term model is that body nodes, chakra activations,
+  and their geometry are all first-class entities in the unified entity graph; there is no
+  separate "chakra ontology." ChakraComponent records are a migration/cache structure, not
+  a permanent second ontology.
+- ChakraState (the unlocked/active set on an actor) is a compatibility facade marked
+  [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]. New code should read active node state from
+  entity_geometry.py / entity_body.py. Existing callers are being migrated per Phase 8.
+- Body-schema dict traversal (body.root, body.nodes trees) is the legacy representation.
+  Entity subtree expansion via entity_lifecycle.expand_entity is the forward path. Both
+  paths co-exist during migration; the entity path wins for actors with a realized body tree.
+
 Core module:
-- edgecaster/systems/chakras.py: ChakraState, unlocking, activation, gating, pattern generation
+- edgecaster/systems/chakras.py: unlock/activation logic, gating checks, pattern generation
+  (body-schema traversal inside this module is a compatibility bridge)
 
 Concepts:
-- Chakras: energy centers aligned with body schema nodes (torso, shoulders, hands, fingers, etc.)
+- Chakras: body nodes with active/inactive state, aligned with body-schema positions
 - Unlocking: chakras must be unlocked before activation; gated by "branch roots" (sub-schema entry points)
 - Activation: unlocked chakras can be toggled active/inactive; only active chakras contribute to patterns
 - Alignment: per-chakra position offsets for tuning pattern shape
@@ -470,19 +517,28 @@ UI:
 - edgecaster/scenes/chakra_scene.py: ChakraSelectionScene (Shift+C to open)
 - Features: body silhouette with glowing chakra points, real-time pattern preview,
   3-layer glow rendering, pulse animations, energy flow lines, particle bursts
+- [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] ChakraScene still derives layout and
+  interaction from body_schema + ChakraState walkers. Migration target: replace with
+  entity_body/entity_geometry queries once the actor-body graph is the UI authority.
+  The pattern preview now receives the live `game` context, so its seed-builder
+  path can use shared entity/component geometry during gameplay instead of
+  defaulting to schema-only fallback mode.
 
 Chakra pipeline responsibilities (key scripts):
-- edgecaster/systems/chakras.py: core chakra data model (unlock/activate), body schema traversal,
-  world-position projection, and seed pattern generation + metadata. When an actor already has a
-  geometry-rich `ChakraComponent`, the seed builder now asks `entity_geometry.py` for the shared
-  normalized pattern before falling back to the body-schema compatibility path.
+- edgecaster/systems/chakras.py: unlock/activate logic, body-schema traversal (compat),
+  world-position projection, and seed pattern generation + metadata. When an actor already
+  has a realized body-node tree, the seed builder now prefers that body-entity geometry while
+  still honoring the explicit ChakraState input for active nodes and pattern root. Generic
+  `ChakraComponent` geometry is still queried as an intermediate fallback before the legacy
+  body-schema compatibility path.
 - edgecaster/systems/entity_body.py: builds deterministic actor/body subtree specs from the
-  authored body schema and now drives the first layered actor-body expansion path through
-  `entity_lifecycle.expand_entity(...)`.
+  authored body schema and drives the layered actor-body expansion path through
+  `entity_lifecycle.expand_entity(...)`. This is the authoritative body-node source.
 - edgecaster/systems/entity_geometry.py: shared query surface for entity/chakra geometry and
   normalized seed-pattern reconstruction from `ChakraComponent` node/edge data.
 - edgecaster/systems/chakra_items.py: runtime effective chakra overlays from equipped items
   (temporary unlocks, auto-activation, and hit-modifier tag parsing).
+  ChakraState facade helpers inside this module are `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`.
 - edgecaster/scenes/chakra_scene.py: player-facing UI for selecting/activating chakras, choosing
   the pattern root, and previewing the generated shape (does not apply gameplay effects).
 - edgecaster/game.py (act_chakra): applies the chakra generator to the live rune, aligning the

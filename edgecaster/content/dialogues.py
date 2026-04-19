@@ -770,7 +770,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
             from edgecaster.systems import chakra_items as chakra_items_system
 
             player = game._player()
-            cs = chakra_items_system.ensure_actor_chakra_state(player)
+            cs = chakra_items_system.effective_chakra_state(game, player)
             if cs is None:
                 return (1, 1)  # Default: torso only
             return (len(cs.unlocked), len(cs.active))
@@ -786,7 +786,7 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
             from edgecaster.systems import chakra_items as chakra_items_system
 
             player = game._player()
-            chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
+            chakra_state = chakra_items_system.effective_chakra_state(game, player)
             if chakra_state is None:
                 return []
 
@@ -806,10 +806,8 @@ def _build_chakra_sage(game: Any, npc: Any, npc_id: str, npc_def: dict) -> Dialo
                 from edgecaster.systems import chakra_items as chakra_items_system
 
                 player = game._player()
-                chakra_state = chakra_items_system.ensure_actor_chakra_state(player)
-                if chakra_state is None:
-                    return
-
+                # unlock_actor_chakra is defensive via _coerce_actor_chakra_component;
+                # no separate null-guard needed.
                 if chakra_items_system.unlock_actor_chakra(player, node_id, auto_activate=True, game=game):
                     display_name = chakra_display_name(node_id)
                     game.log.add(f"The Chakra Sage awakens your {display_name} chakra!")

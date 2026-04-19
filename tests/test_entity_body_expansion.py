@@ -249,6 +249,60 @@ def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
     )
 
 
+def test_build_chakra_generator_seed_uses_realized_body_tree_when_schema_is_omitted() -> None:
+    """Expanded actors should build seeds from body-node entities without schema input."""
+    actor = _make_actor()
+    game = _DummyGame(actor)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+
+    actor_children = entity_lifecycle_system.expand_entity(game, actor.id)
+    assert actor_children == ["actor:test_body:body:body"]
+    entity_lifecycle_system.expand_entity(game, actor_children[0])
+
+    chakra_state = ChakraState(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        pattern_root="body",
+    )
+
+    seed = build_chakra_generator_seed(
+        {},
+        chakra_state,
+        actor=actor,
+        game=game,
+    )
+
+    assert "body" in seed.node_order
+    assert "head" in seed.node_order
+    assert seed.edges
+    assert seed.base_len > 0.0
+
+
+def test_build_chakra_generator_seed_resolves_schema_when_entity_path_is_unavailable() -> None:
+    """Schema fallback should still work when callers omit body_schema for unexpanded actors."""
+    actor = _make_actor()
+    game = _DummyGame(actor)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+    # Deliberately leave the body tree unrealized.
+
+    chakra_state = ChakraState(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        pattern_root="body",
+    )
+
+    seed = build_chakra_generator_seed(
+        {},
+        chakra_state,
+        actor=actor,
+        game=game,
+    )
+
+    assert seed.verts
+    assert seed.node_order
+    assert seed.base_len > 0.0
+
+
 def test_toggle_actor_chakra_mirrors_active_state_to_body_node_entity() -> None:
     """B2 invariant: toggle_actor_chakra writes active state to realized body-node entity.
 
@@ -319,3 +373,75 @@ def test_generic_resolve_entities_do_not_take_actor_body_expansion_path() -> Non
     child = entity_lifecycle_system.find_runtime_entity(game, child_ids[0])
     assert child is not None
     assert getattr(child, "name", "") == "Starttsgard Core Neighborhood"
+
+
+def test_nested_body_node_active_state_inherits_from_ancestor() -> None:
+    """Batch 4 invariant: depth-2+ sub-schema nodes inherit active from their ancestor.
+
+    _materialize_body_child uses _is_full_id_active to check whether a body node
+    should be active.  For a node like "head.neck" (full_id) the check must return
+    True when "head" (the ancestor prefix) is in chakra_state.active, even though
+    "head.neck" itself is not an explicit member.
+
+    The A3 block writes the active flag to the external_child_root node in the
+    PARENT entity's chakra_component (not the child's own root), so we read from
+    head_ent.chakra_component.nodes[neck_root_nid] to observe the result.
+
+    Three scenarios are verified:
+    - ancestor active ("head" ∈ active)  →  head.neck spawns active=True
+    - nothing active                     →  head.neck spawns active=False
+    - exact deep id active ("head.neck") →  head.neck spawns active=True
+    """
+    from edgecaster.systems.chakras import ChakraState as _CS
+
+    def _realize_head_neck(active_set):
+        actor = _make_actor()
+        # Set chakra_state BEFORE expansion so _materialize_body_child sees it.
+        actor.chakra_state = _CS(
+            unlocked=set(active_set),
+            active=set(active_set),
+            pattern_root="body",
+        )
+        game = _DummyGame(actor)
+        entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+
+        actor_children = entity_lifecycle_system.expand_entity(game, actor.id)
+        body_root_id = actor_children[0]
+        entity_lifecycle_system.expand_entity(game, body_root_id)
+
+        head_entity_id = "actor:test_body:body:head"
+        head_ent = entity_lifecycle_system.find_runtime_entity(game, head_entity_id)
+        assert head_ent is not None
+        entity_lifecycle_system.expand_entity(game, head_entity_id)
+
+        neck_entity_id = "actor:test_body:body:head.neck"
+        neck_ent = entity_lifecycle_system.find_runtime_entity(game, neck_entity_id)
+        assert neck_ent is not None, f"head.neck must be realized (active={active_set})"
+
+        # A3 writes the active flag to the external_child_root node stored in the
+        # PARENT's (head entity's) chakra_component, keyed by the neck's root_node_id.
+        neck_raw_comp = getattr(neck_ent, "chakra_component", None)
+        neck_root_nid = str(getattr(neck_raw_comp, "root_node_id", "") or "")
+        head_raw_comp = getattr(head_ent, "chakra_component", None)
+        head_nodes = getattr(head_raw_comp, "nodes", {}) or {}
+        neck_ext_node = head_nodes.get(neck_root_nid)
+        assert neck_ext_node is not None, (
+            f"head.neck external_child_root node (id={neck_root_nid!r}) must exist "
+            f"in head entity's chakra_component.nodes (active={active_set})"
+        )
+        return bool(getattr(neck_ext_node, "active", True))
+
+    # Scenario 1: ancestor "head" is active — head.neck should be active.
+    assert _realize_head_neck({"head"}) is True, (
+        "Batch 4: head.neck must be active when 'head' is in chakra_state.active"
+    )
+
+    # Scenario 2: nothing is active — head.neck should be inactive.
+    assert _realize_head_neck(set()) is False, (
+        "Batch 4: head.neck must be inactive when no nodes are in chakra_state.active"
+    )
+
+    # Scenario 3: exact deep id "head.neck" is active — head.neck should be active.
+    assert _realize_head_neck({"head.neck"}) is True, (
+        "Batch 4: head.neck must be active when 'head.neck' itself is in chakra_state.active"
+    )

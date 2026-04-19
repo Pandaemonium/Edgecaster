@@ -157,6 +157,67 @@ def test_act_chakra_applies_amp_bonus(monkeypatch) -> None:
     assert captured_amp[0] == 1.2
 
 
+def test_act_chakra_skips_schema_resolve_for_component_backed_actor(monkeypatch) -> None:
+    dummy_state = SimpleNamespace(
+        unlocked={"body"},
+        active={"body"},
+        charges={},
+        alignments={},
+        generators={},
+        pattern_root="body",
+    )
+    captured_body_schemas: list[dict] = []
+
+    game, actor = _make_game()
+    actor.chakra_component = object()
+
+    monkeypatch.setattr(
+        pattern_runtime.chakra_items_system,
+        "effective_chakra_state",
+        lambda _game, _actor: dummy_state,
+    )
+    monkeypatch.setattr(
+        pattern_runtime.chakra_items_system,
+        "ensure_actor_chakra_state",
+        lambda _actor: dummy_state,
+    )
+
+    import edgecaster.prototypes as prototypes
+    import edgecaster.systems.chakras as chakra_system
+
+    def _fail_schema_resolve(_actor):
+        raise AssertionError("resolve_body_schema should not be called for component-backed casts")
+
+    def _fake_seed(body_schema, *_args, **_kwargs):
+        captured_body_schemas.append(dict(body_schema or {}))
+        return SimpleNamespace(
+            root_id="body",
+            terminus_id="body",
+            base_len=1.0,
+            node_order=["body"],
+            verts=[(0.0, 0.0), (1.0, 0.0)],
+            edges=[(0, 1)],
+        )
+
+    monkeypatch.setattr(prototypes, "resolve_body_schema", _fail_schema_resolve)
+    monkeypatch.setattr(chakra_system, "build_chakra_generator_seed", _fake_seed)
+
+    class _FakeGenerator:
+        def __init__(self, *_args, **_kwargs):
+            return None
+
+        def apply_segments(self, segs, max_segments=20000):
+            return list(segs)
+
+    monkeypatch.setattr(pattern_runtime.builder, "CustomGraphGenerator", _FakeGenerator)
+    monkeypatch.setattr(pattern_runtime.builder, "cleanup_duplicates", lambda segs: segs)
+    monkeypatch.setattr(pattern_runtime.builder, "Pattern", _PatternFactory)
+
+    pattern_runtime.act_chakra(game, "player")
+
+    assert captured_body_schemas == [{}]
+
+
 def test_chakra_modifiers_prefers_reduced_charge_snapshot(monkeypatch) -> None:
     game, actor = _make_game()
     actor.chakra_state = SimpleNamespace(

@@ -1,15 +1,15 @@
 Title: Entity + Chakra Unification Master Plan
 Purpose: define the active execution plan for converging entity, geometry/query, inventory, and POI systems toward one unified hierarchical substrate.
 Status: active-plan
-Last verified: 2026-04-13
+Last verified: 2026-04-18
 Canonical for: active entity/chakra unification work
 Related docs: `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/architecture.txt`
 Related code: `edgecaster/state/`, `edgecaster/systems/`, `edgecaster/content/`
 Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
-Updated: 2026-04-13
-Status: v1.31 (Phase 8 Slice VII — body_schema runtime baking removed from spawn_factory.py)
+Updated: 2026-04-18
+Status: v1.37 (Phase 8 Slice XIII - game.py, dialogues.py, actions.py migrated off ensure_actor_chakra_state; only annotated legacy helper and effective_* internal fallbacks remain)
 
 This is the execution plan for:
 
@@ -107,6 +107,25 @@ Implemented and stable:
    - Chakra seed generation now prefers shared component geometry when an actor
      already exposes a usable `ChakraComponent`, then falls back to the legacy
      body-schema path.
+   - Runtime effective chakra reads (`effective_unlocked_nodes`,
+     `effective_active_nodes`, `effective_chakra_state`) now rebuild from the
+     actor's `ChakraComponent` first instead of depending on cached
+     `actor.chakra_state` bootstrap side effects.
+   - `pattern_runtime.act_chakra(...)` now stays on the entity/component path
+     for component-backed actors and skips `resolve_body_schema(...)` unless it
+     is actually on a schema-only fallback path.
+   - `scenes/chakra_scene.py` now passes the live `game` context into
+     `PatternPreviewWidget`, so the preview path can use the shared
+     entity/component seed builder instead of falling back to schema-only mode
+     during normal gameplay.
+   - Chakra scene helper reads now prefer cached persistent `actor.chakra_state`
+     before calling the legacy compat bootstrap helper.
+   - `build_chakra_generator_seed(...)` now prefers the realized body-node
+     entity tree for actor anatomy, using the explicit `ChakraState` argument
+     for active-node, alignment, and pattern-root semantics.
+   - When the entity path is unavailable or insufficient, the seed builder now
+     re-resolves authored `body_schema` on demand for actor callers that passed
+     `body_schema={}`, instead of failing with a misleading root-not-found error.
    - `AttentionCellStore` now uses a hierarchical rect index keyed by
      `entity_id`, and `sync_attention_instantiation(...)` now expands/collapses
      resolver-backed parents through the lifecycle module instead of owning the
@@ -243,6 +262,92 @@ Not yet complete:
       `poi_worldgen.py` corrected to reflect its role as the unified entrypoint.
     - `poi_worldgen.py` module docstring and `spawn_poi_contents` docstring updated:
       stale overlap-with-poi_spawning.py language removed; deletion date recorded.
+
+19. Phase 8 Legacy Removal Slice VIII:
+    - `_is_full_id_active` private helper added to `entity_lifecycle.py`.
+      A3 sync block in `_materialize_body_child` upgraded from a flat `in` check
+      to the new helper, which also checks dot-prefix ancestors iteratively.
+      A depth-2 sub-schema node such as "head.neck" is now correctly marked active
+      when its ancestor ("head") is in `chakra_state.active`, matching the legacy
+      body-schema traversal semantics.
+    - `test_nested_body_node_active_state_inherits_from_ancestor` added to
+      `tests/test_entity_body_expansion.py` covering three scenarios:
+      ancestor active → active=True, nothing active → active=False, exact
+      deep id active → active=True.
+    - `gods.py` migrated off `ensure_actor_chakra_state`:
+      `ensure_actor_chakra_state(player)` + `.active` replaced by
+      `effective_active_nodes(game, player)`, which returns the set of active
+      chakra nodes including equipped-item auto-activations.
+    - `scheduling.py` migrated off `ensure_actor_chakra_state`:
+      `ensure_actor_chakra_state(actor)` replaced by
+      `getattr(actor, "chakra_state", None)`; the `is None: continue` guard
+      is preserved.  By Phase 8, players have `chakra_state` set at spawn and
+      the creation-fallback path in `ensure_actor_chakra_state` is never needed.
+
+24. Phase 8 Legacy Removal Slice XIII (2026-04-18):
+    - `game.py` `_unlockable_chakras_for_player`: `ensure_actor_chakra_state`
+      replaced by `effective_chakra_state(self, player)`.
+    - `game.py` `_apply_choice` (Monk chakra-unlock callback): bare null-guard
+      via `ensure_actor_chakra_state` removed; `unlock_actor_chakra` is
+      defensive via `_coerce_actor_chakra_component` and needs no pre-check.
+    - `dialogues.py` `_get_chakra_count`: `ensure_actor_chakra_state` replaced
+      by `effective_chakra_state(game, player)` so item-granted unlocks are
+      reflected in the count shown to NPCs.
+    - `dialogues.py` `_get_unlockable_chakras`: same migration.
+    - `dialogues.py` `_effect_unlock_chakra`: bare null-guard removed for same
+      reason as `_apply_choice`.
+    - `actions.py` `_action_spinal_surge`: null-guard via
+      `ensure_actor_chakra_state` removed; `set_actor_chakra_charge` is
+      defensive and `len(active) >= 3` already confirms the actor has state.
+    - Remaining live callers of `ensure_actor_chakra_state`: the function
+      definition itself; three internal fallbacks inside `effective_unlocked_nodes`,
+      `effective_active_nodes`, `effective_chakra_state` in `chakra_items.py`;
+      and the annotated `_get_chakra_state` legacy helper in `chakra_scene.py`.
+    - 636 tests pass.
+
+23. Phase 8 Legacy Removal Slice XII (2026-04-18):
+    - `pattern_runtime.py` migrated off `ensure_actor_chakra_state`:
+      All three direct calls (`chakra_modifiers`, `consume_chakra_charge`,
+      `act_chakra`) replaced with `effective_chakra_state(self, actor)`, which
+      already falls back to `ensure_actor_chakra_state` internally.  The redundant
+      double-call pattern (try effective → if None try ensure) eliminated.
+    - `chakra_scene.py` `_get_chakra_state` helper annotated
+      `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]` with note that callers should
+      migrate to `effective_chakra_state(game, actor)`.  Both legacy schema-walk
+      `else` branches in `_refresh_list_items` and `_build_chakra_tooltip`
+      annotated `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`.
+    - Remaining direct `ensure_actor_chakra_state` callers outside wrappers:
+      `game.py` (x2), `dialogues.py` (x3), `actions.py` (x1), and the
+      `_get_chakra_state` legacy helper in `chakra_scene.py` (x1).
+    - `spring_cleaning.txt` progress note updated.
+    - 636 tests pass.
+
+22. Phase 8 Legacy Removal Slice XI (2026-04-18):
+    - `_build_seed_from_realized_body_tree` added to `chakras.py`.  Walks entity
+      graph from actor's body children, reads `body_float_pos` tags for sub-tile
+      positions, and builds a complete `ChakraGeneratorSeed` from realized entities.
+    - `build_chakra_generator_seed` now tries the body-tree path first (catching
+      ValueError), then the entity-geometry path, then the schema fallback.
+      All three paths return a valid seed for their respective actor states.
+    - Tests for `_build_seed_from_realized_body_tree` and pattern generation added
+      to `tests/test_entity_body_expansion.py`.
+
+21. Phase 8 Legacy Removal Slice X (2026-04-18):
+    - `PatternPreviewWidget` updated to accept a `game` parameter.
+    - `ChakraSelectionScene` passes `game=self.game` to `PatternPreviewWidget`.
+    - `_regenerate_pattern` uses `game=_preview_game` and `body_schema={}` when
+      game context is available, so the entity/component seed-builder path is
+      taken during normal gameplay (body-schema resolve cost avoided on cast).
+
+20. Phase 8 Legacy Removal Slice IX (2026-04-18):
+    - `effective_unlocked_nodes`, `effective_active_nodes`, `effective_chakra_state`
+      in `chakra_items.py` now rebuild the runtime view from `ChakraComponent` first
+      (via `_rebuild_chakra_state_from_component`), then fall back to the legacy
+      `ensure_actor_chakra_state` bootstrap.  Component data is now the preferred
+      source for all three effective-view helpers.
+    - `pattern_runtime.chakra_modifiers` and `act_chakra` updated to pass
+      `body_schema={}` when ChakraComponent is present, skipping the authored-schema
+      resolve cost for actors already on the entity/component path.
 
 18. Phase 8 Legacy Removal Slice VII:
     - Birth-time body_schema baking removed from `spawn_factory.py`

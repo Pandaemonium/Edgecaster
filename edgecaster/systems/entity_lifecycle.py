@@ -168,6 +168,24 @@ def _coerce_chakra_component_for_entity(ent: object):
         return None
 
 
+def _is_full_id_active(full_id: str, active: set) -> bool:
+    """Return True when *full_id* or any dot-prefix ancestor is in *active*.
+
+    A sub-schema body node such as "body.torso" is considered active whenever
+    its top-level schema root ("body") is active, even if the deep ID itself is
+    not an explicit member of chakra_state.active.  This mirrors the legacy
+    body-schema traversal which stopped at the first active ancestor.
+    """
+    if full_id in active:
+        return True
+    parts = full_id.split(".")
+    # Walk from the longest prefix down to the shortest (single segment).
+    for i in range(len(parts) - 1, 0, -1):
+        if ".".join(parts[:i]) in active:
+            return True
+    return False
+
+
 def _link_parent_child_chakra(parent: object, child: object) -> None:
     """Create a lightweight parent->child chakra edge for realized descendants."""
     pcomp = _coerce_chakra_component_for_entity(parent)
@@ -967,7 +985,8 @@ def _materialize_body_child(
         chakra_state = getattr(owner_ent, "chakra_state", None)
         if chakra_state is not None:
             full_id = str(spec.full_id)
-            is_active = full_id in (getattr(chakra_state, "active", set()) or set())
+            active_set = getattr(chakra_state, "active", set()) or set()
+            is_active = _is_full_id_active(full_id, active_set)
             pcomp = getattr(parent_ent, "chakra_component", None)
             ccomp = getattr(obj, "chakra_component", None)
             if pcomp is not None and ccomp is not None:

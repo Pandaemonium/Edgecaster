@@ -392,6 +392,43 @@ def ensure_actor_chakra_state(actor: Any) -> Any:
     return state
 
 
+def _rebuild_chakra_state_from_component(actor: Any) -> Any:
+    """Build a fresh ChakraState view from ChakraComponent data when available.
+
+    Runtime readers should prefer this over the cached ``actor.chakra_state``
+    facade so entity/component writes become visible immediately even before the
+    remaining Phase 8 callers stop touching the legacy cache directly.
+    """
+    try:
+        from edgecaster.systems.chakras import ChakraState
+    except Exception:
+        return None
+
+    comp = _coerce_actor_chakra_component(actor)
+    if comp is None:
+        return None
+
+    root = _baseline_chakra_root(actor)
+    unlocked, active = _component_node_sets(actor)
+    charges = _component_charge_map(comp)
+    alignments, generators, pattern_root = _component_state_overrides(comp)
+
+    if root:
+        unlocked.add(root)
+        active.add(root)
+    if pattern_root and pattern_root not in active:
+        pattern_root = None
+
+    return ChakraState(
+        unlocked=set(unlocked),
+        active=set(active),
+        alignments=dict(alignments),
+        generators=dict(generators),
+        charges=dict(charges),
+        pattern_root=pattern_root,
+    )
+
+
 
 def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> None:
     """Apply a full ChakraState snapshot to the actor's ChakraComponent.
@@ -747,7 +784,9 @@ def auto_active_nodes(game: Any, actor_id: str) -> set[str]:
 
 def effective_unlocked_nodes(game: Any, actor: Any) -> set[str]:
     """Return actor unlocked chakras including temporary equipped unlocks."""
-    state = ensure_actor_chakra_state(actor)
+    state = _rebuild_chakra_state_from_component(actor)
+    if state is None:
+        state = ensure_actor_chakra_state(actor)
     base = _normalize_nodes(getattr(state, "unlocked", set()) or set())
     base.update(temporary_unlocked_nodes(game, str(getattr(actor, "id", ""))))
     return base
@@ -755,7 +794,9 @@ def effective_unlocked_nodes(game: Any, actor: Any) -> set[str]:
 
 def effective_active_nodes(game: Any, actor: Any) -> set[str]:
     """Return active chakras including explicit item auto-activations."""
-    state = ensure_actor_chakra_state(actor)
+    state = _rebuild_chakra_state_from_component(actor)
+    if state is None:
+        state = ensure_actor_chakra_state(actor)
     active = _normalize_nodes(getattr(state, "active", set()) or set())
     active.update(auto_active_nodes(game, str(getattr(actor, "id", ""))))
     return active
@@ -777,7 +818,9 @@ def effective_chakra_state(game: Any, actor: Any) -> Any:
     # state. The final version should build the effective view from graph edges
     # plus ChakraComponent channels so items, limbs, buildings, and sites all
     # use the same evaluation path.
-    state = ensure_actor_chakra_state(actor)
+    state = _rebuild_chakra_state_from_component(actor)
+    if state is None:
+        state = ensure_actor_chakra_state(actor)
     if state is None:
         return None
 

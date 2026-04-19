@@ -190,16 +190,22 @@ def _get_body_schema(actor: Any) -> Dict[str, Any]:
 
 
 def _get_chakra_state(actor: Any) -> ChakraState:
-    """Extract chakra state from an actor, creating default if missing."""
+    """Extract chakra state from an actor, creating default if missing.
+
+    [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    Callers should migrate to effective_chakra_state(game, actor) so item effects
+    and ChakraComponent data are included. This helper stays as a no-game fallback.
+    """
+    state = getattr(actor, "chakra_state", None)
+    if state and isinstance(state, ChakraState):
+        return state
     try:
+        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] ensure_actor_chakra_state facade.
         state = chakra_items_system.ensure_actor_chakra_state(actor)
         if state and isinstance(state, ChakraState):
             return state
     except Exception:
         pass
-    state = getattr(actor, "chakra_state", None)
-    if state and isinstance(state, ChakraState):
-        return state
     return ChakraState()
 
 
@@ -1299,10 +1305,12 @@ class PatternPreviewWidget(Widget):
         self,
         *,
         actor: Any = None,
+        game: Any = None,
         state_provider: Optional[Callable[[], ChakraState]] = None,
     ) -> None:
         super().__init__()
         self.actor = actor
+        self.game = game
         self._state_provider = state_provider
         self._pattern_surface: Optional[pygame.Surface] = None
         self._dirty: bool = True
@@ -1788,7 +1796,7 @@ class ChakraSelectionScene(PanelScene):
         # Ensure chakra state exists so edits persist.
         if self._actor is not None:
             try:
-                chakra_items_system.ensure_actor_chakra_state(self._actor)
+                self._actor.chakra_state = _get_chakra_state(self._actor)
             except Exception:
                 if not isinstance(getattr(self._actor, "chakra_state", None), ChakraState):
                     self._actor.chakra_state = ChakraState()
@@ -1820,7 +1828,11 @@ class ChakraSelectionScene(PanelScene):
             on_drag_select=self._on_drag_select,
         )
 
-        self._preview = PatternPreviewWidget(actor=self._actor, state_provider=self._get_ui_state)
+        self._preview = PatternPreviewWidget(
+            actor=self._actor,
+            game=self.game,
+            state_provider=self._get_ui_state,
+        )
         self._list_widget = ChakraListWidget(
             items=[],
             get_state=self._get_ui_state,
@@ -1955,7 +1967,8 @@ class ChakraSelectionScene(PanelScene):
                 depth = fid.count(".")
                 entries.append(ChakraListEntry(fid, _format_chakra_label(fid), depth))
         else:
-            # Legacy schema-walk fallback.
+            # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Schema-walk fallback — only
+            # reached when the actor has no realized body-node entities in the graph.
             body_schema = _get_body_schema(self._actor)
             entries = [
                 ChakraListEntry(fid, _format_chakra_label(fid), depth)
@@ -2191,7 +2204,8 @@ class ChakraSelectionScene(PanelScene):
             node_eid = f"{getattr(self._actor, 'entity_id', None) or getattr(self._actor, 'id', '')}:body:{node_id}"
             child_count = len(graph.get_children(node_eid, socket_id="body")) if graph else 0
         else:
-            # Legacy fallback via body schema.
+            # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Schema-walk fallback — only
+            # reached when the actor has no realized body-node entities in the graph.
             body_schema = _get_body_schema(self._actor)
             path = _resolve_chakra_path(body_schema, node_id)
             node_dict = path[-1][1] if path else None
