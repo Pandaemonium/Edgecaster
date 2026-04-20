@@ -20,6 +20,65 @@ def owner_entity_id(owner: object) -> str:
         return ""
 
 
+def _schema_node_count(schema: Any) -> int:
+    """Return the number of nodes in a schema-shaped mapping."""
+    if not isinstance(schema, dict):
+        return 0
+    nodes = schema.get("nodes", {})
+    return len(nodes) if isinstance(nodes, dict) else 0
+
+
+def _entity_zoom_view_is_usable(
+    schema: Any,
+    zoom_stack: list[str] | tuple[str, ...],
+) -> bool:
+    """Return True when an entity-backed schema is rich enough for this zoom depth.
+
+    Requires more than one node at every depth, including depth 0.  A single-node
+    entity schema (e.g. the bare "body" root wrapper) should fall through to the
+    proto-schema, which shows all body parts flat without requiring the user to
+    click through a trivial wrapper node first.
+    """
+    return _schema_node_count(schema) > 1
+
+
+def _traverse_entity_zoom_path(
+    owner_id: str,
+    get_children: Any,
+    find_entity: Any,
+    game: Any,
+    zoom_stack: list[str] | tuple[str, ...],
+) -> str | None:
+    """Walk the entity graph step-by-step matching local_ids to reach the correct parent.
+
+    Zoom_stack holds local_ids (last segment of body_full_id). Entity IDs are keyed by
+    full body_full_id (e.g. "arm", not "body.arm"), so we cannot reconstruct the parent
+    entity ID by joining the zoom_stack. Instead we match children by local_id at each
+    level, following the actual graph edges.
+    """
+    current_eid: str = owner_id
+    for local_id_wanted in zoom_stack:
+        try:
+            child_ids = get_children(current_eid, socket_id="body")
+        except Exception:
+            child_ids = []
+        matched: str | None = None
+        for cid in child_ids:
+            child = find_entity(game, str(cid))
+            if child is None:
+                continue
+            tags = getattr(child, "tags", {}) or {}
+            full_id_tag = str(tags.get("body_full_id", "") or "")
+            child_local = full_id_tag.rsplit(".", 1)[-1] if "." in full_id_tag else full_id_tag
+            if child_local == local_id_wanted:
+                matched = str(cid)
+                break
+        if matched is None:
+            return None
+        current_eid = matched
+    return current_eid
+
+
 def build_entity_schema_at_zoom_depth(
     owner: object,
     game: Any,
@@ -37,18 +96,24 @@ def build_entity_schema_at_zoom_depth(
     if not owner_id:
         return None
 
-    parent_full_id = ".".join(str(n) for n in zoom_stack) if zoom_stack else ""
     child_rows: list[dict[str, Any]] = []
 
     graph = getattr(game, "entity_graph", None) if game is not None else None
     get_children = getattr(graph, "get_children", None) if graph is not None else None
 
     if callable(get_children):
-        parent_eid = f"{owner_id}:body:{parent_full_id}" if parent_full_id else owner_id
-        try:
-            child_ids = get_children(parent_eid, socket_id="body")
-        except Exception:
+        parent_eid = _traverse_entity_zoom_path(
+            owner_id, get_children, entity_lifecycle_system.find_runtime_entity, game, zoom_stack
+        )
+        if parent_eid is None:
+            parent_eid = owner_id if not zoom_stack else None
+        if parent_eid is None:
             child_ids = []
+        else:
+            try:
+                child_ids = get_children(parent_eid, socket_id="body")
+            except Exception:
+                child_ids = []
         for child_id in child_ids:
             child = entity_lifecycle_system.find_runtime_entity(game, str(child_id))
             if child is None:
@@ -96,8 +161,45 @@ def build_entity_schema_at_zoom_depth(
         if not spec_map:
             return None
 
-        if parent_full_id:
-            parent_spec = spec_map.get(parent_full_id)
+        # Resolve the actual body_full_id of the target entity.  Zoom_stack holds
+        # local_ids (last segment of full_id), so we can't reconstruct the full_id
+        # by joining (e.g. "body.arm" != "arm").  Try two strategies in order:
+        #   1. Walk the entity graph via local_id matching (fast when expanded).
+        #   2. Walk the spec_map by local_id matching (works before lazy expansion).
+        actual_parent_full_id: Optional[str] = None
+        if zoom_stack:
+            # Strategy 1: entity graph traversal
+            if callable(get_children):
+                parent_eid = _traverse_entity_zoom_path(
+                    owner_id, get_children, entity_lifecycle_system.find_runtime_entity, game, zoom_stack
+                )
+                if parent_eid is not None:
+                    parent_ent = entity_lifecycle_system.find_runtime_entity(game, parent_eid)
+                    if parent_ent is not None:
+                        tags = getattr(parent_ent, "tags", {}) or {}
+                        actual_parent_full_id = str(tags.get("body_full_id", "") or "") or None
+
+            # Strategy 2: spec_map traversal (handles not-yet-expanded entity graph)
+            if actual_parent_full_id is None:
+                cur_parent: Optional[str] = None
+                for local_id in zoom_stack:
+                    matched_full_id: Optional[str] = None
+                    for full_id, spec in spec_map.items():
+                        spec_local = full_id.rsplit(".", 1)[-1] if "." in full_id else full_id
+                        spec_parent = str(spec.parent_full_id or "").strip() or None
+                        if spec_local == local_id and spec_parent == cur_parent:
+                            matched_full_id = full_id
+                            break
+                    if matched_full_id is None:
+                        break
+                    cur_parent = matched_full_id
+                actual_parent_full_id = cur_parent
+
+            if actual_parent_full_id is None:
+                return None
+
+        if actual_parent_full_id:
+            parent_spec = spec_map.get(actual_parent_full_id)
             if parent_spec is None:
                 return None
             try:
@@ -112,7 +214,7 @@ def build_entity_schema_at_zoom_depth(
                 parent_anchor = (0.0, 0.0)
 
         try:
-            child_specs = entity_body_system.child_specs_for_entity(owner, parent_full_id or None)
+            child_specs = entity_body_system.child_specs_for_entity(owner, actual_parent_full_id)
         except Exception:
             child_specs = []
         if not child_specs:
@@ -306,7 +408,7 @@ def resolve_body_view_for_zoom_path(
     """Resolve `(schema, embed_offset, embed_scale)` for the current zoom path."""
     if game is not None and owner is not None:
         entity_result = entity_body_view_for_zoom_path(owner, game, list(zoom_stack) if zoom_stack else [])
-        if entity_result is not None:
+        if entity_result is not None and _entity_zoom_view_is_usable(entity_result[0], zoom_stack):
             return entity_result
 
     try:
@@ -369,7 +471,12 @@ def resolve_body_view_chain_for_zoom_path(
     """Resolve the root->active embedded schema chain for a body zoom stack."""
     if game is not None and owner is not None:
         entity_chain = entity_body_view_chain_for_zoom_path(owner, game, list(zoom_stack) if zoom_stack else [])
-        if entity_chain is not None:
+        expected_len = len(list(zoom_stack) if zoom_stack else []) + 1
+        if (
+            entity_chain is not None
+            and len(entity_chain) >= expected_len
+            and _entity_zoom_view_is_usable(entity_chain[-1][0], zoom_stack)
+        ):
             return entity_chain
 
     try:

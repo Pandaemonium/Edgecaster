@@ -2,7 +2,7 @@
 
 Purpose: map the main module clusters in `edgecaster/systems/` so agents can find the right ownership area quickly.
 Status: active-plan
-Last verified: 2026-04-19
+Last verified: 2026-04-20 (updated with trade/query-surface notes)
 Canonical for: systems-folder navigation and ownership hints
 Related docs: `edgecaster/systems/AGENTS.md`, `vision_documents/architecture.txt`, `vision_documents/spring_cleaning.txt`
 Related code: `edgecaster/systems/`
@@ -22,7 +22,6 @@ Supersedes: none
 - `action_runner.py`
 - `abilities.py`
 - `scheduling.py`
-- `turns.py`
 - `targeting.py`
 - `previews.py`
 - `tooltips.py`
@@ -34,6 +33,7 @@ Supersedes: none
 - `damage_policy.py`
 - `blade_runtime.py`
 - `pattern_runtime.py`
+- `pattern_state.py` *(extracted from game.py; canonical rune pattern state bridge — ABS-space, per-depth)*
 - `pattern_ops.py`
 - `lorenz_aura.py`
 - `fern_growth.py`
@@ -54,7 +54,7 @@ Supersedes: none
 
 - `coords.py`
 - `entity_ops.py`
-- `entity_identity.py`
+- `entity_identity.py` *(canonical `stable_int_hash` FNV-1a; shared by aggregate_resolution, poi_worldgen, site_placement)*
 - `entity_body.py`
 - `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders)*
 - `entity_graph_ops.py`
@@ -65,6 +65,8 @@ Supersedes: none
 - `aggregate_resolution.py`
 - `world_entity_index.py`
 - `zones.py`
+- `active_zones.py` *(extracted from game.py; active zone coordinate queries, prewarm, move_actor_to_abs)*
+- `session.py` *(extracted from game.py; current_level / ensure_player_level_binding / get_player / is_player_alive)*
 - `render_query.py`
 
 ### Spawning, Sites, And Worldgen Runtime
@@ -81,11 +83,11 @@ Supersedes: none
 
 ### Inventory, Equipment, Economy, And Social Systems
 
-- `inventory.py` *(graph-first inventory queries and shared add/remove helpers; list caches remain a compatibility bridge)*
+- `inventory.py` *(graph-first inventory queries, recursive inventory-tree walkers, and shared add/remove helpers; list caches remain a compatibility bridge while callers migrate off direct `game.inventories` reads)*
 - `equipment.py`
 - `equip_rules.py`
 - `item_grants.py`
-- `trade.py`
+- `trade.py` *(merchant/player inventory reads now go through the shared inventory query surface; direct list mutation is compatibility-only during the remaining cache bridge period)*
 - `reputation.py`
 - `quests.py`
 - `factions.py`

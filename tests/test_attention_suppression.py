@@ -21,12 +21,19 @@ class _DummyGame:
         st.update(dict(fields))
         self.entity_state[str(entity_id)] = st
 
+    def get_effective_entity_state(self, entity_or_id: object, *, lineage_id: object = None) -> dict:
+        eid = str(entity_or_id or "").strip()
+        lid = str(lineage_id or "").strip()
+        primary = dict(self.entity_state.get(eid, {}) or {})
+        if lid and lid != eid:
+            fallback = dict(self.entity_state.get(lid, {}) or {})
+            if not primary:
+                return fallback
+            out = dict(fallback)
+            out.update(primary)
+            return out
+        return primary
 
-def test_normalize_optional_lineage_id_preserves_absence() -> None:
-    assert attention._normalize_optional_lineage_id(None) is None
-    assert attention._normalize_optional_lineage_id("") is None
-    assert attention._normalize_optional_lineage_id("  ") is None
-    assert attention._normalize_optional_lineage_id("lineage:child:1") == "lineage:child:1"
 
 
 def test_is_suppressed_checks_entity_state_first() -> None:

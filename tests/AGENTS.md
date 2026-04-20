@@ -13,7 +13,7 @@ This file applies to `tests/`.
   python -m pytest
   ```
 - Verified on 2026-04-19:
-  - `python -m pytest --collect-only -q` collected 650 tests
+  - `python -m pytest --collect-only -q` collected 648 tests
 
 ## What Belongs Here
 

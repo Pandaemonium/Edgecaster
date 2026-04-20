@@ -107,6 +107,9 @@ from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems import footprints as footprints_system
 from edgecaster.systems import render_query as render_query_system
 from edgecaster.systems import attention as attention_system
+from edgecaster.systems import active_zones as active_zones_system
+from edgecaster.systems import pattern_state as pattern_state_system
+from edgecaster.systems import session as session_system
 from edgecaster.systems import zones as zones_system
 from edgecaster.systems import overmap as overmap_system
 from edgecaster.systems import difficulty as difficulty_system
@@ -154,44 +157,6 @@ def _line_points(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
             err += dx
             y += sy
     return points
-
-
-def _los(
-    world: World,
-    a: Tuple[int, int],
-    b: Tuple[int, int],
-    *,
-    opaque: set[Tuple[int, int]] | None = None,
-) -> bool:
-    """
-    Line-of-sight test from a -> b.
-
-    Blocks LOS on:
-      - any position in `opaque` (typically entities with blocks_vision=True)
-      - terrain tiles with tile.blocks_vision == True (NOT tile.walkable)
-
-    Always allows seeing the target square itself.
-    """
-    for (x, y) in _line_points(a[0], a[1], b[0], b[1]):
-        if not world.in_bounds(x, y):
-            return False
-        tile = world.get_tile(x, y)
-        if tile is None:
-            return False
-
-        # Always allow seeing the target square itself.
-        if (x, y) == b:
-            return True
-
-        # Entity occluders (walls, closed doors, etc.)
-        if opaque is not None and (x, y) in opaque:
-            return False
-
-        # Terrain occluders (cliffs, opaque fog tiles, etc.)
-        if getattr(tile, "blocks_vision", False):
-            return False
-
-    return True
 
 
 
@@ -1318,13 +1283,6 @@ class Game:
         self._logger = logger
         self._debug("Debug logging initialized.")
 
-    def _debug(self, msg: str):
-        if hasattr(self, '_logger') and self._logger:
-            self._logger.debug(str(msg))
-        else:
-            import sys
-            print(f"DEBUG: {msg}", file=sys.stderr)
-        
     def set_urgent(
         self,
         text: str,
@@ -1551,10 +1509,6 @@ class Game:
         return inventory_system.get_inventory(self, owner_id)
 
     @property
-    def player_inventory(self) -> List[Entity]:
-        return inventory_system.get_player_inventory(self)
-
-    @property
     def messages(self) -> MessageLog:
         """Convenience accessor for the message log (quest system compatibility)."""
         return self.log
@@ -1576,10 +1530,6 @@ class Game:
     def _init_overmap_params_and_grid(self) -> None:
         """Set fixed overmap params from curated c-path bounds and start background render."""
         overmap_system.init_overmap_params_and_grid(self)
-
-    def _init_rune_anchors(self) -> None:
-        """Seed rune-anchor POIs and corresponding corruption suppressors."""
-        overmap_system.init_rune_anchors(self)
 
     def _start_world_map_thread(
         self,
@@ -1608,9 +1558,6 @@ class Game:
         """Ensure overmap params/grid exist."""
         overmap_system.ensure_overmap_ready(self)
 
-    def _jx_jy_slices_for_zone(self, coord: Tuple[int, int, int]) -> tuple[Optional[List[float]], Optional[List[float]]]:
-        """Return (jx_slice, jy_slice) for this zone coord using the global tile_julia_grid."""
-        return overmap_system.jx_jy_slices_for_zone(self, coord)
 
     def set_corruption_level(self, level: float) -> None:
         """Set global corruption intensity (phase 1: visuals-only morphing)."""
@@ -1623,20 +1570,6 @@ class Game:
     def add_corruption_hotspot(self, jx: float, jy: float, strength: float, sigma: float) -> None:
         """Add a localized corruption 'cone' (Gaussian bump) in Julia-plane coordinates."""
         overmap_system.add_corruption_hotspot(self, jx, jy, strength, sigma)
-
-    def _alloc_rune_anchor_poi_id(self) -> str:
-        """Return a unique POI id for a newly-created rune anchor."""
-        return overmap_system.alloc_rune_anchor_poi_id(self)
-
-    # =========================================================================
-    # PHASE 5: LEGENDARIES & POI DISCOVERY -> systems/legendaries.py
-    # These methods now delegate to legendaries_system
-    # See vision_documents/spring_cleaning.txt for refactor plan
-    # =========================================================================
-
-    def _alloc_legendary_lair_poi_id(self) -> str:
-        """Return a unique POI id for a newly-generated legendary lair."""
-        return legendaries_system.alloc_legendary_lair_poi_id(self)
 
     def refresh_poi_locations(self) -> None:
         """Rebuild cached POI marker locations from the POI registry."""
@@ -1765,10 +1698,6 @@ class Game:
         return overmap_system.add_corruption_anchor(
             self, jx, jy, sigma=sigma, strength=strength, coord=coord, spawn_pos=spawn_pos
         )
-
-    def _refresh_corruption_visuals(self) -> None:
-        """Refresh already-instantiated overworld visuals and kick off overmap rerender."""
-        overmap_system.refresh_corruption_visuals(self)
 
     # =========================================================================
     # PHASE 8: ZONE MANAGEMENT -> systems/zones.py
@@ -1967,30 +1896,9 @@ class Game:
             zone_coord=zone_coord,
         )
 
-    def _spawn_mentor(self, level: LevelState) -> None:
-        """Place mentor NPC near entry. Delegates to spawning_system."""
-        spawning_system.spawn_mentor(self, level)
-
-    def _spawn_intro_npcs(self, level: LevelState) -> None:
-        """Place intro NPCs. Delegates to spawning_system."""
-        spawning_system.spawn_intro_npcs(self, level)
-
     def _spawn_poi_contents(self, level: LevelState, coord: Tuple[int, int, int]) -> None:
         """Spawn/realize POI runtime contents for this loaded level."""
         poi_worldgen.spawn_poi_contents(self, level, coord)
-
-    def _spawn_npcs(self, level: LevelState, count: int = 1) -> None:
-        spawning_system.spawn_npcs(self, level, count)
-
-    def _spawn_entities_near(
-        self,
-        level: LevelState,
-        center: Tuple[int, int],
-        count: int,
-        place_entity: Callable[[Tuple[int, int]], None],
-        radius: int = 3,
-    ) -> int:
-        return spawning_system.spawn_entities_near(self, level, center, count, place_entity, radius)
 
     def _spawn_imps_near(
         self,
@@ -2002,16 +1910,6 @@ class Game:
         return spawning_system.spawn_imps_near(self, level, center, count, radius)
 
 
-    def _spawn_echoes_near(
-        self,
-        level: LevelState,
-        center: Tuple[int, int],
-        count: int,
-        radius: int = 3,
-    ) -> int:
-        return spawning_system.spawn_echoes_near(self, level, center, count, radius)
-
-
     def _spawn_berries_near(
         self,
         level: LevelState,
@@ -2020,9 +1918,6 @@ class Game:
         radius: int = 3,
     ) -> int:
         return spawning_system.spawn_berries_near(self, level, center, count, radius)
-
-    def _scatter_test_berries(self, level: LevelState, count: int = 30) -> None:
-        spawning_system.scatter_test_berries(self, level, count)
 
     def debug_spawn_inventory_near_player(self, radius: int = 3, *, count: int | None = None) -> None:
         """Debug helper for conjuring inventories near player."""
@@ -2040,53 +1935,12 @@ class Game:
 
     def _advance_time(self, level: LevelState, delta: int) -> None:
         """Advance time by delta ticks across the active zone window."""
-        with perf_profiler.measure(self, "game._advance_time"):
-            try:
-                delta = int(delta)
-            except Exception:
-                delta = int(delta or 0)
-            if delta <= 0:
-                return
-
-            # Ensure adjacent zones are loaded so movement and AI can cross boundaries.
-            if self.cfg.allow_zone_prewarm_during_tick:
-                active_levels = self._ensure_active_zones_loaded()
-                if not active_levels:
-                    active_levels = [level]
-            else:
-                # Zones are caches, not ontology — never create them on the tick hot path
-                active_levels = [level]
-
-
-            current_level = self._level()
-            for lvl in active_levels:
-                apply_player_systems = (lvl is current_level)
-                scheduling.advance_time(self, lvl, delta, apply_player_systems=apply_player_systems)
-
-            # Option 2: maintain ambient hostile populations across active zones.
-            # This keeps roaming areas populated over time without relying on
-            # one-time zone-entry spawns.
-            ambient_spawns_system.maintain_population(self, active_levels, delta)
+        active_zones_system.advance_time(self, level, delta)
 
     def _start_regen(self, level: LevelState, actor_id: str, amount: int, interval: int) -> None:
         """Start periodic regen for an actor. Delegates to scheduling module."""
         scheduling.start_regen(self, level, actor_id, amount, interval)
 
-    def _coherence_tick(self, level: LevelState, delta: int) -> None:
-        """Drain coherence each tick. Delegates to scheduling module."""
-        scheduling.coherence_tick(self, level, delta)
-
-    def _cooldown_tick(self, level: LevelState, delta: int) -> None:
-        """Tick down cooldowns. Delegates to scheduling module."""
-        scheduling.cooldown_tick(self, level, delta)
-
-    def _slow_mult(self, actor: Actor) -> float:
-        """Get slow multiplier for an actor. Delegates to scheduling module."""
-        return scheduling.slow_mult(actor)
-
-    def _apply_action_tick_offset(self, actor: Actor, delay: int) -> int:
-        """Apply additive tick offset. Delegates to scheduling module."""
-        return scheduling.apply_action_tick_offset(actor, delay)
 
 
     # =========================================================================
@@ -2095,21 +1949,9 @@ class Game:
     # See vision_documents/spring_cleaning.txt for refactor plan
     # =========================================================================
 
-    def _init_lorenz_points(self) -> None:
-        """Initialize Lorenz points via lorenz module."""
-        lorenz.init_lorenz_points(self)
-
-    def _step_lorenz(self, steps: int) -> None:
-        """Step Lorenz points via lorenz module."""
-        lorenz.step_lorenz(self, steps)
-
     def _advance_lorenz(self, level: LevelState, delta: int) -> None:
         """Advance the Lorenz aura for Strange Attractors."""
         lorenz_aura.advance_lorenz(self, level, delta)
-
-    def _lorenz_contact_damage(self, level: LevelState) -> None:
-        """Apply butterfly contact damage to nearby hostiles."""
-        lorenz_aura.apply_contact_damage(self, level)
 
 
 
@@ -2134,10 +1976,6 @@ class Game:
     def _all_entities(self, level: LevelState) -> List[Entity]:
         return entity_ops_system.all_entities(level)
         
-    def _blocking_entity_at(self, level: LevelState, pos: Tuple[int, int]) -> Optional[Entity]:
-        """Return a blocking entity at this position, if any."""
-        return entity_ops_system.blocking_entity_at(level, pos)
-
     def _toggle_door(self, ent: Entity, level: LevelState, notify: bool = False) -> None:
         entity_ops_system.toggle_door(self, ent, level, notify=notify)
 
@@ -2297,17 +2135,6 @@ class Game:
 
 
     
-    def _ensure_world_site_entities(self, *, zone_w: int, zone_h: int) -> None:
-        """Delegate world-level site proxy staging to systems.attention."""
-        attention_system._ensure_world_site_entities(self, zone_w=zone_w, zone_h=zone_h)
-
-
-    def _ensure_world_poi_entities(self, *, zone_w: int, zone_h: int) -> None:
-        """Delegate world-level POI proxy staging to systems.attention."""
-        attention_system._ensure_world_poi_entities(self, zone_w=zone_w, zone_h=zone_h)
-
-
-
     def _ensure_world_aggregate_entities(
         self,
         *,
@@ -2332,11 +2159,6 @@ class Game:
             zz=zz,
             kinds=kinds,
         )
-
-
-    def _realize_aggregate_details_in_zone(self, level: "LevelState", coord: Tuple[int, int, int], kinds=None) -> None:
-        """Delegate zone-local aggregate detail realization to systems.attention."""
-        attention_system._realize_aggregate_details_in_zone(self, level, coord, kinds=kinds)
 
 
     # --- identity persistence helpers ---
@@ -2392,29 +2214,6 @@ class Game:
     # The dual entity_id + lineage fallback helpers below are migration-only.
     # Once remaining lineage-keyed records are upgraded, collapse this block to
     # entity_id-only reads/writes.
-    def _entity_state_keys(self, entity_or_id: Any, *, lineage_id: Any = None) -> List[str]:
-        """Return read-compat persistence keys for an entity."""
-        # Unification note: dual-key merging is a migration bridge. Long-term,
-        # stable entity_id should be the primary key and lineage should remain
-        # provenance/context, not a competing persistence identity.
-        keys: List[str] = []
-        if isinstance(entity_or_id, str):
-            eid = self._normalize_entity_id(entity_or_id)
-            if eid:
-                keys.append(eid)
-        else:
-            lid = self.lineage_id_for_entity(entity_or_id)
-            eid = self.entity_id_for_entity(entity_or_id)
-            if lid:
-                keys.append(lid)
-            if eid and eid not in keys:
-                keys.append(eid)
-
-        lid_kw = self._normalize_entity_id(lineage_id)
-        if lid_kw and lid_kw not in keys:
-            keys.insert(0, lid_kw)
-        return keys
-
     def _entity_state_write_key(self, entity_or_id: Any, *, lineage_id: Any = None) -> str:
         """Return the single authoritative key to write for this patch.
 
@@ -2518,9 +2317,6 @@ class Game:
         lineage_id: Any = None,
         **fields: Any,
     ) -> None:
-        # Unification note: once lineage compatibility is fully retired, this
-        # should become a simpler entity_id-keyed delta write path, including
-        # generalized chakra/component geometry patches.
         key = self._entity_state_write_key(entity_or_id, lineage_id=lineage_id)
         if not key:
             return
@@ -2598,62 +2394,20 @@ class Game:
     # --- player helpers ---
 
     def _level(self) -> LevelState:
-        return self.levels[self.zone_coord]
+        return session_system.current_level(self)
 
     def _ensure_player_level_binding(self) -> LevelState:
-        """Recover the current host actor when zone membership drifts.
-
-        During the ongoing zone/attention refactor there are still a few paths
-        where the player actor can momentarily exist in `level.entities` or a
-        neighboring loaded level before all helpers agree on `zone_coord`.
-        Prefer recovering that binding over crashing on a hard dict lookup.
-        """
-        level = self._level()
-        player_id = str(getattr(self, "player_id", "") or "").strip()
-        if not player_id:
-            return level
-        if player_id in level.actors:
-            return level
-
-        maybe_ent = level.entities.get(player_id)
-        if isinstance(maybe_ent, Actor):
-            level.actors[player_id] = maybe_ent
-            return level
-
-        for coord, other_level in self.levels.items():
-            if coord == self.zone_coord:
-                continue
-            actor = other_level.actors.get(player_id)
-            if actor is None:
-                maybe_ent = other_level.entities.get(player_id)
-                if isinstance(maybe_ent, Actor):
-                    actor = maybe_ent
-                    other_level.actors[player_id] = actor
-            if actor is None:
-                continue
-            self.zone_coord = coord
-            try:
-                other_level.entities[player_id] = actor
-            except Exception:
-                pass
-            try:
-                other_level.need_fov = True
-            except Exception:
-                pass
-            return other_level
-
-        return level
+        """Recover the current host actor when zone membership drifts. Delegates to session_system."""
+        return session_system.ensure_player_level_binding(self)
 
     def _player(self) -> Actor:
         level = self._ensure_player_level_binding()
         return level.actors[self.player_id]
+
     @property
     def player_alive(self) -> bool:
         """True if the player is still present and has positive HP."""
-        lvl = self._level()
-        if self.player_id not in lvl.actors:
-            return False
-        return lvl.actors[self.player_id].stats.hp > 0
+        return session_system.is_player_alive(self)
 
     # --- lab console ---
 
@@ -3228,27 +2982,9 @@ class Game:
         center: tuple[int, int, int] | None = None,
         radius: int | None = None,
     ) -> list[tuple[int, int, int]]:
-        """Return a list of zone coords within the active radius (Chebyshev)."""
-        if center is None:
-            center = self.zone_coord
-        if radius is None:
-            radius = int(getattr(self, "active_zone_radius", 1) or 1)
-        radius = max(0, int(radius))
-
-        zx, zy, zz = center
-        max_screen = max(0, int(self.cfg.world_map_screens) - 1)
-        coords: list[tuple[int, int, int]] = []
-        seen: set[tuple[int, int, int]] = set()
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                nx = max(0, min(max_screen, int(zx + dx)))
-                ny = max(0, min(max_screen, int(zy + dy)))
-                c = (nx, ny, int(zz))
-                if c in seen:
-                    continue
-                seen.add(c)
-                coords.append(c)
-        return coords
+        return active_zones_system.active_zone_coords(
+            self, center=center, radius=radius
+        )
 
     def _active_zone_coords_prioritized(
         self,
@@ -3257,39 +2993,9 @@ class Game:
         radius: int | None = None,
         dir_hint: tuple[int, int] | None = None,
     ) -> list[tuple[int, int, int]]:
-        """
-        Return active-zone coords ordered by likely movement relevance.
-
-        Ordering rules:
-        - current zone first
-        - then zones closest in Chebyshev distance
-        - if dir_hint is provided, zones "ahead" of movement are preferred
-        """
-        if center is None:
-            center = self.zone_coord
-        cx, cy, _cz = center
-        coords = self._active_zone_coords(center=center, radius=radius)
-
-        dxh = dyh = 0
-        if dir_hint is not None:
-            try:
-                dxh = int(dir_hint[0])
-                dyh = int(dir_hint[1])
-            except Exception:
-                dxh = dyh = 0
-
-        def score(c: tuple[int, int, int]) -> tuple[int, int, int]:
-            zx, zy, _ = c
-            ddx = int(zx) - int(cx)
-            ddy = int(zy) - int(cy)
-            cheb = max(abs(ddx), abs(ddy))
-            # Higher dot means "more forward" in movement direction, so negate for sorting.
-            dot = ddx * dxh + ddy * dyh
-            man = abs(ddx) + abs(ddy)
-            return (cheb, -dot, man)
-
-        coords.sort(key=score)
-        return coords
+        return active_zones_system.active_zone_coords_prioritized(
+            self, center=center, radius=radius, dir_hint=dir_hint
+        )
 
     def _queue_zone_prewarm(
         self,
@@ -3371,44 +3077,10 @@ class Game:
         return out
 
     def _ensure_active_zones_loaded(self) -> list[LevelState]:
-        """
-        Ensure the current zone is loaded and incrementally prewarm neighbors.
-
-        We do *not* synchronously force-create the entire active radius each tick,
-        because that causes large frame spikes when crossing chunk boundaries.
-        """
-        # Current zone is mandatory.
-        try:
-            if self.zone_coord not in self.levels:
-                zones_system.get_zone(self, self.zone_coord, up_pos=None)
-        except Exception:
-            pass
-
-        # Incremental neighbor prewarm.
-        self._seed_zone_prewarm_queue()
-        budget = int(getattr(self, "zone_prewarm_budget_per_advance", 1) or 1)
-        self._drain_zone_prewarm_queue(budget)
-
-        # Return currently-loaded active zones.
-        levels = self._loaded_active_levels()
-        if not levels:
-            try:
-                levels = [self._level()]
-            except Exception:
-                levels = []
-        return levels
+        return active_zones_system.ensure_active_zones_loaded(self)
 
     def _is_zone_active(self, coord: tuple[int, int, int] | None) -> bool:
-        """Return True if a zone coord is within the active-radius window."""
-        if coord is None:
-            return False
-        zx, zy, zz = coord
-        cx, cy, cz = self.zone_coord
-        if int(zz) != int(cz):
-            return False
-        radius = int(getattr(self, "active_zone_radius", 1) or 1)
-        radius = max(0, radius)
-        return max(abs(int(zx) - int(cx)), abs(int(zy) - int(cy))) <= radius
+        return active_zones_system.is_zone_active(self, coord)
 
     @staticmethod
     def _floor_divmod(a: int, b: int) -> tuple[int, int]:
@@ -3495,74 +3167,9 @@ class Game:
         *,
         from_level: LevelState | None = None,
     ) -> None:
-        """Move a non-player actor across zone boundaries using ABS coordinates."""
-        if getattr(actor, "id", None) == self.player_id:
-            self._move_player_to_abs(abs_pos)
-            return
-
-        if from_level is None:
-            try:
-                for lvl in self.levels.values():
-                    if actor.id in getattr(lvl, "actors", {}):
-                        from_level = lvl
-                        break
-            except Exception:
-                from_level = None
-        if from_level is None:
-            return
-
-        dest_coord, dest_local = self.zone_local_from_abs(
-            abs_pos,
-            depth=getattr(from_level, "coord", self.zone_coord)[2],
-            clamp_to_world=True,
+        active_zones_system.move_actor_to_abs(
+            self, actor, abs_pos, from_level=from_level
         )
-        dest_level = zones_system.get_zone(self, dest_coord, up_pos=None)
-        level_changed = getattr(from_level, "coord", None) != dest_coord
-
-        if level_changed:
-            try:
-                del from_level.actors[actor.id]
-            except Exception:
-                pass
-            try:
-                del from_level.entities[actor.id]
-            except Exception:
-                pass
-            try:
-                from_level.spatial_dirty = True
-            except Exception:
-                pass
-
-            self._set_entity_local_pos(actor, dest_local)
-            dest_level.actors[actor.id] = actor
-            try:
-                dest_level.entities[actor.id] = actor
-            except Exception:
-                pass
-            try:
-                dest_level.spatial_dirty = True
-            except Exception:
-                pass
-
-            # If this actor is AI-driven, schedule its next turn in the new level.
-            try:
-                tags = getattr(actor, "tags", None) or {}
-                if tags.get("ai"):
-                    self._schedule(
-                        dest_level,
-                        self.cfg.action_time_fast,
-                        lambda aid=actor.id, lvl=dest_level: self._monster_act(lvl, aid),
-                    )
-            except Exception:
-                pass
-        else:
-            self._set_entity_local_pos(actor, dest_local)
-            try:
-                dest_level.spatial_dirty = True
-            except Exception:
-                pass
-
-        self._set_entity_abs_pos(actor, (int(abs_pos[0]), int(abs_pos[1])))
 
     def _move_player_to_abs(self, abs_pos: tuple[int, int]) -> None:
         """
@@ -3691,36 +3298,13 @@ class Game:
     # Canonical rune pattern state (ABS-space, per-depth)
     # ---------------------------------------------------------------------
     def _pattern_state(self, depth: int | None = None) -> dict:
-        d = int(self.zone_coord[2] if depth is None else depth)
-        state = self._pattern_state_by_depth.get(d)
-        if state is None:
-            state = {
-                "pattern": builder.Pattern(),
-                "anchor_abs": None,            # (ax, ay) in ABS tiles
-                "activation_points": [],
-                "activation_ttl": 0,
-                # Secondary / modifier state that MUST persist across zone views:
-                "pattern_motion": None,         # motion dict (see motion.py)
-                "acidic_pattern": False,
-                "fern_active": False,
-                "fern_growth_tips": [],
-                "fern_accum": 0.0,
-                "choking_vines_state": None,
-                "rune_choking_vines_state": None,
-            }
-            self._pattern_state_by_depth[d] = state
-
-        # Back-compat: earlier versions used "motion"
-        if "pattern_motion" not in state and "motion" in state:
-            state["pattern_motion"] = state.get("motion")
-        return state
+        return pattern_state_system.pattern_state(self, depth)
 
     def pattern_anchor_abs(self) -> tuple[int, int] | None:
-        return self._pattern_state().get("anchor_abs")
+        return pattern_state_system.pattern_anchor_abs(self)
 
     def _set_pattern_anchor_abs(self, anchor_abs: tuple[int, int] | None) -> None:
-        st = self._pattern_state()
-        st["anchor_abs"] = (int(anchor_abs[0]), int(anchor_abs[1])) if anchor_abs is not None else None
+        pattern_state_system.set_pattern_anchor_abs(self, anchor_abs)
 
     def _commit_pattern_state_from_level(self, level: "LevelState") -> None:
         """
@@ -3729,71 +3313,14 @@ class Game:
         This is the critical bridge: LevelState is a cache/view; Game is truth.
         Without this, crossing a zone boundary can resurrect older canonical state.
         """
-        coord = getattr(level, "coord", self.zone_coord)
-        zx, zy, d = coord
-        st = self._pattern_state(depth=d)
-
-        # Pattern object
-        st["pattern"] = getattr(level, "pattern", builder.Pattern())
-
-        # Anchor: level stores zone-local; canonical stores ABS
-        anchor_local = getattr(level, "pattern_anchor", None)
-        if anchor_local is None:
-            st["anchor_abs"] = None
-        else:
-            zw, zh = self._zone_dims()
-            ox = zx * zw
-            oy = zy * zh
-            # anchor_local can be float-ish in some code paths; canonical is int tiles
-            ax = int(round(anchor_local[0] + ox))
-            ay = int(round(anchor_local[1] + oy))
-            st["anchor_abs"] = (ax, ay)
-
-        # Activation preview
-        st["activation_points"] = list(getattr(level, "activation_points", []) or [])
-        st["activation_ttl"] = int(getattr(level, "activation_ttl", 0) or 0)
-
-        # Motion + modifiers
-        st["pattern_motion"] = getattr(level, "pattern_motion", None)
-        st["acidic_pattern"] = bool(getattr(level, "acidic_pattern", False))
-        st["fern_active"] = bool(getattr(level, "fern_active", False))
-        st["fern_growth_tips"] = list(getattr(level, "fern_growth_tips", []) or [])
-        st["fern_accum"] = float(getattr(level, "fern_accum", 0.0) or 0.0)
-        st["choking_vines_state"] = getattr(level, "choking_vines_state", None)
-        st["rune_choking_vines_state"] = getattr(level, "rune_choking_vines_state", None)
+        pattern_state_system.commit_pattern_state_from_level(self, level)
 
     def _sync_level_pattern_view(self, level: "LevelState") -> None:
         """
         Make the current LevelState view the canonical Game pattern state.
         Keeps legacy code working while we migrate systems.
         """
-        st = self._pattern_state(depth=getattr(level, "coord", self.zone_coord)[2])
-
-        # Core pattern + secondary state
-        level.pattern = st["pattern"]
-        level.pattern_motion = st.get("pattern_motion", None)
-        level.acidic_pattern = bool(st.get("acidic_pattern", False))
-        level.fern_active = bool(st.get("fern_active", False))
-        level.fern_growth_tips = list(st.get("fern_growth_tips", []) or [])
-        level.fern_accum = float(st.get("fern_accum", 0.0) or 0.0)
-        level.choking_vines_state = st.get("choking_vines_state")
-        level.rune_choking_vines_state = st.get("rune_choking_vines_state")
-
-        # Activation preview
-        level.activation_points = list(st.get("activation_points", []) or [])
-        level.activation_ttl = int(st.get("activation_ttl", 0) or 0)
-
-        # Derive a *zone-local* anchor from canonical ABS anchor.
-        anchor_abs = st.get("anchor_abs")
-        if anchor_abs is None:
-            level.pattern_anchor = None
-            return
-
-        zx, zy, _ = getattr(level, "coord", self.zone_coord)
-        zw, zh = self._zone_dims()
-        ox = zx * zw
-        oy = zy * zh
-        level.pattern_anchor = (int(anchor_abs[0] - ox), int(anchor_abs[1] - oy))
+        pattern_state_system.sync_level_pattern_view(self, level)
 
 
 

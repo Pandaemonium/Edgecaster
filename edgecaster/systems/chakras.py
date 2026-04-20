@@ -133,16 +133,6 @@ class ChakraState:
     # If None, we fall back to the body root or any active chakra.
     pattern_root: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize to dict for saving."""
-        return {
-            "unlocked": list(self.unlocked),
-            "active": list(self.active),
-            "alignments": {k: list(v) for k, v in self.alignments.items()},
-            "generators": dict(self.generators),
-            "charges": dict(self.charges),
-            "pattern_root": self.pattern_root,
-        }
 
 
 
@@ -230,28 +220,11 @@ def _get_node_children(node: Dict[str, Any]) -> List[str]:
     return []
 
 
-def _find_parent_node_id(
-    nodes: Dict[str, Dict[str, Any]],
-    target_id: str
-) -> Optional[str]:
-    """
-    Find the parent node ID for a given node.
-
-    Walks through all nodes checking their children lists.
-    Returns None if target is root or not found.
-    """
-    for node_id, node in nodes.items():
-        children = _get_node_children(node)
-        if target_id in children:
-            return node_id
-    return None
-
-
 # =============================================================================
 # BRANCH ROOT DETECTION
 # =============================================================================
 
-def is_branch_root(proto_id: str, proto_index: Optional[Dict[str, Any]] = None) -> bool:
+def is_branch_root(proto_id: str) -> bool:
     """
     Check if a proto_id represents a branch root (entry to a sub-schema).
 
@@ -264,9 +237,6 @@ def is_branch_root(proto_id: str, proto_index: Optional[Dict[str, Any]] = None) 
 
     Args:
         proto_id: The prototype ID to check (e.g., "hand", "finger")
-        proto_index: Optional resolved prototype index. If not provided,
-                     will attempt to import from prototypes module.
-
     Returns:
         True if this proto defines a sub-schema (has body.root)
     """
@@ -282,10 +252,7 @@ def is_branch_root(proto_id: str, proto_index: Optional[Dict[str, Any]] = None) 
         pid = base_proto_id(str(proto_id))
         spec = get_raw_proto(pid)
     except Exception:
-        # Fallback to provided index when raw lookup isn't available.
-        if proto_index is None:
-            return False
-        spec = proto_index.get(str(proto_id), {})
+        return False
 
     if not spec:
         return False
@@ -297,69 +264,6 @@ def is_branch_root(proto_id: str, proto_index: Optional[Dict[str, Any]] = None) 
 
     root = body.get("root")
     return bool(root)
-
-
-def get_gating_chain(
-    body_schema: Dict[str, Any],
-    target_node_id: str,
-    proto_index: Optional[Dict[str, Any]] = None
-) -> List[str]:
-    """
-    Get the list of branch root node IDs that gate access to a target node.
-
-    This walks up the body tree from the target node to the root, collecting
-    any nodes that are branch roots (i.e., nodes whose proto has body.root).
-
-    The gating chain represents the "prerequisite" chakras that must be
-    unlocked before the target chakra can be unlocked.
-
-    Args:
-        body_schema: The actor's body schema dict
-        target_node_id: The node we want to find the gating chain for
-        proto_index: Optional prototype index for branch root checks
-
-    Returns:
-        List of node IDs that are branch roots in the ancestry of target.
-        Ordered from root to target (topological order).
-
-    Example:
-        # For "knuckle_2" in a human body:
-        chain = get_gating_chain(body_schema, "knuckle_2")
-        # Returns: ["torso", "shoulder", "wrist"]
-        # (palm/knuckle_1 are NOT included because they're not branch roots)
-    """
-    nodes = _get_nodes(body_schema)
-    if not nodes or target_node_id not in nodes:
-        return []
-
-    # Build ancestry path from target to root
-    ancestry: List[str] = []
-    current = target_node_id
-    visited: Set[str] = set()
-
-    while current:
-        if current in visited:
-            break  # Prevent infinite loops
-        visited.add(current)
-        ancestry.append(current)
-        current = _find_parent_node_id(nodes, current)
-
-    # Reverse to get root-to-target order
-    ancestry.reverse()
-
-    # Filter to only branch roots (excluding the target itself)
-    gating_chain: List[str] = []
-    for node_id in ancestry:
-        if node_id == target_node_id:
-            continue  # Don't include target in its own gating chain
-
-        node = nodes.get(node_id, {})
-        proto = node.get("proto", "")
-
-        if is_branch_root(proto, proto_index):
-            gating_chain.append(node_id)
-
-    return gating_chain
 
 
 def chakra_display_name(full_id: str) -> str:
@@ -522,75 +426,6 @@ def can_unlock_chakra_for_entity(
 # =============================================================================
 # CHAKRA OPERATIONS
 # =============================================================================
-
-def unlock_chakra(
-    chakra_state: ChakraState,
-    node_id: str,
-    auto_activate: bool = False
-) -> bool:
-    """
-    Unlock a chakra, allowing it to be activated.
-
-    Note: This does NOT check prerequisites - use can_unlock_chakra_for_entity()
-    if you need to validate the unlock is legal before calling this.
-
-    Args:
-        chakra_state: The chakra state to modify
-        node_id: The chakra to unlock
-        auto_activate: If True, also activate the chakra immediately
-
-    Returns:
-        True if newly unlocked, False if already unlocked
-    """
-    if node_id in chakra_state.unlocked:
-        return False
-
-    chakra_state.unlocked.add(node_id)
-
-    if auto_activate:
-        chakra_state.active.add(node_id)
-
-    return True
-
-
-def toggle_chakra_active(
-    chakra_state: ChakraState,
-    node_id: str,
-    active: Optional[bool] = None
-) -> bool:
-    """
-    Toggle a chakra's active state.
-
-    Active chakras contribute to pattern generation. A chakra must be
-    unlocked before it can be activated.
-
-    Args:
-        chakra_state: The chakra state to modify
-        node_id: The chakra to toggle
-        active: If provided, set to this state. If None, toggle current state.
-
-    Returns:
-        The new active state (True if active, False if inactive)
-    """
-    # Must be unlocked to activate
-    if node_id not in chakra_state.unlocked:
-        return False
-
-    if active is None:
-        # Toggle
-        if node_id in chakra_state.active:
-            chakra_state.active.discard(node_id)
-            return False
-        else:
-            chakra_state.active.add(node_id)
-            return True
-    elif active:
-        chakra_state.active.add(node_id)
-        return True
-    else:
-        chakra_state.active.discard(node_id)
-        return False
-
 
 # =============================================================================
 # POSITION EXTRACTION
@@ -869,80 +704,6 @@ def get_all_chakra_positions_recursive(
 # =============================================================================
 # PATTERN GENERATION
 # =============================================================================
-
-def get_connected_active_nodes(
-    edges: List[Tuple[str, str]],
-    active: Set[str],
-    root_id: Optional[str] = None,
-) -> Set[str]:
-    """Return active nodes plus ancestors needed for a connected subgraph.
-
-    If root_id is provided, only active nodes that can trace ancestry to
-    root_id are included. This keeps the chakra graph connected to the
-    chosen pattern root and excludes unrelated branches.
-
-    NOTE:
-    The chakra graph is a tree (with sub-schema edges), but the pattern
-    root can be *any* active node. When the root is not an ancestor of
-    another active node (e.g., root=elbow, active=calf), we still want
-    that node if it is reachable through the graph. That means we must
-    treat edges as **undirected** and include the full path from the
-    root to each active node (including intermediate connectors).
-    """
-    if not active:
-        return set()
-
-    # Build undirected adjacency so we can reach nodes across branches.
-    adj: Dict[str, List[str]] = {}
-    for a, b in edges:
-        adj.setdefault(a, []).append(b)
-        adj.setdefault(b, []).append(a)
-
-    # If a root is provided, include the path from root to each active node.
-    if root_id is not None:
-        if root_id not in adj:
-            return set()
-
-        # BFS to build a parent tree from the chosen root.
-        parent: Dict[str, Optional[str]] = {root_id: None}
-        stack = [root_id]
-        while stack:
-            cur = stack.pop()
-            for nb in adj.get(cur, []):
-                if nb not in parent:
-                    parent[nb] = cur
-                    stack.append(nb)
-
-        expanded: Set[str] = set()
-        for node in list(active):
-            if node not in parent:
-                continue
-            cur = node
-            while cur is not None:
-                expanded.add(cur)
-                if cur == root_id:
-                    break
-                cur = parent.get(cur)
-        # Always include the root itself.
-        expanded.add(root_id)
-        return expanded
-
-    # No root: keep legacy behavior (active + ancestors to schema root).
-    parent_map: Dict[str, str] = {}
-    for parent, child in edges:
-        if child not in parent_map:
-            parent_map[child] = parent
-
-    expanded: Set[str] = set()
-    for node in list(active):
-        cur = node
-        chain: List[str] = [cur]
-        while cur in parent_map:
-            cur = parent_map[cur]
-            chain.append(cur)
-        expanded.update(chain)
-
-    return expanded
 
 
 def get_compact_active_graph(
@@ -1292,10 +1053,9 @@ def _build_seed_from_realized_body_tree(
 
 
 def build_chakra_generator_seed(
-    body_schema: Dict[str, Any],
     chakra_state: ChakraState,
     *,
-    base_scale: float = 1.0,
+    body_schema: Optional[Dict[str, Any]] = None,
     require_root: bool = True,
     actor: Any | None = None,
     game: Any | None = None,
@@ -1384,26 +1144,20 @@ def build_chakra_generator_seed(
                 except Exception:
                     pass
 
-    if not (body_schema or {}).get("nodes") and actor is not None:
+    # Schema fallback path
+    if not body_schema and actor is not None:
         try:
             from edgecaster.prototypes import resolve_body_schema
-
-            resolved_schema = resolve_body_schema(actor)
-            if isinstance(resolved_schema, dict):
-                body_schema = resolved_schema
+            body_schema = resolve_body_schema(actor)
         except Exception:
-            pass
+            body_schema = getattr(actor, "body_schema", {})
 
-    # Body-schema geometry path: fallback for contexts where the entity path
-    # returns <2 active nodes (e.g. callers with no game context, pre-runtime
-    # character creation previews, or body trees not yet realized).  Batch 1
-    # A1 guarantees body nodes exist at spawn for all register_actor paths;
-    # the body-schema path is now rarely reached in production.
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+    if not body_schema:
+        body_schema = {}
+
     positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph(
         body_schema,
         chakra_state,
-        base_scale=base_scale,
         require_root=require_root,
     )
     verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
@@ -1429,7 +1183,6 @@ def build_chakra_generator_seed_for_actor(
     *,
     game: Any | None = None,
     chakra_state: Any | None = None,
-    base_scale: float = 1.0,
     require_root: bool = True,
 ) -> ChakraGeneratorSeed:
     """Build a chakra generator seed through the preferred actor query path."""
@@ -1455,9 +1208,7 @@ def build_chakra_generator_seed_for_actor(
         raise ValueError("No chakra state found.")
 
     return build_chakra_generator_seed(
-        {},
         state_like,
-        base_scale=base_scale,
         require_root=require_root,
         actor=actor,
         game=game,
@@ -1639,21 +1390,6 @@ def check_resonance_bonuses_from_active_nodes(active_node_ids: Set[str]) -> List
 
     return bonuses
 
-
-def check_resonance_bonuses(
-    body_schema: Dict[str, Any],
-    chakra_state: ChakraState
-) -> List[str]:
-    """
-    Compatibility wrapper for resonance checks.
-
-    `body_schema` is retained here so older callers do not break, but current
-    resonance rules only depend on the active node ids. Runtime code should
-    prefer `check_resonance_bonuses_from_active_nodes(...)`.
-    """
-    _ = body_schema
-    active_nodes = set(getattr(chakra_state, "active", set()) or set())
-    return check_resonance_bonuses_from_active_nodes(active_nodes)
 
 
 def get_resonance_modifiers(bonuses: List[str]) -> ChakraModifiers:

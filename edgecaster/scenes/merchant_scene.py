@@ -84,14 +84,19 @@ class MerchantScene(PanelScene):
 
         self._build_widgets()
 
+    def _player_inventory(self) -> list[Any]:
+        """Read the player inventory through the shared runtime query surface."""
+        player_id = str(getattr(self.game, "player_id", "player"))
+        try:
+            return list(self.game.get_inventory(player_id))
+        except Exception:
+            return []
+
     def _sell_id_is_equipped(self, ent_id: str) -> bool:
         ent_id = str(ent_id)
         if not ent_id:
             return False
-        try:
-            pinv = list(getattr(self.game, "player_inventory", []) or [])
-        except Exception:
-            pinv = []
+        pinv = self._player_inventory()
         for ent in pinv:
             if str(getattr(ent, "id", "")) == ent_id:
                 return equipment_system.is_equipped(ent)
@@ -265,7 +270,7 @@ class MerchantScene(PanelScene):
             )
 
         sell_rows: list[_TradeRow] = []
-        pinv = list(getattr(self.game, "player_inventory", []) or [])
+        pinv = self._player_inventory()
         valid_sell = {str(getattr(ent, "id", "")) for ent in pinv}
         # Remove invalid entries from pending
         for eid in list(self.pending_sell_qtys.keys()):
@@ -368,7 +373,7 @@ class MerchantScene(PanelScene):
                     self._status.text = "Unequip that item before selling."
                 return
             # Get the entity for quantity check
-            pinv = list(getattr(self.game, "player_inventory", []) or [])
+            pinv = self._player_inventory()
             ent = pinv[item.index] if 0 <= item.index < len(pinv) else None
             self._toggle_pending_sell(item.ent_id, ent=ent, manager=self._current_manager)
 
@@ -385,7 +390,7 @@ class MerchantScene(PanelScene):
                         self._status.text = "Unequip that item before selling."
                     return
                 # Get entity for quantity check
-                pinv = list(getattr(self.game, "player_inventory", []) or [])
+                pinv = self._player_inventory()
                 ent = pinv[row.index] if 0 <= row.index < len(pinv) else None
                 self._toggle_pending_sell(row.ent_id, ent=ent, manager=self._current_manager)
             return

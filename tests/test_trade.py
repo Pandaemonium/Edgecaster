@@ -7,6 +7,7 @@ from edgecaster.systems.trade import (
     ProposalSummary,
     PriceQuote,
     apply_proposal_with_qty,
+    restock_merchant,
 )
 
 
@@ -45,7 +46,6 @@ def test_apply_proposal_with_qty_partial_buy_sets_player_ownership() -> None:
     merchant_item = _mk_item(item_id="merch_item", qty=3)
     inventories = {"merchant_1": [merchant_item], "player": []}
     game.get_inventory.side_effect = lambda owner_id: inventories[str(owner_id)]
-    game.player_inventory = inventories["player"]
 
     summary = ProposalSummary(
         buy_total=2,
@@ -104,7 +104,6 @@ def test_apply_proposal_with_qty_full_sell_sets_merchant_ownership() -> None:
     player_item = _mk_item(item_id="player_item", qty=1)
     inventories = {"merchant_1": [], "player": [player_item]}
     game.get_inventory.side_effect = lambda owner_id: inventories[str(owner_id)]
-    game.player_inventory = inventories["player"]
 
     summary = ProposalSummary(
         buy_total=0,
@@ -141,3 +140,36 @@ def test_apply_proposal_with_qty_full_sell_sets_merchant_ownership() -> None:
     assert getattr(sold, "socket_id", None) == "inventory"
     game.adjust_currency.assert_called_once_with(1, log=False)
 
+
+def test_restock_merchant_force_clears_existing_stock_via_shared_remove() -> None:
+    game = MagicMock()
+    merchant = MagicMock()
+    merchant.id = "merchant_1"
+    merchant.pos = (0, 0)
+    merchant.tags = {"merchant_id": "test_merchant"}
+
+    stale_item = _mk_item(item_id="old_stock")
+    fresh_item = _mk_item(item_id="new_stock")
+    inventories = {"merchant_1": [stale_item]}
+    game.get_inventory.side_effect = lambda owner_id: inventories[str(owner_id)]
+    game._spawn_entity_from_template.return_value = fresh_item
+    game.rng = None
+
+    with patch(
+        "edgecaster.systems.trade.merchant_def_from_actor",
+        return_value=MagicMock(
+            max_funds_bismuth=50,
+            max_stock=1,
+            stock=[MagicMock(weight=1.0, qty_min=1, qty_max=1, proto="widget_proto")],
+        ),
+    ), patch(
+        "edgecaster.systems.trade.inventory_system.remove_inventory_item",
+        side_effect=lambda _game, owner_id, ent, reason=None: inventories[str(owner_id)].remove(ent),
+    ) as remove_item, patch(
+        "edgecaster.systems.trade._append_inventory_item",
+        side_effect=lambda _game, inv, owner_id, ent: inventories[str(owner_id)].append(ent),
+    ):
+        restock_merchant(game, MagicMock(), merchant, force=True)
+
+    remove_item.assert_called_once()
+    assert inventories["merchant_1"] == [fresh_item]

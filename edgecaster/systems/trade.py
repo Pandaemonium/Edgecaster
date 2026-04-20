@@ -43,6 +43,12 @@ def _append_inventory_item(game: Any, inv: Any, owner_id: str, ent: Any) -> None
     inventory_system.add_inventory_item(game, owner_id, ent)
 
 
+def _player_inventory(game: Any) -> Any:
+    """Read the current player inventory through the shared query surface."""
+    player_id = str(getattr(game, "player_id", "player"))
+    return game.get_inventory(player_id)  # type: ignore[attr-defined]
+
+
 def _safe_int(x: Any, default: int = 0) -> int:
     try:
         return int(x)
@@ -187,7 +193,7 @@ def proposal_summary(
         )
 
     minv = list(game.get_inventory(merchant_actor_id))  # type: ignore[attr-defined]
-    pinv = list(game.player_inventory)  # type: ignore[attr-defined]
+    pinv = list(_player_inventory(game))
 
     by_id_minv = {getattr(ent, "id", ""): ent for ent in minv}
     by_id_pinv = {getattr(ent, "id", ""): ent for ent in pinv}
@@ -276,7 +282,7 @@ def apply_proposal(
     sell_ids = {str(x) for x in sell_item_ids if x}
 
     minv = game.get_inventory(merchant_actor_id)  # type: ignore[attr-defined]
-    pinv = game.player_inventory  # type: ignore[attr-defined]
+    pinv = _player_inventory(game)
 
     buy_items = [ent for ent in list(minv) if getattr(ent, "id", None) in buy_ids]
     sell_items = [ent for ent in list(pinv) if getattr(ent, "id", None) in sell_ids]
@@ -336,7 +342,14 @@ def restock_merchant(game: Any, level: Any, merchant_actor: Any, *, force: bool)
     set_merchant_funds(merchant_actor, int(mdef.max_funds_bismuth))
 
     if force:
-        inv.clear()
+        merchant_id = str(getattr(merchant_actor, "id", "") or "")
+        for item in list(inv):
+            inventory_system.remove_inventory_item(
+                game,
+                merchant_id,
+                item,
+                reason="merchant_restock",
+            )
 
     tags = getattr(merchant_actor, "tags", None) or {}
     if tags.get(MERCHANT_ALL_ITEMS_TAG):
@@ -486,7 +499,7 @@ def try_buy(game: Any, merchant_actor_id: str, item_index: int) -> bool:
         game,
         ent,
         src_inventory=minv,
-        dst_inventory=game.player_inventory,  # type: ignore[attr-defined]
+        dst_inventory=_player_inventory(game),
         dst_owner_id=str(getattr(game, "player_id", "player")),
     )
     # Item-granted actions can appear/disappear when inventory contents change.
@@ -553,7 +566,7 @@ def proposal_summary_with_qty(
         )
 
     minv = list(game.get_inventory(merchant_actor_id))  # type: ignore[attr-defined]
-    pinv = list(game.player_inventory)  # type: ignore[attr-defined]
+    pinv = list(_player_inventory(game))
 
     by_id_minv = {getattr(ent, "id", ""): ent for ent in minv}
     by_id_pinv = {getattr(ent, "id", ""): ent for ent in pinv}
@@ -657,7 +670,7 @@ def apply_proposal_with_qty(
     ensure_merchant_initialized(game, level, merchant)
 
     minv = game.get_inventory(merchant_actor_id)  # type: ignore[attr-defined]
-    pinv = game.player_inventory  # type: ignore[attr-defined]
+    pinv = _player_inventory(game)
 
     by_id_minv = {getattr(ent, "id", ""): ent for ent in list(minv)}
     by_id_pinv = {getattr(ent, "id", ""): ent for ent in list(pinv)}
@@ -766,7 +779,7 @@ def try_sell(game: Any, merchant_actor_id: str, item_index: int) -> bool:
 
     ensure_merchant_initialized(game, level, merchant)
 
-    pinv = game.player_inventory  # type: ignore[attr-defined]
+    pinv = _player_inventory(game)
     if not (0 <= int(item_index) < len(pinv)):
         return False
 

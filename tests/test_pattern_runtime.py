@@ -177,7 +177,7 @@ def test_act_chakra_skips_schema_resolve_for_component_backed_actor(monkeypatch)
     def _fail_schema_resolve(_actor):
         raise AssertionError("resolve_body_schema should not be called for component-backed casts")
 
-    def _fake_seed(body_schema, *_args, **_kwargs):
+    def _fake_seed(chakra_state, *, body_schema=None, **_kwargs):
         captured_body_schemas.append(dict(body_schema or {}))
         return SimpleNamespace(
             root_id="body",

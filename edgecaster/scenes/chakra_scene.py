@@ -1264,7 +1264,6 @@ class PatternPreviewWidget(Widget):
             seed = build_chakra_generator_seed_for_actor(
                 self.actor,
                 chakra_state=chakra_state,
-                base_scale=1.0,
                 game=_preview_game,
                 # Match runtime cast behavior exactly so preview is WYSIWYG.
                 require_root=True,

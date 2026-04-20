@@ -242,7 +242,6 @@ def act_chakra(self, actor_id: str) -> None:
     try:
         seed = build_chakra_generator_seed_for_actor(
             actor,
-            base_scale=1.0,
             game=self,
             require_root=True,
         )

@@ -14,7 +14,7 @@ See vision_documents/spring_cleaning.txt for details.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, TYPE_CHECKING, Tuple
+from typing import Any, Iterator, List, Optional, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     from edgecaster.game import Game, LevelState
@@ -190,6 +190,81 @@ def get_player_inventory(game: "Game") -> List["Entity"]:
     This automatically follows body-swaps by using the current player_id.
     """
     return get_inventory(game, game.player_id)
+
+
+def iter_inventory_root_owner_ids(
+    game: "Game",
+    *,
+    level: Optional[Any] = None,
+) -> Iterator[str]:
+    """Yield known top-level inventory owners without duplicating ids.
+
+    This is the shared discovery surface for systems that need to walk
+    inventory trees without treating ``game.inventories`` as the sole
+    authority for which owners exist.
+    """
+    seen: set[str] = set()
+
+    def _yield_once(raw_owner_id: Any) -> Iterator[str]:
+        owner_id = str(raw_owner_id or "").strip()
+        if owner_id and owner_id not in seen:
+            seen.add(owner_id)
+            yield owner_id
+
+    yield from _yield_once(getattr(game, "player_id", None))
+
+    if level is None:
+        try:
+            level = game._level()
+        except Exception:
+            level = None
+
+    if level is not None:
+        for collection_name in ("actors", "entities"):
+            collection = getattr(level, collection_name, None)
+            if isinstance(collection, dict):
+                for owner_id in collection.keys():
+                    yield from _yield_once(owner_id)
+
+    inventories = getattr(game, "inventories", None)
+    if isinstance(inventories, dict):
+        for owner_id in list(inventories.keys()):
+            yield from _yield_once(owner_id)
+
+    for owner_id in sorted(_inventory_graph_authority_owners(game)):
+        yield from _yield_once(owner_id)
+
+
+def iter_inventory_tree(
+    game: "Game",
+    owner_id: str,
+    *,
+    _visited_owner_ids: Optional[set[str]] = None,
+) -> Iterator[tuple[str, "Entity"]]:
+    """Yield ``(owner_id, item)`` pairs for an owner's recursive inventory tree."""
+    current_owner_id = str(owner_id or "").strip()
+    if not current_owner_id:
+        return
+
+    visited_owner_ids = _visited_owner_ids if _visited_owner_ids is not None else set()
+    if current_owner_id in visited_owner_ids:
+        return
+    visited_owner_ids.add(current_owner_id)
+
+    try:
+        inventory_items = list(get_inventory(game, current_owner_id) or [])
+    except Exception:
+        inventory_items = []
+
+    for item in inventory_items:
+        yield current_owner_id, item
+        child_owner_id = str(getattr(item, "id", "") or "").strip()
+        if child_owner_id:
+            yield from iter_inventory_tree(
+                game,
+                child_owner_id,
+                _visited_owner_ids=visited_owner_ids,
+            )
 
 
 def add_inventory_item(game: "Game", owner_id: str, ent: Any) -> None:

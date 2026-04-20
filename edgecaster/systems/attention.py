@@ -41,49 +41,6 @@ from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.state import chakra_component as chakra_component_state
 
 
-_PRIMARY_ENTITY_STATE_KEYS = {
-    "removed",
-    "dead",
-    "removed_reason",
-    "dead_reason",
-    "updated_tick",
-    "owner_id",
-    "parent_entity_id",
-    "socket_id",
-    "in_inventory",
-}
-
-
-# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-# The persistence/suppression wrappers in this block keep older attention paths
-# working while entity_state, snapshots, and attention still overlap. Once
-# attention reads lifecycle state through one shared authority path, collapse
-# these helpers into direct calls or delete them.
-def _peek_entity_state(game: object, key: str) -> Dict[str, Any]:
-    store = getattr(game, "entity_state", None)
-    if isinstance(store, dict):
-        st = store.get(str(key))
-        if isinstance(st, dict):
-            return st
-        return {}
-    try:
-        getter = getattr(game, "get_entity_state", None)
-        if callable(getter):
-            st = getter(str(key))
-            if isinstance(st, dict):
-                return st
-    except Exception:
-        pass
-    return {}
-
-
-def _normalize_optional_lineage_id(raw: object) -> str | None:
-    try:
-        lineage_id = str(raw or "").strip()
-    except Exception:
-        lineage_id = ""
-    return lineage_id or None
-
 
 def _effective_entity_state(game: object, *, entity_id: str | None, lineage_id: str | None) -> Dict[str, Any]:
     lid = str(lineage_id or "").strip()
@@ -96,29 +53,7 @@ def _effective_entity_state(game: object, *, entity_id: str | None, lineage_id: 
                 return dict(st)
     except Exception:
         pass
-
-    primary: Dict[str, Any] = {}
-    fallback: Dict[str, Any] = {}
-    # Unification note: lineage_id merging is still a migration bridge. Once
-    # graph/persistence cutover is complete, entity_id should be authoritative
-    # and lineage should survive only as contextual provenance/history.
-    if eid:
-        st = _peek_entity_state(game, eid)
-        if isinstance(st, dict):
-            primary = dict(st)
-    if lid and lid != eid:
-        st = _peek_entity_state(game, lid)
-        if isinstance(st, dict):
-            fallback = dict(st)
-    if not primary:
-        return fallback
-
-    out: Dict[str, Any] = {}
-    for key, value in fallback.items():
-        if str(key) not in _PRIMARY_ENTITY_STATE_KEYS:
-            out[str(key)] = value
-    out.update(primary)
-    return out
+    return {}
 
 
 def _entity_is_suppressed(game: object, entity_id: str, *, lineage_id: str | None = None) -> bool:

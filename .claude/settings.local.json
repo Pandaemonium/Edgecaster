@@ -18,7 +18,21 @@
       "Bash(python3 -m pip install:*)",
       "Bash(python3:*)",
       "Bash(git stash:*)",
-      "Bash(ls c:/Games/Edgecaster/tests/test_chakra*.py c:/Games/Edgecaster/tests/test_pattern*.py)"
+      "Bash(ls c:/Games/Edgecaster/tests/test_chakra*.py c:/Games/Edgecaster/tests/test_pattern*.py)",
+      "Bash(git checkout *)",
+      "Bash(git -C \"c:/Games/Edgecaster\" diff --stat HEAD)",
+      "Bash(git -C \"c:/Games/Edgecaster\" diff HEAD -- vision_documents/spring_cleaning.txt)",
+      "Bash(git -C \"c:/Games/Edgecaster\" checkout HEAD -- vision_documents/spring_cleaning.txt)",
+      "Bash(git -C \"c:/Games/Edgecaster\" diff HEAD -- vision_documents/architecture.txt)",
+      "Bash(git -C \"c:/Games/Edgecaster\" status --short)",
+      "Bash(git -C \"c:/Games/Edgecaster\" diff HEAD -- tests/test_entity_geometry.py tests/test_entity_body_expansion.py)",
+      "Bash(git -C \"c:/Games/Edgecaster\" diff HEAD -- edgecaster/systems/pattern_runtime.py)",
+      "Bash(git -C \"c:/Games/Edgecaster\" diff HEAD -- edgecaster/game.py)",
+      "Bash(xargs -I{} bash -c 'echo \"=== {} ===\" && grep -c \"^def \\\\|^ def \" {} 2>/dev/null')",
+      "Bash(xargs -I{} basename {})",
+      "Bash(xargs '-I{}' bash -c 'n=$\\(grep -c \"^def \\\\|^    def \" {} 2>/dev/null\\); echo \"$n $\\(basename {}\\)\"')",
+      "Bash(awk '{print $3}')",
+      "Bash(xargs '-I{}' bash -c 'f={}; n=$\\(grep -c \"^def \" $f 2>/dev/null\\); if [ \"$n\" -le \"3\" ]; then echo \"$n $f\"; fi')"
     ]
   }
 }

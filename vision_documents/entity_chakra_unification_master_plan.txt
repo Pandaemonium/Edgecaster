@@ -137,10 +137,11 @@ Implemented and stable:
      entity model, not a permanent second ontology.
    - Spawn factory now coerces YAML chakra payloads to typed components and
      guarantees a default `{entity_id}:core` node.
-   - Runtime bridge now lazily initializes legacy actor chakra state via
-     `ensure_actor_chakra_state(...)` in core chakra consumers.
-   - Runtime state mutations now mirror back into `ChakraComponent` via
-     `sync_actor_chakra_state(...)` in charge/use/edit paths.
+   - Legacy runtime bridges (`ensure_actor_chakra_state`, `sync_actor_chakra_state`)
+     have been deleted.
+   - `ChakraViewState`, `effective_chakra_view`, and `build_chakra_generator_seed_for_actor`
+     are now the preferred paths for chakra queries and generation.
+   - `body_view_queries.py` provides the shared scene query surface.
    - Actor-scoped chakra mutation wrappers now exist:
      `unlock_actor_chakra(...)`, `toggle_actor_chakra(...)`.
    - Monk unlock flow, Chakra Sage dialogue unlock flow, and Chakra Scene toggle
@@ -410,6 +411,249 @@ Not yet complete:
       `_clone_entity_for_trade`) confirmed already deleted; spring_cleaning entry
       marked DONE.
 
+86. Phase 8 Legacy Removal Slice LXXXVI (2026-04-19):
+    - `systems/poi_worldgen.py`: Deleted `poi_structure_world_id(poi_id, kind, index)` (5 lines)
+      — zero callers; `poi_npc_world_id` and `poi_wall_world_id` are used but this id-builder
+      was never wired up.
+    - 648 tests pass (no behavioral change).
+
+85. Phase 8 Legacy Removal Slice LXXXV (2026-04-19):
+    - `prototypes.py`: Deleted `proto_has_body_root`, `get_proto_body_root`, and
+      `get_body_node_info` (120 lines total) — all three zero callers; companion query helpers
+      written alongside the body-schema walker API but never integrated into any code path.
+    - 648 tests pass (no behavioral change).
+
+84. Phase 8 Legacy Removal Slice LXXXIV (2026-04-19):
+    - `systems/session.py`: Deleted `get_player(game)` (7 lines) — zero callers; its body is
+      `ensure_player_level_binding(game)` + `.actors.get(player_id)`, and all call sites do
+      that combination directly instead.
+    - `events.py`: Deleted `effect_give_berry(game)` (12 lines) — zero callers; the
+      mysterious-stranger event uses `_player_has_berry` / `_consume_one_berry` directly inside
+      `effect_mysterious_stranger` instead.
+    - 648 tests pass (no behavioral change).
+
+83. Phase 8 Legacy Removal Slice LXXXIII (2026-04-19):
+    - `prototypes.py`: Deleted `find_parent_in_body_schema` and `get_all_body_nodes`
+      (48 lines total) — zero callers; same family as the earlier `_find_parent_node_id`
+      and `get_gating_chain` deletions (Slice LVII).
+    - 648 tests pass (no behavioral change).
+
+82. Phase 8 Legacy Removal Slice LXXXII (2026-04-19):
+    - `game.py`: Deleted module-level `_los(world, a, b, *, opaque)` (36 lines) — zero callers;
+      `_los_abs` inside `_update_fov` and `lighting.py _los_check` serve the actual LOS needs.
+    - 648 tests pass (no behavioral change).
+
+81. Phase 8 Legacy Removal Slice LXXXI (2026-04-19):
+    - `systems/turns.py` deleted (30 lines) — defined `TurnScheduler` and `ScheduledAction`
+      dataclasses; never imported by any module or test. Superseded by `scheduling.py` heapq
+      logic which is the actual runtime turn engine.
+    - 648 tests pass (no behavioral change).
+
+80. Phase 8 Legacy Removal Slice LXX (2026-04-19):
+    - `game.py` dead delegate wrappers deleted (all zero callers):
+        - `_realize_aggregate_details_in_zone(level, coord, kinds)` — wrapped
+          `attention_system._realize_aggregate_details_in_zone`
+    - 648 tests pass (no behavioral change).
+
+79. Phase 8 Legacy Removal Slice LXIX (2026-04-19):
+    - `game.py` dead delegate wrappers deleted (all zero callers):
+        - `_init_lorenz_points()` — wrapped `lorenz.init_lorenz_points`
+        - `_step_lorenz(steps)` — wrapped `lorenz.step_lorenz`
+        - `_lorenz_contact_damage(level)` — lorenz_aura calls itself directly
+        - `_ensure_world_site_entities(zone_w, zone_h)` — wrapped
+          `attention_system._ensure_world_site_entities`
+        - `_ensure_world_poi_entities(zone_w, zone_h)` — wrapped
+          `attention_system._ensure_world_poi_entities`
+    - 648 tests pass (no behavioral change).
+
+78. Phase 8 Legacy Removal Slice LXVIII (2026-04-19):
+    - `game.py` dead delegate wrappers deleted (all zero callers):
+        - `_blocking_entity_at(level, pos)` — wrapped `entity_ops_system.blocking_entity_at`
+        - `_coherence_tick(level, delta)` — scheduling.py calls `coherence_tick` directly
+        - `_cooldown_tick(level, delta)` — scheduling.py calls `cooldown_tick` directly
+        - `_slow_mult(actor)` — wrapped `scheduling.slow_mult`
+        - `_apply_action_tick_offset(actor, delay)` — wrapped `scheduling.apply_action_tick_offset`
+    - 648 tests pass (no behavioral change).
+
+77. Phase 8 Legacy Removal Slice LXVII (2026-04-19):
+    - `game.py` `_init_rune_anchors()` deleted. Zero callers. Wrapped
+      `overmap_system.init_rune_anchors`.
+    - `game.py` `_jx_jy_slices_for_zone(coord)` deleted. Zero callers. Wrapped
+      `overmap_system.jx_jy_slices_for_zone`.
+    - `game.py` `_refresh_corruption_visuals()` deleted. Zero callers. Wrapped
+      `overmap_system.refresh_corruption_visuals`.
+    - 648 tests pass (no behavioral change).
+
+76. Phase 8 Legacy Removal Slice LXVI (2026-04-19):
+    - `game.py` `_alloc_rune_anchor_poi_id()` deleted. Zero callers. Wrapped
+      `overmap_system.alloc_rune_anchor_poi_id`.
+    - `game.py` `_alloc_legendary_lair_poi_id()` deleted. Zero callers. Wrapped
+      `legendaries_system.alloc_legendary_lair_poi_id`.
+    - Also removed the orphaned `# PHASE 5: LEGENDARIES & POI DISCOVERY`
+      section header that surrounded the deleted pair.
+    - 648 tests pass (no behavioral change).
+
+75. Phase 8 Legacy Removal Slice LXV (2026-04-19):
+    - `game.py` `_spawn_entities_near(...)` deleted. Zero callers. Wrapped
+      `spawning_system.spawn_entities_near`.
+    - `game.py` `_spawn_echoes_near(...)` deleted. Zero callers. Wrapped
+      `spawning_system.spawn_echoes_near`.
+    - `game.py` `_scatter_test_berries(...)` deleted. Zero callers. Wrapped
+      `spawning_system.scatter_test_berries`.
+    - `_spawn_imps_near` and `_spawn_berries_near` kept — both called from
+      `events.py`.
+    - 648 tests pass (no behavioral change).
+
+74. Phase 8 Legacy Removal Slice LXIV (2026-04-19):
+    - `game.py` `_spawn_mentor(level)` deleted. Zero callers. Wrapper delegating
+      to `spawning_system.spawn_mentor` — callers can use the system directly.
+    - `game.py` `_spawn_intro_npcs(level)` deleted. Zero callers. Same pattern.
+    - `game.py` `_spawn_npcs(level, count)` deleted. Zero callers. Same pattern.
+    - `_spawn_poi_contents` kept — called at line 1916 within `_make_zone`.
+    - 648 tests pass (no behavioral change).
+
+73. Phase 8 Legacy Removal Slice LXIII (2026-04-19):
+    - `state/factions.py` deleted (19 lines). Defined `Faction` and `Reputation`
+      dataclasses that were never imported anywhere. Faction/reputation data in
+      the game uses plain dicts, not these dataclasses.
+    - `state/INDEX.md` entry removed.
+    - 648 tests pass (no behavioral change).
+
+72. Phase 8 Legacy Removal Slice LXII (2026-04-19):
+    - `state/saves.py` deleted (10 lines). Module was a stub ("Replace with real
+      serialization later") with two identity functions `save_game/load_game`.
+      Never imported by any production or test file.
+    - `state/INDEX.md` entry removed.
+    - 648 tests pass (no behavioral change).
+
+71. Phase 8 Legacy Removal Slice LXI (2026-04-19):
+    - `patterns/queries.py` deleted (29 lines). The module defined two helpers —
+      `vertices_in_radius` and `segments_bounding_box` — with zero callers
+      anywhere in production code or tests. Never imported by any module.
+    - 648 tests pass (no behavioral change).
+
+70. Phase 8 Legacy Removal Slice LX (2026-04-19):
+    - `patterns/library.py` `starter_pattern()` deleted. Zero callers anywhere
+      in production code or tests. Was a convenience helper from before the
+      scene-based fractal editor replaced ad hoc pattern construction.
+      Unused imports (`Pattern`, `builder`) removed from library.py header.
+    - 648 tests pass (no behavioral change).
+
+69. Phase 8 Legacy Removal Slice LIX (2026-04-19):
+    - `edgecaster/char_creation.py` deleted (756 lines). The file was an old
+      standalone character-creation UI module (CharCreation class +
+      run_character_creation function). It was never imported anywhere in the
+      codebase — `scenes/character_creation_scene.py` fully supersedes it.
+      No tests referenced it.
+    - 648 tests pass (no behavioral change).
+
+68. Phase 8 Legacy Removal Slice LVIII (2026-04-19):
+    - `systems/effects.py` deleted. The module defined an `Effect` dataclass,
+      a `register_effect` function, and an `effects` dict — none ever imported by
+      any production or test file. `visual_effects.py` has its own independent
+      `register_effect`/`VisualEffectDef` pipeline that superseded this stub.
+    - 648 tests pass (no behavioral change).
+
+67. Phase 8 Legacy Removal Slice LVII (2026-04-19):
+    - `systems/chakras.py` `get_gating_chain(body_schema, target_node_id, ...)` deleted
+      (63 lines). Zero external callers; appeared only in its own docstring example.
+    - `systems/chakras.py` `_find_parent_node_id(nodes, target_id)` deleted (15 lines).
+      Its only caller was `get_gating_chain`. With that deleted, the helper became
+      fully orphaned.
+    - 648 tests pass (no behavioral change).
+
+66. Phase 8 Legacy Removal Slice LVI (2026-04-19):
+    - `game.py` `_entity_state_keys(...)` deleted. The method had zero callers;
+      only `_entity_state_write_key` and `_merge_entity_state_records` are used by
+      `get_effective_entity_state` and `patch_entity_state`. The restore in the
+      Gemini fix pass brought all three back but this one was unnecessary.
+    - `systems/chakras.py` `get_connected_active_nodes(...)` deleted (74 lines).
+      Zero callers. `get_compact_active_graph` supersedes it for all graph
+      compression needs.
+    - `systems/chakras.py` `check_resonance_bonuses(body_schema, chakra_state)`
+      deleted. Zero callers. The compatibility wrapper just forwarded to
+      `check_resonance_bonuses_from_active_nodes` while ignoring `body_schema`.
+    - `tests/test_chakra_unlock_queries.py` import and parity test updated:
+      `check_resonance_bonuses` removed from import; parity assertion replaced
+      with a direct test of `check_resonance_bonuses_from_active_nodes`.
+    - 648 tests pass (no net change — parity test removed, direct test kept).
+
+65. Phase 8 Legacy Removal Slice LV (2026-04-19):
+    - `systems/attention.py` `_normalize_optional_lineage_id` deleted. The function
+      became orphaned after Slice LI removed `_peek_entity_state`: no internal caller
+      remained in attention.py. `entity_lifecycle.py` has its own identical copy.
+    - `tests/test_attention_suppression.py` `test_normalize_optional_lineage_id_preserves_absence`
+      deleted (tested the now-deleted function; entity_lifecycle.py version is covered
+      by its own module's tests).
+    - `spring_cleaning.txt` two CLEANUP entries promoted to DONE:
+        - "Extract sync_attention_instantiation" — already a thin delegate in game.py;
+          confirmed DONE.
+        - "Unify _stable_hash helpers" — done by entity_identity.py canonical
+          `stable_int_hash`; aggregate_resolution / poi_worldgen / site_placement
+          all import it.
+    - 648 tests pass (−1 from deleted function test).
+
+64. Phase 8 Legacy Removal Slice LIV (2026-04-19):
+    - `systems/chakras.py` `unlock_chakra(chakra_state, node_id, ...)` deleted.
+      Zero external callers. Replaced by `chakra_items.unlock_actor_chakra(...)`.
+    - `systems/chakras.py` `toggle_chakra_active(chakra_state, node_id, ...)` deleted.
+      Zero external callers. Replaced by `chakra_items.toggle_actor_chakra(...)`.
+    - `systems/chakras.py` `ChakraState.to_dict()` deleted. Zero callers;
+      replaced by `chakra_items.snapshot_chakra_state(...)` (Slice XLVI).
+    - 649 tests pass (no behavioral change).
+
+63. Phase 8 Legacy Removal Slice LIII (2026-04-19):
+    - `edgecaster/systems/INDEX.md` updated for three new extracted modules:
+        - `active_zones.py` — zone coordinate queries and prewarm, extracted from game.py
+        - `pattern_state.py` — canonical rune pattern state bridge, extracted from game.py
+        - `session.py` — current_level / ensure_player_level_binding / get_player / is_player_alive
+    - `entity_identity.py` annotated as canonical `stable_int_hash` source.
+    - 649 tests pass (no behavioral change).
+
+62. Phase 8 Legacy Removal Slice LII (2026-04-19):
+    - `game.py` `_level()` / `_ensure_player_level_binding()` / `player_alive` property now
+      delegate to `session_system` (new `systems/session.py` module). The `_player()` method
+      keeps its hard-lookup semantics unchanged. All 52 internal `_level()` call sites are
+      unaffected — the delegation is transparent.
+    - 649 tests pass (no behavioral change).
+
+61. Phase 8 Legacy Removal Slice LI (2026-04-19):
+    - `systems/attention.py` `_peek_entity_state` deleted (36 lines).
+    - `_PRIMARY_ENTITY_STATE_KEYS` set deleted.
+    - `_effective_entity_state` collapsed: the local primary/fallback merge logic removed;
+      the function now exclusively calls `game.get_effective_entity_state`. This was safe
+      because Slice XLIV confirmed the condition: all external callers route through
+      `get_effective_entity_state` and `game.py` has the authoritative lineage merge.
+    - `tests/test_attention_suppression.py` `_DummyGame` gained `get_effective_entity_state`
+      so suppression tests exercise the unified path.
+    - `spring_cleaning.txt` "attention persistence wrapper block" entry updated: condition
+      met, deletions complete.
+    - 649 tests pass (−0 net: suppression test count unchanged).
+
+    Also landed as part of this session (Gemini contributions, reviewed and fixed 2026-04-19):
+    - `systems/entity_identity.py` — canonical `stable_int_hash(...)` FNV-1a hash added.
+    - `systems/aggregate_resolution.py`, `systems/poi_worldgen.py`, `systems/site_placement.py`
+      — local `_stable_int_hash` / `_stable_hash` implementations deleted; now import from
+      `entity_identity.stable_int_hash`.
+    - `render/ascii.py` Yoga Stage 2 coordinate consolidation: ~15 ad-hoc
+      `float(ax) * tile_px_f + ...` sites replaced with `self.abs_tile_to_screen_px(...)`.
+    - `scenes/character_creation_scene.py` `MonkChakraDraft` dataclass added: replaces
+      `ChakraState` as the mutable accumulator for the monk creation flow. Narrows the
+      `ChakraState` usage surface in scenes — character creation no longer writes live
+      component state.
+    - `systems/active_zones.py` extracted from game.py (zone coordinate helpers, advance_time).
+    - `systems/pattern_state.py` extracted from game.py (canonical pattern state bridge).
+    - `systems/session.py` extracted from game.py (level/player accessors).
+    - `game.py` imports all three and delegates `_advance_time`, pattern state methods to
+      their respective modules.
+    - `vision_documents/architecture.txt` updated: chakra function names updated to reflect
+      current API (`can_unlock_chakra_for_entity`, `toggle_actor_chakra`, etc.).
+    - Gemini also made premature deletions (entity_graph_ops legacy patching,
+      attention lineage fallback, game.py lineage helpers, chakras.py body-schema fallback,
+      test guards, character-creation sort key, spring_cleaning.txt historical entries) —
+      all reverted or fixed as part of this session's fix pass.
+    - 649 tests pass after fixes.
+
 60. Phase 8 Legacy Removal Slice L (2026-04-19):
     - `systems/trade.py` stale LEGACY_DELETE comment at line 645 removed.
       Comment said "Trade still targets list-backed inventory stores" — stale since
@@ -470,8 +714,8 @@ Not yet complete:
     - `systems/rune_anchor_sieges.py` and `systems/seal_trials.py` consume `remove_inventory_item_at`.
     - `wish.py` pickup path migrated to `add_inventory_item`.
     - `events.py` `_iter_all_inventory_items` refactored: introduced `_inventory_for`
-      helper that calls `game.get_inventory()` first; direct `game.inventories` and
-      `game.player_inventory` reads are now fallback-only shims.
+      helper that calls `game.get_inventory()` first; direct list-cache reads were
+      reduced to fallback-only shims in that slice.
     - `systems/action_runner.py` and `systems/scheduling.py` reads go through
       `get_inventory()` rather than reaching into list caches.
     - 650 tests pass.
@@ -2393,7 +2637,7 @@ Aggressive legacy burn-down targets (2026-04-12):
   - `edgecaster/systems/entity_snapshots.py` `last_known_*` payload shape
   - edgecaster/systems/footprints.py tag-based footprint fallback queries
   - edgecaster/systems/entity_lifecycle.py RUNTIME_REGISTRY compatibility bridge
-  - edgecaster/systems/chakras.py BODY_SCHEMA compatibility bridge
+  - [DONE] `edgecaster/systems/chakras.py` BODY_SCHEMA compatibility bridge
   - `edgecaster/systems/attention.py` suppression wrappers, sidecar child map,
     and `AttentionCellStore`
   - `edgecaster/systems/inventory.py`, `trade.py`, `world_entity_index.py`,

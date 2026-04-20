@@ -28,8 +28,6 @@ Supersedes: none
 ## Chakra And Persistence
 
 - `chakra_component.py` - typed chakra component graph structures
-- `saves.py` - save scaffolding
-- `factions.py` - small faction-state helpers
 
 ## Maintenance Rules
 

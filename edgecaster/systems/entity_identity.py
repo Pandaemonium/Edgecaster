@@ -25,6 +25,16 @@ def world_seed(game: object) -> int:
     return int(seed)
 
 
+def stable_int_hash(*parts: object) -> int:
+    """Generate a stable FNV-1a hash from parts (deterministic within run)."""
+    s = "|".join(str(p) for p in parts)
+    h = 2166136261
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return int(h)
+
+
 def _stable_parts(parts: Iterable[object]) -> str:
     out: list[str] = []
     for p in parts:
@@ -67,4 +77,3 @@ def deterministic_runtime_id(
     payload = _stable_parts(("v1", seed, rid, x, y, salt or ""))
     digest = blake2s(payload.encode("utf-8"), digest_size=8).hexdigest()
     return f"{ns}:{rid}:{x},{y}:{digest}"
-

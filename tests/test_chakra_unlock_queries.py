@@ -4,7 +4,6 @@ from edgecaster import prototypes, spawn_factory
 from edgecaster.systems.chakras import (
     ChakraState,
     can_unlock_chakra_for_entity,
-    check_resonance_bonuses,
     check_resonance_bonuses_from_active_nodes,
     list_unlockable_chakras_for_entity,
     list_unlockable_chakras_for_entity_from_unlocked,
@@ -84,7 +83,7 @@ def test_can_unlock_chakra_for_entity_rejects_locked_prereq() -> None:
         )
 
 
-def test_resonance_helper_from_active_nodes_matches_compat_wrapper() -> None:
+def test_resonance_helper_from_active_nodes() -> None:
     active_nodes = {
         "body",
         "arm",
@@ -95,12 +94,9 @@ def test_resonance_helper_from_active_nodes_matches_compat_wrapper() -> None:
         "ring",
         "pinky",
     }
-    chakra_state = ChakraState(unlocked=set(active_nodes), active=set(active_nodes))
 
-    compat = check_resonance_bonuses({}, chakra_state)
     direct = check_resonance_bonuses_from_active_nodes(active_nodes)
 
-    assert sorted(direct) == sorted(compat)
     assert "bilateral_arms" in direct
     assert "full_hand" in direct
     assert "centered" in direct

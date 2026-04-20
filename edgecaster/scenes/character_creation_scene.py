@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import pygame
-from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from dataclasses import dataclass, field
+from typing import Optional, List, Tuple, Dict
 
 from edgecaster.character import Character, default_character
-from edgecaster.systems.chakras import ChakraState
-from edgecaster.prototypes import resolve_body_schema
 
 from .base import (
     PanelScene,
@@ -62,6 +60,16 @@ DEFAULT_NAME = "Pandaemonium"
 # ---------------------------------------------------------------------------
 # UI model
 # ---------------------------------------------------------------------------
+
+@dataclass
+class MonkChakraDraft:
+    """Lightweight accumulator for Monk character creation preview."""
+    unlocked: set[str] = field(default_factory=set)
+    active: set[str] = field(default_factory=set)
+    alignments: dict[str, tuple[float, float]] = field(default_factory=dict)
+    generators: dict[str, str] = field(default_factory=dict)
+    charges: dict[str, float] = field(default_factory=dict)
+    pattern_root: str | None = None
 
 @dataclass
 class RuneEditorState:
@@ -137,7 +145,7 @@ class CharCreateState:
     # Monk-specific chakra selection
     monk_base: Optional[str] = None
     monk_picks: List[str] = None  # type: ignore[assignment]
-    monk_state: Optional[ChakraState] = None
+    monk_state: Optional[MonkChakraDraft] = None
     monk_scroll: int = 0
 
     def __post_init__(self) -> None:
@@ -152,7 +160,7 @@ class CharCreateState:
         if self.monk_picks is None:
             self.monk_picks = []
         if self.monk_state is None:
-            self.monk_state = ChakraState(unlocked=set(), active=set())
+            self.monk_state = MonkChakraDraft(unlocked=set(), active=set())
         if self.monk_base is None:
             self.monk_base = "body"
 
@@ -484,15 +492,6 @@ class CharacterCreationScene(PanelScene):
     # Monk chakra selection helpers
     # ------------------------------------------------------------------ #
 
-    def _monk_body_schema(self) -> dict:
-        """Resolve the body schema for the currently selected species."""
-        assert self.state is not None
-        st = self.state
-        try:
-            return resolve_body_schema(st.species_template)
-        except Exception:
-            return resolve_body_schema("human_base")
-
     def _monk_can_unlock(self, node_id: str, unlocked: set[str]) -> bool:
         """Prefix-based gating: requires all parent prefixes to be unlocked."""
         if node_id in unlocked:
@@ -514,7 +513,7 @@ class CharacterCreationScene(PanelScene):
 
         base = st.monk_base or "body"
         # Build a fresh state so gating remains deterministic.
-        monk_state = ChakraState(unlocked=set(), active=set())
+        monk_state = MonkChakraDraft(unlocked=set(), active=set())
         monk_state.unlocked = {base}
         monk_state.active = {base}
         monk_state.pattern_root = base
@@ -537,19 +536,18 @@ class CharacterCreationScene(PanelScene):
         if not st.is_monk():
             return []
 
-        body_schema = self._monk_body_schema()
-        state = st.monk_state or ChakraState(unlocked=set(), active=set())
+        state = st.monk_state or MonkChakraDraft(unlocked=set(), active=set())
         unlocked = set(state.unlocked)
 
-        # Build the node list from shared entity_body specs rather than
-        # walking body_schema directly. A minimal dummy entity carries the
-        # resolved schema so build_body_node_specs returns the full flat
-        # node map. The prefix-gating in _monk_can_unlock then decides
-        # which nodes are actually selectable.
+        # Build the node list from shared entity_body specs using a minimal
+        # template-backed owner. This keeps character creation on the same
+        # resolver contract as runtime body expansion instead of resolving
+        # schemas locally first.
         from types import SimpleNamespace
         from edgecaster.systems import entity_body as entity_body_system
 
-        dummy = SimpleNamespace(id="char_creation_preview", body_schema=body_schema)
+        template_id = str(st.species_template or "human_base")
+        dummy = SimpleNamespace(id="char_creation_preview", template_id=template_id)
         specs = entity_body_system.build_body_node_specs(dummy)
 
         def _display(full_id: str) -> str:
@@ -559,7 +557,7 @@ class CharacterCreationScene(PanelScene):
             return local.replace("_", " ").title()
 
         results: List[Tuple[str, str, int]] = []
-        # Depth-first order: shallower nodes first, alphabetical within depth.
+        # Depth-first order: children grouped under their parents.
         for full_id in sorted(specs, key=lambda fid: (fid.count("."), fid)):
             if full_id == st.monk_base:
                 continue

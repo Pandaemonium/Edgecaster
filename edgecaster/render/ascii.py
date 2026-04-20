@@ -2467,14 +2467,8 @@ class AsciiRenderer:
                 continue
 
             # Tile centers in screen pixels (same mapping used by entity glyph/sprite rendering).
-            a_px = (
-                float(ax) * tile_px_f + float(self.origin_x) + tile_px_f * 0.5,
-                float(ay) * tile_px_f + float(self.origin_y) + tile_px_f * 0.5,
-            )
-            b_px = (
-                float(bx) * tile_px_f + float(self.origin_x) + tile_px_f * 0.5,
-                float(by) * tile_px_f + float(self.origin_y) + tile_px_f * 0.5,
-            )
+            a_px = self.abs_tile_to_screen_px(float(ax) + 0.5, float(ay) + 0.5)
+            b_px = self.abs_tile_to_screen_px(float(bx) + 0.5, float(by) + 0.5)
 
             # Quick reject: if the entire chain is off-screen, skip.
             if not screen_rect.inflate(40, 40).collidepoint(int(a_px[0]), int(a_px[1])) and not screen_rect.inflate(40, 40).collidepoint(int(b_px[0]), int(b_px[1])):
@@ -2669,7 +2663,6 @@ class AsciiRenderer:
             # ABS-space camera: abs_x/abs_y already live in the renderer's world coordinate frame.
             x = float(abs_x)
             y = float(abs_y)
-
 
             # Fog-of-war tile rules require a tile lookup in the entity's owning zone.
             tile = None
@@ -2977,7 +2970,6 @@ class AsciiRenderer:
             return
         ox, oy = self._zone_abs_offset(game)
         verts = project_vertices(game.pattern, origin)
-        # density-based sizing
         count = len(verts)
         if count > 400:
             v_radius = max(1, int(self.vertex_base_radius * self.zoom * 0.5))
@@ -2995,10 +2987,8 @@ class AsciiRenderer:
                 b = verts[e.b]
             except IndexError:
                 continue
-            ax = (a[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
-            ay = (a[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
-            bx = (b[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
-            by = (b[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
+            ax, ay = self.abs_tile_to_screen_px(a[0] + ox + 0.5, a[1] + oy + 0.5)
+            bx, by = self.abs_tile_to_screen_px(b[0] + ox + 0.5, b[1] + oy + 0.5)
             dx = bx - ax
             dy = by - ay
             dist = max(1.0, math.hypot(dx, dy))
@@ -3027,8 +3017,8 @@ class AsciiRenderer:
         # vertices with glow sprites
         base_sprite = self._get_glow_sprite(v_radius, self.pattern_color)
         for vx, vy in verts:
-            px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
+            px, py = int(px_f), int(py_f)
             rect = base_sprite.get_rect(center=(px, py))
             self.verts_surface.blit(base_sprite, rect)
 
@@ -3088,10 +3078,8 @@ class AsciiRenderer:
                 b = verts[edge.b]
             except Exception:
                 continue
-            ax = (a[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
-            ay = (a[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
-            bx = (b[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
-            by = (b[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
+            ax, ay = self.abs_tile_to_screen_px(a[0] + ox + 0.5, a[1] + oy + 0.5)
+            bx, by = self.abs_tile_to_screen_px(b[0] + ox + 0.5, b[1] + oy + 0.5)
 
             edge_key = (min(edge.a, edge.b), max(edge.a, edge.b))
             if edge_key in trial.missing_edge_keys:
@@ -3114,8 +3102,8 @@ class AsciiRenderer:
         ox, oy = self._zone_abs_offset(game)
         rx, ry = root
         tile_px = max(1, int(round(self.tile)))
-        x = int((rx + ox) * self.tile + self.origin_x)
-        y = int((ry + oy) * self.tile + self.origin_y)
+        x_f, y_f = self.abs_tile_to_screen_px(rx + ox, ry + oy)
+        x, y = int(x_f), int(y_f)
 
         t = pygame.time.get_ticks() / 1000.0
         pulse = 0.5 + 0.5 * math.sin(t * (math.tau / 1.6))
@@ -3188,9 +3176,8 @@ class AsciiRenderer:
         tile_px = max(1, int(round(self.tile)))
 
         def _to_px(tx: int, ty: int) -> tuple[int, int]:
-            px = int((tx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int((ty + oy) * self.tile + self.tile * 0.5 + self.origin_y)
-            return px, py
+            px, py = self.abs_tile_to_screen_px(tx + ox + 0.5, ty + oy + 0.5)
+            return int(px), int(py)
 
         t = pygame.time.get_ticks() / 1000.0
         pulse = 0.5 + 0.5 * math.sin(t * (math.tau / 1.4))
@@ -3327,15 +3314,13 @@ class AsciiRenderer:
                 indirect_col = (255, 255, 255, 45)
 
             for (tx, ty) in direct:
-                px = int((tx + ox) * self.tile + self.origin_x)
-                py = int((ty + oy) * self.tile + self.origin_y)
-                pygame.draw.rect(overlay, direct_col, pygame.Rect(px, py, tile_px, tile_px))
+                px, py = self.abs_tile_to_screen_px(tx + ox, ty + oy)
+                pygame.draw.rect(overlay, direct_col, pygame.Rect(int(px), int(py), tile_px, tile_px))
                 drew_any = True
 
             for (tx, ty) in indirect:
-                px = int((tx + ox) * self.tile + self.origin_x)
-                py = int((ty + oy) * self.tile + self.origin_y)
-                pygame.draw.rect(overlay, indirect_col, pygame.Rect(px, py, tile_px, tile_px))
+                px, py = self.abs_tile_to_screen_px(tx + ox, ty + oy)
+                pygame.draw.rect(overlay, indirect_col, pygame.Rect(int(px), int(py), tile_px, tile_px))
                 drew_any = True
 
         # --- Circular highlights --------------------------------------------
@@ -3377,8 +3362,8 @@ class AsciiRenderer:
                     # Default sawtooth: jump high then linearly taper.
                     mult = 1.0 - phase
 
-                cx = int((wx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                cy = int((wy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                cx_f, cy_f = self.abs_tile_to_screen_px(wx + ox + 0.5, wy + oy + 0.5)
+                cx, cy = int(cx_f), int(cy_f)
                 pr = max(1, int(round(rad_tiles * self.tile)))
 
                 alpha = max(0, min(255, int(base_rgba[3] * mult)))
@@ -3432,10 +3417,8 @@ class AsciiRenderer:
                 except Exception:
                     continue
 
-                ax = (a[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
-                ay = (a[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
-                bx = (b[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x
-                by = (b[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y
+                ax, ay = self.abs_tile_to_screen_px(a[0] + ox + 0.5, a[1] + oy + 0.5)
+                bx, by = self.abs_tile_to_screen_px(b[0] + ox + 0.5, b[1] + oy + 0.5)
                 dx = bx - ax
                 dy = by - ay
                 dist = max(1.0, math.hypot(dx, dy))
@@ -3509,8 +3492,8 @@ class AsciiRenderer:
             except Exception:
                 continue
 
-            px = int((tx + ox) * self.tile + self.origin_x + self.tile * 0.5)
-            py = int((ty + oy) * self.tile + self.origin_y + self.tile * 0.5)
+            px_f, py_f = self.abs_tile_to_screen_px(tx + ox + 0.5, ty + oy + 0.5)
+            px, py = int(px_f), int(py_f)
 
             try:
                 color = tuple(int(v) for v in item.color[:3])
@@ -3558,8 +3541,8 @@ class AsciiRenderer:
                     center = (tx + 0.5, ty + 0.5)
             else:
                 center = verts[hover_vertex]
-            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            cx_f, cy_f = self.abs_tile_to_screen_px(center[0] + ox + 0.5, center[1] + oy + 0.5)
+            cx, cy = int(cx_f), int(cy_f)
             pygame.draw.circle(self.surface, (120, 200, 255), (cx, cy), int(radius * self.tile), width=1)
             r2 = radius * radius
             target_vertices = getattr(pred, "target_vertices", None)
@@ -3569,14 +3552,14 @@ class AsciiRenderer:
                 if idx < 0 or idx >= len(verts):
                     continue
                 vx, vy = verts[idx]
-                px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
+                px, py = int(px_f), int(py_f)
                 pygame.draw.circle(self.surface, (200, 240, 255), (px, py), int(max(3, self.tile // 5)))
         elif aim_action == "activate_seed":
             center = verts[hover_vertex]
             vx, vy = center
-            px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
+            px, py = int(px_f), int(py_f)
             pygame.draw.circle(self.surface, (255, 230, 120), (px, py), int(max(5, self.tile // 3)))
             target_vertices = getattr(pred, "target_vertices", None) or []
             seen = set()
@@ -3590,19 +3573,18 @@ class AsciiRenderer:
                 if idx < 0 or idx >= len(verts):
                     continue
                 vx, vy = verts[idx]
-                px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
+                px, py = int(px_f), int(py_f)
                 color = (200, 220, 255) if idx != hover_vertex else (255, 230, 120)
                 pygame.draw.circle(self.surface, color, (px, py), int(max(3, self.tile // 5)))
-                tx = int(round(vx))
-                ty = int(round(vy))
-                rect = pygame.Rect(tx * self.tile + self.origin_x, ty * self.tile + self.origin_y, self.tile, self.tile)
+                rx, ry = self.abs_tile_to_screen_px(vx + ox, vy + oy)
+                rect = pygame.Rect(int(rx), int(ry), self.tile, self.tile)
                 pygame.draw.rect(self.surface, color, rect, 1)
         else:  # wind_rush
             # Highlight selected destination vertex.
             center = verts[hover_vertex]
-            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            cx_f, cy_f = self.abs_tile_to_screen_px(center[0] + ox + 0.5, center[1] + oy + 0.5)
+            cx, cy = int(cx_f), int(cy_f)
             pygame.draw.circle(self.surface, (255, 240, 130), (cx, cy), int(max(6, self.tile // 3)), width=2)
             pygame.draw.circle(self.surface, (255, 240, 130), (cx, cy), int(max(3, self.tile // 6)))
 
@@ -3623,10 +3605,10 @@ class AsciiRenderer:
                     first_idx = path_vertices[0]
                     if first_idx is not None and 0 <= first_idx < len(verts):
                         av = verts[first_idx]
-                        ax = int((av[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                        ay = int((av[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
-                        sx = int((caster.pos[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                        sy = int((caster.pos[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                        ax_f, ay_f = self.abs_tile_to_screen_px(av[0] + ox + 0.5, av[1] + oy + 0.5)
+                        sx_f, sy_f = self.abs_tile_to_screen_px(caster.pos[0] + ox + 0.5, caster.pos[1] + oy + 0.5)
+                        ax, ay = int(ax_f), int(ay_f)
+                        sx, sy = int(sx_f), int(sy_f)
                         if (sx, sy) != (ax, ay):
                             path_segments_px.append(((sx, sy), (ax, ay)))
 
@@ -3644,10 +3626,10 @@ class AsciiRenderer:
                         continue
                     av = verts[a_idx]
                     bv = verts[b_idx]
-                    ax = int((av[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                    ay = int((av[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
-                    bx = int((bv[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                    by = int((bv[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    ax_f, ay_f = self.abs_tile_to_screen_px(av[0] + ox + 0.5, av[1] + oy + 0.5)
+                    bx_f, by_f = self.abs_tile_to_screen_px(bv[0] + ox + 0.5, bv[1] + oy + 0.5)
+                    ax, ay = int(ax_f), int(ay_f)
+                    bx, by = int(bx_f), int(by_f)
                     path_segments_px.append(((ax, ay), (bx, by)))
 
                 if path_segments_px:
@@ -3668,8 +3650,8 @@ class AsciiRenderer:
                     if idx is None or idx < 0 or idx >= len(verts):
                         continue
                     vx, vy = verts[idx]
-                    px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-                    py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+                    px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
+                    px, py = int(px_f), int(py_f)
                     pygame.draw.circle(self.surface, (170, 255, 255), (px, py), int(max(3, self.tile // 7)))
 
         # render previews with 2s triangle-wave fade
@@ -3692,8 +3674,8 @@ class AsciiRenderer:
                     tile = level.world.get_tile(ax, ay) if hasattr(level, "world") else None
                     if tile is not None and hasattr(tile, "visible") and not tile.visible:
                         continue
-                    px = (ax + ox) * self.tile + self.origin_x + self.tile // 2
-                    py = (ay + oy) * self.tile + self.origin_y + self.tile // 2
+                    px_f, py_f = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
+                    px, py = int(px_f), int(py_f)
                     dmg_surf = dmg_font.render(str(dmg), True, (255, 160, 160))
                     surf = pygame.Surface((dmg_surf.get_width(), dmg_surf.get_height()), pygame.SRCALPHA)
                     surf.blit(dmg_surf, (0, 0))
@@ -3713,8 +3695,8 @@ class AsciiRenderer:
         if text_val:
             center = verts[hover_vertex]
             radius = getattr(pred, "radius", None) or 0
-            cx = int((center[0] + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            cy = int((center[1] + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            cx_f, cy_f = self.abs_tile_to_screen_px(center[0] + ox + 0.5, center[1] + oy + 0.5)
+            cx, cy = int(cx_f), int(cy_f)
 
             txt = self.small_font.render(text_val, True, (255, 180, 140))
             surf = pygame.Surface((txt.get_width(), txt.get_height()), pygame.SRCALPHA)
@@ -3761,9 +3743,8 @@ class AsciiRenderer:
             border_color = (r, g, b, int(alpha * 0.6))
 
             for tx, ty in da.tiles:
-                px = int((tx + ox) * self.tile + self.origin_x)
-                py = int((ty + oy) * self.tile + self.origin_y)
-                rect = pygame.Rect(px, py, self.tile, self.tile)
+                px_f, py_f = self.abs_tile_to_screen_px(tx + ox, ty + oy)
+                rect = pygame.Rect(int(px_f), int(py_f), self.tile, self.tile)
                 pygame.draw.rect(overlay, tile_color, rect)
                 pygame.draw.rect(overlay, border_color, rect, width=1)
 
@@ -3791,8 +3772,8 @@ class AsciiRenderer:
 
             avx = vx + ox
             avy = vy + oy
-            px = int(avx * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int(avy * self.tile + self.tile * 0.5 + self.origin_y)
+            px_f, py_f = self.abs_tile_to_screen_px(avx + 0.5, avy + 0.5)
+            px, py = int(px_f), int(py_f)
             sprite = self._get_glow_sprite(max(3, self.tile // 8), self.rune_color)
             self.surface.blit(sprite, sprite.get_rect(center=(px, py)))
 
@@ -3835,8 +3816,9 @@ class AsciiRenderer:
         tile_px = float(self.tile)
         size = max(1, int(round(tile_px)))
 
-        px = int(round(ax * tile_px + self.origin_x))
-        py = int(round(ay * tile_px + self.origin_y))
+        px_f, py_f = self.abs_tile_to_screen_px(ax, ay)
+        px = int(round(px_f))
+        py = int(round(py_f))
 
         rect = pygame.Rect(px, py, size, size)
         pygame.draw.rect(self.surface, (255, 255, 120), rect, 2)
@@ -3883,8 +3865,9 @@ class AsciiRenderer:
 
         ax, ay = self._local_tile_to_abs(game, (tx, ty))
 
-        px = ax * self.tile + self.origin_x + self.tile // 2
-        py = ay * self.tile + self.origin_y + self.tile
+        px_f, py_f = self.abs_tile_to_screen_px(ax + 0.5, ay + 1.0)
+        px = int(px_f)
+        py = int(py_f)
 
         text = self.small_font.render(name, True, self.sel)
         self.surface.blit(text, (px - text.get_width() // 2, py))
@@ -3896,8 +3879,8 @@ class AsciiRenderer:
             return
         player = game.actors[game.player_id]
         ax, ay = self._local_tile_to_abs(game, player.pos)
-        cx = ax * self.tile + self.tile * 0.5 + self.origin_x
-        cy = ay * self.tile + self.tile * 0.5 + self.origin_y
+        cx_f, cy_f = self.abs_tile_to_screen_px(ax + 0.5, ay + 0.5)
+        cx, cy = int(cx_f), int(cy_f)
         radius = game.place_range * self.tile
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 350.0)
         alpha = int(25 + 30 * pulse)
@@ -3921,12 +3904,8 @@ class AsciiRenderer:
         ox, oy = self._zone_abs_offset(game)
 
         def _to_px(pt: Tuple[float, float]) -> Tuple[int, int]:
-            ax = pt[0] + ox
-            ay = pt[1] + oy
-            return (
-                int(ax * self.tile + self.tile * 0.5 + self.origin_x),
-                int(ay * self.tile + self.tile * 0.5 + self.origin_y),
-            )
+            px_f, py_f = self.abs_tile_to_screen_px(pt[0] + ox + 0.5, pt[1] + oy + 0.5)
+            return (int(px_f), int(py_f))
 
         sx, sy = _to_px(source)
         tx, ty = _to_px(target)
@@ -3963,11 +3942,8 @@ class AsciiRenderer:
 
         tiles = preview.get("ghost_tiles") or []
         for gx, gy in tiles:
-            agx = gx + ox
-            agy = gy + oy
-            px = int(agx * self.tile + self.origin_x)
-            py = int(agy * self.tile + self.origin_y)
-            rect = pygame.Rect(px, py, int(self.tile), int(self.tile))
+            px_f, py_f = self.abs_tile_to_screen_px(gx + ox, gy + oy)
+            rect = pygame.Rect(int(px_f), int(py_f), int(self.tile), int(self.tile))
             pygame.draw.rect(overlay, (180, 255, 180, 55), rect, 1)
 
         self.surface.blit(overlay, (0, 0))
@@ -4068,9 +4044,8 @@ class AsciiRenderer:
 
         def draw_tile(tile_pos, color):
             tx, ty = tile_pos
-            px = int((tx + ox) * self.tile + self.origin_x)
-            py = int((ty + oy) * self.tile + self.origin_y)
-            rect = pygame.Rect(px, py, self.tile, self.tile)
+            px_f, py_f = self.abs_tile_to_screen_px(tx + ox, ty + oy)
+            rect = pygame.Rect(int(px_f), int(py_f), self.tile, self.tile)
             pygame.draw.rect(overlay, color, rect)
 
         direct_col = (255, 80, 40, int(160 * alpha_scale))
@@ -4084,8 +4059,8 @@ class AsciiRenderer:
         anchor = getattr(level, "pattern_anchor", None)
         if anchor:
             ax, ay = anchor
-            cx = (ax + ox) * self.tile + self.origin_x + self.tile * 0.5
-            cy = (ay + oy) * self.tile + self.origin_y + self.tile * 0.5
+            cx_f, cy_f = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
+            cx, cy = int(cx_f), int(cy_f)
             radius = self.tile * 1.0
             col = (255, 120, 60, int(80 * alpha_scale))
             pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
@@ -4115,9 +4090,8 @@ class AsciiRenderer:
 
         def draw_tile(tile_pos, color):
             tx, ty = tile_pos
-            px = int((tx + ox) * self.tile + self.origin_x)
-            py = int((ty + oy) * self.tile + self.origin_y)
-            rect = pygame.Rect(px, py, self.tile, self.tile)
+            px_f, py_f = self.abs_tile_to_screen_px(tx + ox, ty + oy)
+            rect = pygame.Rect(int(px_f), int(py_f), self.tile, self.tile)
             pygame.draw.rect(overlay, color, rect)
 
         direct_col = (80, 255, 120, int(160 * alpha_scale))
@@ -4130,8 +4104,8 @@ class AsciiRenderer:
         anchor = getattr(level, "pattern_anchor", None)
         if anchor:
             ax, ay = anchor
-            cx = (ax + ox) * self.tile + self.origin_x + self.tile * 0.5
-            cy = (ay + oy) * self.tile + self.origin_y + self.tile * 0.5
+            cx_f, cy_f = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
+            cx, cy = int(cx_f), int(cy_f)
             radius = self.tile * 1.0
             col = (120, 255, 180, int(70 * alpha_scale))
             pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
@@ -4183,14 +4157,10 @@ class AsciiRenderer:
                 x0, y0, x1, y1 = seg
             except Exception:
                 continue
-            p0 = (
-                int(float(x0) * self.tile + self.tile * 0.5 + self.origin_x),
-                int(float(y0) * self.tile + self.tile * 0.5 + self.origin_y),
-            )
-            p1 = (
-                int(float(x1) * self.tile + self.tile * 0.5 + self.origin_x),
-                int(float(y1) * self.tile + self.tile * 0.5 + self.origin_y),
-            )
+            px0, py0 = self.abs_tile_to_screen_px(float(x0) + 0.5, float(y0) + 0.5)
+            px1, py1 = self.abs_tile_to_screen_px(float(x1) + 0.5, float(y1) + 0.5)
+            p0 = (int(px0), int(py0))
+            p1 = (int(px1), int(py1))
             pygame.draw.line(overlay, base_col, p0, p1, base_w)
             pygame.draw.line(overlay, core_col, p0, p1, core_w)
 
@@ -4201,8 +4171,8 @@ class AsciiRenderer:
                 ty = float(tip.get("y", 0.0))
             except Exception:
                 continue
-            px = int(tx * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int(ty * self.tile + self.tile * 0.5 + self.origin_y)
+            px_f, py_f = self.abs_tile_to_screen_px(tx + 0.5, ty + 0.5)
+            px, py = int(px_f), int(py_f)
             pygame.draw.circle(overlay, tip_col, (px, py), tip_r)
 
         self.surface.blit(overlay, (0, 0))
@@ -4348,10 +4318,8 @@ class AsciiRenderer:
                     continue
                 ax, ay = verts[a_idx]
                 bx, by = verts[b_idx]
-                x0 = (ax + ox) * self.tile + self.tile * 0.5 + self.origin_x
-                y0 = (ay + oy) * self.tile + self.tile * 0.5 + self.origin_y
-                x1 = (bx + ox) * self.tile + self.tile * 0.5 + self.origin_x
-                y1 = (by + oy) * self.tile + self.tile * 0.5 + self.origin_y
+                x0, y0 = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
+                x1, y1 = self.abs_tile_to_screen_px(bx + ox + 0.5, by + oy + 0.5)
                 pygame.draw.line(overlay, col, (x0, y0), (x1, y1), width=width)
                 pygame.draw.aaline(overlay, col, (x0, y0), (x1, y1))
 
@@ -4390,8 +4358,8 @@ class AsciiRenderer:
         for _ in range(min(sparkle_count, 200)):
             idx = rng.randrange(0, len(verts))
             vx, vy = verts[idx]
-            px = int((vx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            py = int((vy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
+            px, py = int(px_f), int(py_f)
             if jitter:
                 px += rng.randint(-jitter, jitter)
                 py += rng.randint(-jitter, jitter)
@@ -4415,8 +4383,8 @@ class AsciiRenderer:
         if spark_t < 1.0 and len(verts) >= 2:
             sx = sum(float(v[0]) for v in verts) / max(1, len(verts))
             sy = sum(float(v[1]) for v in verts) / max(1, len(verts))
-            cx = int((sx + ox) * self.tile + self.tile * 0.5 + self.origin_x)
-            cy = int((sy + oy) * self.tile + self.tile * 0.5 + self.origin_y)
+            cx_f, cy_f = self.abs_tile_to_screen_px(sx + ox + 0.5, sy + oy + 0.5)
+            cx, cy = int(cx_f), int(cy_f)
 
             # Fast attack + exponential-ish decay (matches the inspiration).
             attack = 0.05
@@ -4564,8 +4532,9 @@ class AsciiRenderer:
 
         def to_local_px(wx: float, wy: float) -> tuple[int, int]:
             # World-space (tile units) -> local pixel coords (centered on tile centers).
-            px = (wx + ox) * self.tile + self.origin_x + self.tile * 0.5 - fx_rect.x
-            py = (wy + oy) * self.tile + self.origin_y + self.tile * 0.5 - fx_rect.y
+            px, py = self.abs_tile_to_screen_px(wx + ox + 0.5, wy + oy + 0.5)
+            px -= fx_rect.x
+            py -= fx_rect.y
             return (int(px), int(py))
 
         # TUNING: reveal speed (how quickly the bolt "runs" along the path).

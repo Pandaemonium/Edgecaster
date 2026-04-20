@@ -23,7 +23,7 @@ Supersedes: none
 - `inventory_scene.py` - inventory and look flow, body zoom, drag/drop, preview camera state
 - `chakra_scene.py` - chakra selection, realign mode, preview, commit/cancel flow
 - `world_map_scene.py` - world map rendering, zoom, cached overmap handoff, fast travel
-- `merchant_scene.py` - trade UI
+- `merchant_scene.py` - trade UI (merchant/player rows should read inventory through the shared query surface, not direct list caches)
 
 ## Editors
 

@@ -147,49 +147,6 @@ def test_zero_radius_cluster_keeps_starttsgard_city_on_site_anchor() -> None:
     assert getattr(child, "abs_pos", None) == (10, 10)
 
 
-def test_build_chakra_generator_seed_uses_body_schema_path_for_unexpanded_actor() -> None:
-    """Body-schema path handles actors whose body tree has not been expanded.
-
-    Batch 3 A5: build_chakra_generator_seed no longer pre-warms the entity tree.
-    Body expansion is now the caller's responsibility (done at spawn via
-    register_actor, Batch 1 A1).  When body nodes are absent the entity path
-    produces no usable nodes and silently falls through; the body-schema path
-    picks up and returns a valid seed using authored float positions from the
-    body_schema dict.  This test guards that fall-through so seed callers that
-    have not gone through register_actor still get correct geometry.
-    """
-    actor = _make_actor()
-    game = _DummyGame(actor)
-    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
-    # Deliberately do NOT call expand_entity — body nodes are absent.
-
-    body_schema = getattr(actor, "body_schema", None) or prototypes.resolve_body_schema(actor) or {}
-    chakra_state = ChakraState(
-        unlocked={"body", "head"},
-        active={"body", "head"},
-        pattern_root="body",
-    )
-
-    seed = build_chakra_generator_seed(
-        body_schema,
-        chakra_state,
-        actor=actor,
-        game=game,
-    )
-
-    # Body-schema path must produce a valid seed even without body-node entities.
-    assert seed.verts, "seed.verts should be non-empty (body-schema path)"
-    assert seed.node_order, "seed.node_order should be non-empty (body-schema path)"
-
-    # build_chakra_generator_seed must NOT have triggered expansion — the
-    # body-schema-root child entity should still be absent from the graph.
-    body_child_id = "actor:test_body:body:body"
-    assert game.entity_graph.get_node(body_child_id) is None, (
-        "A5: build_chakra_generator_seed must not pre-warm the entity tree; "
-        "body expansion is the spawn-time caller's responsibility (A1)"
-    )
-
-
 def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
     """A6 invariant: entity path produces the seed for a fully expanded actor.
 
@@ -228,11 +185,9 @@ def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
                 body_full_id = str(getattr(node, "tags", {}).get("body_full_id", "") or "")
                 node.active = body_full_id in actor.chakra_state.active
 
-    body_schema = getattr(actor, "body_schema", None) or prototypes.resolve_body_schema(actor) or {}
     chakra_state = actor.chakra_state
 
     seed = build_chakra_generator_seed(
-        body_schema,
         chakra_state,
         actor=actor,
         game=game,
@@ -247,6 +202,37 @@ def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
     assert len(seed.node_order) >= 2, (
         f"A6: expected ≥2 active nodes (body+head), got {seed.node_order}"
     )
+
+
+def test_build_chakra_generator_seed_uses_body_schema_path_for_unexpanded_actor() -> None:
+    """Body-schema fallback is used when the actor has no realized body tree.
+
+    Before entity expansion (Batch 1 A1 not yet run), there are no body-node
+    children in the entity graph.  build_chakra_generator_seed must fall through
+    the entity path silently and produce a valid seed via get_active_chakra_generator_graph.
+    """
+    actor = _make_actor()
+    game = _DummyGame(actor)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="collapsed")
+    # No expand_entity call — actor has no body-node children.
+
+    chakra_state = ChakraState(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        pattern_root="body",
+    )
+
+    from edgecaster.prototypes import resolve_body_schema
+    body_schema = resolve_body_schema(actor)
+
+    seed = build_chakra_generator_seed(
+        chakra_state,
+        body_schema=body_schema,
+    )
+
+    assert seed.node_order, "body-schema path must produce a non-empty node_order"
+    assert seed.verts, "body-schema path must produce non-empty verts"
+    assert seed.edges, "body-schema path must produce non-empty edges"
 
 
 def test_build_chakra_generator_seed_uses_realized_body_tree_when_schema_is_omitted() -> None:
@@ -266,7 +252,6 @@ def test_build_chakra_generator_seed_uses_realized_body_tree_when_schema_is_omit
     )
 
     seed = build_chakra_generator_seed(
-        {},
         chakra_state,
         actor=actor,
         game=game,
@@ -277,30 +262,6 @@ def test_build_chakra_generator_seed_uses_realized_body_tree_when_schema_is_omit
     assert seed.edges
     assert seed.base_len > 0.0
 
-
-def test_build_chakra_generator_seed_resolves_schema_when_entity_path_is_unavailable() -> None:
-    """Schema fallback should still work when callers omit body_schema for unexpanded actors."""
-    actor = _make_actor()
-    game = _DummyGame(actor)
-    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
-    # Deliberately leave the body tree unrealized.
-
-    chakra_state = ChakraState(
-        unlocked={"body", "head"},
-        active={"body", "head"},
-        pattern_root="body",
-    )
-
-    seed = build_chakra_generator_seed(
-        {},
-        chakra_state,
-        actor=actor,
-        game=game,
-    )
-
-    assert seed.verts
-    assert seed.node_order
-    assert seed.base_len > 0.0
 
 
 def test_toggle_actor_chakra_mirrors_active_state_to_body_node_entity() -> None:

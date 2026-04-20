@@ -569,20 +569,47 @@ def transfer_inventory_entity(
     dst_owner_id: str,
     socket_id: str = "inventory",
 ) -> None:
-    """Move an entity reference between inventories and reparent it."""
+    """Move an entity reference between inventories and reparent it.
+
+    Graph ownership is the real mutation. The passed lists are synchronized as
+    immediate compatibility views so older callers and tests still see the move
+    without waiting for a later cache refresh.
+    """
     try:
-        if ent in src_inventory:
-            src_inventory.remove(ent)
+        src_owner_id = str(getattr(ent, "parent_entity_id", "") or "").strip()
     except Exception:
-        pass
+        src_owner_id = ""
+
     try:
-        dst_inventory.append(ent)
+        detach_entity_from_parent(game, ent)
     except Exception:
         pass
     attach_entity_to_parent(game, ent, str(dst_owner_id), socket_id=socket_id)
     try:
         from edgecaster.systems.entity_lifecycle import _track_runtime_entity
         _track_runtime_entity(game, ent)
+    except Exception:
+        pass
+    try:
+        from edgecaster.systems import inventory as inventory_system
+
+        owner_ids = [str(dst_owner_id)]
+        if src_owner_id:
+            owner_ids.insert(0, src_owner_id)
+        inventory_system._mark_inventory_graph_authority(game, *owner_ids)
+        for owner_id in owner_ids:
+            inventory_system.get_inventory(game, owner_id)
+    except Exception:
+        pass
+
+    try:
+        if ent in src_inventory:
+            src_inventory.remove(ent)
+    except Exception:
+        pass
+    try:
+        if ent not in dst_inventory:
+            dst_inventory.append(ent)
     except Exception:
         pass
 
@@ -608,14 +635,22 @@ def transfer_split_quantity(
         spawn_pos=spawn_pos,
         clear_equipped_tags=bool(clear_equipped_tags),
     )
-    try:
-        dst_inventory.append(child)
-    except Exception:
-        pass
     attach_entity_to_parent(game, child, str(dst_owner_id), socket_id=socket_id)
     try:
         from edgecaster.systems.entity_lifecycle import _track_runtime_entity
         _track_runtime_entity(game, child)
+    except Exception:
+        pass
+    try:
+        from edgecaster.systems import inventory as inventory_system
+
+        inventory_system._mark_inventory_graph_authority(game, str(dst_owner_id))
+        inventory_system.get_inventory(game, str(dst_owner_id))
+    except Exception:
+        pass
+    try:
+        if child not in dst_inventory:
+            dst_inventory.append(child)
     except Exception:
         pass
     return child

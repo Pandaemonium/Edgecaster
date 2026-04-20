@@ -1,14 +1,14 @@
 Title: Edgecaster Architecture Guide
 Purpose: orient contributors and AI agents to the current code structure, responsibility boundaries, and major module ownership.
 Status: current-state reference
-Last verified: 2026-04-19
+Last verified: 2026-04-20
 Canonical for: current architecture map and responsibility boundaries
 Related docs: `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/map_generation_strategy.txt`, `ARCHITECTURE.md`
 Related code: `edgecaster/`, `tests/`
 Supersedes: none
 
 EDGECASTER ARCHITECTURE GUIDE
-Updated: 2026-04-19
+Updated: 2026-04-20
 
 This document orients new contributors to the current structure.
 Goal: keep responsibilities clean and make new features easy to add.
@@ -34,6 +34,10 @@ INVENTORY / LOOK SCENES (edgecaster/scenes/inventory_scene.py)
 - Purpose: a two-pane "inspect + manipulate" UI for an entity.
   - Left pane: inventory list / container navigation (supports nesting into sub-containers).
   - Right pane: embodied preview (glyph/sprite) + body-plan node skeleton overlay + equip-slot interaction.
+  - Owner lookup and nested-container consumption now prefer the shared
+    inventory/runtime query path (`get_inventory(...)`, runtime entity lookup,
+    `remove_inventory_item_at(...)`) instead of treating `game.inventories` as
+    authoritative storage.
 
 - Two zoom systems (both intentionally supported):
   1) Diagrammatic zoom (scene open/close):
@@ -305,6 +309,9 @@ Key modules (non-exhaustive):
 - systems/actions.py: ActionDef registry (labels, cooldown, cost, etc.)
 - systems/action_runner.py: unified action execution (cooldowns, charges, confirmations, delay)
 - systems/scheduling.py: event queue and time advance helpers
+  Cooldown decay now walks inventory owners/items through the shared
+  `inventory.py` query surface instead of iterating `game.inventories`
+  directly, so graph-backed and nested container items stay on the same path.
 - systems/combat.py: attack resolution + on-death hooks
 - systems/inventory.py + systems/equipment.py: inventory, equip/unequip, stat mods.
   `inventory.py` now queries the entity containment graph as the primary path and falls
@@ -312,7 +319,12 @@ Key modules (non-exhaustive):
   `[LEGACY_DELETE]` bridge; the end-state is graph-authoritative containment queries only.
   Shared mutation helpers (`add_inventory_item`, `remove_inventory_item_at`) now centralize
   attach/detach plus cache sync so gameplay/content callers do not hand-roll list-cache
-  mutation and graph patching separately.
+  mutation and graph patching separately. Shared recursive inventory walkers now live here
+  too, so event/system callers do not each keep their own inventory traversal ladders.
+- systems/trade.py: merchant pricing + transaction commit.
+  Trade reads now also go through the shared inventory query surface for both merchant and
+  player inventories, and merchant restock clears old stock through shared detach helpers
+  instead of treating the cache list as authority.
 - systems/equip_rules.py: item->slot compatibility policy (allowed/blocked slots, prefixes, kinds)
 - systems/pattern_ops.py: pattern placement, activation, and pattern-related effects
 - systems/targeting.py: aim prediction data (used by renderer only to draw)
@@ -518,6 +530,9 @@ Lab / spell-forge hook:
 
 - Trade rules: edgecaster/systems/trade.py
 - UI: edgecaster/scenes/merchant_scene.py (PanelScene-style menu)
+  MerchantScene now reads both merchant stock and player sellable items through
+  `game.get_inventory(...)` so the trade UI stays on the shared graph-backed
+  inventory query path instead of direct list-cache reads.
 - Esc cancels a proposal; Accept commits and exits
 - Merchant definitions should be data-driven (content YAML) and spawned via POIs where possible
 
@@ -553,10 +568,10 @@ Gating rules:
 - Example: to unlock "knuckle_2", you need {torso, shoulder, wrist} unlocked (but NOT knuckle_1)
 
 Key functions:
-- can_unlock_chakra(): checks gating prerequisites
-- unlock_chakra(): unlocks a chakra (optionally auto-activates)
-- toggle_chakra_active(): toggles active state
-- chakras_to_seed_pattern(): generates Pattern from active chakras
+- can_unlock_chakra_for_entity(): checks gating prerequisites (replaces legacy can_unlock_chakra)
+- unlock_actor_chakra(): unlocks a chakra via component (optionally auto-activates)
+- toggle_actor_chakra(): toggles active state via component
+- build_chakra_generator_seed_for_actor(): generates canonical seed pattern from active chakras (replaces chakras_to_seed_pattern)
 - get_gating_chain(): returns list of branch roots needed for a node
 
 UI:

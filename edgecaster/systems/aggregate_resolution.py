@@ -29,6 +29,7 @@ from edgecaster import prototypes
 from edgecaster import spawn_factory
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import spawning as spawning_system
+from edgecaster.systems.entity_identity import stable_int_hash
 
 
 # -----------------------------
@@ -53,14 +54,6 @@ def _ent_id(ent: object) -> str:
         pass
     return f"obj:{id(ent)}"
 
-def _stable_int_hash(*parts: object) -> int:
-    # Stable within a run; determinism comes from fixed seeds + stringification.
-    s = "|".join(str(p) for p in parts)
-    h = 2166136261
-    for ch in s:
-        h ^= ord(ch)
-        h = (h * 16777619) & 0xFFFFFFFF
-    return int(h)
 
 def _seed_for(game: "Game", *parts: object) -> int:
     # Use game.fractal_seed if present; fallback to cfg.seed; else 0.
@@ -74,7 +67,7 @@ def _seed_for(game: "Game", *parts: object) -> int:
             base = int(getattr(getattr(game, "cfg", None), "seed", 0) or 0)
         except Exception:
             base = 0
-    return (base ^ _stable_int_hash(*parts)) & 0xFFFFFFFF
+    return (base ^ stable_int_hash(*parts)) & 0xFFFFFFFF
 
 
 def lineage_root_for_entity(ent: object) -> str:
@@ -124,7 +117,7 @@ def entity_id_from_lineage(lineage_id: object) -> str:
         lid = ""
     if not lid:
         return ""
-    return f"world:{_stable_int_hash('entity_id', lid):08x}:{lid}"
+    return f"world:{stable_int_hash('entity_id', lid):08x}:{lid}"
 
 
 def aggregate_slot_lineage_id(aggregate_id: object, child_id: object, slot: int) -> str:

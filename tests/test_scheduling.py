@@ -377,6 +377,37 @@ class TestCooldownTick:
 
         assert wand.cooldowns["zap"] == 25
 
+    def test_ticks_nested_graph_backed_inventory_items(self):
+        """Should tick nested items reached through graph-backed inventory roots."""
+        bag = SimpleNamespace(id="bag_1", cooldowns={}, tags={})
+        wand = SimpleNamespace(id="wand_1", cooldowns={"zap": 40}, tags={})
+        runtime_entities = {
+            "bag_1": bag,
+            "wand_1": wand,
+        }
+
+        game = SimpleNamespace(
+            player_id="player",
+            inventories={},
+            _inventory_graph_authority_owners={"player"},
+            entity_graph=SimpleNamespace(
+                get_children=lambda owner_id, socket_id=None: {
+                    "player": ["bag_1"],
+                    "bag_1": ["wand_1"],
+                }.get(str(owner_id), [])
+            ),
+        )
+
+        level = SimpleNamespace(actors={}, entities={})
+
+        with patch(
+            "edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity",
+            side_effect=lambda _game, entity_id: runtime_entities.get(str(entity_id)),
+        ):
+            cooldown_tick(game, level, 15)
+
+        assert wand.cooldowns["zap"] == 25
+
 
 class TestTickFrozenSlow:
     """Tests for _tick_frozen_slow function."""

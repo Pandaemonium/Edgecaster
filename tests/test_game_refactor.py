@@ -187,11 +187,6 @@ class TestInventory:
         inv = game_instance.get_inventory(game_instance.player_id)
         assert isinstance(inv, list)
 
-    def test_player_inventory_property(self, game_instance):
-        """player_inventory property should work."""
-        inv = game_instance.player_inventory
-        assert isinstance(inv, list)
-
     def test_inventories_dict_exists(self, game_instance):
         """inventories dict should exist."""
         assert hasattr(game_instance, 'inventories')
@@ -305,7 +300,7 @@ class TestPatternOps:
 
 # ---------------------------------------------------------------------------
 # PHASE 9: Scheduling Tests
-# Target: systems/turns.py
+# Target: systems/scheduling.py
 # ---------------------------------------------------------------------------
 
 class TestScheduling:

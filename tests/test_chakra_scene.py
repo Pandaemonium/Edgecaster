@@ -54,7 +54,7 @@ def test_pattern_preview_widget_uses_game_context_for_entity_path() -> None:
 
     captured: dict[str, object] = {}
 
-    def _fake_seed(body_schema, chakra_state, **kwargs):
+    def _fake_seed(chakra_state, *, body_schema=None, **kwargs):
         captured["body_schema"] = dict(body_schema or {})
         captured["chakra_state"] = chakra_state
         captured["actor"] = kwargs.get("actor")
@@ -107,7 +107,7 @@ def test_pattern_preview_widget_uses_query_view_for_live_runtime_state() -> None
     ):
         with patch(
             "edgecaster.systems.chakras.build_chakra_generator_seed",
-            side_effect=lambda body_schema, chakra_state, **kwargs: captured.update(
+            side_effect=lambda chakra_state, *, body_schema=None, **kwargs: captured.update(
                 {
                     "body_schema": dict(body_schema or {}),
                     "active": set(getattr(chakra_state, "active", set()) or set()),

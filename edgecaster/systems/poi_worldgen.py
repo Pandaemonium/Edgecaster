@@ -34,6 +34,7 @@ from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems import footprints as footprints_system
+from edgecaster.systems.entity_identity import stable_int_hash
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -42,16 +43,6 @@ if TYPE_CHECKING:
 # =============================================================================
 # Deterministic ID Generation
 # =============================================================================
-
-def _stable_hash(*parts: object) -> int:
-    """Generate a stable hash from parts (deterministic within run)."""
-    s = "|".join(str(p) for p in parts)
-    h = 2166136261
-    for ch in s:
-        h ^= ord(ch)
-        h = (h * 16777619) & 0xFFFFFFFF
-    return int(h)
-
 
 def _poi_seed(game: "Game", *parts: object) -> int:
     """Get a deterministic seed based on game seed + parts."""
@@ -65,7 +56,7 @@ def _poi_seed(game: "Game", *parts: object) -> int:
             base = int(getattr(getattr(game, "cfg", None), "seed", 0) or 0)
         except Exception:
             base = 0
-    return (base ^ _stable_hash(*parts)) & 0xFFFFFFFF
+    return (base ^ stable_int_hash(*parts)) & 0xFFFFFFFF
 
 
 def poi_npc_world_id(poi_id: str, npc_id: str, index: int) -> str:
@@ -77,10 +68,6 @@ def poi_wall_world_id(poi_id: str, abs_x: int, abs_y: int) -> str:
     """Generate deterministic world entity ID for a POI wall."""
     return f"poi:{poi_id}:wall:{abs_x},{abs_y}"
 
-
-def poi_structure_world_id(poi_id: str, kind: str, index: int) -> str:
-    """Generate deterministic world entity ID for a POI structure."""
-    return f"poi:{poi_id}:struct:{kind}:{index}"
 
 
 # =============================================================================

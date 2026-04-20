@@ -17,6 +17,16 @@ Legend:
 [VISION] long-term direction
 [YOGA] required for observer-driven reality (see the_yoga.txt)
 
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] inventory/query legacy trim (2026-04-20)
+  - `Game.player_inventory` deleted. Production callers now read through
+    `game.get_inventory(...)` or `inventory.get_player_inventory(...)`; the
+    property had become a compatibility alias exercised only by a regression test.
+  - `systems/chakras.py` `is_branch_root(..., proto_index=None)` simplified to
+    `is_branch_root(proto_id)`: the optional raw-index fallback parameter had no
+    remaining callers after the body/entity query migration.
+  - `edgecaster/systems/INDEX.md` stale `turns.py` entry removed so folder docs
+    match the current module layout.
+
 ===============================================================================
 SLICE 1 — TARGETMODE (FOUNDATION COMPLETE)
 
@@ -187,7 +197,7 @@ Follow-ups:
 [DONE] Extract attention-query / render candidate assembly from `Game.renderables_in_abs_rect`.
 [DONE] Extract world proxy staging delegates (`_ensure_world_site_entities`, `_ensure_world_poi_entities`,
       `_ensure_world_aggregate_entities`, `_realize_aggregate_details_in_zone`) into `systems/attention.py`.
-[CLEANUP] Extract `sync_attention_instantiation()` into attention systems so all attention lifecycle logic is out of game.py.
+[DONE 2026-04-19] Extract `sync_attention_instantiation()` into attention systems so all attention lifecycle logic is out of game.py.
 
 ===============================================================================
 SLICE 6 — POI SYSTEM MIGRATION (YOGA-COMPLIANT)
@@ -384,16 +394,16 @@ AUDIT NOTES (2026-02-01) - ADDITIONAL REFACTOR CANDIDATES
     removed (proper docstrings were already present).
   - rune_audio.py: comment block promoted to `"""..."""` module docstring.
 
-[CLEANUP] systems/attention.py — extract sync_attention_instantiation
-  - `sync_attention_instantiation()` still lives in game.py (see SLICE 5
-    follow-up).  Moving it into attention.py would complete the extraction and
-    keep all attention lifecycle logic in one module.
+[DONE 2026-04-19] systems/attention.py — extract sync_attention_instantiation
+  - `sync_attention_instantiation()` lives in attention.py; game.py method is
+    a thin delegate (one call, no logic). All attention lifecycle logic is in
+    one module.
 
-[CLEANUP] Unify _stable_hash / _stable_int_hash helpers
-  - aggregate_resolution.py and poi_worldgen.py each define a private FNV-1a
-    hash function with the same algorithm and slightly different names.
-  - Consolidate into systems/entity_identity.py (which already handles stable
-    deterministic IDs) or a shared math_utils helper.
+[DONE 2026-04-19] Unify _stable_hash / _stable_int_hash helpers
+  - `stable_int_hash` (FNV-1a) added to `entity_identity.py`.
+  - Local `_stable_int_hash` / `_stable_hash` implementations deleted from
+    aggregate_resolution.py, poi_worldgen.py, site_placement.py; all import
+    the canonical version.
 
 
 ===============================================================================
@@ -1492,11 +1502,11 @@ PHASE 8 — LEGACY REMOVAL
   - End-state: replace with typed entity/component persistence deltas once
     collapse/restore and save data both flow through the unified model.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] Footprint tag fallback removal
-  - File: edgecaster/systems/footprints.py
-  - Compatibility fallback for footprint_local/footprint_abs checks using tags
-    instead of explicit runtime fields.
-  - Target: remove the tag-based fallback once all spawn paths populate runtime fields.
+[DONE][ENTITY_CHAKRA][PHASE_8] Footprint tag fallback removal (Slice XLIII, 2026-04-19)
+  - `entity_footprint_local` backfill block removed: `initialize_entity_footprints` call
+    that re-read tags/spec was unreachable (the function immediately before it already
+    always sets `ent.footprint_local`). The remaining `tile_rect(ent.pos)` fallback at
+    function end is the correct last-resort for setattr-failure cases.
 
 [LEGACY_DELETE][ENTITY_CHAKRA][RUNTIME_REGISTRY] Entity lifecycle compatibility bridge
   - File: edgecaster/systems/entity_lifecycle.py
@@ -1508,12 +1518,11 @@ PHASE 8 — LEGACY REMOVAL
   - These recursive body-schema readers are now a compatibility bridge.
   - Target: replace with long-term runtime/query path from realized actor/body entities.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] attention persistence wrapper block
-  - File: edgecaster/systems/attention.py (near top, tagged block)
-  - Compatibility wrappers keep older attention paths working while
-    entity_state, snapshots, and attention still share logic.
-  - Condition: collapse once attention reads lifecycle state through one
-    shared authority path.
+[DONE][ENTITY_CHAKRA][PHASE_8] attention persistence wrapper block (Slice LI, 2026-04-19)
+  - `_peek_entity_state` deleted; `_PRIMARY_ENTITY_STATE_KEYS` set deleted.
+  - `_effective_entity_state` collapsed to a single `game.get_effective_entity_state` call.
+  - Condition was met after Slice XLIV confirmed all external callers route through the
+    shared authority path. DummyGame in test_attention_suppression.py updated accordingly.
 
 [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] entity_graph_ops write-through helper
   - File: edgecaster/systems/entity_graph_ops.py

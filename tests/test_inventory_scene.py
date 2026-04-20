@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -87,3 +88,149 @@ def test_build_entity_schema_at_zoom_depth_falls_back_to_entity_body_specs_when_
             }
         },
     }
+
+
+def test_find_owner_entity_uses_runtime_registry_before_inventory_scans() -> None:
+    inventory_scene_module = _import_inventory_scene_module()
+    owner = SimpleNamespace(id="bag_1")
+    level = SimpleNamespace(entities={}, actors={})
+    game = SimpleNamespace(
+        player_id="player",
+        _level=lambda: level,
+        get_inventory=lambda _owner_id: [],
+    )
+
+    scene = inventory_scene_module.InventoryScene.__new__(inventory_scene_module.InventoryScene)
+    scene.game = game
+    scene.owner_id = "bag_1"
+    scene.parent_owner_id = None
+
+    with patch(
+        "edgecaster.systems.entity_lifecycle.find_runtime_entity",
+        return_value=owner,
+    ):
+        assert scene._find_owner_entity() is owner
+
+
+def test_find_owner_entity_recurses_inventory_tree_through_get_inventory() -> None:
+    inventory_scene_module = _import_inventory_scene_module()
+    bag = SimpleNamespace(id="bag_1", tags={"container": True})
+    level = SimpleNamespace(entities={}, actors={})
+    inventories = {
+        "player": [bag],
+        "bag_1": [],
+    }
+    game = SimpleNamespace(
+        player_id="player",
+        _level=lambda: level,
+        get_inventory=lambda owner_id: list(inventories.get(str(owner_id), [])),
+    )
+
+    scene = inventory_scene_module.InventoryScene.__new__(inventory_scene_module.InventoryScene)
+    scene.game = game
+    scene.owner_id = "bag_1"
+    scene.parent_owner_id = None
+
+    with patch(
+        "edgecaster.systems.entity_lifecycle.find_runtime_entity",
+        return_value=None,
+    ):
+        assert scene._find_owner_entity() is bag
+
+
+def test_resolve_body_view_for_zoom_path_falls_back_when_entity_zoom_view_is_degenerate() -> None:
+    inventory_scene_module = _import_inventory_scene_module()
+    owner = SimpleNamespace(id="actor:test_body", entity_id="actor:test_body")
+    entity_result = (
+        {
+            "root": "shoulder",
+            "nodes": {
+                "shoulder": {
+                    "layout": {"x": 0.0, "y": 0.0},
+                    "props": {"size": 1.0},
+                }
+            },
+        },
+        (0.0, 0.0),
+        1.0,
+    )
+    root_schema = {
+        "root": "body",
+        "nodes": {
+            "arm": {
+                "layout": {"x": 0.0, "y": 0.0},
+                "props": {"size": 1.0},
+                "proto": "arm_proto",
+            }
+        },
+    }
+    arm_schema = {
+        "root": "shoulder",
+        "nodes": {
+            "shoulder": {"layout": {"x": 0.0, "y": 0.0}, "props": {"size": 1.0}},
+            "elbow": {"layout": {"x": 1.0, "y": 0.0}, "props": {"size": 1.0}},
+        },
+    }
+
+    with patch(
+        "edgecaster.systems.body_view_queries.entity_body_view_for_zoom_path",
+        return_value=entity_result,
+    ), patch(
+        "edgecaster.systems.body_view_queries.resolve_body_schema",
+        side_effect=[root_schema, arm_schema],
+    ):
+        schema, embed_off_u, embed_scale_u = inventory_scene_module._resolve_body_view_for_zoom_path(
+            owner,
+            ["arm"],
+            game=object(),
+        )
+
+    assert schema == arm_schema
+    assert embed_off_u == (0.0, 0.0)
+    assert embed_scale_u == 1.0
+
+
+def test_resolve_body_view_chain_for_zoom_path_falls_back_when_entity_chain_is_incomplete() -> None:
+    inventory_scene_module = _import_inventory_scene_module()
+    owner = SimpleNamespace(id="actor:test_body", entity_id="actor:test_body")
+    entity_chain = [
+        (
+            {
+                "root": "body",
+                "nodes": {
+                    "arm": {
+                        "layout": {"x": 0.0, "y": 0.0},
+                        "props": {"size": 1.0},
+                        "proto": "arm_proto",
+                    }
+                },
+            },
+            (0.0, 0.0),
+            1.0,
+        )
+    ]
+    root_schema = entity_chain[0][0]
+    arm_schema = {
+        "root": "shoulder",
+        "nodes": {
+            "shoulder": {"layout": {"x": 0.0, "y": 0.0}, "props": {"size": 1.0}},
+            "elbow": {"layout": {"x": 1.0, "y": 0.0}, "props": {"size": 1.0}},
+        },
+    }
+
+    with patch(
+        "edgecaster.systems.body_view_queries.entity_body_view_chain_for_zoom_path",
+        return_value=entity_chain,
+    ), patch(
+        "edgecaster.systems.body_view_queries.resolve_body_schema",
+        side_effect=[root_schema, arm_schema],
+    ):
+        chain = inventory_scene_module._resolve_body_view_chain_for_zoom_path(
+            owner,
+            ["arm"],
+            game=object(),
+        )
+
+    assert len(chain) == 2
+    assert chain[0][0] == root_schema
+    assert chain[-1][0] == arm_schema

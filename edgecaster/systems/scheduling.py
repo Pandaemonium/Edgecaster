@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Callable
 
 from edgecaster.systems import combat_actions as combat_actions_system
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import inventory as inventory_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -368,15 +369,8 @@ def cooldown_tick(game: "Game", level: "LevelState", delta: int) -> None:
         tick_entity(act)
     for ent in level.entities.values():
         tick_entity(ent)
-    for owner_id in getattr(game, "inventories", {}).keys():
-        cache_items = getattr(game, "inventories", {}).get(owner_id, []) or []
-        try:
-            items = game.get_inventory(owner_id)
-            if not isinstance(items, (list, tuple)):
-                items = cache_items
-        except Exception:
-            items = cache_items
-        for ent in items:
+    for owner_id in inventory_system.iter_inventory_root_owner_ids(game, level=level):
+        for _, ent in inventory_system.iter_inventory_tree(game, owner_id):
             tick_entity(ent)
 
     # Tick down frozen/chilled slow effects (decay 0.1 every 10 ticks).

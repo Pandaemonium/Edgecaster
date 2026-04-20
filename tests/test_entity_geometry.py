@@ -116,7 +116,6 @@ def test_query_normalized_pattern_is_deterministic_and_seed_builder_uses_it() ->
     assert pattern_a["base_len"] == pattern_b["base_len"]
 
     seed = chakra_system.build_chakra_generator_seed(
-        body_schema={},
         chakra_state=chakra_system.ChakraState(),
         actor=actor,
         game=game,

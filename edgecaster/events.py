@@ -284,54 +284,22 @@ def _iter_all_inventory_items(game, owner_id: Optional[str] = None, _visited: Op
     Yield (owner_id, item) for every item reachable from the player’s inventory,
     including items inside containers, recursively.
 
-    - Starts from the current player’s inventory by default.
-    - Walks through container inventories via ``game.get_inventory(owner_id)``
-      when available, falling back to legacy list fields only as a shim.
-    - Uses a visited set of owner_ids to avoid infinite loops
-      (e.g. recursive Inventory that contains itself).
+    Delegates to the shared inventory query surface so event logic does not
+    maintain its own inventory/cache traversal policy.
     """
-    if _visited is None:
-        _visited = set()
-
-    def _inventory_for(owner_key: Optional[str]):
-        if owner_key is None:
-            return []
-        if hasattr(game, "get_inventory"):
-            try:
-                queried = game.get_inventory(owner_key)
-                if isinstance(queried, (list, tuple)):
-                    return queried or []
-            except Exception:
-                pass
-        inventories = getattr(game, "inventories", {}) or {}
-        if owner_key in inventories:
-            return inventories.get(owner_key, []) or []
-        return getattr(game, "inventory", []) or []
-
-    # Initial root: the current host (player) inventory
     if owner_id is None:
         owner_id = getattr(game, "player_id", None)
-        if owner_id is None:
-            return
-        root_inv = _inventory_for(owner_id)
-    else:
-        if owner_id in _visited:
-            return
-        root_inv = _inventory_for(owner_id)
-
-    if owner_id in _visited:
+    owner_key = str(owner_id or "").strip()
+    if not owner_key:
         return
-    _visited.add(owner_id)
 
-    for ent in root_inv:
-        yield owner_id, ent
+    from edgecaster.systems import inventory as inventory_system
 
-        # If this item itself owns an inventory, recurse into it.
-        eid = getattr(ent, "id", None)
-        if eid:
-            child_inv = _inventory_for(eid)
-            if child_inv:
-                yield from _iter_all_inventory_items(game, eid, _visited)
+    yield from inventory_system.iter_inventory_tree(
+        game,
+        owner_key,
+        _visited_owner_ids=_visited,
+    )
 
 
 def _player_has_berry(game) -> bool:
@@ -363,16 +331,13 @@ def _consume_one_berry(game) -> bool:
             "strawberry",
         }:
             # Second pass: actually pop it from that specific inventory list.
-            if hasattr(game, "get_inventory"):
-                inv = game.get_inventory(owner_id)
-            else:
-                inv = getattr(game, "inventory", []) or []
+            from edgecaster.systems import inventory as inventory_system
+
+            inv = inventory_system.get_inventory(game, owner_id)
 
             for i, e in enumerate(inv):
                 if e is ent:
                     try:
-                        from edgecaster.systems import inventory as inventory_system
-
                         inventory_system.remove_inventory_item_at(game, owner_id, i)
                     except Exception:
                         pass
@@ -466,20 +431,6 @@ def effect_curse_player(game: "Game") -> None:
 
 
 # --- Adaptive Choice Effect ----------------------------------------------
-
-def effect_give_berry(game):
-    """
-    Attempt to give him a berry.
-
-    - If the player has a berry: consume one and go to 'path1'.
-    - If not: behave like the refusal path and go to 'path2'.
-    """
-    if _player_has_berry(game):
-        _consume_one_berry(game)
-        return "path1"
-    else:
-        return "path2"
-
 
 
 # --- Updated Dialogue Tree ------------------------------------------------

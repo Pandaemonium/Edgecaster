@@ -1,6 +1,6 @@
 # Patterns Guide
 
-Purpose: guide work inside `edgecaster/patterns/`, where fractal geometry generation, pattern queries, motion, and coloring live.
+Purpose: guide work inside `edgecaster/patterns/`, where fractal geometry generation, motion, and coloring live.
 
 ## Scope
 
@@ -12,7 +12,6 @@ This file applies to `edgecaster/patterns/`.
 - pattern construction helpers (`builder.py`, `library.py`)
 - gameplay projection helpers (`activation.py`)
 - runtime motion state (`motion.py`)
-- spatial queries on `Pattern` data (`queries.py`)
 - edge/vertex color assignment helpers (`colors.py`)
 
 ## What Does Not Belong Here

@@ -4252,6 +4252,8 @@ class InventoryScene(PopupMenuScene):
 
     def _find_owner_entity(self):
         owner_id = self._owner_id()
+        if not owner_id:
+            return None
 
         level = self.game._level()
         if level is not None:
@@ -4259,14 +4261,52 @@ class InventoryScene(PopupMenuScene):
             if ent is not None:
                 return ent
 
-        for cand in getattr(self.game, "player_inventory", []):
-            if getattr(cand, "id", None) == owner_id:
-                return cand
+        try:
+            from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
 
-        for inv_list in getattr(self.game, "inventories", {}).values():
-            for cand in inv_list:
-                if getattr(cand, "id", None) == owner_id:
+            ent = entity_lifecycle_system.find_runtime_entity(self.game, owner_id)
+            if ent is not None:
+                return ent
+        except Exception:
+            pass
+
+        def _search_inventory_tree(root_owner_id: str, visited: set[str]) -> Any:
+            root = str(root_owner_id or "").strip()
+            if not root or root in visited:
+                return None
+            visited.add(root)
+
+            try:
+                inventory_items = list(self.game.get_inventory(root) or [])
+            except Exception:
+                inventory_items = []
+
+            for cand in inventory_items:
+                cand_id = str(getattr(cand, "id", "") or "").strip()
+                if cand_id == owner_id:
                     return cand
+                child_tags = getattr(cand, "tags", {}) or {}
+                if cand_id and bool(child_tags.get("container")):
+                    found = _search_inventory_tree(cand_id, visited)
+                    if found is not None:
+                        return found
+            return None
+
+        search_roots: list[str] = []
+        for candidate in (
+            getattr(self.game, "player_id", None),
+            getattr(self, "parent_owner_id", None),
+            owner_id,
+        ):
+            text = str(candidate or "").strip()
+            if text and text not in search_roots:
+                search_roots.append(text)
+
+        visited: set[str] = set()
+        for root_owner_id in search_roots:
+            found = _search_inventory_tree(root_owner_id, visited)
+            if found is not None:
+                return found
 
         return None
 
@@ -5300,17 +5340,32 @@ class InventoryScene(PopupMenuScene):
                             return
                         visited.add(owner_id)
 
-                        inv_map = getattr(self.game, "inventories", None)
-                        if not isinstance(inv_map, dict):
-                            return
-
-                        inv_list = inv_map.get(owner_id)
+                        try:
+                            inv_list = list(self.game.get_inventory(owner_id) or [])
+                        except Exception:
+                            inv_list = []
                         if not inv_list:
-                            inv_map.pop(owner_id, None)
                             return
 
-                        # Iterate a snapshot because we'll delete the mapping at the end.
-                        for child in list(inv_list):
+                        def _remove_child(owner_key: str, target: Any) -> None:
+                            try:
+                                current_inventory = self.game.get_inventory(owner_key)
+                            except Exception:
+                                current_inventory = []
+                            target_id = str(getattr(target, "id", "") or "").strip()
+                            for child_index, existing in enumerate(list(current_inventory)):
+                                existing_id = str(getattr(existing, "id", "") or "").strip()
+                                if existing is target or (target_id and existing_id == target_id):
+                                    _remove_inv_at(
+                                        self.game,
+                                        owner_key,
+                                        int(child_index),
+                                        reason="consumed",
+                                    )
+                                    break
+
+                        # Iterate a snapshot because we'll remove children as we go.
+                        for child in inv_list:
                             nonlocal all_effects
                             all_effects = concat_effect_names(all_effects, effect_names_from_obj(child))
 
@@ -5318,13 +5373,11 @@ class InventoryScene(PopupMenuScene):
                             child_tags = getattr(child, "tags", {}) or {}
                             child_is_container = bool(child_tags.get("container"))
 
-                            if child_is_container and child_id is not None and str(child_id) in inv_map:
+                            if child_is_container and child_id is not None:
                                 _consume_inventory_tree(str(child_id), visited)
+                            _remove_child(owner_id, child)
 
-                        # Finally delete this inventory list (consumes its contents)
-                        inv_map.pop(owner_id, None)
-
-                    if eaten_id is not None and hasattr(self.game, "inventories"):
+                    if eaten_id is not None:
                         _consume_inventory_tree(str(eaten_id), set())
 
                     # 3) Apply ALL collected effects globally (stacking)

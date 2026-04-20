@@ -24,6 +24,7 @@ import numpy as np
 from edgecaster import prototypes
 from edgecaster import spawn_factory  # <-- IMPORTANT: bind spawn_factory name here
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+from edgecaster.systems.entity_identity import stable_int_hash
 
 from edgecaster.climate import (
     Biome,
@@ -374,15 +375,6 @@ def _world_seed(game: "Game") -> int:
         return 1337
 
 
-def _stable_int_hash(*parts: object) -> int:
-    s = "|".join(str(p) for p in parts)
-    h = 2166136261
-    for ch in s:
-        h ^= ord(ch)
-        h = (h * 16777619) & 0xFFFFFFFF
-    return int(h)
-
-
 def _place_fixed_near_sites(
     game: "Game",
     *,
@@ -436,7 +428,7 @@ def _place_fixed_near_sites(
         dmin = max(1, dmin)
         dmax = max(dmin, dmax)
 
-        rng = random.Random((base_seed ^ _stable_int_hash("fixed_near", pid, near_kind, base_ax, base_ay)) & 0xFFFFFFFF)
+        rng = random.Random((base_seed ^ stable_int_hash("fixed_near", pid, near_kind, base_ax, base_ay)) & 0xFFFFFFFF)
 
         zz = int(tags.get("fixed_near_site_z", base_zz) or base_zz)
 
