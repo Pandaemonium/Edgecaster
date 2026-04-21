@@ -557,8 +557,11 @@ class CharacterCreationScene(PanelScene):
             return local.replace("_", " ").title()
 
         results: List[Tuple[str, str, int]] = []
-        # Depth-first order: children grouped under their parents.
-        for full_id in sorted(specs, key=lambda fid: (fid.count("."), fid)):
+        # Preserve the resolver traversal order from entity_body.build_body_node_specs().
+        # That order is already parent-before-children and mirrors the authored
+        # body graph; re-sorting by (depth, id) flattens siblings together and
+        # breaks the hierarchy in the character-creation list.
+        for full_id in specs.keys():
             if full_id == st.monk_base:
                 continue
             depth = full_id.count(".")

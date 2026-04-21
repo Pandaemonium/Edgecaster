@@ -55,6 +55,10 @@ INVENTORY / LOOK SCENES (edgecaster/scenes/inventory_scene.py)
        body-node entities and carry explicit `zoomable` metadata so UI labels do
        not need to re-resolve authored schemas just to decide whether a node is
        a branch root.
+     - Authored-schema fallback paths now annotate that same `zoomable`
+       metadata before returning view data, so label rendering and double-click
+       zoom decisions can stay on the shared query surface even when the
+       realized body tree is absent.
      - When realized body-node entities are unavailable, those same helpers now
        fall back to deterministic `entity_body` child specs before dropping to
        authored schema traversal, which keeps more of the zoom/view pipeline on
@@ -85,10 +89,25 @@ CHAKRA SCENE (edgecaster/scenes/chakra_scene.py)
   walkers, which narrows the old body-schema-only UI path.
 - Live scene reads now prefer `chakra_items.effective_chakra_view(...)` rather
   than materializing the legacy `ChakraState` facade for ordinary UI display.
+- Runtime structural reads that should ignore equipped-item overlays now prefer
+  `chakra_items.structural_chakra_projection(...)` /
+  `chakra_items.structural_chakra_view(...)`, which are component-first and
+  only backfill deterministic body-node ids from the cached legacy facade when
+  a migration-era gap still exists.
+- Actor chakra write helpers now treat `actor.chakra_state` as an optional
+  derived compatibility cache: they rebuild it from component authority when
+  needed instead of manually editing partial unlocked/active sets in place.
+- Actor baseline-root inference now prefers shared `entity_body` specs over the
+  old baked `body_schema` attribute, and actor-facing chakra reads suppress the
+  temporary `{entity_id}:core` placeholder when a real body root is available.
 - Realign mode now uses an explicit scene-local `ChakraEditSession` snapshot:
   preview/drag edits mutate that local session and commit back through explicit
   component writes, rather than treating a live runtime state object as the
   editing surface.
+- Pattern-root selection and realign commits now route through shared
+  `chakra_items` write helpers (`set_actor_chakra_pattern_root(...)`,
+  `set_actor_chakra_alignments(...)`) instead of mutating compat tags directly
+  from the scene layer.
 
 RENDERERS (edgecaster/render/)
 - Pure view layer ("TV unplug test"): if the renderer is removed, the game should still run.
@@ -590,8 +609,9 @@ Chakra pipeline responsibilities (key scripts):
   world-position projection, and seed pattern generation + metadata. When an actor already
   has a realized body-node tree, the seed builder now prefers that body-entity geometry while
   still honoring the explicit ChakraState input for active nodes and pattern root. Generic
-  `ChakraComponent` geometry is still queried as an intermediate fallback before the legacy
-  body-schema compatibility path. `build_chakra_generator_seed_for_actor(...)` is now the
+  `ChakraComponent` geometry is still queried as an intermediate fallback, and unexpanded
+  actors now fall back through deterministic `entity_body.build_body_node_specs(...)` before
+  the legacy raw body-schema compatibility path. `build_chakra_generator_seed_for_actor(...)` is now the
   preferred actor-oriented entrypoint for runtime and scene callers.
 - edgecaster/systems/entity_body.py: builds deterministic actor/body subtree specs from the
   authored body schema and drives the layered actor-body expansion path through
@@ -600,6 +620,10 @@ Chakra pipeline responsibilities (key scripts):
   normalized seed-pattern reconstruction from `ChakraComponent` node/edge data.
 - edgecaster/systems/chakra_items.py: runtime effective chakra overlays from equipped items
   (temporary unlocks, auto-activation, and hit-modifier tag parsing).
+  `structural_chakra_projection(...)` / `structural_chakra_view(...)` are the
+  shared no-item-overlay runtime reads for lifecycle and seed-building callers,
+  while `effective_chakra_projection(...)` layers temporary equipment effects
+  on top of that structural base.
   Snapshot/bootstrap payloads now normalize through `snapshot_chakra_state(...)`;
   ChakraState facade helpers inside this module are `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`.
 - edgecaster/scenes/chakra_scene.py: player-facing UI for selecting/activating chakras, choosing

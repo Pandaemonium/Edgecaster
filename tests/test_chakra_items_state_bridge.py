@@ -50,6 +50,25 @@ def test_effective_chakra_view_reads_component_root_node_id() -> None:
     assert "ent.test.core" in view.active
 
 
+def test_effective_chakra_view_prefers_entity_body_root_over_default_core_for_actor_templates() -> None:
+    actor = SimpleNamespace(
+        id="actor:test:2b",
+        entity_id="actor:test:2b",
+        template_id="human_base",
+        body_schema=None,
+        chakra_component=None,
+        chakra_state=None,
+    )
+    game = SimpleNamespace(get_inventory=lambda _aid: [])
+
+    view = chakra_items_system.effective_chakra_view(game, actor)
+
+    assert view is not None
+    assert "body" in view.unlocked
+    assert "body" in view.active
+    assert "actor.test.2b.core" not in view.unlocked
+
+
 def test_effective_active_nodes_works_without_cached_state_bootstrap() -> None:
     actor = SimpleNamespace(
         id="actor:test:3",
@@ -157,7 +176,8 @@ def test_effective_chakra_projection_reads_component_payload_without_chakra_stat
     assert projection["generators"].get("arm.hand") == "koch"
 
 
-def test_effective_chakra_view_prefers_component_view_over_stale_cached_state() -> None:
+def test_effective_chakra_view_excludes_nodes_absent_from_component() -> None:
+    """structural_chakra_projection is component-only; actor.chakra_state is not consulted."""
     actor = SimpleNamespace(
         id="actor:test:5b",
         entity_id="actor:test:5b",
@@ -174,12 +194,7 @@ def test_effective_chakra_view_prefers_component_view_over_stale_cached_state() 
                 "compat_generators": {"arm.hand": "koch"},
             },
         ),
-        chakra_state=ChakraState(
-            unlocked={"body", "stale.node"},
-            active={"body", "stale.node"},
-            charges={"stale.node": 1.0},
-            pattern_root="stale.node",
-        ),
+        chakra_state=None,
     )
     game = SimpleNamespace(get_inventory=lambda _actor_id: [])
 
@@ -188,12 +203,48 @@ def test_effective_chakra_view_prefers_component_view_over_stale_cached_state() 
     assert view is not None
     assert "arm.hand" in view.unlocked
     assert "arm.hand" not in view.active
-    assert "stale.node" not in view.unlocked
     assert view.charges.get("body") == 0.25
     assert view.charges.get("arm.hand") == 0.75
     assert view.pattern_root == "body"
     assert view.alignments.get("arm.hand") == (0.1, -0.2)
     assert view.generators.get("arm.hand") == "koch"
+
+
+def test_structural_chakra_projection_ignores_actor_chakra_state_attribute() -> None:
+    """ChakraComponent is the sole authority; setting actor.chakra_state has no effect."""
+    actor = SimpleNamespace(
+        id="actor:test:5c",
+        entity_id="actor:test:5c",
+        body_schema={"root": "body", "nodes": {"body": {}, "head": {}, "tail": {}}},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={
+                "body": ChakraNode(node_id="body", active=True, channels={"charge": 0.25}),
+                "head": ChakraNode(node_id="head", active=False, channels={"charge": 0.75}),
+            },
+            tags={},
+        ),
+        chakra_state=ChakraState(
+            unlocked={"body", "head", "tail", "stale.node"},
+            active={"body", "head", "tail", "stale.node"},
+            charges={"tail": 0.5},
+            pattern_root="tail",
+        ),
+    )
+
+    projection = chakra_items_system.structural_chakra_projection(actor)
+
+    assert projection is not None
+    # Component has body+head; actor.chakra_state is not consulted.
+    assert "body" in projection["unlocked"]
+    assert "head" in projection["unlocked"]
+    assert "tail" not in projection["unlocked"], "tail is not in component; chakra_state must not backfill it"
+    assert "stale.node" not in projection["unlocked"]
+    assert "body" in projection["active"]
+    assert "head" not in projection["active"], "component knows head is inactive"
+    assert "tail" not in projection["active"]
+    assert projection["charges"].get("head") == 0.75
+    assert "tail" not in projection["charges"]
 
 
 def test_apply_chakra_state_snapshot_mirrors_to_component_nodes_and_tags() -> None:
@@ -293,6 +344,54 @@ def test_apply_chakra_state_snapshot_accepts_dict_payload_and_rebuilds_cache() -
     assert actor.chakra_component.tags.get("compat_pattern_root") == "arm.hand"
 
 
+def test_set_actor_chakra_alignments_persists_through_shared_snapshot_bridge() -> None:
+    actor = SimpleNamespace(
+        id="actor:test:6d",
+        entity_id="actor:test:6d",
+        body_schema={"root": "body"},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
+            tags={},
+        ),
+        chakra_state=None,
+    )
+
+    out = chakra_items_system.set_actor_chakra_alignments(
+        actor,
+        {"arm.hand": (0.25, -0.5)},
+    )
+
+    assert out == {"arm.hand": (0.25, -0.5)}
+    assert actor.chakra_component.tags.get("compat_alignments") == {"arm.hand": [0.25, -0.5]}
+    assert actor.chakra_state is not None
+    assert actor.chakra_state.alignments.get("arm.hand") == (0.25, -0.5)
+
+
+def test_set_actor_chakra_pattern_root_persists_through_shared_snapshot_bridge() -> None:
+    actor = SimpleNamespace(
+        id="actor:test:6e",
+        entity_id="actor:test:6e",
+        body_schema={"root": "body"},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={
+                "body": ChakraNode(node_id="body", active=True, channels={}),
+                "arm.hand": ChakraNode(node_id="arm.hand", active=True, channels={}),
+            },
+            tags={},
+        ),
+        chakra_state=None,
+    )
+
+    root = chakra_items_system.set_actor_chakra_pattern_root(actor, "arm.hand")
+
+    assert root == "arm.hand"
+    assert actor.chakra_component.tags.get("compat_pattern_root") == "arm.hand"
+    assert actor.chakra_state is not None
+    assert actor.chakra_state.pattern_root == "arm.hand"
+
+
 def test_set_actor_chakra_charge_writes_to_component() -> None:
     """set_actor_chakra_charge writes to ChakraComponent (the sole authority)."""
     actor = SimpleNamespace(
@@ -382,6 +481,28 @@ def test_unlock_actor_chakra_syncs_component() -> None:
     assert bool(actor.chakra_component.nodes["arm.hand"].active) is True
 
 
+def test_unlock_actor_chakra_rebuilds_present_cache_from_component_and_prunes_stale_nodes() -> None:
+    actor = SimpleNamespace(
+        id="actor:test:8b",
+        entity_id="actor:test:8b",
+        body_schema={"root": "body", "nodes": {"body": {}, "arm": {"proto": "arm"}}},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
+            tags={},
+        ),
+        chakra_state=ChakraState(unlocked={"body", "stale.node"}, active={"body", "stale.node"}),
+    )
+
+    ok = chakra_items_system.unlock_actor_chakra(actor, "arm.hand", auto_activate=True)
+
+    assert ok is True
+    assert actor.chakra_state is not None
+    assert "arm.hand" in actor.chakra_state.unlocked
+    assert "arm.hand" in actor.chakra_state.active
+    assert "stale.node" not in actor.chakra_state.unlocked
+
+
 def test_toggle_actor_chakra_syncs_component() -> None:
     actor = SimpleNamespace(
         id="actor:test:9",
@@ -389,16 +510,46 @@ def test_toggle_actor_chakra_syncs_component() -> None:
         body_schema={"root": "body"},
         chakra_component=ChakraComponent(
             root_node_id="body",
-            nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
+            nodes={
+                "body": ChakraNode(node_id="body", active=True, channels={}),
+                "arm.hand": ChakraNode(node_id="arm.hand", active=True, channels={}),
+            },
             tags={},
         ),
-        chakra_state=ChakraState(unlocked={"body", "arm.hand"}, active={"body", "arm.hand"}),
+        chakra_state=None,
     )
     now_active = chakra_items_system.toggle_actor_chakra(actor, "arm.hand", active=False)
     assert now_active is False
-    assert "arm.hand" not in actor.chakra_state.active
     assert "arm.hand" in actor.chakra_component.nodes
     assert bool(actor.chakra_component.nodes["arm.hand"].active) is False
+
+
+def test_toggle_actor_chakra_returns_false_for_node_absent_from_component() -> None:
+    """toggle_actor_chakra requires nodes to be in ChakraComponent; no backfill from chakra_state.
+
+    ChakraComponent is the sole authority after Slice XC. Setting actor.chakra_state
+    with extra nodes must not cause them to appear via toggle — use
+    apply_chakra_state_snapshot to write to the component first.
+    """
+    actor = SimpleNamespace(
+        id="actor:test:9b",
+        entity_id="actor:test:9b",
+        body_schema={"root": "body", "nodes": {"body": {}, "head": {}}},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
+            tags={},
+        ),
+        chakra_state=ChakraState(
+            unlocked={"body", "head"},
+            active={"body", "head"},
+        ),
+    )
+
+    # "head" is in chakra_state but not in the component — toggle must return False.
+    result = chakra_items_system.toggle_actor_chakra(actor, "head", active=True)
+    assert result is False
+    assert "head" not in actor.chakra_component.nodes
 
 
 def test_restore_actor_chakra_component_snapshot_restores_component_and_state() -> None:

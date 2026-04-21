@@ -145,7 +145,6 @@ from edgecaster.ui.widgets import (
     _wrap_text_px
 )
 
-from edgecaster.prototypes import resolve_body_schema
 from edgecaster.systems import body_view_queries as body_view_queries_system
 
 if TYPE_CHECKING:
@@ -281,28 +280,7 @@ def _display_body_node_label(
     """
     has_children = False
     if isinstance(node_spec, dict):
-        if "zoomable" in node_spec:
-            has_children = bool(node_spec.get("zoomable"))
-        else:
-            proto = node_spec.get("proto")
-            if proto:
-                try:
-                    sub = resolve_body_schema(proto) or {"root": None, "nodes": {}}
-                except Exception:
-                    sub = {"root": None, "nodes": {}}
-
-                sub_nodes = sub.get("nodes") if isinstance(sub, dict) else None
-                meaningful = bool(isinstance(sub_nodes, dict) and len(sub_nodes) > 1)
-
-                # If we know the current schema's nodes, suppress '*' when proto doesn't
-                # actually change the node set (common with inherited/alias protos).
-                if meaningful and isinstance(cur_nodes, dict) and isinstance(sub_nodes, dict):
-                    try:
-                        meaningful = {str(k) for k in sub_nodes.keys()} != {str(k) for k in cur_nodes.keys()}
-                    except Exception:
-                        pass
-
-                has_children = bool(meaningful)
+        has_children = bool(node_spec.get("zoomable"))
 
     s = str(nid)
     is_mirrored = s.endswith("_m")
@@ -2752,19 +2730,7 @@ class BodyPlanGraphWidget(Widget):
                                         schema0 = {"root": None, "nodes": {}}
                                     node = (schema0.get("nodes", {}) or {}).get(str(release_nid))
                                     if isinstance(node, dict):
-                                        proto = node.get("proto")
-                                        if proto:
-                                            try:
-                                                sub = resolve_body_schema(proto) or {"root": None, "nodes": {}}
-                                            except Exception:
-                                                sub = {"root": None, "nodes": {}}
-                                            sub_nodes = sub.get("nodes") if isinstance(sub, dict) else None
-                                            if isinstance(sub_nodes, dict):
-                                                cur_nodes = (schema0.get("nodes", {}) or {}) if isinstance(schema0, dict) else {}
-                                                meaningful = len(sub_nodes) > 1
-                                                if meaningful and isinstance(cur_nodes, dict):
-                                                    meaningful = set(sub_nodes.keys()) != set(cur_nodes.keys())
-                                                can_zoom = bool(meaningful)
+                                        can_zoom = bool(node.get("zoomable"))
                                 if can_zoom:
                                     # Double-click zoom wins: cancel any pending delayed single-click activation.
                                     try:

@@ -21,16 +21,11 @@ def test_display_body_node_label_uses_entity_zoomable_metadata_without_schema_re
         "proto": "head_branch",
     }
 
-    with patch.object(
-        inventory_scene_module,
-        "resolve_body_schema",
-        side_effect=AssertionError("entity-backed node labels should not resolve schema"),
-    ):
-        label = inventory_scene_module._display_body_node_label(
-            "arm_hand",
-            node_spec=node_spec,
-            cur_nodes={"arm_hand": node_spec},
-        )
+    label = inventory_scene_module._display_body_node_label(
+        "arm_hand",
+        node_spec=node_spec,
+        cur_nodes={"arm_hand": node_spec},
+    )
 
     assert label == "arm hand*"
 
@@ -177,7 +172,7 @@ def test_resolve_body_view_for_zoom_path_falls_back_when_entity_zoom_view_is_deg
         return_value=entity_result,
     ), patch(
         "edgecaster.systems.body_view_queries.resolve_body_schema",
-        side_effect=[root_schema, arm_schema],
+        side_effect=[root_schema, arm_schema, arm_schema],
     ):
         schema, embed_off_u, embed_scale_u = inventory_scene_module._resolve_body_view_for_zoom_path(
             owner,
@@ -185,7 +180,21 @@ def test_resolve_body_view_for_zoom_path_falls_back_when_entity_zoom_view_is_deg
             game=object(),
         )
 
-    assert schema == arm_schema
+    assert schema == {
+        "root": "shoulder",
+        "nodes": {
+            "shoulder": {
+                "layout": {"x": 0.0, "y": 0.0},
+                "props": {"size": 1.0},
+                "zoomable": False,
+            },
+            "elbow": {
+                "layout": {"x": 1.0, "y": 0.0},
+                "props": {"size": 1.0},
+                "zoomable": False,
+            },
+        },
+    }
     assert embed_off_u == (0.0, 0.0)
     assert embed_scale_u == 1.0
 
@@ -223,7 +232,7 @@ def test_resolve_body_view_chain_for_zoom_path_falls_back_when_entity_chain_is_i
         return_value=entity_chain,
     ), patch(
         "edgecaster.systems.body_view_queries.resolve_body_schema",
-        side_effect=[root_schema, arm_schema],
+        side_effect=[root_schema, arm_schema, arm_schema],
     ):
         chain = inventory_scene_module._resolve_body_view_chain_for_zoom_path(
             owner,
@@ -232,5 +241,64 @@ def test_resolve_body_view_chain_for_zoom_path_falls_back_when_entity_chain_is_i
         )
 
     assert len(chain) == 2
-    assert chain[0][0] == root_schema
-    assert chain[-1][0] == arm_schema
+    assert chain[0][0] == {
+        "root": "body",
+        "nodes": {
+            "arm": {
+                "layout": {"x": 0.0, "y": 0.0},
+                "props": {"size": 1.0},
+                "proto": "arm_proto",
+                "zoomable": True,
+            }
+        },
+    }
+    assert chain[-1][0] == {
+        "root": "shoulder",
+        "nodes": {
+            "shoulder": {
+                "layout": {"x": 0.0, "y": 0.0},
+                "props": {"size": 1.0},
+                "zoomable": False,
+            },
+            "elbow": {
+                "layout": {"x": 1.0, "y": 0.0},
+                "props": {"size": 1.0},
+                "zoomable": False,
+            },
+        },
+    }
+
+
+def test_resolve_body_schema_for_zoom_path_annotates_zoomable_metadata_on_schema_fallback() -> None:
+    inventory_scene_module = _import_inventory_scene_module()
+    owner = SimpleNamespace(id="actor:test_body", entity_id="actor:test_body")
+    root_schema = {
+        "root": "body",
+        "nodes": {
+            "arm": {"proto": "arm_proto"},
+            "heart": {},
+        },
+    }
+    arm_schema = {
+        "root": "shoulder",
+        "nodes": {
+            "shoulder": {"layout": {"x": 0.0, "y": 0.0}, "props": {"size": 1.0}},
+            "elbow": {"layout": {"x": 1.0, "y": 0.0}, "props": {"size": 1.0}},
+        },
+    }
+
+    with patch(
+        "edgecaster.systems.body_view_queries.build_entity_schema_at_zoom_depth",
+        return_value=None,
+    ), patch(
+        "edgecaster.systems.body_view_queries.resolve_body_schema",
+        side_effect=[root_schema, arm_schema],
+    ):
+        schema = inventory_scene_module._resolve_body_schema_for_zoom_path(
+            owner,
+            [],
+            game=object(),
+        )
+
+    assert schema["nodes"]["arm"]["zoomable"] is True
+    assert schema["nodes"]["heart"]["zoomable"] is False

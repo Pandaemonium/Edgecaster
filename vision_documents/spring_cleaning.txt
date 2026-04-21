@@ -27,6 +27,48 @@ Legend:
   - `edgecaster/systems/INDEX.md` stale `turns.py` entry removed so folder docs
     match the current module layout.
 
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] scene query/write cleanup (2026-04-20)
+  - `edgecaster/systems/chakra_items.py` now owns explicit scene-facing write
+    helpers for alignment and pattern-root commits:
+      - `set_actor_chakra_alignments(...)`
+      - `set_actor_chakra_pattern_root(...)`
+  - `edgecaster/scenes/chakra_scene.py` no longer writes `compat_alignments` or
+    `compat_pattern_root` directly; those commits now route through the shared
+    snapshot/write bridge.
+  - `edgecaster/systems/body_view_queries.py` now annotates authored-schema
+    fallbacks with explicit `zoomable` metadata, so Inventory Scene label and
+    double-click zoom decisions stay on the shared query surface instead of
+    re-resolving schemas locally.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] structural runtime chakra read cleanup (2026-04-20)
+  - `edgecaster/systems/chakra_items.py` now exposes
+    `structural_chakra_projection(...)` / `structural_chakra_view(...)` as the
+    shared no-item-overlay runtime read surface.
+  - These helpers are component-first, but still backfill deterministic
+    body-node ids from cached `actor.chakra_state` when migration-era actors
+    have valid structural gaps not yet mirrored into the component.
+  - `edgecaster/systems/entity_lifecycle.py` body-child activation sync now
+    reads through that shared structural projection instead of peeking directly
+    at `owner_ent.chakra_state`.
+  - `edgecaster/systems/chakras.py` actor seed-building fallback now uses the
+    shared structural view instead of a raw cached-state read.
+  - `unlock_actor_chakra(...)` / `toggle_actor_chakra(...)` now rebuild an
+    existing `actor.chakra_state` cache from component authority after writes
+    instead of hand-editing partial fields in place.
+  - `toggle_actor_chakra(...)` backfill now uses the filtered structural
+    projection, so stale cached ids no longer reappear as real component nodes
+    during compat writes.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] actor seed fallback cleanup (2026-04-20)
+  - `edgecaster/systems/chakras.py` now uses
+    `entity_body.build_body_node_specs(...)` as the preferred unexpanded-actor
+    seed fallback before dropping to the raw recursive `body_schema` path.
+  - This keeps actor-oriented seed generation on the shared body substrate even
+    before the body entity tree has been realized.
+  - `chakra_items.py` baseline-root inference now also prefers shared
+    `entity_body` specs, and actor-facing projections suppress the temporary
+    default `{entity_id}:core` shell when a real body root is available.
+
 ===============================================================================
 SLICE 1 — TARGETMODE (FOUNDATION COMPLETE)
 
@@ -1407,8 +1449,8 @@ PHASE 8 — LEGACY REMOVAL
 
 [DONE][ENTITY_CHAKRA][PHASE_8] sync_actor_chakra_state deletion (2026-04-12)
   - Deleted from edgecaster/systems/chakra_items.py.
-  - Replaced by apply_chakra_state_snapshot (full-state restore path) and
-    direct comp.tags writes in chakra_scene.py for pattern_root/alignments.
+  - Replaced by apply_chakra_state_snapshot (full-state restore path), then
+    later by shared `chakra_items` write helpers for pattern_root/alignments.
   - game.py bootstrap migrated to apply_chakra_state_snapshot.
   - Test migrated to cover apply_chakra_state_snapshot instead.
 

@@ -43,13 +43,14 @@ So knuckle_2 requires: {torso, shoulder, wrist} unlocked, but NOT knuckle_1.
 Runtime Usage (entity path, preferred for spawned actors):
 ----------------------------------------------------------
     from edgecaster.systems import chakra_items
-    from edgecaster.systems.chakras import can_unlock_chakra_for_entity
+    from edgecaster.systems.chakras import list_unlockable_chakras_for_entity_from_unlocked
 
-    # Check if player can unlock "wrist" chakra
-    if can_unlock_chakra_for_entity(actor, actor.chakra_state, "arm.wrist"):
-        chakra_items.unlock_actor_chakra(actor, "arm.wrist", game=game)
+    # Ask what the player can unlock (returns list of full_ids).
+    unlocked = chakra_items.effective_unlocked_nodes(game, actor)
+    unlockable = list_unlockable_chakras_for_entity_from_unlocked(actor, unlocked)
 
-    # Deactivate it
+    # Unlock and deactivate.
+    chakra_items.unlock_actor_chakra(actor, "arm.wrist", game=game)
     chakra_items.toggle_actor_chakra(actor, "arm.wrist", active=False, game=game)
 
     # Generate pattern seed through the actor-oriented helper.
@@ -365,62 +366,6 @@ def list_unlockable_chakras_for_entity_from_unlocked(
         for (full_id, _depth) in locked
         if can_unlock_full_chakra_id(state, full_id)
     ]
-
-
-def list_unlockable_chakras_for_entity(
-    owner_ent: Any,
-    chakra_state: ChakraState,
-) -> List[str]:
-    """Return unlockable chakra ids using deterministic body-node specs.
-
-    This is the runtime-facing unlock query for real actor/entities. It uses
-    `entity_body.build_body_node_specs(...)` instead of re-walking `body_schema`
-    directly, which keeps the unlock flow aligned with the body-entity hierarchy.
-    """
-    return list_unlockable_chakras_for_entity_from_unlocked(
-        owner_ent,
-        getattr(chakra_state, "unlocked", set()) or set(),
-    )
-
-
-def can_unlock_chakra_for_entity(
-    owner_ent: Any,
-    chakra_state: ChakraState,
-    full_id: str,
-) -> bool:
-    """Entity-aware unlock check using body-node specs.
-
-    This is the runtime-facing prerequisite gate for real actor/entities.
-    It uses ``entity_body.build_body_node_specs`` to verify the node exists
-    in the body tree, then delegates to ``can_unlock_full_chakra_id`` for
-    the dot-prefix prerequisite logic. Returns False when body specs are
-    unavailable (entity has no body schema).
-
-    Args:
-        owner_ent: The actor or entity whose body tree to query.
-        chakra_state: Current chakra state.
-        full_id: The fully-qualified node id to check (e.g. ``"arm.wrist"``).
-
-    Returns:
-        True if the node exists, is not yet unlocked, and all dot-prefix
-        prerequisites are already unlocked.
-    """
-    try:
-        from edgecaster.systems import entity_body as entity_body_system
-
-        specs = entity_body_system.build_body_node_specs(owner_ent)
-    except Exception:
-        specs = {}
-
-    if not specs:
-        return False
-
-    # Node must be present in the body tree.
-    if full_id not in specs:
-        return False
-
-    # Delegate prereq logic to the full-id helper (uses dot-prefix decomposition).
-    return can_unlock_full_chakra_id(chakra_state, full_id)
 
 
 # =============================================================================
@@ -1052,6 +997,128 @@ def _build_seed_from_realized_body_tree(
     )
 
 
+def _build_seed_from_body_specs(
+    chakra_state: ChakraState,
+    *,
+    actor: Any,
+    require_root: bool,
+) -> Optional[ChakraGeneratorSeed]:
+    """Build a seed from deterministic body-node specs without realizing entities.
+
+    This is the preferred actor fallback when no realized body tree or richer
+    geometry query is available yet. It keeps actor-oriented seed generation on
+    the shared `entity_body` substrate instead of re-walking raw body_schema
+    dicts inside this module.
+    """
+    if actor is None:
+        return None
+
+    try:
+        from edgecaster.systems import entity_body as entity_body_system
+
+        specs = entity_body_system.build_body_node_specs(actor)
+    except Exception:
+        specs = {}
+    if not isinstance(specs, dict) or not specs:
+        return None
+
+    alignments = getattr(chakra_state, "alignments", {}) or {}
+    if not isinstance(alignments, dict):
+        alignments = {}
+
+    positions_all: Dict[str, Vec2] = {}
+    full_edges: List[Tuple[str, str]] = []
+
+    for spec in specs.values():
+        full_id = str(getattr(spec, "full_id", "") or "").strip()
+        if not full_id:
+            continue
+        try:
+            pos = (
+                float(getattr(spec, "abs_pos", (0.0, 0.0))[0]),
+                float(getattr(spec, "abs_pos", (0.0, 0.0))[1]),
+            )
+        except Exception:
+            continue
+        try:
+            local_scale = float(getattr(spec, "local_scale", 1.0) or 1.0)
+        except Exception:
+            local_scale = 1.0
+
+        raw_align = alignments.get(full_id)
+        if isinstance(raw_align, (tuple, list)) and len(raw_align) >= 2:
+            try:
+                pos = (
+                    float(pos[0]) + float(raw_align[0]) * local_scale * 0.5,
+                    float(pos[1]) + float(raw_align[1]) * local_scale * 0.5,
+                )
+            except Exception:
+                pass
+
+        positions_all[full_id] = pos
+
+        parent_full_id = str(getattr(spec, "parent_full_id", "") or "").strip()
+        if parent_full_id:
+            full_edges.append((parent_full_id, full_id))
+
+    if not positions_all:
+        return None
+
+    active_set = set(getattr(chakra_state, "active", set()) or set())
+    root_id = getattr(chakra_state, "pattern_root", None)
+    if root_id not in active_set:
+        if require_root:
+            raise ValueError("Select an active chakra as the pattern root first.")
+        active_sorted = sorted(active_set)
+        if not active_sorted:
+            raise ValueError("Need at least 2 active chakras to form a generator.")
+        root_id = active_sorted[0]
+
+    active_nodes, compact_edges = get_compact_active_graph(
+        full_edges,
+        active_set,
+        root_id=root_id,
+    )
+    positions = {
+        node_id: positions_all[node_id]
+        for node_id in active_nodes
+        if node_id in positions_all
+    }
+
+    if root_id not in positions:
+        raise ValueError("Pattern root not found in chakra pattern.")
+
+    candidates = [node_id for node_id in active_nodes if node_id != root_id and node_id in positions]
+    if not candidates:
+        raise ValueError("Need at least 2 connected chakras to form a generator.")
+
+    rx, ry = positions[root_id]
+
+    def _distance_squared(node_id: str) -> float:
+        px, py = positions[node_id]
+        dx = px - rx
+        dy = py - ry
+        return dx * dx + dy * dy
+
+    terminus_id = max(candidates, key=_distance_squared)
+    verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
+        positions,
+        compact_edges,
+        root_id=str(root_id),
+        terminus_id=str(terminus_id),
+    )
+    return ChakraGeneratorSeed(
+        positions=positions,
+        compact_edges=compact_edges,
+        root_id=str(root_id),
+        terminus_id=str(terminus_id),
+        verts=verts,
+        edges=edges,
+        node_order=node_order,
+        base_len=base_len,
+    )
+
+
 def build_chakra_generator_seed(
     chakra_state: ChakraState,
     *,
@@ -1144,6 +1211,22 @@ def build_chakra_generator_seed(
                 except Exception:
                     pass
 
+    # Shared deterministic body-spec path for actor anatomy when the body tree
+    # is not realized yet. This keeps actor-oriented seed generation on the
+    # same substrate used by entity expansion and body-view queries instead of
+    # dropping straight to raw body_schema recursion.
+    if actor is not None:
+        try:
+            body_spec_seed = _build_seed_from_body_specs(
+                chakra_state,
+                actor=actor,
+                require_root=require_root,
+            )
+            if body_spec_seed is not None:
+                return body_spec_seed
+        except ValueError:
+            pass
+
     # Schema fallback path
     if not body_schema and actor is not None:
         try:
@@ -1200,7 +1283,9 @@ def build_chakra_generator_seed_for_actor(
 
     if state_like is None:
         try:
-            state_like = getattr(actor, "chakra_state", None)
+            from edgecaster.systems import chakra_items as chakra_items_system
+
+            state_like = chakra_items_system.structural_chakra_view(actor)
         except Exception:
             state_like = None
 

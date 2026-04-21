@@ -199,10 +199,46 @@ Implemented and stable:
      `entity_body.build_body_node_specs(...)` data before dropping to legacy
      schema walkers, so point layout, list entries, and tooltips can stay on
      the shared body-node shape even when no realized graph is present.
+   - `chakra_items.py` now exposes explicit write helpers for scene commits
+     (`set_actor_chakra_alignments(...)`,
+     `set_actor_chakra_pattern_root(...)`), and Chakra Scene uses those
+     instead of mutating compat tags directly from the scene layer.
+   - `chakra_items.structural_chakra_projection(...)` /
+     `structural_chakra_view(...)` now provide the shared no-item-overlay
+     runtime read for lifecycle and seed callers: component data wins, but
+     migration-era cached `actor.chakra_state` can still backfill deterministic
+     body-node ids that are missing from the component without reviving stale
+     cached junk.
+   - `entity_lifecycle._materialize_body_child(...)` now syncs external child
+     activation from that shared structural projection instead of peeking
+     directly at `owner_ent.chakra_state`, so component-backed activation
+     survives even after the cache facade is absent.
+   - `build_chakra_generator_seed_for_actor(...)` now falls back to the shared
+     structural chakra view instead of the raw cached `actor.chakra_state`
+     facade when the richer runtime effective view is unavailable.
+   - `build_chakra_generator_seed(...)` now prefers deterministic
+     `entity_body.build_body_node_specs(...)` for unexpanded actor anatomy
+     before dropping to the legacy raw `body_schema` recursion path, so actor
+     seed generation stays on the shared body substrate even when no realized
+     body tree is present yet.
+   - `unlock_actor_chakra(...)` / `toggle_actor_chakra(...)` now treat
+     `actor.chakra_state` as a derived compatibility cache: when the cache
+     exists they rebuild it from component authority after writes instead of
+     mutating partial fields in place, and toggle backfill now consults the
+     filtered structural projection so stale cached ids do not re-materialize
+     as real component nodes.
+   - Actor baseline-root inference in `chakra_items.py` now prefers shared
+     `entity_body` specs over the old baked `body_schema` attribute, and
+     actor-facing chakra projections suppress the temporary default
+     `{entity_id}:core` placeholder when a real body root is available.
    - `scenes/inventory_scene.py` entity-backed zoom schemas now carry explicit
      `zoomable` metadata, and body-node labels use that metadata directly
      instead of re-resolving authored schemas just to decide whether to append
      the branch `*` marker.
+   - `body_view_queries.py` now annotates authored-schema fallback payloads
+     with the same `zoomable` metadata, so Inventory Scene label rendering and
+     double-click zoom checks can stay on the shared query surface even when
+     the realized body tree is unavailable.
    - `scenes/inventory_scene.py` synthetic zoom schemas now also fall back to
      deterministic `entity_body.child_specs_for_entity(...)` output when the
      realized graph is unavailable, so the deeper zoom/view helpers stay on the
@@ -410,6 +446,61 @@ Not yet complete:
     - Item clone helpers (`clone_entity`, `_clone_entity_for_drop`,
       `_clone_entity_for_trade`) confirmed already deleted; spring_cleaning entry
       marked DONE.
+
+90. Phase 8 Legacy Removal Slice XC (2026-04-20):
+    - `systems/chakra_items.py`: Deleted `_structural_legacy_node_ids` helper (~29 lines) and the
+      entire `actor.chakra_state` backfill block inside `structural_chakra_projection`. The backfill
+      read `actor.chakra_state` to hydrate nodes absent from ChakraComponent for migration-era actors,
+      but `apply_chakra_state_snapshot` is always called before entity expansion in `game.py` (line
+      710 before lines 738-748), so ChakraComponent is always populated first in production. The
+      function now reads from ChakraComponent exclusively.
+    - `systems/chakra_items.py`: Deleted the migration-era backfill block in `toggle_actor_chakra`
+      (lines ~995-1004) that tried to hydrate missing nodes from `structural_chakra_projection`.
+      After the projection was made component-only, that backfill became a dead no-op (the condition
+      `nid not in comp.nodes AND nid in structural_unlocked` can never be True). Toggle now requires
+      nodes to already exist in ChakraComponent.
+    - `tests/test_chakra_items_state_bridge.py`: Rewrote two tests:
+      * `test_toggle_actor_chakra_syncs_component`: pre-populate component with "arm.hand" (not
+        relying on backfill); verifies toggle deactivates the node correctly.
+      * Replaced `test_toggle_actor_chakra_backfills_missing_component_node_only_from_valid_structural_state`
+        with `test_toggle_actor_chakra_returns_false_for_node_absent_from_component`: confirms
+        toggle returns False for nodes in chakra_state but absent from ChakraComponent (no backfill).
+    - `tests/test_entity_body_expansion.py`: Updated entity expansion test to call
+      `apply_chakra_state_snapshot` instead of setting `actor.chakra_state` directly, matching the
+      production spawn path.
+    - `tests/test_pattern_runtime.py`: Removed dead `actor.chakra_state = SimpleNamespace(...)`
+      assignments from two tests — `chakra_modifiers` uses monkeypatched `effective_active_nodes`
+      and never read `actor.chakra_state`.
+    - `tests/test_chakra_items_state_bridge.py` additionally: renamed/rewrote
+      `test_effective_chakra_view_prefers_component_view_over_stale_cached_state` →
+      `test_effective_chakra_view_excludes_nodes_absent_from_component` (pure component path); and
+      replaced `test_structural_chakra_projection_backfills_missing_valid_nodes_without_reviving_stale_or_overridden_ids`
+      with `test_structural_chakra_projection_ignores_actor_chakra_state_attribute` verifying
+      that setting `actor.chakra_state` with extra nodes has no effect.
+    - 667 tests pass.
+
+89. Phase 8 Legacy Removal Slice LXXXIX (2026-04-20):
+    - `systems/chakras.py`: Deleted `can_unlock_chakra_for_entity(owner_ent, chakra_state, full_id)`
+      (38 lines) — zero production callers; prereq-gate behavior is covered by
+      `can_unlock_full_chakra_id` (internal) and exercised through
+      `list_unlockable_chakras_for_entity_from_unlocked` which production uses.
+    - `tests/test_chakra_unlock_queries.py` rewritten: 6 old tests replaced by 4 cleaner tests
+      that exercise the prereq-gate, already-unlocked exclusion, and resonance invariants
+      directly through the preferred `_from_unlocked` API.
+    - 667 tests pass.
+
+88. Phase 8 Legacy Removal Slice LXXXVIII (2026-04-20):
+    - `systems/chakras.py`: Deleted `list_unlockable_chakras_for_entity(owner_ent, chakra_state)`
+      (14 lines) — thin wrapper around `list_unlockable_chakras_for_entity_from_unlocked`;
+      all production callers (`game.py`, `dialogues.py`) already call the thinner form directly.
+    - 667 tests pass (no behavioral change; test count unchanged at this step).
+
+87. Phase 8 Legacy Removal Slice LXXXVII (2026-04-20):
+    - `systems/chakra_items.py`: Deleted `actor.body_schema` fallback branch from
+      `_baseline_chakra_root` (8 lines) — production actors have not had `body_schema` baked
+      since Slice VII; entity_body specs (first branch) and chakra_component root (third branch)
+      cover all production cases.
+    - 669 tests pass (no behavioral change).
 
 86. Phase 8 Legacy Removal Slice LXXXVI (2026-04-19):
     - `systems/poi_worldgen.py`: Deleted `poi_structure_world_id(poi_id, kind, index)` (5 lines)

@@ -40,9 +40,9 @@ Supersedes: none
 
 ### Chakra, Gods, And Rune Systems
 
-- `chakras.py` *(legacy body-schema math still lives here, but `build_chakra_generator_seed_for_actor(...)` is now the preferred actor-oriented entrypoint for runtime/scene generator seed reads)*
+- `chakras.py` *(legacy body-schema math still lives here, but `build_chakra_generator_seed_for_actor(...)` is now the preferred actor-oriented entrypoint for runtime/scene generator seed reads, with structural fallback routed through `chakra_items` instead of raw `actor.chakra_state` peeks and unexpanded actor fallback now preferring deterministic `entity_body` specs before raw body-schema recursion)*
 - `chakra_effects.py`
-- `chakra_items.py` *(component-first chakra read/write helpers; `effective_chakra_view(...)` / `effective_chakra_projection(...)` are the preferred runtime query surfaces while `ChakraState` remains compatibility vocabulary)*
+- `chakra_items.py` *(component-first chakra read/write helpers; `effective_chakra_view(...)` / `effective_chakra_projection(...)` are the preferred runtime query surfaces, `structural_chakra_projection(...)` / `structural_chakra_view(...)` are the no-item-overlay runtime reads for lifecycle/seed callers, and write helpers now rebuild the optional `actor.chakra_state` cache from component authority instead of hand-editing partial compat fields)*
 - `chakra_content.py`
 - `gods.py`
 - `god_abilities.py`
@@ -56,7 +56,7 @@ Supersedes: none
 - `entity_ops.py`
 - `entity_identity.py` *(canonical `stable_int_hash` FNV-1a; shared by aggregate_resolution, poi_worldgen, site_placement)*
 - `entity_body.py`
-- `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders)*
+- `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders; schema fallbacks now annotate explicit `zoomable` metadata so scenes do not need to re-resolve authored schemas just to decide branch behavior)*
 - `entity_graph_ops.py`
 - `entity_snapshots.py`
 - `entity_lifecycle.py`

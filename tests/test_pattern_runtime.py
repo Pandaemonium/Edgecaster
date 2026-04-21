@@ -209,14 +209,6 @@ def test_act_chakra_skips_schema_resolve_for_component_backed_actor(monkeypatch)
 
 def test_chakra_modifiers_prefers_reduced_charge_snapshot(monkeypatch) -> None:
     game, actor = _make_game()
-    actor.chakra_state = SimpleNamespace(
-        unlocked={"body", "head"},
-        active={"body", "head"},
-        charges={"body": 0.0, "head": 0.0},
-        alignments={},
-        generators={},
-        pattern_root="body",
-    )
     actor._chakra_effective_channels = {
         "body": {"charge": 0.0},
         "head": {"charge": 1.0},
@@ -251,15 +243,6 @@ def test_chakra_modifiers_resonance_uses_effective_active_nodes(monkeypatch) -> 
     same way charge averaging does, so the two reads are consistent.
     """
     game, actor = _make_game()
-    # Stored state only has body — arm and arm_m are equipment-granted.
-    actor.chakra_state = SimpleNamespace(
-        unlocked={"body"},
-        active={"body"},
-        charges={},
-        alignments={},
-        generators={},
-        pattern_root="body",
-    )
 
     # Equipment grants arm + arm_m — enough to trigger bilateral_arms resonance.
     monkeypatch.setattr(

@@ -32,7 +32,20 @@
       "Bash(xargs -I{} basename {})",
       "Bash(xargs '-I{}' bash -c 'n=$\\(grep -c \"^def \\\\|^    def \" {} 2>/dev/null\\); echo \"$n $\\(basename {}\\)\"')",
       "Bash(awk '{print $3}')",
-      "Bash(xargs '-I{}' bash -c 'f={}; n=$\\(grep -c \"^def \" $f 2>/dev/null\\); if [ \"$n\" -le \"3\" ]; then echo \"$n $f\"; fi')"
+      "Bash(xargs '-I{}' bash -c 'f={}; n=$\\(grep -c \"^def \" $f 2>/dev/null\\); if [ \"$n\" -le \"3\" ]; then echo \"$n $f\"; fi')",
+      "Bash(awk '/^class Game:/,/^class / {print NR\": \"$0}' /c/Games/Edgecaster/edgecaster/game.py)",
+      "Bash(cat)",
+      "Bash(chmod +x /tmp/analyze_legacy.sh)",
+      "Bash(bash /tmp/analyze_legacy.sh)",
+      "Bash(chmod +x /tmp/find_zero_callers.sh)",
+      "Bash(bash /tmp/find_zero_callers.sh)",
+      "Bash(chmod +x /tmp/comprehensive_search.sh)",
+      "Bash(bash /tmp/comprehensive_search.sh)",
+      "Bash(chmod +x /tmp/check_imports.sh)",
+      "Bash(bash /tmp/check_imports.sh)",
+      "Bash(chmod +x /tmp/find_delegates.sh)",
+      "Bash(bash /tmp/find_delegates.sh)",
+      "Read(//tmp/**)"
     ]
   }
 }

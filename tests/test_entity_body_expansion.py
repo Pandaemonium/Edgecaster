@@ -235,6 +235,37 @@ def test_build_chakra_generator_seed_uses_body_schema_path_for_unexpanded_actor(
     assert seed.edges, "body-schema path must produce non-empty edges"
 
 
+def test_build_chakra_generator_seed_uses_body_specs_for_actor_before_schema_recursion() -> None:
+    """Actor-oriented seed generation should prefer entity_body specs over raw schema walkers."""
+    actor = _make_actor()
+    chakra_state = ChakraState(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        pattern_root="body",
+    )
+
+    from edgecaster.systems import chakras as chakra_system
+
+    original_schema_helper = chakra_system.get_active_chakra_generator_graph
+
+    def _unexpected_schema_helper(*_args, **_kwargs):
+        raise AssertionError("raw body_schema recursion should not be the first actor fallback anymore")
+
+    chakra_system.get_active_chakra_generator_graph = _unexpected_schema_helper
+    try:
+        seed = build_chakra_generator_seed(
+            chakra_state,
+            actor=actor,
+        )
+    finally:
+        chakra_system.get_active_chakra_generator_graph = original_schema_helper
+
+    assert "body" in seed.node_order
+    assert "head" in seed.node_order
+    assert seed.edges
+    assert seed.base_len > 0.0
+
+
 def test_build_chakra_generator_seed_uses_realized_body_tree_when_schema_is_omitted() -> None:
     """Expanded actors should build seeds from body-node entities without schema input."""
     actor = _make_actor()
@@ -354,14 +385,15 @@ def test_nested_body_node_active_state_inherits_from_ancestor() -> None:
     - exact deep id active ("head.neck") →  head.neck spawns active=True
     """
     from edgecaster.systems.chakras import ChakraState as _CS
+    from edgecaster.systems import chakra_items as _ci
 
     def _realize_head_neck(active_set):
         actor = _make_actor()
-        # Set chakra_state BEFORE expansion so _materialize_body_child sees it.
-        actor.chakra_state = _CS(
-            unlocked=set(active_set),
-            active=set(active_set),
-            pattern_root="body",
+        # Write active nodes to ChakraComponent BEFORE expansion so
+        # _materialize_body_child reads the correct structural projection.
+        _ci.apply_chakra_state_snapshot(
+            actor,
+            _CS(unlocked=set(active_set), active=set(active_set), pattern_root="body"),
         )
         game = _DummyGame(actor)
         entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
@@ -406,3 +438,41 @@ def test_nested_body_node_active_state_inherits_from_ancestor() -> None:
     assert _realize_head_neck({"head.neck"}) is True, (
         "Batch 4: head.neck must be active when 'head.neck' itself is in chakra_state.active"
     )
+
+
+def test_nested_body_node_active_state_reads_component_backed_structure_without_cached_state() -> None:
+    """Body expansion must honor component-backed activation even after cache removal."""
+    actor = _make_actor()
+    chakra_items_system.apply_chakra_state_snapshot(
+        actor,
+        ChakraState(
+            unlocked={"body", "head"},
+            active={"body", "head"},
+            pattern_root="body",
+        ),
+    )
+    actor.chakra_state = None
+
+    game = _DummyGame(actor)
+    entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
+
+    actor_children = entity_lifecycle_system.expand_entity(game, actor.id)
+    body_root_id = actor_children[0]
+    entity_lifecycle_system.expand_entity(game, body_root_id)
+
+    head_entity_id = "actor:test_body:body:head"
+    head_ent = entity_lifecycle_system.find_runtime_entity(game, head_entity_id)
+    assert head_ent is not None
+    entity_lifecycle_system.expand_entity(game, head_entity_id)
+
+    neck_entity_id = "actor:test_body:body:head.neck"
+    neck_ent = entity_lifecycle_system.find_runtime_entity(game, neck_entity_id)
+    assert neck_ent is not None
+
+    neck_comp = getattr(neck_ent, "chakra_component", None)
+    neck_root_nid = str(getattr(neck_comp, "root_node_id", "") or "")
+    head_comp = getattr(head_ent, "chakra_component", None)
+    head_nodes = getattr(head_comp, "nodes", {}) or {}
+    neck_ext_node = head_nodes.get(neck_root_nid)
+    assert neck_ext_node is not None
+    assert bool(getattr(neck_ext_node, "active", True)) is True

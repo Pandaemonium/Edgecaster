@@ -1929,9 +1929,11 @@ class ChakraSelectionScene(PanelScene):
             return
 
         self._push_undo()
-        comp = chakra_items_system._coerce_actor_chakra_component(self._actor)
-        if comp is not None:
-            comp.tags["compat_pattern_root"] = primary
+        chakra_items_system.set_actor_chakra_pattern_root(
+            self._actor,
+            primary,
+            game=self.game,
+        )
         self._preview.mark_dirty()
         self._refresh_list_items()
         self._update_info_for_chakra(primary)
@@ -2178,9 +2180,11 @@ class ChakraSelectionScene(PanelScene):
             changed = (self._pending_alignments != (self._original_alignments or {}))
             if changed:
                 self._push_undo()
-            comp = chakra_items_system._coerce_actor_chakra_component(self._actor)
-            if comp is not None:
-                comp.tags["compat_alignments"] = dict(self._pending_alignments)
+                chakra_items_system.set_actor_chakra_alignments(
+                    self._actor,
+                    dict(self._pending_alignments),
+                    game=self.game,
+                )
             if changed:
                 self._apply_realign_time_cost()
 

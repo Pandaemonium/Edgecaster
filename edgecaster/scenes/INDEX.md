@@ -20,8 +20,8 @@ Supersedes: none
 
 ## Heavy Overlay / Interaction Scenes
 
-- `inventory_scene.py` - inventory and look flow, body zoom, drag/drop, preview camera state
-- `chakra_scene.py` - chakra selection, realign mode, preview, commit/cancel flow
+- `inventory_scene.py` - inventory and look flow, body zoom, drag/drop, preview camera state; body-node zoom labels/clicks should consume shared `body_view_queries` metadata instead of re-resolving schemas locally
+- `chakra_scene.py` - chakra selection, realign mode, preview, commit/cancel flow; scene-local edit sessions should commit through `chakra_items` write helpers rather than mutating compat tags directly
 - `world_map_scene.py` - world map rendering, zoom, cached overmap handoff, fast travel
 - `merchant_scene.py` - trade UI (merchant/player rows should read inventory through the shared query surface, not direct list caches)
 

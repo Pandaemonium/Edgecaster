@@ -169,3 +169,74 @@ def test_body_nodes_for_actor_falls_back_to_entity_body_specs_when_graph_is_abse
             "is_schema_root": False,
         }
     ]
+
+
+def test_set_pattern_root_routes_through_shared_chakra_write_helper() -> None:
+    chakra_scene_module = _import_chakra_scene_module()
+    scene = chakra_scene_module.ChakraSelectionScene.__new__(chakra_scene_module.ChakraSelectionScene)
+    scene._mode = "activate"
+    scene._actor = object()
+    scene.game = SimpleNamespace(log=SimpleNamespace(add=MagicMock()))
+    scene._silhouette = SimpleNamespace(get_selected_chakra=lambda: "arm.hand")
+    scene._push_undo = MagicMock()
+    scene._preview = SimpleNamespace(mark_dirty=MagicMock())
+    scene._refresh_list_items = MagicMock()
+    scene._update_info_for_chakra = MagicMock()
+
+    runtime_view = chakra_scene_module.chakra_items_system.ChakraViewState(
+        unlocked={"body", "arm.hand"},
+        active={"body", "arm.hand"},
+        alignments={},
+        generators={},
+        charges={},
+        pattern_root="body",
+    )
+
+    with patch.object(chakra_scene_module, "_runtime_chakra_view", return_value=runtime_view):
+        with patch.object(
+            chakra_scene_module.chakra_items_system,
+            "set_actor_chakra_pattern_root",
+            return_value="arm.hand",
+        ) as set_root:
+            scene._set_pattern_root()
+
+    scene._push_undo.assert_called_once()
+    set_root.assert_called_once_with(scene._actor, "arm.hand", game=scene.game)
+
+
+def test_exit_realign_mode_commit_routes_through_shared_alignment_write_helper() -> None:
+    chakra_scene_module = _import_chakra_scene_module()
+    scene = chakra_scene_module.ChakraSelectionScene.__new__(chakra_scene_module.ChakraSelectionScene)
+    scene._mode = "realign"
+    scene._actor = object()
+    scene.game = SimpleNamespace()
+    scene._pending_alignments = {"arm.hand": (0.1, -0.2)}
+    scene._original_alignments = {}
+    scene._working_session = object()
+    scene._push_undo = MagicMock()
+    scene._apply_realign_time_cost = MagicMock()
+    scene._silhouette = SimpleNamespace(
+        set_state_override=MagicMock(),
+        set_realign_mode=MagicMock(),
+        refresh_points=MagicMock(),
+    )
+    scene._preview = SimpleNamespace(
+        set_state_override=MagicMock(),
+        mark_dirty=MagicMock(),
+    )
+
+    with patch.object(
+        chakra_scene_module.chakra_items_system,
+        "set_actor_chakra_alignments",
+        return_value={"arm.hand": (0.1, -0.2)},
+    ) as set_alignments:
+        scene._exit_realign_mode(commit=True)
+
+    scene._push_undo.assert_called_once()
+    set_alignments.assert_called_once_with(
+        scene._actor,
+        {"arm.hand": (0.1, -0.2)},
+        game=scene.game,
+    )
+    scene._apply_realign_time_cost.assert_called_once()
+    assert scene._mode == "activate"

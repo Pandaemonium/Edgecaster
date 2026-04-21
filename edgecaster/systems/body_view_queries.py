@@ -42,6 +42,54 @@ def _entity_zoom_view_is_usable(
     return _schema_node_count(schema) > 1
 
 
+def _clone_schema_with_zoomable_metadata(schema: Any) -> dict[str, Any]:
+    """Return a schema-shaped mapping with explicit per-node ``zoomable`` flags."""
+    if not isinstance(schema, dict):
+        return {"root": None, "nodes": {}}
+
+    raw_nodes = schema.get("nodes", {})
+    if not isinstance(raw_nodes, dict):
+        return {
+            "root": schema.get("root") if isinstance(schema.get("root"), str) else None,
+            "nodes": {},
+        }
+
+    current_node_ids = {str(node_id) for node_id in raw_nodes.keys()}
+    nodes_out: dict[str, dict[str, Any]] = {}
+    for node_id, raw_node in raw_nodes.items():
+        node_text = str(node_id or "")
+        node = dict(raw_node) if isinstance(raw_node, dict) else {}
+
+        if "zoomable" in node:
+            node["zoomable"] = bool(node.get("zoomable"))
+            nodes_out[node_text] = node
+            continue
+
+        zoomable = False
+        proto = node.get("proto")
+        if proto:
+            try:
+                sub_schema = resolve_body_schema(proto) or {"root": None, "nodes": {}}
+            except Exception:
+                sub_schema = {"root": None, "nodes": {}}
+            sub_nodes = sub_schema.get("nodes") if isinstance(sub_schema, dict) else None
+            if isinstance(sub_nodes, dict):
+                meaningful = len(sub_nodes) > 1
+                if meaningful:
+                    try:
+                        meaningful = {str(key) for key in sub_nodes.keys()} != current_node_ids
+                    except Exception:
+                        pass
+                zoomable = bool(meaningful)
+
+        node["zoomable"] = zoomable
+        nodes_out[node_text] = node
+
+    cloned = dict(schema)
+    cloned["nodes"] = nodes_out
+    return cloned
+
+
 def _traverse_entity_zoom_path(
     owner_id: str,
     get_children: Any,
@@ -396,7 +444,7 @@ def resolve_body_schema_for_zoom_path(
         schema = {"root": None, "nodes": {}}
     if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
-    return schema
+    return _clone_schema_with_zoomable_metadata(schema)
 
 
 def resolve_body_view_for_zoom_path(
@@ -458,6 +506,7 @@ def resolve_body_view_for_zoom_path(
         schema = {"root": None, "nodes": {}}
     if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+    schema = _clone_schema_with_zoomable_metadata(schema)
 
     return schema, (float(offset_x), float(offset_y)), float(scale)
 
@@ -488,6 +537,7 @@ def resolve_body_view_chain_for_zoom_path(
         schema = {"root": None, "nodes": {}}
     if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+    schema = _clone_schema_with_zoomable_metadata(schema)
 
     offset_x = 0.0
     offset_y = 0.0
@@ -533,6 +583,7 @@ def resolve_body_view_chain_for_zoom_path(
             schema = {"root": None, "nodes": {}}
         if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
             schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+        schema = _clone_schema_with_zoomable_metadata(schema)
 
         chain.append((schema, (float(offset_x), float(offset_y)), float(scale)))
 

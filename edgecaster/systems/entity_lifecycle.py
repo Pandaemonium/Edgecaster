@@ -972,18 +972,25 @@ def _materialize_body_child(
         pass
     _link_parent_child_chakra(parent_ent, obj)
 
-    # A3: Sync ChakraState active flag into the external_child_root node that
-    # _link_parent_child_chakra just added to parent_ent.chakra_component.
-    # external_child_root nodes default to active=True, but the entity geometry
-    # path must respect the owner's ChakraState so query_normalized_pattern
-    # produces the same active-node set as the legacy body-schema traversal.
-    # Without this, all body nodes appear active even when only "body" is unlocked,
-    # producing a different (wrong) seed than the body-schema path.
+    # A3 / Phase 8 runtime cutover: sync the owner's structural activation state
+    # into the external_child_root node that _link_parent_child_chakra just
+    # added to parent_ent.chakra_component. external_child_root nodes default to
+    # active=True, but the entity geometry path must respect the owner's real
+    # structural activation set so query_normalized_pattern produces the same
+    # active-node set as the legacy body-schema traversal.
+    #
+    # We intentionally read through chakra_items.structural_chakra_projection()
+    # here instead of peeking directly at owner_ent.chakra_state:
+    # - component-backed actor state becomes visible immediately
+    # - migration-era cached state can still backfill missing valid body nodes
+    # - stale cached junk is filtered out before it can perturb geometry reads
     try:
-        chakra_state = getattr(owner_ent, "chakra_state", None)
-        if chakra_state is not None:
+        from edgecaster.systems import chakra_items as chakra_items_system
+
+        structural_projection = chakra_items_system.structural_chakra_projection(owner_ent)
+        if structural_projection is not None:
             full_id = str(spec.full_id)
-            active_set = getattr(chakra_state, "active", set()) or set()
+            active_set = structural_projection.get("active", set()) or set()
             is_active = _is_full_id_active(full_id, active_set)
             pcomp = getattr(parent_ent, "chakra_component", None)
             ccomp = getattr(obj, "chakra_component", None)

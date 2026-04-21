@@ -232,13 +232,21 @@ def _equipped_slot_node(item: Any) -> str:
 def _baseline_chakra_root(actor: Any) -> str:
     """Infer a stable default chakra root for actors missing legacy state."""
     try:
-        body_schema = getattr(actor, "body_schema", None)
+        from edgecaster.systems import entity_body as entity_body_system
+
+        specs = entity_body_system.build_body_node_specs(actor)
     except Exception:
-        body_schema = None
-    if isinstance(body_schema, dict):
-        root = _normalize_node_id(str(body_schema.get("root", "") or ""))
-        if root:
-            return root
+        specs = {}
+    if isinstance(specs, dict) and specs:
+        for spec in specs.values():
+            try:
+                parent_full_id = str(getattr(spec, "parent_full_id", "") or "").strip()
+                full_id = _normalize_node_id(str(getattr(spec, "full_id", "") or ""))
+            except Exception:
+                parent_full_id = ""
+                full_id = ""
+            if not parent_full_id and full_id:
+                return full_id
 
     try:
         comp = getattr(actor, "chakra_component", None)
@@ -462,6 +470,15 @@ def _component_chakra_projection(actor: Any) -> Optional[dict[str, Any]]:
 
     root = _baseline_chakra_root(actor)
     unlocked, active = _component_node_sets(actor)
+    default_core_id = _normalize_node_id(
+        chakra_component_state.default_core_node_id(_actor_entity_id(actor))
+    )
+    if root and root != default_core_id and unlocked == {default_core_id}:
+        # When an actor has a discoverable body root but only a synthetic
+        # placeholder core node, expose the body root instead of leaking the
+        # temporary `{entity_id}:core` shell into actor-facing chakra queries.
+        unlocked.clear()
+        active.clear()
     charges = _component_charge_map(comp)
     alignments, generators, pattern_root = _component_state_overrides(comp)
 
@@ -479,6 +496,34 @@ def _component_chakra_projection(actor: Any) -> Optional[dict[str, Any]]:
         "charges": dict(charges),
         "pattern_root": pattern_root,
     }
+
+
+def structural_chakra_projection(actor: Any) -> Optional[dict[str, Any]]:
+    """Return component-first structural chakra state without item overlays.
+
+    This is the preferred runtime read for code that wants the actor's own
+    persisted structure only, with no equipped-item temporary unlocks/activations.
+    ChakraComponent is the sole authority; apply_chakra_state_snapshot is always
+    called before expansion in the production spawn path so the component is
+    populated first.
+    """
+    if actor is None:
+        return None
+
+    default_root = _baseline_chakra_root(actor)
+    component_projection = _component_chakra_projection(actor)
+    return _normalized_chakra_snapshot_payload(
+        component_projection or {},
+        default_root=default_root,
+    )
+
+
+def structural_chakra_view(actor: Any) -> Optional[ChakraViewState]:
+    """Return the no-item-overlay structural chakra view for runtime callers."""
+    projection = structural_chakra_projection(actor)
+    if projection is None:
+        return None
+    return ChakraViewState.from_projection(projection)
 
 
 def _remove_component_node(comp: Any, node_id: str) -> None:
@@ -527,6 +572,97 @@ def _rebuild_chakra_state_from_component(actor: Any) -> Any:
         charges=dict(projection.get("charges", {}) or {}),
         pattern_root=projection.get("pattern_root"),
     )
+
+
+def _refresh_actor_chakra_cache_from_component(
+    actor: Any,
+    *,
+    create_if_missing: bool = False,
+) -> Any:
+    """Refresh the optional legacy ChakraState cache from component authority.
+
+    During Phase 8, `actor.chakra_state` is still allowed to exist as a
+    compatibility facade, but write helpers should rebuild it from the
+    authoritative component instead of hand-editing partial fields.
+    """
+    should_refresh = bool(create_if_missing)
+    if not should_refresh:
+        try:
+            should_refresh = getattr(actor, "chakra_state", None) is not None
+        except Exception:
+            should_refresh = False
+    if not should_refresh:
+        return None
+
+    rebuilt_state = _rebuild_chakra_state_from_component(actor)
+    if rebuilt_state is None:
+        return None
+    try:
+        actor.chakra_state = rebuilt_state
+    except Exception:
+        return None
+    return rebuilt_state
+
+
+def _authoritative_chakra_snapshot(actor: Any) -> dict[str, Any]:
+    """Return the mutable authoritative chakra snapshot for explicit writes.
+
+    This intentionally reads from the component-backed authority path, not from
+    ``effective_chakra_view(...)``. The effective view may include temporary
+    item overlays that are valid for reads but should not be persisted back
+    onto the actor's own chakra component.
+    """
+    projection = structural_chakra_projection(actor)
+    if projection is not None:
+        return _normalized_chakra_snapshot_payload(
+            projection,
+            default_root=_baseline_chakra_root(actor),
+        )
+
+    return _normalized_chakra_snapshot_payload(
+        getattr(actor, "chakra_state", None),
+        default_root=_baseline_chakra_root(actor),
+    )
+
+
+def set_actor_chakra_alignments(
+    actor: Any,
+    alignments: Any,
+    *,
+    game: Any = None,
+) -> dict[str, tuple[float, float]]:
+    """Persist explicit alignment overrides through the shared snapshot bridge."""
+    snapshot = _authoritative_chakra_snapshot(actor)
+
+    normalized_alignments: dict[str, tuple[float, float]] = {}
+    if isinstance(alignments, dict):
+        for key, value in alignments.items():
+            node_id = _normalize_node_id(str(key))
+            if not node_id or not isinstance(value, (list, tuple)) or len(value) < 2:
+                continue
+            try:
+                normalized_alignments[node_id] = (float(value[0]), float(value[1]))
+            except Exception:
+                continue
+
+    snapshot["alignments"] = normalized_alignments
+    apply_chakra_state_snapshot(actor, snapshot, game=game)
+    return dict(normalized_alignments)
+
+
+def set_actor_chakra_pattern_root(
+    actor: Any,
+    node_id: Any,
+    *,
+    game: Any = None,
+) -> Optional[str]:
+    """Persist the chosen pattern root through the shared snapshot bridge."""
+    snapshot = _authoritative_chakra_snapshot(actor)
+    active = _normalize_nodes(snapshot.get("active", set()) or set())
+    root_node_id = _normalize_node_id(str(node_id or ""))
+    snapshot["pattern_root"] = root_node_id if root_node_id in active else None
+    apply_chakra_state_snapshot(actor, snapshot, game=game)
+    return snapshot["pattern_root"]
 
 
 
@@ -618,12 +754,7 @@ def apply_chakra_state_snapshot(actor: Any, state: Any, *, game: Any = None) -> 
     }
     tags["compat_generators"] = dict(sorted(snapshot["generators"].items()))
 
-    rebuilt_state = _rebuild_chakra_state_from_component(actor)
-    if rebuilt_state is not None:
-        try:
-            actor.chakra_state = rebuilt_state
-        except Exception:
-            pass
+    _refresh_actor_chakra_cache_from_component(actor, create_if_missing=True)
 
 
 def tick_actor_chakra_charge(
@@ -737,12 +868,7 @@ def restore_actor_chakra_component_snapshot(
         actor.chakra_component = restored
     except Exception:
         return
-    state = _rebuild_chakra_state_from_component(actor)
-    if state is not None:
-        try:
-            actor.chakra_state = state
-        except Exception:
-            pass
+    _refresh_actor_chakra_cache_from_component(actor, create_if_missing=True)
     if game is not None:
         try:
             nodes = getattr(restored, "nodes", None)
@@ -846,16 +972,7 @@ def unlock_actor_chakra(actor: Any, node_id: str, *, auto_activate: bool = True,
     newly_added = chakra_component_state.unlock_node(comp, nid, active=bool(auto_activate))
     if not newly_added:
         return False
-    # Keep cached ChakraState in sync when present.
-    state = getattr(actor, "chakra_state", None)
-    if state is not None:
-        unlocked = getattr(state, "unlocked", None)
-        if isinstance(unlocked, set):
-            unlocked.add(nid)
-        if auto_activate:
-            active_set = getattr(state, "active", None)
-            if isinstance(active_set, set):
-                active_set.add(nid)
+    _refresh_actor_chakra_cache_from_component(actor)
     # B2: Mirror active state to body-node entity when tree is realized.
     if game is not None:
         _write_active_to_body_node_entity(game, actor, nid, active=bool(auto_activate))
@@ -875,28 +992,12 @@ def toggle_actor_chakra(actor: Any, node_id: str, *, active: Optional[bool] = No
     comp = _coerce_actor_chakra_component(actor)
     if comp is None:
         return False
-    # Compat: node may be in legacy ChakraState.unlocked but not yet in component.
-    # Backfill it so subsequent writes have a target.
-    if nid not in comp.nodes:
-        state_compat = getattr(actor, "chakra_state", None)
-        if state_compat is not None:
-            state_unlocked = _normalize_nodes(getattr(state_compat, "unlocked", set()) or set())
-            if nid in state_unlocked:
-                chakra_component_state.unlock_node(comp, nid, active=False)
     if nid not in comp.nodes:
         return False
     node = comp.nodes[nid]
     now_active = (not bool(getattr(node, "active", True))) if active is None else bool(active)
     chakra_component_state.set_node_active(comp, nid, active=now_active)
-    # Keep cached ChakraState in sync when present.
-    state = getattr(actor, "chakra_state", None)
-    if state is not None:
-        active_set = getattr(state, "active", None)
-        if isinstance(active_set, set):
-            if now_active:
-                active_set.add(nid)
-            else:
-                active_set.discard(nid)
+    _refresh_actor_chakra_cache_from_component(actor)
     # B2: Mirror active state to body-node entity when tree is realized.
     if game is not None:
         _write_active_to_body_node_entity(game, actor, nid, active=now_active)
@@ -1009,7 +1110,7 @@ def effective_chakra_projection(game: Any, actor: Any) -> Optional[dict[str, Any
     itself.  The payload shape intentionally stays simple so more fields can be
     added later without forcing another actor-centric compatibility class.
     """
-    projection = _component_chakra_projection(actor)
+    projection = structural_chakra_projection(actor)
     if projection is None:
         return None
 
