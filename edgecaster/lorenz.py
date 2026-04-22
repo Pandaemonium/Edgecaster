@@ -78,10 +78,13 @@ def advance_lorenz(ctx: Any, level: Any, delta: int) -> None:
     turned into a generic context object.
     """
     # No player / no level? Nothing to do.
-    if not getattr(ctx, "levels", None) or ctx.player_id not in level.actors:
+    if not getattr(ctx, "levels", None):
         return
 
-    player = ctx._player()
+    try:
+        player = ctx._player()
+    except Exception:
+        return
     px, py = player.pos
 
     # Detect zone changes and large teleports.

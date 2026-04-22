@@ -1371,7 +1371,7 @@ class Game:
         """
         try:
             lvl = self._level()
-            player = lvl.actors.get(self.player_id)
+            player = entity_ops_system.get_actor(lvl, self.player_id)
         except Exception:
             player = None
         if player is None:
@@ -1405,7 +1405,7 @@ class Game:
         actor_id = str(actor_id)
         try:
             lvl = self._level()
-            actor = lvl.actors.get(actor_id)
+            actor = entity_ops_system.get_actor(lvl, actor_id)
         except Exception:
             actor = None
         if actor is None:
@@ -1999,7 +1999,7 @@ class Game:
                 eid = ""
 
         if ent is None and eid:
-            ent = level.entities.get(eid) or level.actors.get(eid)
+            ent = entity_ops_system.resolve_entity(level, eid)
 
         # Persist deterministic lineage removals (doors/walls/items/etc.).
         try:
@@ -2402,7 +2402,10 @@ class Game:
 
     def _player(self) -> Actor:
         level = self._ensure_player_level_binding()
-        return level.actors[self.player_id]
+        player = entity_ops_system.get_actor(level, self.player_id)
+        if player is None:
+            raise KeyError(self.player_id)
+        return player
 
     @property
     def player_alive(self) -> bool:
@@ -2444,7 +2447,7 @@ class Game:
 
     def _auto_look(self, level: LevelState) -> None:
         """Describe items at the player's feet after moving."""
-        player = level.actors.get(self.player_id)
+        player = entity_ops_system.get_actor(level, self.player_id)
         if player is None:
             return
         self._describe_tile(level, player.pos, observer_id=self.player_id, auto=True)
@@ -2667,7 +2670,7 @@ class Game:
     def _adjacent_npc(self) -> Optional[Actor]:
         lvl = self._level()
         px, py = self._player().pos
-        for actor in lvl.actors.values():
+        for actor in entity_ops_system.iter_actors(lvl):
             if actor.faction == "npc" and actor.alive:
                 ax, ay = actor.pos
                 if max(abs(ax - px), abs(ay - py)) == 1:
@@ -2692,10 +2695,10 @@ class Game:
         # Sanity checks
         if target_id == self.player_id:
             return
-        target = level.actors.get(target_id)
+        target = entity_ops_system.get_actor(level, target_id)
         if target is None:
             # Fall back to any Actor tracked in entities (if it somehow wasn't in actors).
-            maybe_ent = level.entities.get(target_id) if hasattr(level, "entities") else None
+            maybe_ent = entity_ops_system.get_entity(level, target_id)
             if isinstance(maybe_ent, Actor):
                 target = maybe_ent
         if target is None or not getattr(target, "alive", False):
@@ -2703,7 +2706,7 @@ class Game:
             return
 
         # --- release old host (if still around) ---
-        old_player = level.actors.get(self.player_id)
+        old_player = entity_ops_system.get_actor(level, self.player_id)
         if old_player is not None:
             old_tags = getattr(old_player, "tags", None)
             native_faction = None
@@ -2779,7 +2782,7 @@ class Game:
         return combat_system.is_hostile(self, attacker, target)
 
     def _handle_move_or_attack(self, level: LevelState, id: str, dx: int, dy: int) -> None:
-        actor = level.actors.get(id)
+        actor = entity_ops_system.get_actor(level, id)
         if actor is None or not actor.alive:
             return
 
@@ -2881,7 +2884,7 @@ class Game:
             # Brutes: cannot step farther than CHAIN_RANGE from their slaver.
             master_id = tags.get("slaver_master_id")
             if master_id:
-                master = level.actors.get(str(master_id))
+                master = entity_ops_system.get_actor(level, str(master_id))
                 if master is None or not getattr(master, "alive", False):
                     # If the master no longer exists, treat the brute as freed.
                     tags.pop("slaver_master_id", None)
@@ -2903,7 +2906,7 @@ class Game:
                 ringmaster_id = tags.get("circus_ringmaster_id")
                 # Member rule: cannot increase distance past leash from ringmaster.
                 if ringmaster_id:
-                    ringmaster = level.actors.get(str(ringmaster_id))
+                    ringmaster = entity_ops_system.get_actor(level, str(ringmaster_id))
                     if ringmaster is None or not getattr(ringmaster, "alive", False):
                         # Group leader gone: drop leash tags and continue.
                         tags.pop("circus_ringmaster_id", None)
@@ -2922,7 +2925,7 @@ class Game:
                     # Ringmaster rule: keep troupe members within leash.
                     member_ids = list(tags.get("circus_member_ids", []) or [])
                     for mid in member_ids:
-                        mate = level.actors.get(str(mid))
+                        mate = entity_ops_system.get_actor(level, str(mid))
                         if mate is None or not getattr(mate, "alive", False):
                             continue
                         mx, my = mate.pos
@@ -3338,13 +3341,13 @@ class Game:
 
         Uses action_runner for unified action handling (cooldowns, delays).
         """
-        actor = level.actors.get(id)
+        actor = entity_ops_system.get_actor(level, id)
         if actor is None or not actor.alive:
             return
 
         # If the player is not on this level, only act if this zone is in the
         # active adjacency window (seamless boundary behavior).
-        if self.player_id not in level.actors:
+        if entity_ops_system.get_actor(level, self.player_id) is None:
             if not self._is_zone_active(getattr(level, "coord", None)):
                 self._schedule(
                     level,
@@ -3404,7 +3407,7 @@ class Game:
 
         # --- Schedule next turn -----------------------------------------
         dest_level = level
-        if actor.id not in level.actors:
+        if entity_ops_system.get_actor(level, actor.id) is None:
             # Actor crossed a zone boundary; schedule on the new level.
             try:
                 abs_pos = getattr(actor, "abs_pos", None)
@@ -3472,7 +3475,7 @@ class Game:
         Phase 1: this only affects fractal-derived visuals/biomes, not walkability.
         """
         level = self._level()
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
         if actor is None:
             return
 
@@ -3600,7 +3603,7 @@ class Game:
         because they scale the effective corruption_level at z before any distortion math runs.
         """
         level = self._level()
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
         if actor is None:
             return
 
@@ -3737,13 +3740,13 @@ class Game:
         aid = str(actor_id or getattr(self, "player_id", ""))
         actor: Optional[Actor] = None
         try:
-            actor = self._level().actors.get(aid)
+            actor = entity_ops_system.get_actor(self._level(), aid)
         except Exception:
             actor = None
         if actor is None:
             # Fallback: actor may not be in the current zone cache bucket.
             for lvl in getattr(self, "levels", {}).values():
-                actor = lvl.actors.get(aid)
+                actor = entity_ops_system.get_actor(lvl, aid)
                 if actor is not None:
                     break
         if actor is None:
@@ -4071,7 +4074,7 @@ class Game:
         Zones/chunks are cache buckets only: FoV is computed in ABS coordinates and
         projected into whatever chunks are touched.
         """
-        if self.player_id not in level.actors:
+        if entity_ops_system.get_actor(level, self.player_id) is None:
             return
 
         # Apply view bonus from equipment + chakra passives.
@@ -4079,7 +4082,7 @@ class Game:
         view_bonus += int(round(self.chakra_effect_value("fov_radius_bonus", actor_id=self.player_id)))
         # Status: third_eye grants a large temporary vision boost.
         try:
-            player = level.actors.get(self.player_id)
+            player = entity_ops_system.get_actor(level, self.player_id)
             if player and self._has_status(player, "third_eye"):
                 view_bonus += 10
             if player and self._has_status(player, "all_seeing"):
@@ -4109,7 +4112,10 @@ class Game:
                         level.spotted.add(actor.id)
             # Lighting is zone-local; apply to current chunk only.
             from edgecaster.systems import lighting
-            px, py = level.actors[self.player_id].pos
+            player = entity_ops_system.get_actor(level, self.player_id)
+            if player is None:
+                return
+            px, py = player.pos
             lighting.update_level_lighting(self, level, (px, py))
             level.need_fov = False
             return
@@ -4147,14 +4153,14 @@ class Game:
         # Build ABS-space opaque set from vision-blocking entities across observed chunks
         opaque_abs: set[tuple[int, int]] = set()
         for zc, zl in observed.items():
-            for ent in zl.entities.values():
+            for ent in entity_ops_system.iter_entities(zl):
                 if getattr(ent, "blocks_vision", False):
                     ax, ay = self.abs_from_zone_local(zc, ent.pos)
                     opaque_abs.add((int(ax), int(ay)))
 
         # Status: third_eye bypasses all vision-blocking entities.
         try:
-            player = level.actors.get(self.player_id)
+            player = entity_ops_system.get_actor(level, self.player_id)
             if player and self._has_status(player, "third_eye"):
                 opaque_abs = set()
         except Exception:

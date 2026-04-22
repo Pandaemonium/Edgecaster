@@ -4,6 +4,7 @@ import math
 from typing import Optional, Tuple
 
 from edgecaster.math_utils import smoothstep_range
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 def describe_current_tile(game, for_examine: bool = False) -> None:
@@ -14,9 +15,9 @@ def describe_current_tile(game, for_examine: bool = False) -> None:
     for explicit 'look' commands, not auto-observe.
     """
     level = game._level()
-    if game.player_id not in level.actors:
+    player = entity_ops_system.get_actor(level, game.player_id)
+    if player is None:
         return
-    player = level.actors[game.player_id]
     pos = player.pos
 
     ent = game._entity_at(level, pos)

@@ -16,6 +16,7 @@ import math
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Sequence, Tuple
 
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.patterns import builder
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ def actor_uses_blade_melee(game: "Game", actor_id: str) -> bool:
             return True
         # Mirror blade clones also use blade melee
         level = game._level()
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
         if actor is not None:
             tags = getattr(actor, "tags", None) or {}
             if tags.get("mirror_blade_clone"):
@@ -164,7 +165,7 @@ def blade_stat_snapshot(game: "Game", actor_id: str) -> BladeStatSnapshot:
     # Status: phantom_limb extends all blade reach by 2.
     try:
         level = game._level()
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
         if actor and game._has_status(actor, "phantom_limb"):
             slash_reach += 2.0
             thrust_reach += 2.0
@@ -328,7 +329,7 @@ def act_blade_attack(
     only when no valid actor context exists.
     """
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None or not getattr(actor, "alive", False):
         return False
 
@@ -518,7 +519,7 @@ def act_throwing_knife(
     - damages hostile actors that the flight segment intersects.
     """
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None or not getattr(actor, "alive", False):
         return False
 

@@ -54,6 +54,9 @@ Supersedes: none
 
 - `coords.py`
 - `entity_ops.py`
+  *(shared realized-entity query surface plus tile/footprint/status helpers; Track B callers in
+  simulation, scenes, and render code should prefer this over direct `level.actors` /
+  `level.entities` reads)*
 - `entity_identity.py` *(canonical `stable_int_hash` FNV-1a; shared by aggregate_resolution, poi_worldgen, site_placement)*
 - `entity_body.py`
 - `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders; schema fallbacks now annotate explicit `zoomable` metadata so scenes do not need to re-resolve authored schemas just to decide branch behavior, branch metadata helpers provide shared gating-chain / child-count reads for tooltips and similar UI affordances, and `visible_body_nodes_for_owner(...)` now centralizes unlocked-branch filtering for body-node list views)*

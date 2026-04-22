@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Callable, List, Optional
 from edgecaster.visuals import VisualProfile
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 @dataclass
@@ -356,7 +357,7 @@ def effect_bless_player(game: "Game") -> None:
     - Clear any global visual profile (e.g. un-mirror the world).
     """
     lvl = game._level()
-    player = lvl.actors.get(game.player_id)
+    player = entity_ops_system.get_actor(lvl, game.player_id)
     if player is None:
         return
 
@@ -399,7 +400,7 @@ def effect_curse_player(game: "Game") -> None:
     This is invoked from the 'eat the eyeballs' choice.
     """
     lvl = game._level()
-    player = lvl.actors.get(game.player_id)
+    player = entity_ops_system.get_actor(lvl, game.player_id)
     if player is None:
         return
 

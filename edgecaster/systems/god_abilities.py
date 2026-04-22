@@ -30,7 +30,7 @@ _KNIFE_RUNE_EXECUTE_SCALE = 0.35   # additional HP per point of favor (caps ~40 
 def act_knife_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Death Rune: damage enemies near Dark Knife pattern vertices. Execute low-HP targets."""
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -67,7 +67,7 @@ def act_knife_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
     # Damage enemies near rune vertices
     total_damage = 0
     kills = 0
-    for actor in list(level.actors.values()):
+    for actor in list(entity_ops_system.iter_actors(level)):
         if not getattr(actor, "alive", False):
             continue
         if getattr(actor, "faction", "") != "hostile":
@@ -130,7 +130,7 @@ def act_knife_rune(game: Any, actor_id: str, **kwargs: Any) -> None:
 def act_reaper_mark(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Mark a visible enemy. If it dies within 10 turns, player heals."""
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -148,7 +148,7 @@ def act_reaper_mark(game: Any, actor_id: str, **kwargs: Any) -> None:
 
     # Find enemy at target pos
     target = None
-    for actor in level.actors.values():
+    for actor in entity_ops_system.iter_actors(level):
         if not getattr(actor, "alive", False):
             continue
         if actor.pos == (tx, ty) and getattr(actor, "faction", "") == "hostile":
@@ -190,8 +190,8 @@ def reaper_mark_on_kill(game: Any, killed_actor: Any) -> None:
         healer_id = tags.get("reaper_mark_healer")
         heal_amount = int(tags.get("reaper_mark_heal", 3))
 
-        if healer_id and healer_id in level.actors:
-            healer = level.actors[healer_id]
+        if healer_id:
+            healer = entity_ops_system.get_actor(level, healer_id)
             if getattr(healer, "alive", False):
                 old_hp = healer.stats.hp
                 healer.stats.hp = min(healer.stats.max_hp, healer.stats.hp + heal_amount)
@@ -209,7 +209,7 @@ def reaper_mark_on_kill(game: Any, killed_actor: Any) -> None:
 def act_verdant_mend(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Heal 15% max HP, scaling with favor."""
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -237,7 +237,7 @@ def act_root_ward(game: Any, actor_id: str, **kwargs: Any) -> None:
     from edgecaster.state.entities import Entity
 
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -295,7 +295,8 @@ def act_root_ward(game: Any, actor_id: str, **kwargs: Any) -> None:
 def tick_root_wards(game: Any, level: Any, dt_ticks: int) -> None:
     """Decay root ward TTLs and remove expired ones."""
     to_remove = []
-    for eid, ent in level.entities.items():
+    for ent in entity_ops_system.iter_entities(level):
+        eid = str(getattr(ent, "id", "") or "")
         tags = getattr(ent, "tags", {}) or {}
         if not tags.get("root_ward"):
             continue
@@ -306,7 +307,7 @@ def tick_root_wards(game: Any, level: Any, dt_ticks: int) -> None:
             tags["ttl"] = ttl
 
     for eid in to_remove:
-        del level.entities[eid]
+        entity_ops_system.remove_entity(level, eid)
 
     if to_remove:
         level.need_fov = True
@@ -319,7 +320,7 @@ def tick_root_wards(game: Any, level: Any, dt_ticks: int) -> None:
 def act_all_seeing(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Extend FOV radius by 3 for 15 turns via status."""
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -338,7 +339,7 @@ def act_all_seeing(game: Any, actor_id: str, **kwargs: Any) -> None:
 def act_piercing_gaze(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Reveal tiles through walls in a line from player to target for 10 turns."""
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -388,7 +389,7 @@ def act_piercing_gaze(game: Any, actor_id: str, **kwargs: Any) -> None:
 def act_god_iron_skin(game: Any, actor_id: str, **kwargs: Any) -> None:
     """+2 defense for 20 turns, scaling with favor."""
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -423,7 +424,7 @@ def god_iron_skin_expire(game: Any, actor: Any) -> None:
 def act_unbreakable(game: Any, actor_id: str, **kwargs: Any) -> None:
     """Survive one lethal hit with 1 HP. Costs 30 favor."""
     level = game._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
@@ -477,7 +478,7 @@ def tick_god_statuses(game: Any, level: Any, dt_ticks: int) -> None:
 
     # Check player for expired god statuses
     try:
-        player = level.actors.get(game.player_id)
+        player = entity_ops_system.get_actor(level, game.player_id)
         if player is None:
             return
     except Exception:

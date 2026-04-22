@@ -5,6 +5,7 @@ from typing import Any
 
 from edgecaster.systems import action_runner
 from edgecaster.systems.actions import ActionDef, TargetingSpec, get_action
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 @dataclass(frozen=True)
@@ -185,7 +186,7 @@ def _cooldown_and_charges(
 
     try:
         level = game._level()
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
     except Exception:
         actor = None
     if actor is None:

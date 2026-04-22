@@ -229,9 +229,12 @@ Current concern map (authoritative):
 - `edgecaster/systems/coords.py`
   - Canonical ABS <-> (zone, local) transforms and coordinate helpers.
 - `edgecaster/systems/entity_ops.py`
-  - Actor/entity tile queries, blocking checks, status mutation helpers, door toggle behavior.
+  - Shared runtime entity query surface (`get_actor`, `get_entity`, `resolve_entity`,
+    `iter_actors`, `iter_entities`) plus actor/entity tile queries, blocking checks,
+    status mutation helpers, and door toggle behavior.
 - `edgecaster/systems/render_query.py`
-  - Render-candidate sizing heuristics, spatial bin rebuild, zone-window clamp helper.
+  - Render-candidate sizing heuristics, entity_ops-backed spatial bin rebuild,
+    zone-window clamp helper.
 - `edgecaster/systems/attention.py`
   - Attention-driven render candidate assembly (`renderables_in_abs_rect` core path).
   - World proxy staging delegates for sites/POIs/aggregates.

@@ -13,6 +13,8 @@ from typing import Any, Callable, List, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+from edgecaster.systems import entity_ops as entity_ops_system
+
 
 @dataclass
 class DeferredAction:
@@ -38,12 +40,11 @@ def tick_deferred_actions(level: Any) -> None:
     da_list = getattr(level, "deferred_actions", None)
     if not da_list:
         return
-    actors = getattr(level, "actors", {})
     level.deferred_actions = [
         da
         for da in da_list
-        if da.caster_id in actors
-        and getattr(actors[da.caster_id], "alive", True)
+        if entity_ops_system.get_actor(level, da.caster_id) is not None
+        and getattr(entity_ops_system.get_actor(level, da.caster_id), "alive", True)
     ]
 
 

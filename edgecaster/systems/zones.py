@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Tuple
 
+from edgecaster.systems import entity_ops as entity_ops_system
+
 from edgecaster.systems import perf_profiler
 
 if TYPE_CHECKING:
@@ -288,7 +290,7 @@ def fast_travel_to_zone(game: "Game", zx: int, zy: int) -> None:
     dest_coord = (zx, zy, 0)
 
     level = game._level()
-    actor = level.actors.get(game.player_id)
+    actor = entity_ops_system.get_actor(level, game.player_id)
     if actor is None:
         return
 

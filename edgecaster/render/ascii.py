@@ -35,6 +35,7 @@ from edgecaster.game import Game
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns.library import action_preview_geometry
+from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems.tooltips import resolve_action_tooltip
 from edgecaster.ui.ability_bar import AbilityBarRenderer, AbilityBarWidget
 from edgecaster.visuals import VisualProfile, apply_visual_panel
@@ -482,7 +483,7 @@ class AsciiRenderer:
         glyph_px stays clamped strictly for font/icon legibility.
         """
         try:
-            player = game.actors[game.player_id]
+            player = game._player()
             ap = getattr(player, "abs_pos", None)
             if ap is not None:
                 px, py = int(ap[0]), int(ap[1])
@@ -1239,7 +1240,7 @@ class AsciiRenderer:
         # world map vs zone). We support both so FOV/visibility stays correct.
         try:
             # Newer/most common path
-            player = game.actors[game.player_id]
+            player = game._player()
             player_pos = getattr(player, 'pos', None)
             lvl = game._level()
             world = getattr(lvl, 'world', None)
@@ -1961,7 +1962,7 @@ class AsciiRenderer:
         self.lorenz_surface.fill((0, 0, 0, 0))
 
         # Fallback to the player position if the game didn't set a center yet.
-        player = game.actors[game.player_id]
+        player = game._player()
         px_tile, py_tile = player.pos
         center_x = getattr(game, "lorenz_center_x", float(px_tile))
         center_y = getattr(game, "lorenz_center_y", float(py_tile))
@@ -3598,7 +3599,7 @@ class AsciiRenderer:
                 # If the caster is mid-edge, include the initial partial segment
                 # from caster tile center to the first path vertex.
                 try:
-                    caster = game._level().actors.get(game.player_id)
+                    caster = game._player()
                 except Exception:
                     caster = None
                 if caster is not None:
@@ -3667,7 +3668,7 @@ class AsciiRenderer:
             try:
                 level = game._level()
                 for aid, dmg in per_actor_damage.items():
-                    actor = level.actors.get(aid)
+                    actor = entity_ops_system.get_actor(level, aid)
                     if actor is None:
                         continue
                     ax, ay = actor.pos
@@ -3877,7 +3878,7 @@ class AsciiRenderer:
         """Subtle pulsing circle showing placement range when selecting a terminus."""
         if not getattr(game, "awaiting_terminus", False):
             return
-        player = game.actors[game.player_id]
+        player = game._player()
         ax, ay = self._local_tile_to_abs(game, player.pos)
         cx_f, cy_f = self.abs_tile_to_screen_px(ax + 0.5, ay + 0.5)
         cx, cy = int(cx_f), int(cy_f)
@@ -4752,7 +4753,7 @@ class AsciiRenderer:
 
         # Start target cursor at player position (scene/ui_state drives it)
         # YOGA: Set ABS cursor as canonical, local is derived
-        player = game.actors[game.player_id]
+        player = game._player()
         if getattr(self, "ui_state", None) is not None:
             abs_pos = getattr(player, "abs_pos", None)
             if abs_pos is not None:

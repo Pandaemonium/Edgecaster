@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 from edgecaster.state.actors import Actor
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 def current_level(game: Any) -> Any:
@@ -22,10 +23,10 @@ def ensure_player_level_binding(game: Any) -> Any:
     if not player_id:
         return level
 
-    if player_id in level.actors:
+    if entity_ops_system.get_actor(level, player_id) is not None:
         return level
 
-    maybe_ent = level.entities.get(player_id)
+    maybe_ent = entity_ops_system.get_entity(level, player_id)
     if isinstance(maybe_ent, Actor):
         level.actors[player_id] = maybe_ent
         return level
@@ -33,9 +34,9 @@ def ensure_player_level_binding(game: Any) -> Any:
     for coord, other_level in game.levels.items():
         if coord == game.zone_coord:
             continue
-        actor = other_level.actors.get(player_id)
+        actor = entity_ops_system.get_actor(other_level, player_id)
         if actor is None:
-            maybe_ent = other_level.entities.get(player_id)
+            maybe_ent = entity_ops_system.get_entity(other_level, player_id)
             if isinstance(maybe_ent, Actor):
                 actor = maybe_ent
                 other_level.actors[player_id] = actor
@@ -61,8 +62,9 @@ def is_player_alive(game: Any) -> bool:
     if lvl is None:
         return False
     try:
-        if game.player_id not in lvl.actors:
+        player = entity_ops_system.get_actor(lvl, game.player_id)
+        if player is None:
             return False
-        return lvl.actors[game.player_id].stats.hp > 0
+        return player.stats.hp > 0
     except Exception:
         return False

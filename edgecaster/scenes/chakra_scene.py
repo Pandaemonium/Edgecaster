@@ -52,6 +52,7 @@ from edgecaster.systems.chakras import (
 )
 from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import body_view_queries as body_view_queries_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 if TYPE_CHECKING:
     from .manager import SceneManager
@@ -1613,12 +1614,13 @@ class ChakraSelectionScene(PanelScene):
         # Get player actor
         self._actor: Optional[Any] = None
         if game:
-            # The game stores player_id, and actual actor is in level.actors
+            # Resolve the live actor through the shared query surface instead of
+            # reaching straight into the zone cache dict.
             try:
                 player_id = getattr(game, "player_id", None)
                 if player_id:
                     level = game._level()
-                    self._actor = level.actors.get(player_id)
+                    self._actor = entity_ops_system.get_actor(level, player_id)
             except Exception:
                 pass
 

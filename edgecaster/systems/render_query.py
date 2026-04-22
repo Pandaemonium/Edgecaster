@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 import math
 
+from edgecaster.systems import entity_ops as entity_ops_system
+
 
 def size_for_render(obj: object) -> float:
     """Estimate absolute size for LoD/render filtering.
@@ -43,7 +45,7 @@ def rebuild_spatial_bins(level) -> None:
 
     seen: set[str] = set()
 
-    for a in level.actors.values():
+    for a in entity_ops_system.iter_actors(level):
         try:
             if not a.alive:
                 continue
@@ -56,7 +58,7 @@ def rebuild_spatial_bins(level) -> None:
         key = (int(x) // bs, int(y) // bs)
         bins.setdefault(key, []).append(a.id)
 
-    for e in level.entities.values():
+    for e in entity_ops_system.iter_entities(level):
         if e.id in seen:
             continue
         seen.add(e.id)
@@ -101,4 +103,3 @@ def clamp_zone_window(
     nzy0 = czy - half
     nzy1 = nzy0 + zone_span_cap - 1
     return int(nzx0), int(nzx1), int(nzy0), int(nzy1), True
-

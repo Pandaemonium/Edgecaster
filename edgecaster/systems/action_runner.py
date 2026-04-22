@@ -26,6 +26,7 @@ from edgecaster.systems.actions import get_action, action_delay, ActionDef
 from edgecaster.systems import item_grants
 from edgecaster.systems import equipment as equipment_system
 from edgecaster.systems import inventory as inventory_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 def _telemetry(game: "Game", event: str, **payload: Any) -> None:
@@ -380,7 +381,7 @@ def run_action(
     """
     try:
         level = game._level()
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
     except Exception:
         actor = None
 

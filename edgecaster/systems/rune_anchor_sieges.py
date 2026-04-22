@@ -322,7 +322,7 @@ def apply_siege_grants(game: "Game", actor_id: str, siege: RuneAnchorSiegeState)
         return
 
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 
@@ -353,7 +353,7 @@ def apply_siege_grants(game: "Game", actor_id: str, siege: RuneAnchorSiegeState)
 def revoke_siege_grants(game: "Game", actor_id: str) -> None:
     """Remove encounter actions when leaving a siege zone."""
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 
@@ -388,7 +388,7 @@ def channel_fracture(game: "Game", actor_id: str) -> None:
     """Action: spend Coherence Crystal charge to stabilize a nearby fracture."""
     level = game._level()
     siege = getattr(level, "rune_anchor_siege", None)
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     if siege is None or siege.phase == "stabilized":
@@ -430,7 +430,7 @@ def stabilize_anchor(game: "Game", actor_id: str) -> None:
     """Action: reinforce the anchor core during the stabilize phase."""
     level = game._level()
     siege = getattr(level, "rune_anchor_siege", None)
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     if siege is None or siege.phase == "stabilized":
@@ -469,7 +469,7 @@ def purge_anchor(game: "Game", actor_id: str) -> None:
     """Action: spend coherence to blast hostiles and steady the anchor."""
     level = game._level()
     siege = getattr(level, "rune_anchor_siege", None)
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     if siege is None or siege.phase == "stabilized":
@@ -489,7 +489,7 @@ def purge_anchor(game: "Game", actor_id: str) -> None:
     radius2 = 3 * 3
     hits = 0
     kills = 0
-    for target in list(level.actors.values()):
+    for target in list(entity_ops_system.iter_actors(level)):
         if target is None or target.id == actor_id:
             continue
         if not getattr(target, "alive", True):
@@ -916,7 +916,7 @@ def _resolve_catastrophe_pulse(game: "Game", level: "LevelState", siege: RuneAnc
     damage = max(1, int(siege.pulse_damage) + min(3, int(siege.backlash_count // 2)))
     hits = 0
     player_hit = False
-    for actor in list(level.actors.values()):
+    for actor in list(entity_ops_system.iter_actors(level)):
         if actor is None or not getattr(actor, "alive", True):
             continue
         if not _target_overlaps_tile_set(actor, tile_set):
@@ -988,7 +988,7 @@ def _tick_sapper_pressure(game: "Game", level: "LevelState", siege: RuneAnchorSi
     if siege.phase == "stabilized":
         return
 
-    for actor in list(level.actors.values()):
+    for actor in list(entity_ops_system.iter_actors(level)):
         if actor is None or not getattr(actor, "alive", True):
             continue
         tags = getattr(actor, "tags", {}) or {}
@@ -1064,7 +1064,7 @@ def _tick_sapper_pressure(game: "Game", level: "LevelState", siege: RuneAnchorSi
 
 def _count_alive_sappers(level: "LevelState", siege: RuneAnchorSiegeState) -> int:
     alive = 0
-    for actor in getattr(level, "actors", {}).values():
+    for actor in entity_ops_system.iter_actors(level):
         if actor is None or not getattr(actor, "alive", True):
             continue
         tags = getattr(actor, "tags", {}) or {}
@@ -1312,7 +1312,7 @@ def _find_spawn_tile(game: "Game", level: "LevelState", siege: RuneAnchorSiegeSt
 
 
 def _spawn_anchor_entity(game: "Game", level: "LevelState", pos: Tuple[int, int], siege_id: str) -> None:
-    for ent in getattr(level, "entities", {}).values():
+    for ent in entity_ops_system.iter_entities(level):
         tags = getattr(ent, "tags", {}) or {}
         if tags.get("rune_anchor_siege_id") == siege_id:
             return

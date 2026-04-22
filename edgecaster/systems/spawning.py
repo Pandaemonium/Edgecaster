@@ -1282,9 +1282,11 @@ def debug_spawn_inventory_near_player(
         and keeps Game slimmer.
     """
     level = game._level()
-    if game.player_id not in level.actors:
+    if entity_ops_system.get_actor(level, game.player_id) is None:
         return
-    player = level.actors[game.player_id]
+    player = entity_ops_system.get_actor(level, game.player_id)
+    if player is None:
+        return
 
     # Functional adjectives -> effect names from visual_effects registry.
     # "mirrored" resolves to mirror_x currently.

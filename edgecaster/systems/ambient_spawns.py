@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Iterable
 
 from edgecaster.systems import spawning as spawning_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -128,10 +129,9 @@ def _is_spawn_eligible(level: "LevelState") -> bool:
 
 def _hostile_count(level: "LevelState") -> int:
     n = 0
-    for actor in level.actors.values():
+    for actor in entity_ops_system.iter_actors(level):
         if not getattr(actor, "alive", True):
             continue
         if getattr(actor, "faction", None) == "hostile":
             n += 1
     return n
-

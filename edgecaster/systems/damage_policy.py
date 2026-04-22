@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterator, Tuple
 
+from edgecaster.systems import entity_ops as entity_ops_system
+
 
 @dataclass(frozen=True)
 class DamagePolicy:
@@ -98,7 +100,7 @@ def can_damage_target(
 
     source_actor = None
     try:
-        source_actor = getattr(level, "actors", {}).get(source_actor_id)
+        source_actor = entity_ops_system.get_actor(level, source_actor_id)
     except Exception:
         source_actor = None
 
@@ -123,13 +125,13 @@ def iter_damage_targets(
 
     source_actor = None
     try:
-        source_actor = getattr(level, "actors", {}).get(source_actor_id)
+        source_actor = entity_ops_system.get_actor(level, source_actor_id)
     except Exception:
         source_actor = None
 
     if include_actors:
-        for tid, obj in list(getattr(level, "actors", {}).items()):
-            sid = str(tid)
+        for obj in list(entity_ops_system.iter_actors(level)):
+            sid = str(getattr(obj, "id", ""))
             if sid in seen:
                 continue
             seen.add(sid)
@@ -140,8 +142,8 @@ def iter_damage_targets(
                 yield sid, obj
 
     if include_entities:
-        for tid, obj in list(getattr(level, "entities", {}).items()):
-            sid = str(tid)
+        for obj in list(entity_ops_system.iter_entities(level)):
+            sid = str(getattr(obj, "id", ""))
             if sid in seen:
                 continue
             seen.add(sid)

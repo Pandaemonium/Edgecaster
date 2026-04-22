@@ -10,6 +10,7 @@ from typing import Any, Dict, Tuple
 
 from edgecaster.systems import reputation as reputation_system
 from edgecaster.systems import footprints as footprints_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 def _get_player_actor(game: Any):
@@ -527,7 +528,7 @@ def _war_drummer(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
             if dist <= trigger_range:
                 # If there are other hostiles nearby, this is especially valuable.
                 nearby_hostiles = 0
-                for other in level.actors.values():
+                for other in entity_ops_system.iter_actors(level):
                     if other is None or not getattr(other, "alive", True):
                         continue
                     try:
@@ -646,7 +647,7 @@ def _circus_member(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     master_id = tags.get("circus_ringmaster_id")
     leash = int(tags.get("circus_leash_range", 15) or 15)
 
-    master = level.actors.get(str(master_id)) if master_id else None
+    master = entity_ops_system.get_actor(level, str(master_id)) if master_id else None
     if master is not None and getattr(master, "alive", True):
         rel = _entity_chebyshev_and_delta(game, level, actor, master)
         if rel is not None:
@@ -697,7 +698,7 @@ def _furious_ringmaster(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         farthest_dy = 0
         farthest_dist = 0
         for mid in member_ids:
-            mate = level.actors.get(str(mid))
+            mate = entity_ops_system.get_actor(level, str(mid))
             if mate is None or not getattr(mate, "alive", True):
                 continue
             rel = _entity_chebyshev_and_delta(game, level, actor, mate)
@@ -826,8 +827,8 @@ def _mirror_blade_clone(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
         # Dissolve: remove from level
         try:
             game.log.add(f"The mirror of {actor.name.replace('Mirror ', '')} shatters.")
-            level.actors.pop(actor.id, None)
-            level.entities.pop(actor.id, None)
+            entity_ops_system.remove_actor(level, actor.id)
+            entity_ops_system.remove_entity(level, actor.id)
             # Clean up blade state
             blade_states = getattr(game, "blade_states", None)
             if isinstance(blade_states, dict):
@@ -844,7 +845,8 @@ def _mirror_blade_clone(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     # Find nearest hostile actor by footprint distance.
     best_target = None
     best_dist = 10**9
-    for aid, other in list(level.actors.items()):
+    for other in list(entity_ops_system.iter_actors(level)):
+        aid = other.id
         if aid == actor.id:
             continue
         if not getattr(other, "alive", True):

@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 import math
 from typing import Any, Dict, List, Tuple
 
+from edgecaster.systems import entity_ops as entity_ops_system
+
 from edgecaster import prototypes
 from edgecaster import spawn_factory
 from edgecaster.content import npcs
@@ -1714,9 +1716,9 @@ def renderables_in_abs_rect(
 
                     obj = None
                     if include_actors:
-                        obj = level.actors.get(obj_id)
+                        obj = entity_ops_system.get_actor(level, obj_id)
                     if obj is None and include_entities:
-                        obj = level.entities.get(obj_id)
+                        obj = entity_ops_system.get_entity(level, obj_id)
                     if obj is None:
                         continue
 

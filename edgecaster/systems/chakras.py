@@ -11,8 +11,8 @@ Core Concepts:
 1. **Chakras**: Each node in an actor's body entity tree (torso, hand, finger,
    etc.) can function as a chakra — an energy point that contributes to pattern
    generation.  The authoritative runtime representation is ChakraComponent on
-   each body-node entity; the legacy body_schema dict is a fallback path for
-   contexts where the entity tree has not been realized.
+   each body-node entity, with deterministic body specs as the non-realized
+   fallback for actor-oriented pattern generation.
 
 2. **Unlocking**: Chakras must be unlocked before they can be activated. Unlocking
    is gated by "branch roots" - nodes that are the entry points to sub-schemas.
@@ -61,8 +61,9 @@ Migration note:
 - The geometry/pattern code in this module is still valuable, but it is too
   actor/body-schema specific to be the final substrate.
 - The entity path (ChakraComponent + entity_geometry) is now the preferred
-  runtime substrate. The body-schema path remains as a fallback for the
-  seed-builder when no realized entity tree is available.
+  runtime substrate. When realized body nodes are not available yet, actor-
+  oriented seed generation falls back to deterministic body specs rather than
+  re-walking raw authored body schemas here.
 """
 
 from __future__ import annotations
@@ -84,50 +85,6 @@ Vec2 = Tuple[float, float]
 # and light attribute-style objects are all accepted by the query helpers.
 
 
-
-
-# =============================================================================
-# BODY SCHEMA HELPERS
-# =============================================================================
-
-def _get_nodes(body_schema: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """
-    Extract the nodes dict from a body schema.
-
-    Body schemas can have nodes stored directly or nested under 'body'.
-    This helper normalizes access.
-    """
-    if not body_schema:
-        return {}
-
-    # Check for nested 'body' key first (common in resolved schemas)
-    body = body_schema.get("body", body_schema)
-    if isinstance(body, dict):
-        nodes = body.get("nodes", {})
-        if isinstance(nodes, dict):
-            return nodes
-
-    # Fallback: check if nodes is directly on schema
-    nodes = body_schema.get("nodes", {})
-    return nodes if isinstance(nodes, dict) else {}
-
-
-def _get_root_node_id(body_schema: Dict[str, Any]) -> Optional[str]:
-    """
-    Get the root node ID from a body schema.
-
-    Returns the ID of the entry-point node (e.g., "torso" for body schema).
-    """
-    if not body_schema:
-        return None
-
-    body = body_schema.get("body", body_schema)
-    if isinstance(body, dict):
-        root = body.get("root")
-        if root:
-            return str(root)
-
-    return body_schema.get("root")
 
 
 def _get_node_layout(node: Dict[str, Any]) -> Tuple[float, float]:
@@ -462,284 +419,6 @@ def _coerce_chakra_query_snapshot(state: Any) -> Dict[str, Any]:
 # =============================================================================
 
 # =============================================================================
-# POSITION EXTRACTION
-# =============================================================================
-#
-# [LEGACY_DELETE][ENTITY_CHAKRA][BODY_SCHEMA]
-# These recursive body-schema readers are now a compatibility bridge. The
-# long-term runtime/query path should come from realized actor/body entities via
-# `entity_body.py` + `entity_geometry.py`, with body_schema retained as authoring
-# input instead of the main gameplay traversal substrate.
-
-def _get_chakra_connections_recursive(
-    body_schema: Dict[str, Any],
-    chakra_state: Any,
-    prefix: str = "",
-    depth: int = 0,
-    max_depth: Optional[int] = None,
-    recursion_guard: Optional[Set[str]] = None,
-) -> List[Tuple[str, str]]:
-    """
-    Build parent-child connections across the full body schema tree, including
-    unlocked sub-schemas. Accepts any thin chakra read snapshot.
-    """
-    if max_depth is not None and depth > max_depth:
-        return []
-
-    state = _coerce_chakra_query_snapshot(chakra_state)
-
-    nodes = _get_nodes(body_schema)
-    if not nodes:
-        return []
-
-    root_id = _get_root_node_id(body_schema)
-    root_full = f"{prefix}{root_id}" if (root_id and (prefix or root_id)) else root_id
-
-    # Keep insertion order stable while deduping.
-    edges: List[Tuple[str, str]] = []
-    edge_keys: Set[Tuple[str, str]] = set()
-
-    def add_edge(a: str, b: str) -> None:
-        if not a or not b or a == b:
-            return
-        key = (a, b)
-        if key in edge_keys:
-            return
-        edge_keys.add(key)
-        edges.append(key)
-
-    # Track which local nodes have an explicit parent edge in this schema.
-    # Some sub-schemas (notably face) contain nodes that are not listed in
-    # any `children` array. Without this fallback, valid chakras such as
-    # `...face.eye` become unreachable and are dropped from generator seeds.
-    has_parent_local: Set[str] = set()
-    guard = set(recursion_guard or ())
-
-    for node_id, node in nodes.items():
-        if not isinstance(node, dict):
-            continue
-
-        full_id = f"{prefix}{node_id}" if prefix else node_id
-
-        # Edges to children within this schema
-        children = node.get("children", [])
-        if isinstance(children, list):
-            for child_id in children:
-                if child_id:
-                    child_full_id = f"{prefix}{child_id}" if prefix else str(child_id)
-                    add_edge(full_id, child_full_id)
-                    has_parent_local.add(str(child_id))
-
-        # If this is an unlocked branch root, connect to sub-schema root and recurse
-        proto_id = node.get("proto", node_id)
-        if is_branch_root(proto_id) and full_id in state["unlocked"]:
-            if str(proto_id) in guard:
-                continue
-            try:
-                from edgecaster.prototypes import resolve_body_schema
-                sub_schema = resolve_body_schema(proto_id)
-                if sub_schema and isinstance(sub_schema, dict):
-                    sub_root = sub_schema.get("root")
-                    if sub_root:
-                        sub_root_full = f"{full_id}.{sub_root}"
-                        add_edge(full_id, sub_root_full)
-                    for sub_a, sub_b in _get_chakra_connections_recursive(
-                        sub_schema,
-                        chakra_state,
-                        prefix=f"{full_id}.",
-                        depth=depth + 1,
-                        max_depth=max_depth,
-                        recursion_guard=guard | {str(proto_id)},
-                    ):
-                        add_edge(sub_a, sub_b)
-            except Exception:
-                pass
-
-    # Fallback wiring: connect any local node with no declared parent to the
-    # local schema root. This preserves 1:1 chakra<->schema-node behavior even
-    # when authoring data omits some child links.
-    if root_id and root_full:
-        for local_id in nodes.keys():
-            sid = str(local_id)
-            if sid == root_id:
-                continue
-            if sid in has_parent_local:
-                continue
-            add_edge(root_full, f"{prefix}{sid}" if prefix else sid)
-
-    return edges
-
-
-def _get_all_chakra_positions_recursive(
-    body_schema: Dict[str, Any],
-    chakra_state: Any,
-    base_scale: float = 1.0,
-    prefix: str = "",
-    parent_pos: Vec2 = (0.0, 0.0),
-    parent_scale: float = 1.0,
-    depth: int = 0,
-    max_depth: Optional[int] = None,
-    recursion_guard: Optional[Set[str]] = None,
-) -> Dict[str, Tuple[Vec2, str, float, Vec2]]:
-    """
-    Recursively get positions for ALL chakra nodes, including sub-schemas.
-
-    When a branch root is unlocked, this expands into its sub-schema and
-    positions those nodes relative to the branch root's position.
-
-    Args:
-        body_schema: The body schema to traverse
-        chakra_state: Current chakra read snapshot
-        base_scale: Scale factor for this schema level
-        prefix: Prefix for node IDs (e.g., "arm." for arm sub-schema)
-        parent_pos: Parent node's position for offset calculation
-        parent_scale: Parent's scale for composing transforms
-        depth: Current recursion depth
-        max_depth: Optional recursion depth limit (None = unbounded)
-        recursion_guard: Proto-id guard for cycle detection in recursive schemas
-
-    Returns:
-        Dict mapping full_node_id to (position, state, local_scale, base_position)
-        - position: (x, y) in unit coordinates (includes alignment offsets)
-        - state: "locked", "unlocked", or "active"
-        - local_scale: scale used for this node's layout (for alignment math)
-        - base_position: (x, y) without alignment offsets
-    """
-    if max_depth is not None and depth > max_depth:
-        return {}
-
-    state = _coerce_chakra_query_snapshot(chakra_state)
-
-    nodes = _get_nodes(body_schema)
-    root_id = _get_root_node_id(body_schema)
-
-    if not nodes:
-        return {}
-
-    result: Dict[str, Tuple[Vec2, str]] = {}
-    guard = set(recursion_guard or ())
-    visited_local: Set[str] = set()
-
-    # Track which local nodes are explicitly listed as children. Any local node
-    # not in this set (and not the schema root) is treated as an implicit child
-    # of the local root, so it still participates in positioning/generation.
-    has_parent_local: Set[str] = set()
-    for _nid, _node in nodes.items():
-        if not isinstance(_node, dict):
-            continue
-        for _cid in _get_node_children(_node):
-            has_parent_local.add(str(_cid))
-
-    def get_node_state(full_id: str) -> str:
-        """Determine chakra state for a node."""
-        if full_id in state["active"]:
-            return "active"
-        elif full_id in state["unlocked"]:
-            return "unlocked"
-        else:
-            return "locked"
-
-    def walk(node_id: str, pos: Vec2, scale: float) -> None:
-        """Recursively walk the tree, computing positions."""
-        if node_id not in nodes:
-            return
-        if node_id in visited_local:
-            return
-        visited_local.add(node_id)
-
-        node = nodes[node_id]
-        layout = _get_node_layout(node)
-        size = _get_node_size(node)
-
-        # Compute this node's base position (pre-alignment)
-        x = pos[0] + (layout[0] * scale)
-        y = pos[1] + (layout[1] * scale)
-        base_pos = (x, y)
-
-        # Build full ID with prefix
-        full_id = f"{prefix}{node_id}" if prefix else node_id
-
-        # Apply alignment offset if present
-        if full_id in state["alignments"]:
-            align = state["alignments"][full_id]
-            x += align[0] * scale * 0.5
-            y += align[1] * scale * 0.5
-
-        # Store this node's position and state
-        node_state = get_node_state(full_id)
-        result[full_id] = ((x, y), node_state, scale, base_pos)
-
-        # Check if this is a branch root that's unlocked
-        proto_id = node.get("proto", node_id) if isinstance(node, dict) else node_id
-        if is_branch_root(proto_id) and full_id in state["unlocked"]:
-            if str(proto_id) in guard:
-                # Prevent infinite recursion if a schema references itself.
-                return
-            try:
-                from edgecaster.prototypes import resolve_body_schema
-                sub_schema = resolve_body_schema(proto_id)
-                if sub_schema and isinstance(sub_schema, dict) and sub_schema.get("nodes"):
-                    # Recursively get sub-schema positions
-                    # Position sub-schema relative to this node
-                    # NOTE: Only apply the parent scale once. The previous logic
-                    # multiplied by (scale * size) twice, which made deeper
-                    # chakras appear much smaller than intended.
-                    sub_result = _get_all_chakra_positions_recursive(
-                        sub_schema,
-                        state,
-                        base_scale=1.0,
-                        prefix=f"{full_id}.",
-                        parent_pos=(x, y),
-                        parent_scale=scale * size,
-                        depth=depth + 1,
-                        max_depth=max_depth,
-                        recursion_guard=guard | {str(proto_id)},
-                    )
-                    result.update(sub_result)
-            except Exception:
-                pass
-
-        # Recurse to children within this schema.
-        #
-        # IMPORTANT: Do NOT compound scale by node size for *in-schema* children.
-        # The layout coordinates already describe relative spacing within the
-        # schema's own coordinate system. Compounding size here causes deep
-        # chains (arm → hand → finger) to collapse into near-zero distances,
-        # which makes the chakra generator degenerate into a single line.
-        #
-        # Size should only affect how *sub-schemas* embed inside a branch root.
-        child_scale = scale
-        for child_id in _get_node_children(node):
-            walk(child_id, (x, y), child_scale)
-
-    # Start walk from root (or from parent_pos if nested)
-    if root_id and root_id in nodes:
-        walk(root_id, parent_pos, base_scale * parent_scale)
-        root_full = f"{prefix}{root_id}" if prefix else root_id
-        root_pos_entry = result.get(root_full)
-        if root_pos_entry is not None:
-            root_pos_u = root_pos_entry[0]
-            root_scale = root_pos_entry[2]
-            # Include orphan local nodes that have no explicit parent in
-            # children-links by attaching them to the local root.
-            for orphan_id in sorted(nodes.keys()):
-                sid = str(orphan_id)
-                if sid == root_id:
-                    continue
-                if sid in has_parent_local:
-                    continue
-                if sid in visited_local:
-                    continue
-                walk(sid, root_pos_u, root_scale)
-    else:
-        # No root, walk all nodes
-        for node_id in nodes:
-            walk(node_id, parent_pos, base_scale * parent_scale)
-
-    return result
-
-
-# =============================================================================
 # PATTERN GENERATION
 # =============================================================================
 
@@ -834,74 +513,6 @@ def get_compact_active_graph(
         compact_edges.add(key)
 
     return active_set, list(compact_edges)
-
-
-def _get_active_chakra_generator_graph(
-    body_schema: Dict[str, Any],
-    chakra_state: Any,
-    *,
-    base_scale: float = 1.0,
-    require_root: bool = True,
-) -> Tuple[Dict[str, Vec2], List[Tuple[str, str]], str, str]:
-    """Build the active chakra graph used by generator/preview code.
-
-    Returns:
-        (positions, compact_edges, root_id, terminus_id)
-        - positions: node_id -> (x, y) for active nodes reachable from root
-        - compact_edges: active-only compressed edges
-        - root_id: selected active root
-        - terminus_id: active node furthest from root by Euclidean distance
-
-    Notes:
-    - There is no implicit "body root" fallback.
-    - If `require_root=True`, `pattern_root` must be set and active.
-    """
-    state = _coerce_chakra_query_snapshot(chakra_state)
-
-    all_positions = _get_all_chakra_positions_recursive(
-        body_schema,
-        state,
-        base_scale=base_scale,
-    )
-    full_edges = _get_chakra_connections_recursive(body_schema, state)
-
-    root_id = state["pattern_root"]
-    if root_id not in state["active"]:
-        if require_root:
-            raise ValueError("Select an active chakra as the pattern root first.")
-        active_sorted = sorted(state["active"])
-        if not active_sorted:
-            raise ValueError("Need at least 2 active chakras to form a generator.")
-        root_id = active_sorted[0]
-
-    active_nodes, compact_edges = get_compact_active_graph(
-        full_edges,
-        state["active"],
-        root_id=root_id,
-    )
-    positions: Dict[str, Vec2] = {
-        node_id: pos_u
-        for node_id, (pos_u, _state, _scale, _base_pos) in all_positions.items()
-        if node_id in active_nodes
-    }
-
-    if root_id not in positions:
-        raise ValueError("Pattern root not found in chakra pattern.")
-
-    candidates = [nid for nid in active_nodes if nid != root_id and nid in positions]
-    if not candidates:
-        raise ValueError("Need at least 2 connected chakras to form a generator.")
-
-    rx, ry = positions[root_id]
-
-    def d2(nid: str) -> float:
-        x, y = positions[nid]
-        dx = x - rx
-        dy = y - ry
-        return dx * dx + dy * dy
-
-    terminus_id = max(candidates, key=d2)
-    return positions, compact_edges, str(root_id), str(terminus_id)
 
 
 @dataclass(frozen=True)
@@ -1234,7 +845,6 @@ def get_active_chakra_generator_graph_for_entity(
 def build_chakra_generator_seed(
     chakra_state: Any,
     *,
-    body_schema: Optional[Dict[str, Any]] = None,
     require_root: bool = True,
     actor: Any | None = None,
     game: Any | None = None,
@@ -1261,11 +871,9 @@ def build_chakra_generator_seed(
             )
             if body_tree_seed is not None:
                 return body_tree_seed
-        except ValueError:
-            # If the live body tree cannot satisfy the request yet, keep falling
-            # through so generic component or schema-based fallback can still
-            # rescue partially migrated actors.
-            pass
+        except ValueError as ve:
+            # We want the specific missing-root or missing-nodes message to bubble up
+            raise ve
 
     # Entity tree path: try query_normalized_pattern for entities whose
     # chakra_component carries positioned nodes.  For body-anatomy actors this
@@ -1273,7 +881,8 @@ def build_chakra_generator_seed(
     # external_child_root active flags were synced from the structural snapshot
     # path (Batch 2 A3).
     # Actors with only one active chakra (< 2 nodes) fall through to the
-    # body-schema path below; so do actors with deeper body trees (>1 level).
+    # deterministic body-spec path below; so do actors with deeper body trees
+    # (>1 level).
     # Body-anatomy node offsets are sub-tile floats that collapse to the same
     # integer grid cell — entity abs_pos alone is not sufficient geometry.
     if actor is not None and game is not None:
@@ -1326,8 +935,7 @@ def build_chakra_generator_seed(
 
     # Shared deterministic body-spec path for actor anatomy when the body tree
     # is not realized yet. This keeps actor-oriented seed generation on the
-    # same substrate used by entity expansion and body-view queries instead of
-    # dropping straight to raw body_schema recursion.
+    # same substrate used by entity expansion and body-view queries.
     if actor is not None:
         try:
             body_spec_seed = _build_seed_from_body_specs(
@@ -1340,38 +948,7 @@ def build_chakra_generator_seed(
         except ValueError:
             pass
 
-    # Schema fallback path
-    if not body_schema and actor is not None:
-        try:
-            from edgecaster.prototypes import resolve_body_schema
-            body_schema = resolve_body_schema(actor)
-        except Exception:
-            body_schema = getattr(actor, "body_schema", {})
-
-    if not body_schema:
-        body_schema = {}
-
-    positions, compact_edges, root_id, terminus_id = _get_active_chakra_generator_graph(
-        body_schema,
-        chakra_state,
-        require_root=require_root,
-    )
-    verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
-        positions,
-        compact_edges,
-        root_id=root_id,
-        terminus_id=terminus_id,
-    )
-    return ChakraGeneratorSeed(
-        positions=positions,
-        compact_edges=compact_edges,
-        root_id=root_id,
-        terminus_id=terminus_id,
-        verts=verts,
-        edges=edges,
-        node_order=node_order,
-        base_len=base_len,
-    )
+    raise ValueError("No usable chakra entity geometry found to form a chakra generator.")
 
 
 def build_chakra_generator_seed_for_actor(

@@ -7,6 +7,7 @@ import pygame
 import math
 
 from edgecaster.math_utils import lerp, smoothstep, clamp01
+from edgecaster.systems import entity_ops as entity_ops_system
 
 # Font sizing / glyph sizing limits.
 # Big on purpose: user wants proportionality over crispness.
@@ -4223,7 +4224,7 @@ class InventoryScene(PopupMenuScene):
 
         level = self.game._level()
         if level is not None:
-            ent = level.entities.get(owner_id) or level.actors.get(owner_id)
+            ent = entity_ops_system.resolve_entity(level, owner_id)
             if ent is not None:
                 return ent
 

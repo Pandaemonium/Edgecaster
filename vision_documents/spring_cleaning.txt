@@ -1463,8 +1463,8 @@ PHASE 8 — LEGACY REMOVAL
   - File: edgecaster/systems/chakras.py
   - Completed 2026-04-21.
   - Nominal `ChakraState` facade deleted from production code.
-  - Remaining Track A work is body-schema fallback cleanup and doc/test
-    cleanup around snapshot-shaped chakra inputs.
+  - Query helpers now accept snapshot-shaped payloads (`dict`,
+    `ChakraViewState`, or light attribute-style objects).
 
 [DONE][ENTITY_CHAKRA][PHASE_8] lineage_state dict removal (already complete)
   - lineage_state was removed from game.py; confirmed no references in codebase.
@@ -1604,10 +1604,12 @@ PHASE 8 — LEGACY REMOVAL
   - Bridge code related to runtime registry tracking that bypasses unified paths.
   - Target: unify the registry code and remove this specific bridge.
 
-[LEGACY_DELETE][ENTITY_CHAKRA][BODY_SCHEMA] Body-schema recursive walkers
+[DONE][ENTITY_CHAKRA][BODY_SCHEMA] Body-schema recursive walkers
   - File: edgecaster/systems/chakras.py
-  - These recursive body-schema readers are now a compatibility bridge.
-  - Target: replace with long-term runtime/query path from realized actor/body entities.
+  - Raw recursive body-schema walkers have been deleted.
+  - `build_chakra_generator_seed` now reads from realized body entities first,
+    then deterministic body specs; it no longer drops into raw authored
+    `body_schema` recursion.
 
 [DONE][ENTITY_CHAKRA][PHASE_8] attention persistence wrapper block (Slice LI, 2026-04-19)
   - `_peek_entity_state` deleted; `_PRIMARY_ENTITY_STATE_KEYS` set deleted.
@@ -2075,6 +2077,22 @@ Highest-impact Phase 2 actions (enables fractal promise):
   4. BladeState -> chakra sub-graph conversion
 
 Owner: Claude audit (2026-02-13)
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track B: Shared Entity Query Surface (2026-04-22)
+  - Established `get_actor`, `get_entity`, `iter_actors`, `iter_entities` in
+    `entity_ops.py` to decouple runtime iteration from `level.actors`/`entities` dicts.
+  - Migrated core simulation systems: `combat_actions`, `ai`, `scheduling`, `ambient_spawns`,
+    `deferred`, `damage_policy`.
+  - Migrated game orchestration and encounters: `game`, `action_runner`, `gods`,
+    `god_abilities`, `rune_anchor_sieges`, `session`, `active_zones`, `abilities`.
+  - Final read-side cutover completed across gameplay/UI/render helpers:
+    `actions`, `blade_runtime`, `pattern_runtime`, `seal_trials`, `combat`,
+    `spawning`, `events`, `inspection`, `tooltips`, `render_query`,
+    `attention`, `scenes/dungeon`, `scenes/chakra_scene`,
+    `scenes/inventory_scene`, `render/ascii`, `ui/status_header`, and `lorenz`.
+  - Remaining direct `.actors` / `.entities` usage is now concentrated in
+    ownership/cache write paths and inventory/equipment flows tracked under
+    Track C and later lifecycle/index cleanup.
 
 ===============================================================================
 CODEBASE AUDIT — REFRESH (2026-02-18)

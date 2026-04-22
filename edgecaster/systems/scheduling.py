@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Callable
 from edgecaster.systems import combat_actions as combat_actions_system
 from edgecaster.systems import damage_policy as damage_policy_system
 from edgecaster.systems import inventory as inventory_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -214,7 +215,7 @@ def chakra_reducer_tick(game: "Game", level: "LevelState") -> None:
     player_id = getattr(game, "player_id", None)
     graph = getattr(game, "entity_graph", None)
 
-    for actor in list(level.actors.values()):
+    for actor in list(entity_ops_system.iter_actors(level)):
         raw_comp = getattr(actor, "chakra_component", None)
         if raw_comp is None:
             continue
@@ -248,7 +249,7 @@ def chakra_charge_tick(game: "Game", level: "LevelState", delta: int) -> None:
     # Only charge while the player's pattern exists
     charging = bool(getattr(level, "pattern", None) and level.pattern.vertices)
 
-    for actor in level.actors.values():
+    for actor in entity_ops_system.iter_actors(level):
         # Component is the write authority; skip actors without one.
         if getattr(actor, "chakra_component", None) is None:
             continue
@@ -276,7 +277,7 @@ def start_regen(game: "Game", level: "LevelState", actor_id: str, amount: int, i
     Start periodic regen for an actor: heals `amount` HP every `interval` ticks.
     """
     def tick() -> None:
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
         if actor is None or getattr(actor, "alive", True) is False:
             return
         try:
@@ -365,9 +366,9 @@ def cooldown_tick(game: "Game", level: "LevelState", delta: int) -> None:
         for name in to_delete:
             del cds[name]
 
-    for act in level.actors.values():
+    for act in entity_ops_system.iter_actors(level):
         tick_entity(act)
-    for ent in level.entities.values():
+    for ent in entity_ops_system.iter_entities(level):
         tick_entity(ent)
     for owner_id in inventory_system.iter_inventory_root_owner_ids(game, level=level):
         for _, ent in inventory_system.iter_inventory_tree(game, owner_id):
@@ -385,7 +386,7 @@ def cooldown_tick(game: "Game", level: "LevelState", delta: int) -> None:
 
 def _tick_frozen_slow(level: "LevelState", delta: int) -> None:
     """Decay frozen slow effects on actors."""
-    for actor in level.actors.values():
+    for actor in entity_ops_system.iter_actors(level):
         tags = getattr(actor, "tags", None) or {}
         mult = float(tags.get("frozen_slow", 1.0))
         if mult <= 1.0:
@@ -407,7 +408,7 @@ def _tick_frozen_slow(level: "LevelState", delta: int) -> None:
 
 def _tick_attack_bonus(level: "LevelState", delta: int) -> None:
     """Decay temporary attack bonuses on actors."""
-    for actor in level.actors.values():
+    for actor in entity_ops_system.iter_actors(level):
         tags = getattr(actor, "tags", None) or {}
         try:
             ticks = int(tags.get("attack_bonus_ticks", 0))
@@ -426,7 +427,7 @@ def _tick_attack_bonus(level: "LevelState", delta: int) -> None:
 
 def _tick_action_offset(level: "LevelState", delta: int) -> None:
     """Decay additive action-speed modifiers on actors."""
-    for actor in level.actors.values():
+    for actor in entity_ops_system.iter_actors(level):
         tags = getattr(actor, "tags", None) or {}
         try:
             offset = int(tags.get("action_tick_offset", 0))
@@ -584,7 +585,7 @@ def acidic_pattern_tick(game: "Game", level: "LevelState") -> None:
 
     # Apply damage to enemies
     for actor_id, damage in damage_by_actor.items():
-        actor = level.actors.get(actor_id)
+        actor = entity_ops_system.get_actor(level, actor_id)
         if actor and getattr(actor, "alive", True):
             int_damage = max(1, int(damage))
             actor.stats.hp -= int_damage

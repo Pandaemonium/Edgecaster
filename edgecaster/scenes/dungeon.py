@@ -16,6 +16,7 @@ from edgecaster.systems.previews import build_action_preview, is_previewable_act
 from edgecaster.patterns import motion as pattern_motion
 from edgecaster.ui.ability_bar import AbilityBarState
 from edgecaster.systems.actions import get_action, describe_entity_for_look
+from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.visuals import VisualProfile, apply_visual_panel  
 from edgecaster.ui.widgets import WidgetContext, VBox, HBox, LabelWidget, ButtonWidget, ListWidget
 from edgecaster.systems import rune_audio as rune_audio_system
@@ -881,7 +882,7 @@ class DungeonScene(Scene):
             game.camera_needs_recenter = False
             try:
                 with open("C:/Games/Edgecaster/debug.log", "a") as f:
-                    player = game.actors.get(game.player_id)
+                    player = entity_ops_system.get_actor(game._level(), game.player_id)
                     abs_pos = getattr(player, "abs_pos", None) if player else None
                     old_pan = (getattr(renderer, "pan_x", 0), getattr(renderer, "pan_y", 0))
                     f.write(f"[dungeon] Camera recenter triggered, player abs_pos={abs_pos}, zone={game.zone_coord}, old_pan={old_pan}\n")
@@ -923,8 +924,10 @@ class DungeonScene(Scene):
             constraints = TargetConstraints()
         actor_id = origin_actor_id or getattr(game, "player_id", None)
         origin_tile = None
-        if actor_id is not None and getattr(game, "actors", None):
-            origin_tile = game.actors[actor_id].pos
+        if actor_id is not None:
+            actor = entity_ops_system.get_actor(game._level(), actor_id)
+            if actor is not None:
+                origin_tile = actor.pos
 
         tstate = TargetState(
             action=action,
@@ -941,8 +944,8 @@ class DungeonScene(Scene):
             if origin_tile is not None:
                 # Compute canonical ABS cursor from the origin actor if possible.
                 abs_origin = None
-                if actor_id is not None and getattr(game, "actors", None):
-                    a = game.actors.get(actor_id)
+                if actor_id is not None:
+                    a = entity_ops_system.get_actor(game._level(), actor_id)
                     abs_origin = getattr(a, "abs_pos", None)
                 if abs_origin is None:
                     abs_origin = game.abs_from_zone_local(game.zone_coord, origin_tile)
@@ -1122,7 +1125,7 @@ class DungeonScene(Scene):
 
         if abs_tile is None:
             # As an absolute last resort, look at the player.
-            a = game.actors[game.player_id]
+            a = game._player()
             abs_tile = getattr(a, "abs_pos", None)
             if abs_tile is None:
                 self.cancel_target_mode(game)
@@ -1232,7 +1235,7 @@ class DungeonScene(Scene):
         # 1) Concrete entities from loaded zone.
         if level_for_tile is not None and tx_ty is not None:
             tx, ty = tx_ty
-            for ent in list(level_for_tile.actors.values()) + list(level_for_tile.entities.values()):
+            for ent in list(entity_ops_system.iter_actors(level_for_tile)) + list(entity_ops_system.iter_entities(level_for_tile)):
                 if getattr(ent, "pos", None) != (tx, ty):
                     continue
                 _add_candidate(ent)
@@ -1933,7 +1936,7 @@ class DungeonScene(Scene):
         if in_target_mode and t and t.kind == "vertex":
             # Arrow / WASD: move a logical tile cursor and pick nearest vertex.
             if kind == "move" and vec is not None:
-                tx, ty = t.cursor_tile or game.actors[game.player_id].pos
+                tx, ty = t.cursor_tile or game._player().pos
                 dx, dy = vec
                 nt = (tx + dx, ty + dy)
                 if game.world.in_bounds(*nt):
@@ -2065,7 +2068,7 @@ class DungeonScene(Scene):
                 if cur_abs is None:
                     base_local = t.cursor_tile
                     if base_local is None:
-                        base_local = game.actors[game.player_id].pos
+                        base_local = game._player().pos
                     try:
                         cur_abs = game.abs_from_zone_local(getattr(game, "zone_coord", (0, 0, 0)), base_local)
                     except Exception:
@@ -2251,7 +2254,7 @@ class DungeonScene(Scene):
 
         if kind == "toggle_door":
             level = game._level()
-            player = game.actors[game.player_id]
+            player = game._player()
             px, py = player.pos
             # Check current + cardinal neighbors for doors.
             offsets = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
@@ -2388,7 +2391,7 @@ class DungeonScene(Scene):
                 return
 
             # Default: click-to-move / stairs / wait.
-            player = game.actors[game.player_id]
+            player = game._player()
             px, py = player.pos
             dx = tx - px
             dy = ty - py
@@ -2436,7 +2439,7 @@ class DungeonScene(Scene):
         if kind == "pickup":
             if not in_aim_mode:
                 level = game._level()
-                player = level.actors.get(game.player_id)
+                player = entity_ops_system.get_actor(level, game.player_id)
                 if player:
                     items = game._items_at(level, player.pos)
                     if len(items) == 0:
@@ -2454,12 +2457,12 @@ class DungeonScene(Scene):
 
         if kind == "possess_nearest":
             level = game._level()
-            player = level.actors.get(game.player_id)
+            player = entity_ops_system.get_actor(level, game.player_id)
             if player is not None:
                 px, py = player.pos
                 best_id = None
                 best_d2 = 1e18
-                for actor in level.actors.values():
+                for actor in entity_ops_system.iter_actors(level):
                     if not actor.alive or actor.id == game.player_id:
                         continue
                     ax, ay = actor.pos
@@ -2542,7 +2545,7 @@ class DungeonScene(Scene):
             return
 
         if kind == "stairs_up_or_map":
-            tile = game.world.get_tile(*game.actors[game.player_id].pos)
+            tile = game.world.get_tile(*game._player().pos)
             zone = getattr(game, "zone_coord", getattr(game, "zone", (0, 0, game.level_index)))
             depth = zone[2] if len(zone) > 2 else getattr(game, "level_index", 0)
             if depth == 0 and (not tile or tile.glyph != "<"):

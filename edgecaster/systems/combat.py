@@ -16,6 +16,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Optional, Tuple
 
+from edgecaster.systems import entity_ops as entity_ops_system
+
 if TYPE_CHECKING:
     from edgecaster.game import Game
     from edgecaster.state.levels import LevelState
@@ -383,7 +385,7 @@ def kill_actor(
         killer_actor = None
         if killer_id is not None:
             try:
-                killer_actor = level.actors.get(killer_id)
+                killer_actor = entity_ops_system.get_actor(level, killer_id)
                 if killer_actor is None:
                     attn = getattr(game, "attn_store", None)
                     if attn is not None:
@@ -553,7 +555,7 @@ def _free_chained_brutes(
         return
 
     freed = 0
-    for other in list(level.actors.values()):
+    for other in list(entity_ops_system.iter_actors(level)):
         try:
             otags = getattr(other, "tags", None) or {}
         except Exception:

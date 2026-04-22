@@ -16,6 +16,7 @@ from edgecaster.patterns import builder
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 def _normalize_chakra_node_id(node_id: Any) -> str:
@@ -183,7 +184,7 @@ def act_star(self, actor_id: str) -> None:
 def chakra_modifiers(self, actor_id: str):
     """Return ChakraModifiers for the given actor (resonance + charge)."""
     try:
-        actor = self._level().actors.get(actor_id)
+        actor = entity_ops_system.get_actor(self._level(), actor_id)
     except Exception:
         actor = None
     if actor is None:
@@ -225,7 +226,7 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
 def act_chakra(self, actor_id: str) -> None:
     """Apply the actor's active chakra graph as a custom generator shape."""
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 

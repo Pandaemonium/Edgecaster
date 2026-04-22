@@ -17,6 +17,8 @@ try:
 except ImportError:
     yaml = None  # type: ignore[assignment]
 
+from edgecaster.systems import entity_ops as entity_ops_system
+
 if TYPE_CHECKING:
     from edgecaster.game import Game
     from edgecaster.state.actors import Actor
@@ -276,7 +278,7 @@ def sync_all_god_abilities(game: "Game") -> None:
     try:
         from edgecaster.systems import chakra_items as chakra_items_system
         level = game._level()
-        player = level.actors.get(game.player_id)
+        player = entity_ops_system.get_actor(level, game.player_id)
         if player is None or not getattr(player, "alive", False):
             return
         active = chakra_items_system.effective_active_nodes(game, player)

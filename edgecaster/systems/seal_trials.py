@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from edgecaster.content.sealing_runes import SealPatternStep, SealTrialDef, get_seal_trial
 from edgecaster.patterns import builder
 from edgecaster.state.patterns import Edge, Pattern, Segment
+from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems import inventory as inventory_system
 
 if TYPE_CHECKING:
@@ -218,7 +219,7 @@ def apply_trial_grants(game: "Game", actor_id: str, trial: SealTrialState) -> No
         return
 
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 
@@ -254,7 +255,7 @@ def apply_trial_grants(game: "Game", actor_id: str, trial: SealTrialState) -> No
 def revoke_trial_grants(game: "Game", actor_id: str) -> None:
     """Restore intrinsic actions after leaving a trial zone or sealing."""
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 
@@ -611,7 +612,7 @@ def _apply_trial_params(game: "Game", actor_id: str, trial: SealTrialState) -> N
         return
 
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 
@@ -650,7 +651,7 @@ def _apply_trial_params(game: "Game", actor_id: str, trial: SealTrialState) -> N
 def _restore_trial_params(game: "Game", actor_id: str) -> None:
     """Restore generator parameters after leaving a trial zone."""
     level = game._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     tags = getattr(actor, "tags", {}) or {}

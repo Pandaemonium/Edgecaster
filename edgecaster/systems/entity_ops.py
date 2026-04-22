@@ -6,7 +6,7 @@ This module extracts frequently used query/status helpers from Game to keep
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, List, TYPE_CHECKING, Iterable
+from typing import Any, Optional, Tuple, List, TYPE_CHECKING, Iterable, Iterator
 from edgecaster.systems import footprints as footprints_system
 from edgecaster.systems import entity_snapshots as entity_snapshots_system
 
@@ -15,6 +15,42 @@ if TYPE_CHECKING:
     from edgecaster.state.actors import Actor
     from edgecaster.state.entities import Entity
 
+
+def get_actor(level: "LevelState", actor_id: str) -> Optional["Actor"]:
+    return getattr(level, "actors", {}).get(actor_id)
+
+def get_entity(level: "LevelState", entity_id: str) -> Optional["Entity"]:
+    return getattr(level, "entities", {}).get(entity_id)
+
+def resolve_entity(level: "LevelState", entity_id: str) -> Optional[Any]:
+    actor = get_actor(level, entity_id)
+    if actor is not None:
+        return actor
+    return get_entity(level, entity_id)
+
+def iter_actors(level: "LevelState") -> Iterator["Actor"]:
+    return iter(getattr(level, "actors", {}).values())
+
+def iter_entities(level: "LevelState") -> Iterator["Entity"]:
+    return iter(getattr(level, "entities", {}).values())
+
+def iter_all(level: "LevelState") -> Iterator[Any]:
+    for actor in iter_actors(level):
+        yield actor
+    for ent in iter_entities(level):
+        yield ent
+
+def remove_actor(level: "LevelState", actor_id: str) -> Optional["Actor"]:
+    actors = getattr(level, "actors", None)
+    if isinstance(actors, dict):
+        return actors.pop(actor_id, None)
+    return None
+
+def remove_entity(level: "LevelState", entity_id: str) -> Optional["Entity"]:
+    entities = getattr(level, "entities", None)
+    if isinstance(entities, dict):
+        return entities.pop(entity_id, None)
+    return None
 
 def _is_suppressed(game: "Game | None", entity: object) -> bool:
     """Return True if *entity* is marked removed/dead in entity_state."""
@@ -32,7 +68,7 @@ def actor_at(
     *,
     game: "Game | None" = None,
 ) -> Optional["Actor"]:
-    for actor in level.actors.values():
+    for actor in iter_actors(level):
         if not actor.alive:
             continue
         if _is_suppressed(game, actor):
@@ -49,7 +85,7 @@ def actors_overlapping_rect(
     exclude_id: str | None = None,
 ) -> List["Actor"]:
     out: List["Actor"] = []
-    for actor in level.actors.values():
+    for actor in iter_actors(level):
         if actor is None or not getattr(actor, "alive", False):
             continue
         if exclude_id is not None and getattr(actor, "id", None) == exclude_id:
@@ -85,8 +121,8 @@ def entities_overlapping_rect(
 ) -> List["Entity"]:
     out: List["Entity"] = []
     skip = set(str(eid) for eid in (exclude_ids or ()))
-    actor_ids = set(getattr(level, "actors", {}).keys())
-    for ent in level.entities.values():
+    actor_ids = set(a.id for a in iter_actors(level) if hasattr(a, "id"))
+    for ent in iter_entities(level):
         ent_id = str(getattr(ent, "id", "") or "")
         if ent_id in skip:
             continue
@@ -121,7 +157,7 @@ def first_entity_overlapping_rect(
 
 
 def all_actors(level: "LevelState") -> List["Actor"]:
-    return [a for a in level.actors.values() if a.alive]
+    return [a for a in iter_actors(level) if getattr(a, "alive", False)]
 
 
 def entity_at(
@@ -136,7 +172,7 @@ def entity_at(
     item_candidate: Optional["Entity"] = None
     actor_candidate: Optional["Entity"] = None
 
-    for ent in level.entities.values():
+    for ent in iter_entities(level):
         if _is_suppressed(game, ent):
             continue
         if not footprints_system.entity_overlaps_tile(ent, pos):
@@ -157,7 +193,7 @@ def items_at(
     game: "Game | None" = None,
 ) -> List["Entity"]:
     return [
-        e for e in level.entities.values()
+        e for e in iter_entities(level)
         if footprints_system.entity_overlaps_tile(e, pos)
         and getattr(e, "kind", None) == "item"
         and not _is_suppressed(game, e)
@@ -165,7 +201,7 @@ def items_at(
 
 
 def all_entities(level: "LevelState") -> List["Entity"]:
-    return list(level.entities.values())
+    return list(iter_entities(level))
 
 
 def blocking_entity_at(
@@ -174,7 +210,7 @@ def blocking_entity_at(
     *,
     game: "Game | None" = None,
 ) -> Optional["Entity"]:
-    for ent in level.entities.values():
+    for ent in iter_entities(level):
         if _is_suppressed(game, ent):
             continue
         if footprints_system.entity_blocks_movement_at(ent, pos):
@@ -190,8 +226,8 @@ def blocking_entity_overlapping_rect(
     ignore_actor_entities: bool = True,
 ) -> Optional["Entity"]:
     skip = set(exclude_ids or [])
-    actor_ids = set(getattr(level, "actors", {}).keys())
-    for ent in level.entities.values():
+    actor_ids = set(a.id for a in iter_actors(level) if hasattr(a, "id"))
+    for ent in iter_entities(level):
         ent_id = str(getattr(ent, "id", "") or "")
         if ent_id in skip:
             continue

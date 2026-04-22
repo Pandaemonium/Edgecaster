@@ -27,6 +27,7 @@ from edgecaster.game import Game
 from edgecaster.systems.actions import get_action
 from edgecaster.systems import action_runner
 from edgecaster.patterns.library import action_preview_geometry
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 @dataclass
@@ -85,7 +86,7 @@ def compute_abilities_signature(game: Game) -> Tuple[
     cooldown_snapshot: List[Tuple[str, int]] = []
     try:
         level = game._level()
-        host = level.actors.get(game.player_id)
+        host = entity_ops_system.get_actor(level, game.player_id)
     except Exception:
         host = None
 
@@ -123,7 +124,7 @@ def build_abilities(game: Game) -> List[Ability]:
     # Find the current "host" actor (whoever the player is currently driving).
     try:
         level = game._level()
-        host = level.actors.get(game.player_id)
+        host = entity_ops_system.get_actor(level, game.player_id)
     except Exception:
         host = None
 

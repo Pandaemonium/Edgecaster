@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, List, Optional, Tuple
 
 from edgecaster.systems import zones as zones_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 def active_zone_coords(
@@ -125,7 +126,7 @@ def move_actor_to_abs(
     if from_level is None:
         try:
             for lvl in game.levels.values():
-                if actor.id in getattr(lvl, "actors", {}):
+                if entity_ops_system.get_actor(lvl, actor.id) is not None:
                     from_level = lvl
                     break
         except Exception:

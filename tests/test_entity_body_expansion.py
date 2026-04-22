@@ -229,61 +229,19 @@ def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
     )
 
 
-def test_build_chakra_generator_seed_uses_body_schema_path_for_unexpanded_actor() -> None:
-    """Body-schema fallback is used when the actor has no realized body tree.
-
-    Before entity expansion (Batch 1 A1 not yet run), there are no body-node
-    children in the entity graph.  build_chakra_generator_seed must fall through
-    the entity path silently and produce a valid seed via _get_active_chakra_generator_graph.
-    """
+def test_build_chakra_generator_seed_uses_body_specs_for_actor() -> None:
+    """Actor-oriented seed generation should use entity_body specs when unexpanded."""
     actor = _make_actor()
-    game = _DummyGame(actor)
-    entity_graph_ops_system.register_entity(game, actor, lod_state="collapsed")
-    # No expand_entity call — actor has no body-node children.
-
     chakra_state = _chakra_snapshot(
         unlocked={"body", "head"},
         active={"body", "head"},
         pattern_root="body",
     )
-
-    from edgecaster.prototypes import resolve_body_schema
-    body_schema = resolve_body_schema(actor)
 
     seed = build_chakra_generator_seed(
         chakra_state,
-        body_schema=body_schema,
+        actor=actor,
     )
-
-    assert seed.node_order, "body-schema path must produce a non-empty node_order"
-    assert seed.verts, "body-schema path must produce non-empty verts"
-    assert seed.edges, "body-schema path must produce non-empty edges"
-
-
-def test_build_chakra_generator_seed_uses_body_specs_for_actor_before_schema_recursion() -> None:
-    """Actor-oriented seed generation should prefer entity_body specs over raw schema walkers."""
-    actor = _make_actor()
-    chakra_state = _chakra_snapshot(
-        unlocked={"body", "head"},
-        active={"body", "head"},
-        pattern_root="body",
-    )
-
-    from edgecaster.systems import chakras as chakra_system
-
-    original_schema_helper = chakra_system._get_active_chakra_generator_graph
-
-    def _unexpected_schema_helper(*_args, **_kwargs):
-        raise AssertionError("raw body_schema recursion should not be the first actor fallback anymore")
-
-    chakra_system._get_active_chakra_generator_graph = _unexpected_schema_helper
-    try:
-        seed = build_chakra_generator_seed(
-            chakra_state,
-            actor=actor,
-        )
-    finally:
-        chakra_system._get_active_chakra_generator_graph = original_schema_helper
 
     assert "body" in seed.node_order
     assert "head" in seed.node_order

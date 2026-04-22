@@ -68,7 +68,7 @@ class StatusHeaderWidget(Widget):
         xp_color = (120, 200, 120)
         coh_color = (200, 180, 100)
 
-        player = game.actors[game.player_id]
+        player = game._player()
         x = self.rect.x + 12
         y = self.rect.y + 12
 

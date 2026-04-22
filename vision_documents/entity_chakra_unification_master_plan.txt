@@ -511,7 +511,7 @@ Recommended dependency order:
 7. Expand Phase 3 rule data and geometry-aware reducers once the runtime/query
    surfaces are stable enough to stop moving underneath them.
 
-### Track A - Delete ChakraState And Raw Body-Schema Runtime Reads
+### Track A - Delete ChakraState And Raw Body-Schema Runtime Reads (COMPLETE)
 
 Why this is first:
 - The nominal `ChakraState` class is now gone, which removes the easiest path
@@ -536,13 +536,13 @@ Execution strategy:
    `ChakraState(...)` were a live production surface.
 
 Done looks like:
-- No runtime code constructs or requires a nominal actor-side chakra facade.
-- Remaining body-schema traversal is either gone or clearly isolated as
+✓ No runtime code constructs or requires a nominal actor-side chakra facade.
+✓ Remaining body-schema traversal is either gone or clearly isolated as
   pre-runtime/editor-only fallback.
-- Chakra Scene and Inventory Scene read shared query/view-model helpers rather
+✓ Chakra Scene and Inventory Scene read shared query/view-model helpers rather
   than open-coding their own ladders.
 
-### Track B - Add One Shared Runtime Entity Query Surface Before Deleting Zone Stores
+### Track B - Add One Shared Runtime Entity Query Surface Before Deleting Zone Stores (COMPLETE)
 
 Why this is second:
 - `LevelState.actors` / `LevelState.entities` are still referenced across AI,
@@ -571,8 +571,8 @@ Execution strategy:
    a more explicit realization registry or graph-backed view.
 
 Done looks like:
-- Most code no longer reaches directly into `level.actors` / `level.entities`.
-- Loaded-zone membership becomes a declared cache/projection, not an ambient
+✓ Most code no longer reaches directly into `level.actors` / `level.entities`.
+✓ Loaded-zone membership becomes a declared cache/projection, not an ambient
   hidden authority.
 
 ### Track C - Finish Graph-Authoritative Inventory And Equipment
@@ -744,6 +744,36 @@ with fewer moving parts still attached.
       payloads.
     - Remaining Track A work is the raw body-schema fallback cleanup, not the
       actor-side facade deletion itself.
+
+97. Phase 8 Legacy Removal Slice XCVII & XCVIII (2026-04-21):
+    - `scenes/inventory_scene.py`: Eradicated the final `body_schema` deep-zoom UI traversal
+      (the BFS layout fallback `_compute_body_positions` and `_default_offsets`).
+    - The inventory zoom path now purely consumes the UI schemas synthesized by `body_view_queries.py`
+      using authoritative entity geometry.
+    - Track A is now fully complete! All raw `body_schema` runtime traversal and `ChakraState`
+      facade objects have been deleted.
+
+98. Phase 8 Legacy Removal Slice XCIX, C, CI (2026-04-21):
+    - Established a unified entity/actor query API in `entity_ops.py` (Track B).
+    - Migrated heavy simulation loops (`combat_actions.py`, `ai.py`, `scheduling.py`, `ambient_spawns.py`, `deferred.py`, `damage_policy.py`) away from direct `.actors`/`.entities` dict access.
+    - Migrated game orchestration, gods, and rune siege logic (`game.py`, `gods.py`, `god_abilities.py`, `rune_anchor_sieges.py`, `action_runner.py`) to the new query surface.
+
+99. Phase 8 Legacy Removal Slice CII (2026-04-22):
+    - Finished the Track B read-side migration onto `entity_ops.py` by porting
+      the remaining high-fanout action/runtime/UI callers:
+      `actions.py`, `blade_runtime.py`, `pattern_runtime.py`, `seal_trials.py`,
+      `combat.py`, `spawning.py`, `events.py`, `inspection.py`, `tooltips.py`,
+      `render_query.py`, `attention.py`, `scenes/dungeon.py`,
+      `scenes/chakra_scene.py`, `scenes/inventory_scene.py`,
+      `render/ascii.py`, `ui/status_header.py`, and `lorenz.py`.
+    - Cleaned accidental duplicate `get_actor(...)` calls in
+      `god_abilities.py` and `rune_anchor_sieges.py`.
+    - Deleted the dead raw-body-schema helpers still lingering in
+      `systems/chakras.py` and aligned the remaining comments/docstrings with
+      the current realized-body + deterministic-body-spec seed path.
+    - Remaining direct `.actors` / `.entities` touches are now concentrated in
+      ownership/cache write paths and inventory flows that belong to Track C+
+      follow-up work, not general runtime reads.
 
 95. Phase 8 Legacy Removal Slice XCV (2026-04-21):
     - `systems/chakras.py`: Made the three body-schema geometry helpers private by
@@ -3104,7 +3134,7 @@ Aggressive legacy burn-down targets (2026-04-12):
   - `edgecaster/systems/entity_snapshots.py` `last_known_*` payload shape
   - edgecaster/systems/footprints.py tag-based footprint fallback queries
   - edgecaster/systems/entity_lifecycle.py RUNTIME_REGISTRY compatibility bridge
-  - [DONE] `edgecaster/systems/chakras.py` BODY_SCHEMA compatibility bridge
+  - `edgecaster/systems/chakras.py` BODY_SCHEMA compatibility bridge
   - `edgecaster/systems/attention.py` suppression wrappers, sidecar child map,
     and `AttentionCellStore`
   - `edgecaster/systems/inventory.py`, `trade.py`, `world_entity_index.py`,

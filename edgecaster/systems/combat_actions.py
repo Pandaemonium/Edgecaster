@@ -274,7 +274,7 @@ def wind_rush_preview(
     level = self._level()
     if actor_id is None:
         actor_id = self.player_id
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return None, "No actor to rush."
 
@@ -345,7 +345,7 @@ def act_wind_rush(self, actor_id: str, target_vertex: Optional[int]) -> None:
     - Action timing is fixed by the action registry (`speed=5` in actions.py).
     """
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     preview, fail_text = self.wind_rush_preview(target_vertex, actor_id=actor_id)
@@ -495,7 +495,7 @@ def act_wind_rush(self, actor_id: str, target_vertex: Optional[int]) -> None:
             if caster_is_player:
                 self.log.add(f"Wind Rush cuts {getattr(obj, 'name', 'something')} for {dmg}.")
 
-            if int(getattr(obj.stats, "hp", 0)) <= 0 and tid in lvl.actors:
+            if int(getattr(obj.stats, "hp", 0)) <= 0 and entity_ops_system.get_actor(lvl, tid) is not None:
                 self._kill_actor(
                     lvl,
                     obj,
@@ -527,7 +527,7 @@ def act_throw_flask(
 ) -> None:
     """Throw an energy flask to activate nearby vertices with high damage."""
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 
@@ -671,7 +671,7 @@ def _consume_flask(self, actor_id: str, flask_item: Any) -> None:
 def act_destabilize(self, actor_id: str) -> None:
     """Teleport randomly within 10 tiles; 50% chance to take 10% max HP."""
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     px, py = actor.pos
@@ -760,7 +760,7 @@ def act_destabilize(self, actor_id: str) -> None:
 def act_ignite(self, actor_id: str) -> None:
     """Ignite red edges for 30 ticks with decaying direct/indirect damage."""
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     pattern = getattr(level, "pattern", None)
     if actor is None or pattern is None or not pattern.edges:
         return
@@ -920,7 +920,7 @@ def act_ignite(self, actor_id: str) -> None:
                     obj.stats.hp -= dmg_int
                     obj.stats.clamp()
                     if int(getattr(obj.stats, "hp", 0)) <= 0:
-                        if tid in level.actors:
+                        if entity_ops_system.get_actor(level, tid) is not None:
                             if tid == self.player_id:
                                 self.set_urgent(
                                     "by way of ignition",
@@ -934,7 +934,7 @@ def act_ignite(self, actor_id: str) -> None:
                                 killer_id=actor_id,
                                 killer_is_player=caster_is_player,
                             )
-                        elif tid in level.entities:
+                        elif entity_ops_system.get_entity(level, tid) is not None:
                             if hasattr(self, "_remove_entity"):
                                 self._remove_entity(level, obj, reason="destroyed_ignite")
                             else:
@@ -958,7 +958,7 @@ def act_ignite(self, actor_id: str) -> None:
 def act_regrow(self, actor_id: str) -> None:
     """Heal along green edges for 30 ticks with decaying strength."""
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     pattern = getattr(level, "pattern", None)
     if actor is None or pattern is None or not pattern.edges:
         return
@@ -1064,11 +1064,11 @@ def act_regrow(self, actor_id: str) -> None:
         state["indirect_tiles"] = list(indirect_tiles.keys())
 
         combined: dict[str, Any] = {}
-        for aid, act in level.actors.items():
-            combined[aid] = act
-        for eid, ent in level.entities.items():
-            if eid not in combined:
-                combined[eid] = ent
+        for act in entity_ops_system.iter_actors(level):
+            combined[act.id] = act
+        for ent in entity_ops_system.iter_entities(level):
+            if ent.id not in combined:
+                combined[ent.id] = ent
 
         for tid, obj in combined.items():
             tiles = _target_tiles_local(obj)
@@ -1113,7 +1113,7 @@ def act_regrow(self, actor_id: str) -> None:
 def act_freeze(self, actor_id: str) -> None:
     """Deal damage and apply slowing based on pattern blueness on touched tiles."""
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     pattern = getattr(level, "pattern", None)
     anchor = getattr(level, "pattern_anchor", None)
     if actor is None or pattern is None or anchor is None or not pattern.vertices:
@@ -1225,7 +1225,7 @@ def act_energy_kick(self, actor_id: str) -> None:
     - Non-actor entities with HP are removed when reduced to <= 0.
     """
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     pattern = getattr(level, "pattern", None)
@@ -1335,7 +1335,7 @@ def act_energy_kick(self, actor_id: str) -> None:
             self.log.add(f"Energy Kick shudders {name} for {total_dmg}.")
 
         # Actors use canonical death handling.
-        if tid in level.actors:
+        if entity_ops_system.get_actor(level, tid) is not None:
             if int(getattr(stats, "hp", 0)) <= 0:
                 self._kill_actor(
                     level,
@@ -1346,7 +1346,7 @@ def act_energy_kick(self, actor_id: str) -> None:
             continue
 
         # Non-actor entities with HP are removed when broken.
-        if int(getattr(stats, "hp", 0)) <= 0 and tid in level.entities:
+        if int(getattr(stats, "hp", 0)) <= 0 and entity_ops_system.get_entity(level, tid) is not None:
             if hasattr(self, "_remove_entity"):
                 self._remove_entity(level, obj, reason="destroyed_energy_kick")
             else:
@@ -1414,7 +1414,7 @@ def _chakra_world_sources(
 def act_palm_burst(self, actor_id: str) -> None:
     """Pulse damage from hand/palm/finger-lineage chakra vertices."""
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     pattern = getattr(level, "pattern", None)
@@ -1522,7 +1522,7 @@ def act_palm_burst(self, actor_id: str) -> None:
             name = getattr(obj, "name", None) or "something"
             self.log.add(f"Palm Burst cracks {name} for {total_dmg}.")
 
-        if tid in level.actors and int(getattr(stats, "hp", 0)) <= 0:
+        if entity_ops_system.get_actor(level, tid) is not None and int(getattr(stats, "hp", 0)) <= 0:
             self._kill_actor(
                 level,
                 obj,
@@ -1542,7 +1542,7 @@ def act_mirror_strike(self, actor_id: str) -> None:
     i.e., node ids differing by the `_m` suffix.
     """
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     pattern = getattr(level, "pattern", None)
@@ -1679,7 +1679,7 @@ def act_mirror_strike(self, actor_id: str) -> None:
             name = getattr(obj, "name", None) or "something"
             self.log.add(f"Mirror Strike rends {name} for {total_dmg}.")
 
-        if tid in level.actors and int(getattr(stats, "hp", 0)) <= 0:
+        if entity_ops_system.get_actor(level, tid) is not None and int(getattr(stats, "hp", 0)) <= 0:
             self._kill_actor(
                 level,
                 obj,
@@ -1703,7 +1703,7 @@ def act_aggressive_vines(self, actor_id: str) -> None:
     Runtime simulation is advanced by scheduling.choking_vines_tick().
     """
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
 
@@ -1995,7 +1995,7 @@ def act_choking_vines(self, actor_id: str) -> None:
     actual rune graph by inserting new vertices/edges over time.
     """
     level = self._level()
-    actor = level.actors.get(actor_id)
+    actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
     _dbg = getattr(self, "_debug", None)
@@ -2412,7 +2412,7 @@ def _step_rune_choking_vines(game: "Game", level: Any, state: dict[str, Any]) ->
         if rem <= 0:
             dot_targets.pop(tid, None)
             continue
-        target = level.actors.get(tid)
+        target = entity_ops_system.get_actor(level, tid)
         if target is None:
             dot_targets.pop(tid, None)
             continue
@@ -2863,7 +2863,7 @@ def act_mirror_blade(
     from edgecaster.systems import blade_runtime as blade_runtime_system
 
     level = self._level()
-    player = level.actors.get(actor_id)
+    player = entity_ops_system.get_actor(level, actor_id)
     if player is None or not getattr(player, "alive", False):
         return
 
