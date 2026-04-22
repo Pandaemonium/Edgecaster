@@ -116,7 +116,14 @@ def test_query_normalized_pattern_is_deterministic_and_seed_builder_uses_it() ->
     assert pattern_a["base_len"] == pattern_b["base_len"]
 
     seed = chakra_system.build_chakra_generator_seed(
-        chakra_state=chakra_system.ChakraState(),
+        chakra_state={
+            "unlocked": {"body"},
+            "active": {"body"},
+            "alignments": {},
+            "generators": {},
+            "charges": {},
+            "pattern_root": "body",
+        },
         actor=actor,
         game=game,
         require_root=True,
@@ -126,12 +133,12 @@ def test_query_normalized_pattern_is_deterministic_and_seed_builder_uses_it() ->
     assert seed.edges == pattern_a["edges"]
 
 
-def test_external_child_root_active_state_follows_chakra_state() -> None:
-    """A4 invariant: _link_parent_child_chakra respects owner ChakraState active flags.
+def test_external_child_root_active_state_follows_structural_snapshot() -> None:
+    """A4 invariant: _link_parent_child_chakra respects owner active snapshot flags.
 
     After A3 (active-state sync in _materialize_body_child), external_child_root
     nodes in the parent's chakra_component must have their `active` field set from
-    the owner's ChakraState.  This test verifies that query_normalized_pattern
+    the owner's structural chakra snapshot. This test verifies that query_normalized_pattern
     returns only the chakra-state-active nodes — not all body nodes — so the entity
     path produces the same active-node set as the legacy body-schema traversal.
     """

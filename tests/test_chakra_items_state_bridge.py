@@ -8,8 +8,47 @@ from types import SimpleNamespace
 
 from edgecaster.state.chakra_component import ChakraComponent, ChakraNode
 from edgecaster.state.entity_graph import EntityGraphStore
-from edgecaster.systems.chakras import ChakraState
 from edgecaster.systems import chakra_items as chakra_items_system
+
+
+def _chakra_snapshot(
+    *,
+    unlocked=None,
+    active=None,
+    alignments=None,
+    generators=None,
+    charges=None,
+    pattern_root=None,
+) -> dict[str, object]:
+    unlocked_nodes = set(unlocked or {"body"})
+    active_nodes = set(active) if active is not None else set(unlocked_nodes)
+    return {
+        "unlocked": unlocked_nodes,
+        "active": active_nodes,
+        "alignments": dict(alignments or {}),
+        "generators": dict(generators or {}),
+        "charges": dict(charges or {}),
+        "pattern_root": pattern_root,
+    }
+
+
+def _chakra_state_like(
+    *,
+    unlocked=None,
+    active=None,
+    alignments=None,
+    generators=None,
+    charges=None,
+    pattern_root=None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        unlocked=set(unlocked or {"body"}),
+        active=set(active) if active is not None else set(unlocked or {"body"}),
+        alignments=dict(alignments or {}),
+        generators=dict(generators or {}),
+        charges=dict(charges or {}),
+        pattern_root=pattern_root,
+    )
 
 
 def test_effective_chakra_view_uses_body_root_when_no_component() -> None:
@@ -48,6 +87,27 @@ def test_effective_chakra_view_reads_component_root_node_id() -> None:
     # normalization converts ':' to '.'
     assert "ent.test.core" in view.unlocked
     assert "ent.test.core" in view.active
+
+
+def test_coerce_chakra_view_state_accepts_state_like_input() -> None:
+    state = _chakra_state_like(
+        unlocked={"body", "arm.hand"},
+        active={"body"},
+        alignments={"arm.hand": (0.25, -0.5)},
+        generators={"body": "koch"},
+        charges={"body": 0.75},
+        pattern_root="body",
+    )
+
+    view = chakra_items_system.coerce_chakra_view_state(state)
+
+    assert view is not None
+    assert view.unlocked == {"body", "arm.hand"}
+    assert view.active == {"body"}
+    assert view.alignments["arm.hand"] == (0.25, -0.5)
+    assert view.generators["body"] == "koch"
+    assert view.charges["body"] == 0.75
+    assert view.pattern_root == "body"
 
 
 def test_effective_chakra_view_prefers_entity_body_root_over_default_core_for_actor_templates() -> None:
@@ -142,8 +202,8 @@ def test_effective_chakra_view_reads_component_compat_payload() -> None:
     assert view.generators.get("arm.hand") == "koch"
 
 
-def test_effective_chakra_projection_reads_component_payload_without_chakra_state_facade() -> None:
-    """effective_chakra_projection exposes rich runtime fields without ChakraState."""
+def test_effective_chakra_projection_reads_component_payload_without_legacy_facade() -> None:
+    """effective_chakra_projection exposes rich runtime fields without a legacy facade."""
     comp = ChakraComponent(
         root_node_id="body",
         nodes={
@@ -224,7 +284,7 @@ def test_structural_chakra_projection_ignores_actor_chakra_state_attribute() -> 
             },
             tags={},
         ),
-        chakra_state=ChakraState(
+        chakra_state=_chakra_snapshot(
             unlocked={"body", "head", "tail", "stale.node"},
             active={"body", "head", "tail", "stale.node"},
             charges={"tail": 0.5},
@@ -248,8 +308,8 @@ def test_structural_chakra_projection_ignores_actor_chakra_state_attribute() -> 
 
 
 def test_apply_chakra_state_snapshot_mirrors_to_component_nodes_and_tags() -> None:
-    """apply_chakra_state_snapshot writes a full ChakraState snapshot to ChakraComponent."""
-    state = ChakraState(
+    """apply_chakra_state_snapshot writes a full snapshot payload to ChakraComponent."""
+    state = _chakra_snapshot(
         unlocked={"body", "arm.hand"},
         active={"body", "arm.hand"},
         charges={"arm.hand": 1.0},
@@ -280,7 +340,7 @@ def test_apply_chakra_state_snapshot_mirrors_to_component_nodes_and_tags() -> No
 
 
 def test_apply_chakra_state_snapshot_prunes_stale_compat_nodes_and_charge() -> None:
-    state = ChakraState(
+    state = _chakra_snapshot(
         unlocked={"body"},
         active={"body"},
         charges={},
@@ -315,7 +375,7 @@ def test_apply_chakra_state_snapshot_prunes_stale_compat_nodes_and_charge() -> N
     assert comp.tags.get("compat_unlocked_nodes") == ["body"]
 
 
-def test_apply_chakra_state_snapshot_accepts_dict_payload_and_rebuilds_cache() -> None:
+def test_apply_chakra_state_snapshot_accepts_dict_payload() -> None:
     actor = SimpleNamespace(
         id="actor:test:6c",
         entity_id="actor:test:6c",
@@ -338,10 +398,9 @@ def test_apply_chakra_state_snapshot_accepts_dict_payload_and_rebuilds_cache() -
 
     chakra_items_system.apply_chakra_state_snapshot(actor, snapshot)
 
-    assert actor.chakra_state is not None
-    assert "arm.hand" in set(getattr(actor.chakra_state, "active", set()))
-    assert getattr(actor.chakra_state, "pattern_root", None) == "arm.hand"
     assert actor.chakra_component.tags.get("compat_pattern_root") == "arm.hand"
+    assert "arm.hand" in actor.chakra_component.nodes
+    assert bool(actor.chakra_component.nodes["arm.hand"].active) is True
 
 
 def test_set_actor_chakra_alignments_persists_through_shared_snapshot_bridge() -> None:
@@ -364,8 +423,6 @@ def test_set_actor_chakra_alignments_persists_through_shared_snapshot_bridge() -
 
     assert out == {"arm.hand": (0.25, -0.5)}
     assert actor.chakra_component.tags.get("compat_alignments") == {"arm.hand": [0.25, -0.5]}
-    assert actor.chakra_state is not None
-    assert actor.chakra_state.alignments.get("arm.hand") == (0.25, -0.5)
 
 
 def test_set_actor_chakra_pattern_root_persists_through_shared_snapshot_bridge() -> None:
@@ -388,8 +445,6 @@ def test_set_actor_chakra_pattern_root_persists_through_shared_snapshot_bridge()
 
     assert root == "arm.hand"
     assert actor.chakra_component.tags.get("compat_pattern_root") == "arm.hand"
-    assert actor.chakra_state is not None
-    assert actor.chakra_state.pattern_root == "arm.hand"
 
 
 def test_set_actor_chakra_charge_writes_to_component() -> None:
@@ -471,36 +526,34 @@ def test_unlock_actor_chakra_syncs_component() -> None:
             nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
             tags={},
         ),
-        chakra_state=ChakraState(unlocked={"body"}, active={"body"}),
+        chakra_state=None,
     )
     ok = chakra_items_system.unlock_actor_chakra(actor, "arm.hand", auto_activate=True)
     assert ok is True
-    assert "arm.hand" in actor.chakra_state.unlocked
-    assert "arm.hand" in actor.chakra_state.active
     assert "arm.hand" in actor.chakra_component.nodes
     assert bool(actor.chakra_component.nodes["arm.hand"].active) is True
 
 
-def test_unlock_actor_chakra_rebuilds_present_cache_from_component_and_prunes_stale_nodes() -> None:
+def test_unlock_actor_chakra_returns_false_for_already_unlocked_node() -> None:
+    """unlock_actor_chakra is idempotent: returns False when node already in component."""
     actor = SimpleNamespace(
         id="actor:test:8b",
         entity_id="actor:test:8b",
-        body_schema={"root": "body", "nodes": {"body": {}, "arm": {"proto": "arm"}}},
+        body_schema={"root": "body"},
         chakra_component=ChakraComponent(
             root_node_id="body",
-            nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
+            nodes={
+                "body": ChakraNode(node_id="body", active=True, channels={}),
+                "arm.hand": ChakraNode(node_id="arm.hand", active=True, channels={}),
+            },
             tags={},
         ),
-        chakra_state=ChakraState(unlocked={"body", "stale.node"}, active={"body", "stale.node"}),
+        chakra_state=None,
     )
 
     ok = chakra_items_system.unlock_actor_chakra(actor, "arm.hand", auto_activate=True)
 
-    assert ok is True
-    assert actor.chakra_state is not None
-    assert "arm.hand" in actor.chakra_state.unlocked
-    assert "arm.hand" in actor.chakra_state.active
-    assert "stale.node" not in actor.chakra_state.unlocked
+    assert ok is False
 
 
 def test_toggle_actor_chakra_syncs_component() -> None:
@@ -540,7 +593,7 @@ def test_toggle_actor_chakra_returns_false_for_node_absent_from_component() -> N
             nodes={"body": ChakraNode(node_id="body", active=True, channels={})},
             tags={},
         ),
-        chakra_state=ChakraState(
+        chakra_state=_chakra_snapshot(
             unlocked={"body", "head"},
             active={"body", "head"},
         ),
@@ -584,10 +637,6 @@ def test_restore_actor_chakra_component_snapshot_restores_component_and_state() 
     assert float(restored_comp.nodes["body"].channels.get("charge", 0.0)) == 0.5
     assert float(restored_comp.nodes["arm.hand"].channels.get("charge", 0.0)) == 0.8
 
-    # chakra_state should be rebuilt from the restored component.
-    assert actor.chakra_state is not None
-    assert "arm.hand" in actor.chakra_state.active
-
 
 def test_restore_actor_chakra_component_snapshot_fires_dirty_marks() -> None:
     """restore_actor_chakra_component_snapshot marks all restored nodes dirty."""
@@ -629,7 +678,7 @@ def test_toggle_actor_chakra_marks_realized_body_node_dirty_when_game_provided()
             },
             tags={},
         ),
-        chakra_state=ChakraState(unlocked={"body", "arm.hand"}, active={"body", "arm.hand"}),
+        chakra_state=_chakra_snapshot(unlocked={"body", "arm.hand"}, active={"body", "arm.hand"}),
     )
     game = SimpleNamespace(entity_graph=EntityGraphStore())
     game.entity_graph.register(actor.entity_id, kind="actor")

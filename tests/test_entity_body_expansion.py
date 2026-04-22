@@ -11,7 +11,10 @@ from edgecaster.systems import entity_geometry as entity_geometry_system
 from edgecaster.systems import entity_body as entity_body_system
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
-from edgecaster.systems.chakras import ChakraState, build_chakra_generator_seed
+from edgecaster.systems.chakras import (
+    build_chakra_generator_seed,
+    get_active_chakra_generator_graph_for_entity,
+)
 
 
 class _DummyGame:
@@ -76,6 +79,27 @@ def _make_feature(proto_id: str, *, entity_id: str) -> object:
     )
     ent.zone_coord = (0, 0, 0)
     return ent
+
+
+def _chakra_snapshot(
+    *,
+    unlocked=None,
+    active=None,
+    alignments=None,
+    generators=None,
+    charges=None,
+    pattern_root=None,
+) -> dict[str, object]:
+    unlocked_nodes = set(unlocked or {"body"})
+    active_nodes = set(active) if active is not None else set(unlocked_nodes)
+    return {
+        "unlocked": unlocked_nodes,
+        "active": active_nodes,
+        "alignments": dict(alignments or {}),
+        "generators": dict(generators or {}),
+        "charges": dict(charges or {}),
+        "pattern_root": pattern_root,
+    }
 
 
 def test_actor_body_expands_in_layers_and_collapses_cleanly() -> None:
@@ -152,7 +176,7 @@ def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
 
     After Batches 1-3:
     - A1: body nodes are materialized at spawn (register_actor → expand_entity)
-    - A3: external_child_root active flags follow ChakraState
+    - A3: external_child_root active flags follow the structural chakra snapshot
     - A5: build_chakra_generator_seed no longer pre-warms; relies on prior expansion
 
     With body+head active and body nodes in the graph, query_normalized_pattern
@@ -171,21 +195,22 @@ def test_build_chakra_generator_seed_entity_path_wins_after_expansion() -> None:
     for cid in actor_children:
         entity_lifecycle_system.expand_entity(game, cid)  # expand grandchildren too
 
-    # Wire chakra_state to match what register_actor would produce (body+head active).
-    from edgecaster.systems.chakras import ChakraState as _CS
-    actor.chakra_state = _CS(unlocked={"body", "head"}, active={"body", "head"}, pattern_root="body")
+    # Wire a local chakra snapshot to match what register_actor would produce (body+head active).
+    chakra_state = _chakra_snapshot(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        pattern_root="body",
+    )
 
     # Re-sync active flags on external_child_root nodes (normally done during
-    # _materialize_body_child; here we set chakra_state after expansion so we need
+    # _materialize_body_child; here we build chakra_state after expansion so we need
     # to update the node directly to match the A3 contract).
     pcomp = getattr(actor, "chakra_component", None)
     if pcomp is not None and isinstance(getattr(pcomp, "nodes", None), dict):
         for nid, node in pcomp.nodes.items():
             if getattr(node, "kind", "") == "external_child_root":
                 body_full_id = str(getattr(node, "tags", {}).get("body_full_id", "") or "")
-                node.active = body_full_id in actor.chakra_state.active
-
-    chakra_state = actor.chakra_state
+                node.active = body_full_id in set(chakra_state.get("active", set()) or set())
 
     seed = build_chakra_generator_seed(
         chakra_state,
@@ -209,14 +234,14 @@ def test_build_chakra_generator_seed_uses_body_schema_path_for_unexpanded_actor(
 
     Before entity expansion (Batch 1 A1 not yet run), there are no body-node
     children in the entity graph.  build_chakra_generator_seed must fall through
-    the entity path silently and produce a valid seed via get_active_chakra_generator_graph.
+    the entity path silently and produce a valid seed via _get_active_chakra_generator_graph.
     """
     actor = _make_actor()
     game = _DummyGame(actor)
     entity_graph_ops_system.register_entity(game, actor, lod_state="collapsed")
     # No expand_entity call — actor has no body-node children.
 
-    chakra_state = ChakraState(
+    chakra_state = _chakra_snapshot(
         unlocked={"body", "head"},
         active={"body", "head"},
         pattern_root="body",
@@ -238,7 +263,7 @@ def test_build_chakra_generator_seed_uses_body_schema_path_for_unexpanded_actor(
 def test_build_chakra_generator_seed_uses_body_specs_for_actor_before_schema_recursion() -> None:
     """Actor-oriented seed generation should prefer entity_body specs over raw schema walkers."""
     actor = _make_actor()
-    chakra_state = ChakraState(
+    chakra_state = _chakra_snapshot(
         unlocked={"body", "head"},
         active={"body", "head"},
         pattern_root="body",
@@ -246,24 +271,67 @@ def test_build_chakra_generator_seed_uses_body_specs_for_actor_before_schema_rec
 
     from edgecaster.systems import chakras as chakra_system
 
-    original_schema_helper = chakra_system.get_active_chakra_generator_graph
+    original_schema_helper = chakra_system._get_active_chakra_generator_graph
 
     def _unexpected_schema_helper(*_args, **_kwargs):
         raise AssertionError("raw body_schema recursion should not be the first actor fallback anymore")
 
-    chakra_system.get_active_chakra_generator_graph = _unexpected_schema_helper
+    chakra_system._get_active_chakra_generator_graph = _unexpected_schema_helper
     try:
         seed = build_chakra_generator_seed(
             chakra_state,
             actor=actor,
         )
     finally:
-        chakra_system.get_active_chakra_generator_graph = original_schema_helper
+        chakra_system._get_active_chakra_generator_graph = original_schema_helper
 
     assert "body" in seed.node_order
     assert "head" in seed.node_order
     assert seed.edges
     assert seed.base_len > 0.0
+
+
+def test_build_chakra_generator_seed_accepts_chakra_view_state_input() -> None:
+    actor = _make_actor()
+    chakra_view = chakra_items_system.ChakraViewState(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        alignments={},
+        generators={},
+        charges={},
+        pattern_root="body",
+    )
+
+    seed = build_chakra_generator_seed(
+        chakra_view,
+        actor=actor,
+    )
+
+    assert "body" in seed.node_order
+    assert "head" in seed.node_order
+    assert seed.edges
+    assert seed.base_len > 0.0
+
+
+def test_active_chakra_generator_graph_for_entity_uses_shared_body_specs() -> None:
+    actor = _make_actor()
+    chakra_state = _chakra_snapshot(
+        unlocked={"body", "head"},
+        active={"body", "head"},
+        pattern_root="body",
+    )
+
+    positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph_for_entity(
+        actor,
+        chakra_state,
+        require_root=True,
+    )
+
+    assert root_id == "body"
+    assert terminus_id == "head"
+    assert "body" in positions
+    assert "head" in positions
+    assert compact_edges
 
 
 def test_build_chakra_generator_seed_uses_realized_body_tree_when_schema_is_omitted() -> None:
@@ -276,7 +344,7 @@ def test_build_chakra_generator_seed_uses_realized_body_tree_when_schema_is_omit
     assert actor_children == ["actor:test_body:body:body"]
     entity_lifecycle_system.expand_entity(game, actor_children[0])
 
-    chakra_state = ChakraState(
+    chakra_state = _chakra_snapshot(
         unlocked={"body", "head"},
         active={"body", "head"},
         pattern_root="body",
@@ -384,7 +452,6 @@ def test_nested_body_node_active_state_inherits_from_ancestor() -> None:
     - nothing active                     →  head.neck spawns active=False
     - exact deep id active ("head.neck") →  head.neck spawns active=True
     """
-    from edgecaster.systems.chakras import ChakraState as _CS
     from edgecaster.systems import chakra_items as _ci
 
     def _realize_head_neck(active_set):
@@ -393,7 +460,11 @@ def test_nested_body_node_active_state_inherits_from_ancestor() -> None:
         # _materialize_body_child reads the correct structural projection.
         _ci.apply_chakra_state_snapshot(
             actor,
-            _CS(unlocked=set(active_set), active=set(active_set), pattern_root="body"),
+            _chakra_snapshot(
+                unlocked=set(active_set),
+                active=set(active_set),
+                pattern_root="body",
+            ),
         )
         game = _DummyGame(actor)
         entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
@@ -445,13 +516,12 @@ def test_nested_body_node_active_state_reads_component_backed_structure_without_
     actor = _make_actor()
     chakra_items_system.apply_chakra_state_snapshot(
         actor,
-        ChakraState(
+        _chakra_snapshot(
             unlocked={"body", "head"},
             active={"body", "head"},
             pattern_root="body",
         ),
     )
-    actor.chakra_state = None
 
     game = _DummyGame(actor)
     entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")

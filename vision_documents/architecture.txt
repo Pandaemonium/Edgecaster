@@ -88,15 +88,13 @@ CHAKRA SCENE (edgecaster/scenes/chakra_scene.py)
   `entity_body.build_body_node_specs(...)` output before falling back to schema
   walkers, which narrows the old body-schema-only UI path.
 - Live scene reads now prefer `chakra_items.effective_chakra_view(...)` rather
-  than materializing the legacy `ChakraState` facade for ordinary UI display.
+  than materializing a legacy actor-side facade for ordinary UI display.
 - Runtime structural reads that should ignore equipped-item overlays now prefer
   `chakra_items.structural_chakra_projection(...)` /
   `chakra_items.structural_chakra_view(...)`, which are component-first and
-  only backfill deterministic body-node ids from the cached legacy facade when
-  a migration-era gap still exists.
-- Actor chakra write helpers now treat `actor.chakra_state` as an optional
-  derived compatibility cache: they rebuild it from component authority when
-  needed instead of manually editing partial unlocked/active sets in place.
+  no longer consult any cached `actor.chakra_state` bridge.
+- Actor chakra write helpers mutate `ChakraComponent` authority directly; the
+  old `actor.chakra_state` compatibility cache has been deleted.
 - Actor baseline-root inference now prefers shared `entity_body` specs over the
   old baked `body_schema` attribute, and actor-facing chakra reads suppress the
   temporary `{entity_id}:core` placeholder when a real body root is available.
@@ -380,9 +378,9 @@ Key modules (non-exhaustive):
 - systems/lorenz_aura.py: Strange Attractor aura simulation (game-side)
 - systems/lighting.py: light emission from entities (illumination, visibility)
 - systems/chakras.py: chakra unlock/activation logic, pattern generation
-  - [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] `ChakraState` (unlocked/active sets) is a
-    compatibility facade. Entity-centric callers should query `entity_geometry.py` and
-    `entity_body.py` directly; `ChakraState` will be removed once all callers migrate.
+  - The nominal `ChakraState` facade has been deleted. Entity-centric callers
+    should query `entity_geometry.py`, `entity_body.py`, or the thinner
+    snapshot/query helpers in `chakra_items.py` directly.
   - [LEGACY_DELETE][ENTITY_CHAKRA][BODY_SCHEMA] Recursive body-schema readers inside
     this module are a compatibility bridge; the entity graph backed by
     `entity_body.py` is the forward path.
@@ -393,14 +391,14 @@ Key modules (non-exhaustive):
   - A thinner runtime unlock helper
     (`list_unlockable_chakras_for_entity_from_unlocked`) now serves callers
     that only need the current unlocked-node set, avoiding a full
-    `ChakraState` projection for those query-only paths.
+    larger snapshot/view payload for those query-only paths.
 - systems/chakra_effects.py: centralized chakra passive-rule evaluation
 - systems/chakra_items.py: equipped-item chakra overlays (temporary unlock/auto-active + per-hit modifiers).
-  `ChakraComponent` is now the sole write authority; `ChakraState` is a read-only
-  derived view rebuilt on demand by `effective_chakra_state`.  All legacy facade
-  helpers (`ensure_actor_chakra_state`, `flush_charges_to_component`,
-  `sync_actor_chakra_state`) have been deleted.  Public API entry points are
-  `effective_chakra_view`, `effective_chakra_projection`, `effective_chakra_state`, `effective_active_nodes`,
+  `ChakraComponent` is now the sole write authority. All legacy facade helpers
+  (`ensure_actor_chakra_state`, `flush_charges_to_component`,
+  `sync_actor_chakra_state`) and the nominal `ChakraState` runtime facade have
+  been deleted. Public API entry points are
+  `effective_chakra_view`, `effective_chakra_projection`, `effective_active_nodes`,
   `effective_unlocked_nodes`, `toggle_actor_chakra`, `unlock_actor_chakra`,
   `set_actor_chakra_charge`, `tick_actor_chakra_charge`, `consume_actor_chakra_charge`.
   `effective_chakra_view(...)` is the preferred ordinary runtime/UI read, while
@@ -563,9 +561,10 @@ Architectural direction:
   and their geometry are all first-class entities in the unified entity graph; there is no
   separate "chakra ontology." ChakraComponent records are a migration/cache structure, not
   a permanent second ontology.
-- ChakraState (the unlocked/active set on an actor) is a compatibility facade marked
-  [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]. New code should read active node state from
-  entity_geometry.py / entity_body.py. Existing callers are being migrated per Phase 8.
+- The old runtime `ChakraState` facade has been deleted. New code should pass
+  thin snapshot-like payloads (`dict`, `ChakraViewState`, or equivalent) into
+  fallback seed/query helpers when it is not already reading from shared entity
+  geometry or component-backed query surfaces.
 - Body-schema dict traversal (body.root, body.nodes trees) is the legacy representation.
   Entity subtree expansion via entity_lifecycle.expand_entity is the forward path. Both
   paths co-exist during migration; the entity path wins for actors with a realized body tree.
@@ -588,9 +587,17 @@ Gating rules:
 
 Key functions:
 - can_unlock_chakra_for_entity(): checks gating prerequisites (replaces legacy can_unlock_chakra)
+- can_unlock_full_chakra_id_from_unlocked(): thin unlocked-set helper for prereq checks without
+  building a larger facade snapshot first
+- can_unlock_chakra_for_entity_from_unlocked(): thin query helper for UI/scene callers that already
+  have an unlocked-node set and want the shared deterministic body-spec gate without mutating state
+- list_visible_chakra_nodes_for_entity_from_unlocked(): shared ordered body-spec node list for scenes
+  that need the currently unlocked-or-unlockable hierarchy without rebuilding their own local ladder
 - unlock_actor_chakra(): unlocks a chakra via component (optionally auto-activates)
 - toggle_actor_chakra(): toggles active state via component
 - build_chakra_generator_seed_for_actor(): generates canonical seed pattern from active chakras (replaces chakras_to_seed_pattern)
+- get_active_chakra_generator_graph_for_entity(): shared actor/body-spec geometry graph read used by
+  unexpanded-actor seed fallback paths before dropping to raw schema recursion
 - get_gating_chain(): returns list of branch roots needed for a node
 
 UI:
@@ -598,7 +605,7 @@ UI:
 - Features: body silhouette with glowing chakra points, real-time pattern preview,
   3-layer glow rendering, pulse animations, energy flow lines, particle bursts
 - [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] ChakraScene still derives layout and
-  interaction from body_schema + ChakraState walkers. Migration target: replace with
+  interaction from body_schema + snapshot-driven fallback walkers. Migration target: replace with
   entity_body/entity_geometry queries once the actor-body graph is the UI authority.
   The pattern preview now receives the live `game` context, so its seed-builder
   path can use shared entity/component geometry during gameplay instead of
@@ -608,27 +615,39 @@ Chakra pipeline responsibilities (key scripts):
 - edgecaster/systems/chakras.py: unlock/activate logic, body-schema traversal (compat),
   world-position projection, and seed pattern generation + metadata. When an actor already
   has a realized body-node tree, the seed builder now prefers that body-entity geometry while
-  still honoring the explicit ChakraState input for active nodes and pattern root. Generic
+  still honoring the explicit read snapshot for active nodes and pattern root. Generic
   `ChakraComponent` geometry is still queried as an intermediate fallback, and unexpanded
   actors now fall back through deterministic `entity_body.build_body_node_specs(...)` before
-  the legacy raw body-schema compatibility path. `build_chakra_generator_seed_for_actor(...)` is now the
-  preferred actor-oriented entrypoint for runtime and scene callers.
+  the legacy raw body-schema compatibility path. `get_active_chakra_generator_graph_for_entity(...)`
+  now centralizes that shared body-spec graph read, and
+  `can_unlock_full_chakra_id_from_unlocked(...)` keeps thin unlock/query callers off
+  larger temporary snapshot construction for prereq checks.
+  `can_unlock_chakra_for_entity_from_unlocked(...)` gives scene/UI callers the same
+  deterministic unlock gate used by runtime unlock flows. `build_chakra_generator_seed_for_actor(...)`
+  is now the preferred actor-oriented entrypoint for runtime and scene callers.
 - edgecaster/systems/entity_body.py: builds deterministic actor/body subtree specs from the
   authored body schema and drives the layered actor-body expansion path through
   `entity_lifecycle.expand_entity(...)`. This is the authoritative body-node source.
 - edgecaster/systems/entity_geometry.py: shared query surface for entity/chakra geometry and
   normalized seed-pattern reconstruction from `ChakraComponent` node/edge data.
+- edgecaster/systems/body_view_queries.py: shared scene-query helpers for body-node rows, zoom-path
+  schemas/views, unlocked-branch visibility filtering, and UI metadata such as
+  branch gating chains and child counts.
 - edgecaster/systems/chakra_items.py: runtime effective chakra overlays from equipped items
   (temporary unlocks, auto-activation, and hit-modifier tag parsing).
   `structural_chakra_projection(...)` / `structural_chakra_view(...)` are the
   shared no-item-overlay runtime reads for lifecycle and seed-building callers,
   while `effective_chakra_projection(...)` layers temporary equipment effects
-  on top of that structural base.
-  Snapshot/bootstrap payloads now normalize through `snapshot_chakra_state(...)`;
-  ChakraState facade helpers inside this module are `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`.
+  on top of that structural base. `coerce_chakra_view_state(...)` is now the
+  preferred bridge from snapshot-like or dict-like inputs onto this thinner
+  query/read model for scenes and runtime helpers.
+  Snapshot/bootstrap payloads now normalize through `snapshot_chakra_state(...)`.
 - edgecaster/scenes/chakra_scene.py: player-facing UI for selecting/activating chakras, choosing
   the pattern root, and previewing the generated shape (does not apply gameplay effects).
-  Pattern preview now uses the same actor-backed seed helper as runtime casting.
+  Pattern preview now uses the same actor-backed seed helper as runtime casting,
+  provider/editor inputs are coerced through `chakra_items.coerce_chakra_view_state(...)`,
+  and realign-mode preview state is explicitly scene-local `ChakraEditSession`
+  data rather than a generic live-state override.
 - edgecaster/game.py (act_chakra): applies the chakra generator to the live rune, aligning the
   chosen root and computed terminus to the current segment endpoints.
 - edgecaster/patterns/builder.py (CustomGraphGenerator): maps a vertex/edge graph onto a line

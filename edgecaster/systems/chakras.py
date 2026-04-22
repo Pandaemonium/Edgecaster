@@ -68,7 +68,7 @@ Migration note:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Type alias for 2D vectors
@@ -76,63 +76,12 @@ Vec2 = Tuple[float, float]
 
 
 # =============================================================================
-# CHAKRA STATE
+# CHAKRA READ SNAPSHOTS
 # =============================================================================
-
-# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-# ChakraState remains only as a compatibility facade for actor-centric callers.
-# The long-term runtime authority should be actor/body entities plus
-# ChakraComponent geometry queried through shared entity/chakra APIs.
-@dataclass
-class ChakraState:
-    """
-    Tracks chakra unlocks, activations, and alignments for an actor.
-
-    This is the primary state object stored on each actor that determines
-    their chakra configuration and resulting pattern shape.
-
-    Attributes:
-        unlocked: Set of node_id strings that have been unlocked. Unlocked
-                  chakras CAN be activated but aren't necessarily active.
-
-        active: Set of node_id strings currently active. Active chakras
-                contribute vertices to the generated pattern.
-
-        alignments: Dict mapping node_id to (dx, dy) position offsets.
-                    These offsets adjust the chakra's position from its
-                    default body layout position, allowing pattern tuning.
-
-        generators: Dict mapping node_id to generator_id. Optional per-chakra
-                    fractal generator preferences (e.g., "koch", "branch").
-
-    Example:
-        # A player with torso and both shoulders active:
-        state = ChakraState(
-            unlocked={"torso", "shoulder", "shoulder_m"},
-            active={"torso", "shoulder", "shoulder_m"},
-            alignments={"shoulder": (0.1, -0.05)},  # Slightly adjusted
-        )
-    """
-
-    # Unlocked chakras (can be activated)
-    # Note: "body" is the root node in the human body schema (represents torso/core)
-    unlocked: Set[str] = field(default_factory=lambda: {"body"})
-
-    # Currently active chakras (contribute to pattern)
-    active: Set[str] = field(default_factory=lambda: {"body"})
-
-    # Position offsets for alignment tuning: node_id -> (dx, dy)
-    alignments: Dict[str, Tuple[float, float]] = field(default_factory=dict)
-
-    # Per-chakra generator preferences: node_id -> generator_id
-    generators: Dict[str, str] = field(default_factory=dict)
-
-    # Per-chakra charge level (0..max). Populated lazily.
-    charges: Dict[str, float] = field(default_factory=dict)
-
-    # Optional root for chakra pattern generation (must be active).
-    # If None, we fall back to the body root or any active chakra.
-    pattern_root: Optional[str] = None
+#
+# Runtime and scene callers should pass thin snapshot-shaped payloads here
+# rather than reviving a nominal actor-side facade. Dicts, ChakraViewState,
+# and light attribute-style objects are all accepted by the query helpers.
 
 
 
@@ -305,19 +254,31 @@ def _unlock_prereqs_for_full_id(full_id: str) -> List[str]:
     return out
 
 
-def can_unlock_full_chakra_id(chakra_state: ChakraState, full_id: str) -> bool:
-    """
-    Check unlockability for a full (possibly prefixed) chakra id.
+def can_unlock_full_chakra_id_from_unlocked(
+    unlocked_node_ids: Any,
+    full_id: str,
+) -> bool:
+    """Check unlockability for a full (possibly prefixed) chakra id using an unlocked-node set.
 
-    We treat all prefix segments as branch-root gates. That matches how nested
-    chakra schemas are traversed in the scene and in generation.
+    Treats all prefix segments as branch-root gates, matching how nested chakra
+    schemas are traversed in the scene and in generation.
     """
-    if not full_id:
+    unlocked: Set[str] = set()
+    try:
+        for raw in (unlocked_node_ids or []):
+            value = str(raw or "").strip()
+            if value:
+                unlocked.add(value)
+    except Exception:
+        unlocked = set()
+
+    node_id = str(full_id or "").strip()
+    if not node_id:
         return False
-    if full_id in chakra_state.unlocked:
+    if node_id in unlocked:
         return False
-    for req in _unlock_prereqs_for_full_id(full_id):
-        if req not in chakra_state.unlocked:
+    for req in _unlock_prereqs_for_full_id(node_id):
+        if req not in unlocked:
             return False
     return True
 
@@ -329,8 +290,9 @@ def list_unlockable_chakras_for_entity_from_unlocked(
     """Return unlockable chakra ids using only the current unlocked-node set.
 
     This is the thinner runtime unlock query for callers that do not need a
-    full ChakraState projection. It stays on the shared entity-body unlock
-    logic while avoiding ChakraState construction on frequently queried paths.
+    full chakra view/projection payload. It stays on the shared entity-body
+    unlock logic while avoiding larger snapshot construction on frequently
+    queried paths.
     """
     unlocked: Set[str] = set()
     try:
@@ -340,8 +302,6 @@ def list_unlockable_chakras_for_entity_from_unlocked(
                 unlocked.add(value)
     except Exception:
         unlocked = set()
-
-    state = ChakraState(unlocked=set(unlocked), active=set())
 
     try:
         from edgecaster.systems import entity_body as entity_body_system
@@ -364,8 +324,137 @@ def list_unlockable_chakras_for_entity_from_unlocked(
     return [
         full_id
         for (full_id, _depth) in locked
-        if can_unlock_full_chakra_id(state, full_id)
+        if can_unlock_full_chakra_id_from_unlocked(unlocked, full_id)
     ]
+
+
+def can_unlock_chakra_for_entity_from_unlocked(
+    owner_ent: Any,
+    unlocked_node_ids: Any,
+    full_id: str,
+) -> bool:
+    """Return True when a body-spec node exists and its prereqs are unlocked.
+
+    This is the thinner companion to
+    ``list_unlockable_chakras_for_entity_from_unlocked(...)`` for callers that
+    already have an unlocked-node projection and only need to validate one
+    candidate chakra id.
+    """
+    unlocked: Set[str] = set()
+    try:
+        for raw in (unlocked_node_ids or []):
+            value = str(raw or "").strip()
+            if value:
+                unlocked.add(value)
+    except Exception:
+        unlocked = set()
+
+    try:
+        from edgecaster.systems import entity_body as entity_body_system
+
+        specs = entity_body_system.build_body_node_specs(owner_ent)
+    except Exception:
+        specs = {}
+    if not specs or str(full_id or "") not in specs:
+        return False
+
+    return can_unlock_full_chakra_id_from_unlocked(unlocked, str(full_id or ""))
+
+
+def list_visible_chakra_nodes_for_entity_from_unlocked(
+    owner_ent: Any,
+    unlocked_node_ids: Any,
+) -> List[str]:
+    """Return unlocked-or-currently-unlockable nodes in deterministic spec order.
+
+    This is the shared scene/query helper for UIs that want the current
+    body-spec traversal order without open-coding a second local visibility
+    ladder. The returned list includes:
+    - nodes already unlocked
+    - nodes whose prereq chain is currently satisfied
+
+    It intentionally excludes still-hidden deeper descendants whose branch/root
+    prerequisites are not unlocked yet.
+    """
+    unlocked: Set[str] = set()
+    try:
+        for raw in (unlocked_node_ids or []):
+            value = str(raw or "").strip()
+            if value:
+                unlocked.add(value)
+    except Exception:
+        unlocked = set()
+
+    try:
+        from edgecaster.systems import entity_body as entity_body_system
+
+        specs = entity_body_system.build_body_node_specs(owner_ent)
+    except Exception:
+        specs = {}
+    if not specs:
+        return []
+
+    visible: List[str] = []
+    for spec in specs.values():
+        full_id = str(getattr(spec, "full_id", "") or "")
+        if not full_id:
+            continue
+        if full_id in unlocked or can_unlock_full_chakra_id_from_unlocked(unlocked, full_id):
+            visible.append(full_id)
+    return visible
+
+
+def _coerce_chakra_query_snapshot(state: Any) -> Dict[str, Any]:
+    """Return a thin read-only chakra snapshot from snapshot-like input.
+
+    This keeps query/geometry helpers on a small shared read shape when
+    callers already have an equivalent thin model such as ChakraViewState,
+    a dict payload, or a light attribute-style object.
+    """
+    if isinstance(state, dict):
+        unlocked_raw = state.get("unlocked", set()) or set()
+        active_raw = state.get("active", set()) or set()
+        alignments_raw = state.get("alignments", {}) or {}
+        pattern_root_raw = state.get("pattern_root", None)
+    else:
+        unlocked_raw = getattr(state, "unlocked", set()) or set()
+        active_raw = getattr(state, "active", set()) or set()
+        alignments_raw = getattr(state, "alignments", {}) or {}
+        pattern_root_raw = getattr(state, "pattern_root", None)
+
+    unlocked: Set[str] = set()
+    for raw in unlocked_raw:
+        value = str(raw or "").strip()
+        if value:
+            unlocked.add(value)
+
+    active: Set[str] = set()
+    for raw in active_raw:
+        value = str(raw or "").strip()
+        if value:
+            active.add(value)
+
+    alignments: Dict[str, Tuple[float, float]] = {}
+    if isinstance(alignments_raw, dict):
+        for key, value in alignments_raw.items():
+            node_id = str(key or "").strip()
+            if not node_id or not isinstance(value, (list, tuple)) or len(value) < 2:
+                continue
+            try:
+                alignments[node_id] = (float(value[0]), float(value[1]))
+            except Exception:
+                continue
+
+    pattern_root = str(pattern_root_raw or "").strip() or None
+    if pattern_root not in active:
+        pattern_root = None
+
+    return {
+        "unlocked": unlocked,
+        "active": active,
+        "alignments": alignments,
+        "pattern_root": pattern_root,
+    }
 
 
 # =============================================================================
@@ -382,9 +471,9 @@ def list_unlockable_chakras_for_entity_from_unlocked(
 # `entity_body.py` + `entity_geometry.py`, with body_schema retained as authoring
 # input instead of the main gameplay traversal substrate.
 
-def get_chakra_connections_recursive(
+def _get_chakra_connections_recursive(
     body_schema: Dict[str, Any],
-    chakra_state: ChakraState,
+    chakra_state: Any,
     prefix: str = "",
     depth: int = 0,
     max_depth: Optional[int] = None,
@@ -392,10 +481,12 @@ def get_chakra_connections_recursive(
 ) -> List[Tuple[str, str]]:
     """
     Build parent-child connections across the full body schema tree, including
-    unlocked sub-schemas. This mirrors the Chakra scene's connection logic.
+    unlocked sub-schemas. Accepts any thin chakra read snapshot.
     """
     if max_depth is not None and depth > max_depth:
         return []
+
+    state = _coerce_chakra_query_snapshot(chakra_state)
 
     nodes = _get_nodes(body_schema)
     if not nodes:
@@ -441,7 +532,7 @@ def get_chakra_connections_recursive(
 
         # If this is an unlocked branch root, connect to sub-schema root and recurse
         proto_id = node.get("proto", node_id)
-        if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
+        if is_branch_root(proto_id) and full_id in state["unlocked"]:
             if str(proto_id) in guard:
                 continue
             try:
@@ -452,7 +543,7 @@ def get_chakra_connections_recursive(
                     if sub_root:
                         sub_root_full = f"{full_id}.{sub_root}"
                         add_edge(full_id, sub_root_full)
-                    for sub_a, sub_b in get_chakra_connections_recursive(
+                    for sub_a, sub_b in _get_chakra_connections_recursive(
                         sub_schema,
                         chakra_state,
                         prefix=f"{full_id}.",
@@ -479,9 +570,9 @@ def get_chakra_connections_recursive(
     return edges
 
 
-def get_all_chakra_positions_recursive(
+def _get_all_chakra_positions_recursive(
     body_schema: Dict[str, Any],
-    chakra_state: ChakraState,
+    chakra_state: Any,
     base_scale: float = 1.0,
     prefix: str = "",
     parent_pos: Vec2 = (0.0, 0.0),
@@ -498,7 +589,7 @@ def get_all_chakra_positions_recursive(
 
     Args:
         body_schema: The body schema to traverse
-        chakra_state: Current chakra state
+        chakra_state: Current chakra read snapshot
         base_scale: Scale factor for this schema level
         prefix: Prefix for node IDs (e.g., "arm." for arm sub-schema)
         parent_pos: Parent node's position for offset calculation
@@ -516,6 +607,8 @@ def get_all_chakra_positions_recursive(
     """
     if max_depth is not None and depth > max_depth:
         return {}
+
+    state = _coerce_chakra_query_snapshot(chakra_state)
 
     nodes = _get_nodes(body_schema)
     root_id = _get_root_node_id(body_schema)
@@ -539,9 +632,9 @@ def get_all_chakra_positions_recursive(
 
     def get_node_state(full_id: str) -> str:
         """Determine chakra state for a node."""
-        if full_id in chakra_state.active:
+        if full_id in state["active"]:
             return "active"
-        elif full_id in chakra_state.unlocked:
+        elif full_id in state["unlocked"]:
             return "unlocked"
         else:
             return "locked"
@@ -567,18 +660,18 @@ def get_all_chakra_positions_recursive(
         full_id = f"{prefix}{node_id}" if prefix else node_id
 
         # Apply alignment offset if present
-        if full_id in chakra_state.alignments:
-            align = chakra_state.alignments[full_id]
+        if full_id in state["alignments"]:
+            align = state["alignments"][full_id]
             x += align[0] * scale * 0.5
             y += align[1] * scale * 0.5
 
         # Store this node's position and state
-        state = get_node_state(full_id)
-        result[full_id] = ((x, y), state, scale, base_pos)
+        node_state = get_node_state(full_id)
+        result[full_id] = ((x, y), node_state, scale, base_pos)
 
         # Check if this is a branch root that's unlocked
         proto_id = node.get("proto", node_id) if isinstance(node, dict) else node_id
-        if is_branch_root(proto_id) and full_id in chakra_state.unlocked:
+        if is_branch_root(proto_id) and full_id in state["unlocked"]:
             if str(proto_id) in guard:
                 # Prevent infinite recursion if a schema references itself.
                 return
@@ -591,9 +684,9 @@ def get_all_chakra_positions_recursive(
                     # NOTE: Only apply the parent scale once. The previous logic
                     # multiplied by (scale * size) twice, which made deeper
                     # chakras appear much smaller than intended.
-                    sub_result = get_all_chakra_positions_recursive(
+                    sub_result = _get_all_chakra_positions_recursive(
                         sub_schema,
-                        chakra_state,
+                        state,
                         base_scale=1.0,
                         prefix=f"{full_id}.",
                         parent_pos=(x, y),
@@ -743,9 +836,9 @@ def get_compact_active_graph(
     return active_set, list(compact_edges)
 
 
-def get_active_chakra_generator_graph(
+def _get_active_chakra_generator_graph(
     body_schema: Dict[str, Any],
-    chakra_state: ChakraState,
+    chakra_state: Any,
     *,
     base_scale: float = 1.0,
     require_root: bool = True,
@@ -763,25 +856,27 @@ def get_active_chakra_generator_graph(
     - There is no implicit "body root" fallback.
     - If `require_root=True`, `pattern_root` must be set and active.
     """
-    all_positions = get_all_chakra_positions_recursive(
+    state = _coerce_chakra_query_snapshot(chakra_state)
+
+    all_positions = _get_all_chakra_positions_recursive(
         body_schema,
-        chakra_state,
+        state,
         base_scale=base_scale,
     )
-    full_edges = get_chakra_connections_recursive(body_schema, chakra_state)
+    full_edges = _get_chakra_connections_recursive(body_schema, state)
 
-    root_id = getattr(chakra_state, "pattern_root", None)
-    if root_id not in chakra_state.active:
+    root_id = state["pattern_root"]
+    if root_id not in state["active"]:
         if require_root:
             raise ValueError("Select an active chakra as the pattern root first.")
-        active_sorted = sorted(chakra_state.active)
+        active_sorted = sorted(state["active"])
         if not active_sorted:
             raise ValueError("Need at least 2 active chakras to form a generator.")
         root_id = active_sorted[0]
 
     active_nodes, compact_edges = get_compact_active_graph(
         full_edges,
-        chakra_state.active,
+        state["active"],
         root_id=root_id,
     )
     positions: Dict[str, Vec2] = {
@@ -832,7 +927,7 @@ class ChakraGeneratorSeed:
 
 
 def _build_seed_from_realized_body_tree(
-    chakra_state: ChakraState,
+    chakra_state: Any,
     *,
     actor: Any,
     game: Any,
@@ -840,10 +935,9 @@ def _build_seed_from_realized_body_tree(
 ) -> Optional[ChakraGeneratorSeed]:
     """Build a seed directly from the realized body-node entity tree.
 
-    This path keeps the live entity tree authoritative for geometry while still
-    using the explicit ChakraState argument for active-node and alignment
-    semantics. That avoids preview/runtime drift while the actor-side
-    ChakraState facade is still being migrated away elsewhere.
+    The live entity tree is authoritative for geometry. The chakra_state
+    argument (any snapshot-like payload) provides active-node
+    and alignment semantics so preview and runtime reads stay consistent.
     """
     if actor is None or game is None:
         return None
@@ -868,9 +962,8 @@ def _build_seed_from_realized_body_tree(
     if not root_child_ids:
         return None
 
-    alignments = getattr(chakra_state, "alignments", {}) or {}
-    if not isinstance(alignments, dict):
-        alignments = {}
+    state = _coerce_chakra_query_snapshot(chakra_state)
+    alignments = dict(state["alignments"])
 
     positions_all: Dict[str, Vec2] = {}
     full_edges: List[Tuple[str, str]] = []
@@ -942,8 +1035,8 @@ def _build_seed_from_realized_body_tree(
     if not positions_all:
         return None
 
-    active_set = set(getattr(chakra_state, "active", set()) or set())
-    root_id = getattr(chakra_state, "pattern_root", None)
+    active_set = set(state["active"])
+    root_id = state["pattern_root"]
     if root_id not in active_set:
         if require_root:
             raise ValueError("Select an active chakra as the pattern root first.")
@@ -998,7 +1091,7 @@ def _build_seed_from_realized_body_tree(
 
 
 def _build_seed_from_body_specs(
-    chakra_state: ChakraState,
+    chakra_state: Any,
     *,
     actor: Any,
     require_root: bool,
@@ -1014,17 +1107,51 @@ def _build_seed_from_body_specs(
         return None
 
     try:
+        positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph_for_entity(
+            actor,
+            chakra_state,
+            require_root=require_root,
+        )
+    except Exception:
+        return None
+
+    verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
+        positions,
+        compact_edges,
+        root_id=str(root_id),
+        terminus_id=str(terminus_id),
+    )
+    return ChakraGeneratorSeed(
+        positions=positions,
+        compact_edges=compact_edges,
+        root_id=str(root_id),
+        terminus_id=str(terminus_id),
+        verts=verts,
+        edges=edges,
+        node_order=node_order,
+        base_len=base_len,
+    )
+
+
+def get_active_chakra_generator_graph_for_entity(
+    owner_ent: Any,
+    chakra_state: Any,
+    *,
+    require_root: bool = True,
+) -> Tuple[Dict[str, Vec2], List[Tuple[str, str]], str, str]:
+    """Build the active generator graph from shared deterministic body specs."""
+    state = _coerce_chakra_query_snapshot(chakra_state)
+
+    try:
         from edgecaster.systems import entity_body as entity_body_system
 
-        specs = entity_body_system.build_body_node_specs(actor)
+        specs = entity_body_system.build_body_node_specs(owner_ent)
     except Exception:
         specs = {}
     if not isinstance(specs, dict) or not specs:
-        return None
+        raise ValueError("No deterministic body specs available for chakra graph.")
 
-    alignments = getattr(chakra_state, "alignments", {}) or {}
-    if not isinstance(alignments, dict):
-        alignments = {}
+    alignments = dict(state["alignments"])
 
     positions_all: Dict[str, Vec2] = {}
     full_edges: List[Tuple[str, str]] = []
@@ -1062,10 +1189,10 @@ def _build_seed_from_body_specs(
             full_edges.append((parent_full_id, full_id))
 
     if not positions_all:
-        return None
+        raise ValueError("No chakra positions available from deterministic body specs.")
 
-    active_set = set(getattr(chakra_state, "active", set()) or set())
-    root_id = getattr(chakra_state, "pattern_root", None)
+    active_set = set(state["active"])
+    root_id = state["pattern_root"]
     if root_id not in active_set:
         if require_root:
             raise ValueError("Select an active chakra as the pattern root first.")
@@ -1101,26 +1228,11 @@ def _build_seed_from_body_specs(
         return dx * dx + dy * dy
 
     terminus_id = max(candidates, key=_distance_squared)
-    verts, edges, node_order, base_len = normalized_custom_graph_from_positions(
-        positions,
-        compact_edges,
-        root_id=str(root_id),
-        terminus_id=str(terminus_id),
-    )
-    return ChakraGeneratorSeed(
-        positions=positions,
-        compact_edges=compact_edges,
-        root_id=str(root_id),
-        terminus_id=str(terminus_id),
-        verts=verts,
-        edges=edges,
-        node_order=node_order,
-        base_len=base_len,
-    )
+    return positions, compact_edges, str(root_id), str(terminus_id)
 
 
 def build_chakra_generator_seed(
-    chakra_state: ChakraState,
+    chakra_state: Any,
     *,
     body_schema: Optional[Dict[str, Any]] = None,
     require_root: bool = True,
@@ -1137,7 +1249,7 @@ def build_chakra_generator_seed(
     """
     # Realized actor-body tree path: prefer body-node entities when available.
     # This keeps runtime casts and the chakra-scene preview on the shared entity
-    # substrate, while still honoring the explicit ChakraState argument for
+    # substrate, while still honoring the explicit read snapshot for
     # active nodes, alignments, and pattern-root choice.
     if actor is not None and game is not None:
         try:
@@ -1158,7 +1270,8 @@ def build_chakra_generator_seed(
     # Entity tree path: try query_normalized_pattern for entities whose
     # chakra_component carries positioned nodes.  For body-anatomy actors this
     # works when body nodes were expanded at spawn (Batch 1 A1) and the
-    # external_child_root active flags were synced from ChakraState (Batch 2 A3).
+    # external_child_root active flags were synced from the structural snapshot
+    # path (Batch 2 A3).
     # Actors with only one active chakra (< 2 nodes) fall through to the
     # body-schema path below; so do actors with deeper body trees (>1 level).
     # Body-anatomy node offsets are sub-tile floats that collapse to the same
@@ -1238,7 +1351,7 @@ def build_chakra_generator_seed(
     if not body_schema:
         body_schema = {}
 
-    positions, compact_edges, root_id, terminus_id = get_active_chakra_generator_graph(
+    positions, compact_edges, root_id, terminus_id = _get_active_chakra_generator_graph(
         body_schema,
         chakra_state,
         require_root=require_root,
@@ -1272,28 +1385,30 @@ def build_chakra_generator_seed_for_actor(
     if actor is None:
         raise ValueError("No actor to generate pattern from.")
 
-    state_like = chakra_state
-    if state_like is None:
-        try:
-            from edgecaster.systems import chakra_items as chakra_items_system
+    try:
+        from edgecaster.systems import chakra_items as chakra_items_system
+    except Exception:
+        chakra_items_system = None
 
-            state_like = chakra_items_system.effective_chakra_view(game, actor)
-        except Exception:
-            state_like = None
+    render_state = None
+    if chakra_items_system is not None:
+        render_state = chakra_items_system.coerce_chakra_view_state(chakra_state)
+        if render_state is None:
+            try:
+                render_state = chakra_items_system.effective_chakra_view(game, actor)
+            except Exception:
+                render_state = None
+        if render_state is None:
+            try:
+                render_state = chakra_items_system.structural_chakra_view(actor)
+            except Exception:
+                render_state = None
 
-    if state_like is None:
-        try:
-            from edgecaster.systems import chakra_items as chakra_items_system
-
-            state_like = chakra_items_system.structural_chakra_view(actor)
-        except Exception:
-            state_like = None
-
-    if state_like is None:
+    if render_state is None:
         raise ValueError("No chakra state found.")
 
     return build_chakra_generator_seed(
-        state_like,
+        render_state,
         require_root=require_root,
         actor=actor,
         game=game,
@@ -1322,7 +1437,7 @@ def normalized_custom_graph_from_positions(
     # Unification note: the normalization math here is already substrate-worthy.
     # Once non-actor entities expose geometry-rich ChakraComponents, lift this to
     # a shared helper that reads node/edge geometry directly instead of relying
-    # on body_schema + legacy ChakraState inputs.
+    # on body_schema + legacy snapshot inputs.
     # Stable order: root first, terminus last, everything else deterministic.
     middle = sorted([nid for nid in positions.keys() if nid not in {root_id, terminus_id}])
     node_order = [root_id] + middle + [terminus_id]

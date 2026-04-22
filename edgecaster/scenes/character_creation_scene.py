@@ -492,16 +492,29 @@ class CharacterCreationScene(PanelScene):
     # Monk chakra selection helpers
     # ------------------------------------------------------------------ #
 
+    def _monk_preview_owner(self):
+        from types import SimpleNamespace
+
+        assert self.state is not None
+        template_id = str(self.state.species_template or "human_base")
+        return SimpleNamespace(id="char_creation_preview", template_id=template_id)
+
     def _monk_can_unlock(self, node_id: str, unlocked: set[str]) -> bool:
-        """Prefix-based gating: requires all parent prefixes to be unlocked."""
-        if node_id in unlocked:
+        """Shared body-spec unlock gate for monk character creation."""
+        if self.state is None:
             return False
-        parts = node_id.split(".")
-        for i in range(1, len(parts)):
-            prefix = ".".join(parts[:i])
-            if prefix not in unlocked:
-                return False
-        return True
+        try:
+            from edgecaster.systems.chakras import can_unlock_chakra_for_entity_from_unlocked
+
+            return bool(
+                can_unlock_chakra_for_entity_from_unlocked(
+                    self._monk_preview_owner(),
+                    unlocked,
+                    node_id,
+                )
+            )
+        except Exception:
+            return False
 
     def _sync_monk_state(self) -> None:
         """Rebuild monk chakra state from base + pick list."""
@@ -539,16 +552,15 @@ class CharacterCreationScene(PanelScene):
         state = st.monk_state or MonkChakraDraft(unlocked=set(), active=set())
         unlocked = set(state.unlocked)
 
-        # Build the node list from shared entity_body specs using a minimal
-        # template-backed owner. This keeps character creation on the same
-        # resolver contract as runtime body expansion instead of resolving
-        # schemas locally first.
-        from types import SimpleNamespace
-        from edgecaster.systems import entity_body as entity_body_system
+        # Build the node list from the shared body-spec visibility helper so
+        # character creation stays on the same deterministic unlock/query
+        # surface as runtime instead of owning a second local traversal ladder.
+        from edgecaster.systems import chakras as chakra_system
 
-        template_id = str(st.species_template or "human_base")
-        dummy = SimpleNamespace(id="char_creation_preview", template_id=template_id)
-        specs = entity_body_system.build_body_node_specs(dummy)
+        visible_node_ids = chakra_system.list_visible_chakra_nodes_for_entity_from_unlocked(
+            self._monk_preview_owner(),
+            unlocked,
+        )
 
         def _display(full_id: str) -> str:
             local = full_id.split(".")[-1]
@@ -557,20 +569,15 @@ class CharacterCreationScene(PanelScene):
             return local.replace("_", " ").title()
 
         results: List[Tuple[str, str, int]] = []
-        # Preserve the resolver traversal order from entity_body.build_body_node_specs().
-        # That order is already parent-before-children and mirrors the authored
-        # body graph; re-sorting by (depth, id) flattens siblings together and
-        # breaks the hierarchy in the character-creation list.
-        for full_id in specs.keys():
+        # Preserve deterministic spec order from the shared helper. Re-sorting
+        # this list would flatten siblings together and break the hierarchy in
+        # the character-creation list.
+        for full_id in visible_node_ids:
             if full_id == st.monk_base:
                 continue
             depth = full_id.count(".")
             display = _display(full_id)
-            if full_id in st.monk_picks:
-                results.append((full_id, display, depth))
-                continue
-            if self._monk_can_unlock(full_id, unlocked):
-                results.append((full_id, display, depth))
+            results.append((full_id, display, depth))
 
         return results
 

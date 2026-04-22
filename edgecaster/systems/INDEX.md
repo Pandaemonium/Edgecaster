@@ -2,7 +2,7 @@
 
 Purpose: map the main module clusters in `edgecaster/systems/` so agents can find the right ownership area quickly.
 Status: active-plan
-Last verified: 2026-04-20 (updated with trade/query-surface notes)
+Last verified: 2026-04-21 (updated with chakra scene/query-surface notes)
 Canonical for: systems-folder navigation and ownership hints
 Related docs: `edgecaster/systems/AGENTS.md`, `vision_documents/architecture.txt`, `vision_documents/spring_cleaning.txt`
 Related code: `edgecaster/systems/`
@@ -40,9 +40,9 @@ Supersedes: none
 
 ### Chakra, Gods, And Rune Systems
 
-- `chakras.py` *(legacy body-schema math still lives here, but `build_chakra_generator_seed_for_actor(...)` is now the preferred actor-oriented entrypoint for runtime/scene generator seed reads, with structural fallback routed through `chakra_items` instead of raw `actor.chakra_state` peeks and unexpanded actor fallback now preferring deterministic `entity_body` specs before raw body-schema recursion)*
+- `chakras.py` *(legacy body-schema math still lives here, but actor-facing reads are getting thinner: `build_chakra_generator_seed_for_actor(...)` is the preferred runtime/scene generator-seed entrypoint, `get_active_chakra_generator_graph_for_entity(...)` centralizes the shared body-spec fallback graph read for unexpanded actors, `can_unlock_full_chakra_id_from_unlocked(...)` / `can_unlock_chakra_for_entity_from_unlocked(...)` now cover unlock checks without forcing larger facade snapshots, and `list_visible_chakra_nodes_for_entity_from_unlocked(...)` gives scenes a shared ordered body-spec node list instead of a local visibility ladder)*
 - `chakra_effects.py`
-- `chakra_items.py` *(component-first chakra read/write helpers; `effective_chakra_view(...)` / `effective_chakra_projection(...)` are the preferred runtime query surfaces, `structural_chakra_projection(...)` / `structural_chakra_view(...)` are the no-item-overlay runtime reads for lifecycle/seed callers, and write helpers now rebuild the optional `actor.chakra_state` cache from component authority instead of hand-editing partial compat fields)*
+- `chakra_items.py` *(component-first chakra read/write helpers; `effective_chakra_view(...)` / `effective_chakra_projection(...)` are the preferred runtime query surfaces, `structural_chakra_projection(...)` / `structural_chakra_view(...)` are the no-item-overlay runtime reads for lifecycle/seed callers, `coerce_chakra_view_state(...)` is the preferred bridge from snapshot-like input onto the thin query model, and write helpers now mutate component authority directly instead of maintaining a parallel actor-side chakra cache)*
 - `chakra_content.py`
 - `gods.py`
 - `god_abilities.py`
@@ -56,7 +56,7 @@ Supersedes: none
 - `entity_ops.py`
 - `entity_identity.py` *(canonical `stable_int_hash` FNV-1a; shared by aggregate_resolution, poi_worldgen, site_placement)*
 - `entity_body.py`
-- `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders; schema fallbacks now annotate explicit `zoomable` metadata so scenes do not need to re-resolve authored schemas just to decide branch behavior)*
+- `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders; schema fallbacks now annotate explicit `zoomable` metadata so scenes do not need to re-resolve authored schemas just to decide branch behavior, branch metadata helpers provide shared gating-chain / child-count reads for tooltips and similar UI affordances, and `visible_body_nodes_for_owner(...)` now centralizes unlocked-branch filtering for body-node list views)*
 - `entity_graph_ops.py`
 - `entity_snapshots.py`
 - `entity_lifecycle.py`

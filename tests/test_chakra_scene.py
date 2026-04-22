@@ -44,9 +44,12 @@ def test_pattern_preview_widget_uses_game_context_for_entity_path() -> None:
     widget = chakra_scene_module.PatternPreviewWidget(
         actor=actor,
         game=game,
-        state_provider=lambda: chakra_scene_module.ChakraState(
+        state_provider=lambda: chakra_scene_module.chakra_items_system.ChakraViewState(
             unlocked={"body"},
             active={"body"},
+            alignments={},
+            generators={},
+            charges={},
             pattern_root="body",
         ),
     )
@@ -171,6 +174,165 @@ def test_body_nodes_for_actor_falls_back_to_entity_body_specs_when_graph_is_abse
     ]
 
 
+def test_body_view_query_helpers_return_gating_chain_and_child_count_without_graph() -> None:
+    chakra_scene_module = _import_chakra_scene_module()
+    actor = SimpleNamespace(id="actor:test_branch_meta", entity_id="actor:test_branch_meta", abs_pos=(0.0, 0.0))
+
+    rows = [
+        {
+            "full_id": "arm",
+            "parent_full_id": None,
+            "schema_rel_pos": (0.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_arm",
+            "schema_proto_id": "body_arm",
+            "is_schema_root": False,
+        },
+        {
+            "full_id": "arm.hand",
+            "parent_full_id": "arm",
+            "schema_rel_pos": (1.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_hand",
+            "schema_proto_id": "body_hand",
+            "is_schema_root": False,
+        },
+        {
+            "full_id": "arm.hand.index",
+            "parent_full_id": "arm.hand",
+            "schema_rel_pos": (2.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_finger",
+            "schema_proto_id": "",
+            "is_schema_root": False,
+        },
+    ]
+
+    with patch.object(
+        chakra_scene_module.body_view_queries_system,
+        "body_nodes_for_owner",
+        return_value=rows,
+    ):
+        with patch(
+            "edgecaster.systems.chakras.is_branch_root",
+            side_effect=lambda proto: proto in {"body_arm", "body_hand"},
+        ):
+            gating_chain = chakra_scene_module.body_view_queries_system.body_node_gating_chain_for_owner(
+                None,
+                actor,
+                "arm.hand.index",
+            )
+        child_count = chakra_scene_module.body_view_queries_system.body_node_child_count_for_owner(
+            None,
+            actor,
+            "arm.hand",
+        )
+
+    assert gating_chain == ["arm", "arm.hand"]
+    assert child_count == 1
+
+
+def test_body_node_row_for_owner_returns_matching_row_without_graph() -> None:
+    chakra_scene_module = _import_chakra_scene_module()
+    actor = SimpleNamespace(id="actor:test_row_lookup", entity_id="actor:test_row_lookup", abs_pos=(0.0, 0.0))
+
+    rows = [
+        {
+            "full_id": "arm",
+            "parent_full_id": None,
+            "schema_rel_pos": (0.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_arm",
+            "schema_proto_id": "body_arm",
+            "is_schema_root": False,
+        },
+        {
+            "full_id": "arm.hand",
+            "parent_full_id": "arm",
+            "schema_rel_pos": (1.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_hand",
+            "schema_proto_id": "body_hand",
+            "is_schema_root": False,
+        },
+    ]
+
+    with patch.object(
+        chakra_scene_module.body_view_queries_system,
+        "body_nodes_for_owner",
+        return_value=rows,
+    ):
+        row = chakra_scene_module.body_view_queries_system.body_node_row_for_owner(
+            None,
+            actor,
+            "arm.hand",
+        )
+
+    assert row is not None
+    assert row["node_proto_id"] == "body_hand"
+
+
+def test_visible_body_nodes_for_owner_hides_descendants_behind_locked_branch_roots() -> None:
+    chakra_scene_module = _import_chakra_scene_module()
+    actor = SimpleNamespace(id="actor:test_visible_rows", entity_id="actor:test_visible_rows", abs_pos=(0.0, 0.0))
+
+    rows = [
+        {
+            "full_id": "arm",
+            "parent_full_id": None,
+            "schema_rel_pos": (0.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_arm",
+            "schema_proto_id": "body_arm",
+            "is_schema_root": False,
+        },
+        {
+            "full_id": "arm.hand",
+            "parent_full_id": "arm",
+            "schema_rel_pos": (1.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_hand",
+            "schema_proto_id": "body_hand",
+            "is_schema_root": False,
+        },
+        {
+            "full_id": "arm.hand.index",
+            "parent_full_id": "arm.hand",
+            "schema_rel_pos": (2.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_finger",
+            "schema_proto_id": "",
+            "is_schema_root": False,
+        },
+        {
+            "full_id": "arm_m",
+            "parent_full_id": None,
+            "schema_rel_pos": (-1.0, 0.0),
+            "local_scale": 1.0,
+            "node_proto_id": "body_arm",
+            "schema_proto_id": "body_arm",
+            "is_schema_root": False,
+        },
+    ]
+
+    with patch.object(
+        chakra_scene_module.body_view_queries_system,
+        "body_nodes_for_owner",
+        return_value=rows,
+    ):
+        with patch(
+            "edgecaster.systems.chakras.is_branch_root",
+            side_effect=lambda proto: proto in {"body_arm", "body_hand"},
+        ):
+            visible = chakra_scene_module.body_view_queries_system.visible_body_nodes_for_owner(
+                None,
+                actor,
+                {"body", "arm"},
+            )
+
+    assert [row["full_id"] for row in visible] == ["arm", "arm.hand", "arm_m"]
+
+
 def test_set_pattern_root_routes_through_shared_chakra_write_helper() -> None:
     chakra_scene_module = _import_chakra_scene_module()
     scene = chakra_scene_module.ChakraSelectionScene.__new__(chakra_scene_module.ChakraSelectionScene)
@@ -216,12 +378,12 @@ def test_exit_realign_mode_commit_routes_through_shared_alignment_write_helper()
     scene._push_undo = MagicMock()
     scene._apply_realign_time_cost = MagicMock()
     scene._silhouette = SimpleNamespace(
-        set_state_override=MagicMock(),
+        set_edit_session=MagicMock(),
         set_realign_mode=MagicMock(),
         refresh_points=MagicMock(),
     )
     scene._preview = SimpleNamespace(
-        set_state_override=MagicMock(),
+        set_edit_session=MagicMock(),
         mark_dirty=MagicMock(),
     )
 

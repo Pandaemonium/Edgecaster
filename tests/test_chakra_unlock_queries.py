@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from edgecaster import prototypes, spawn_factory
 from edgecaster.systems.chakras import (
+    can_unlock_chakra_for_entity_from_unlocked,
     check_resonance_bonuses_from_active_nodes,
     list_unlockable_chakras_for_entity_from_unlocked,
+    list_visible_chakra_nodes_for_entity_from_unlocked,
 )
 
 
@@ -39,6 +41,23 @@ def test_unlockable_query_excludes_already_unlocked_nodes() -> None:
     result = list_unlockable_chakras_for_entity_from_unlocked(actor, unlocked)
     for nid in unlocked:
         assert nid not in result, f"already-unlocked node {nid!r} must not appear in unlockable list"
+
+
+def test_can_unlock_query_from_unlocked_accepts_valid_node_and_rejects_locked_prereq() -> None:
+    actor = _make_actor()
+
+    assert can_unlock_chakra_for_entity_from_unlocked(actor, {"body", "arm"}, "arm.hand") is True
+    assert can_unlock_chakra_for_entity_from_unlocked(actor, {"body"}, "arm.hand") is False
+    assert can_unlock_chakra_for_entity_from_unlocked(actor, {"body", "arm"}, "nonexistent.node") is False
+
+
+def test_visible_node_query_preserves_branch_order_and_hides_deeper_locked_descendants() -> None:
+    actor = _make_actor()
+
+    result = list_visible_chakra_nodes_for_entity_from_unlocked(actor, {"body", "arm"})
+
+    assert result.index("arm") < result.index("arm.elbow") < result.index("arm.hand") < result.index("arm_m")
+    assert "arm.hand.index" not in result
 
 
 def test_resonance_helper_from_active_nodes() -> None:

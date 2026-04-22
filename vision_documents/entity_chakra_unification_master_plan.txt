@@ -1,15 +1,15 @@
 Title: Entity + Chakra Unification Master Plan
 Purpose: define the active execution plan for converging entity, geometry/query, inventory, and POI systems toward one unified hierarchical substrate.
 Status: active-plan
-Last verified: 2026-04-19
+Last verified: 2026-04-21
 Canonical for: active entity/chakra unification work
 Related docs: `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/architecture.txt`
 Related code: `edgecaster/state/`, `edgecaster/systems/`, `edgecaster/content/`
 Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
-Updated: 2026-04-19
-Status: v1.63 (added topology-convergence doctrine, relation/contact guidance, and later-slice unification backlog)
+Updated: 2026-04-21
+Status: v1.64 (added completion roadmap for the remaining large architectural pieces)
 
 This is the execution plan for:
 
@@ -169,9 +169,9 @@ Implemented and stable:
      already exposes a usable `ChakraComponent`, then falls back to the legacy
      body-schema path.
    - Runtime effective chakra reads (`effective_unlocked_nodes`,
-     `effective_active_nodes`, `effective_chakra_state`) now rebuild from the
-     actor's `ChakraComponent` first instead of depending on cached
-     `actor.chakra_state` bootstrap side effects.
+     `effective_active_nodes`) now rebuild from the actor's
+     `ChakraComponent` first instead of depending on any actor-side cache or
+     bootstrap side effects.
    - `pattern_runtime.act_chakra(...)` now stays on the entity/component path
      for component-backed actors and skips `resolve_body_schema(...)` unless it
      is actually on a schema-only fallback path.
@@ -179,10 +179,8 @@ Implemented and stable:
      `PatternPreviewWidget`, so the preview path can use the shared
      entity/component seed builder instead of falling back to schema-only mode
      during normal gameplay.
-   - Chakra scene helper reads now prefer cached persistent `actor.chakra_state`
-     before calling the legacy compat bootstrap helper.
    - `build_chakra_generator_seed(...)` now prefers the realized body-node
-     entity tree for actor anatomy, using the explicit `ChakraState` argument
+     entity tree for actor anatomy, using the explicit read snapshot
      for active-node, alignment, and pattern-root semantics.
    - When the entity path is unavailable or insufficient, the seed builder now
      re-resolves authored `body_schema` on demand for actor callers that passed
@@ -205,28 +203,48 @@ Implemented and stable:
      instead of mutating compat tags directly from the scene layer.
    - `chakra_items.structural_chakra_projection(...)` /
      `structural_chakra_view(...)` now provide the shared no-item-overlay
-     runtime read for lifecycle and seed callers: component data wins, but
-     migration-era cached `actor.chakra_state` can still backfill deterministic
-     body-node ids that are missing from the component without reviving stale
-     cached junk.
+     runtime read for lifecycle and seed callers directly from component
+     authority without consulting any cached `actor.chakra_state` bridge.
    - `entity_lifecycle._materialize_body_child(...)` now syncs external child
      activation from that shared structural projection instead of peeking
      directly at `owner_ent.chakra_state`, so component-backed activation
      survives even after the cache facade is absent.
    - `build_chakra_generator_seed_for_actor(...)` now falls back to the shared
-     structural chakra view instead of the raw cached `actor.chakra_state`
-     facade when the richer runtime effective view is unavailable.
+     structural chakra view when the richer runtime effective view is
+     unavailable.
    - `build_chakra_generator_seed(...)` now prefers deterministic
      `entity_body.build_body_node_specs(...)` for unexpanded actor anatomy
      before dropping to the legacy raw `body_schema` recursion path, so actor
      seed generation stays on the shared body substrate even when no realized
      body tree is present yet.
-   - `unlock_actor_chakra(...)` / `toggle_actor_chakra(...)` now treat
-     `actor.chakra_state` as a derived compatibility cache: when the cache
-     exists they rebuild it from component authority after writes instead of
-     mutating partial fields in place, and toggle backfill now consults the
-     filtered structural projection so stale cached ids do not re-materialize
-     as real component nodes.
+   - `systems/chakras.py` now exposes
+     `get_active_chakra_generator_graph_for_entity(...)` as the shared
+     actor/body-spec graph read behind that unexpanded-actor fallback, so new
+     callers do not need to open-code another schema/spec ladder just to read
+     the active generator graph.
+   - `unlock_actor_chakra(...)` / `toggle_actor_chakra(...)` now mutate
+     component authority directly without maintaining a parallel
+     `actor.chakra_state` cache.
+   - `scenes/character_creation_scene.py` monk unlock gating now routes through
+     `can_unlock_chakra_for_entity_from_unlocked(...)`, so character creation
+     uses the same deterministic body-spec unlock rules as runtime monk
+     unlocks instead of carrying a scene-local prefix/prerequisite walker.
+   - `list_visible_chakra_nodes_for_entity_from_unlocked(...)` now provides the
+     shared ordered body-spec node list for scene callers that need the
+     unlocked-or-currently-unlockable hierarchy without rebuilding their own
+     visibility traversal.
+   - `can_unlock_full_chakra_id_from_unlocked(...)` now provides the shared
+     unlocked-set prereq check for thin query helpers, so
+     `list_unlockable_chakras_for_entity_from_unlocked(...)`,
+     `can_unlock_chakra_for_entity_from_unlocked(...)`, and
+     `list_visible_chakra_nodes_for_entity_from_unlocked(...)` no longer need
+     to construct compatibility `ChakraState` wrappers just to answer read-only
+     unlock questions.
+   - `chakra_items.coerce_chakra_view_state(...)` now provides the shared
+     read-model coercion path from ChakraState-like or dict-like inputs onto
+     the thinner `ChakraViewState` query object, and both Chakra Scene and
+     `build_chakra_generator_seed_for_actor(...)` now route ad hoc provider
+     state through that helper instead of open-coding "state-like" field checks.
    - Actor baseline-root inference in `chakra_items.py` now prefers shared
      `entity_body` specs over the old baked `body_schema` attribute, and
      actor-facing chakra projections suppress the temporary default
@@ -239,6 +257,17 @@ Implemented and stable:
      with the same `zoomable` metadata, so Inventory Scene label rendering and
      double-click zoom checks can stay on the shared query surface even when
      the realized body tree is unavailable.
+   - `body_view_queries.py` now also exposes shared body-node branch metadata
+     queries (`body_node_gating_chain_for_owner(...)`,
+     `body_node_child_count_for_owner(...)`), so Chakra Scene tooltips do not
+     reassemble that branch logic locally.
+   - `body_view_queries.visible_body_nodes_for_owner(...)` now centralizes the
+     unlocked-branch visibility filter used by Chakra Scene list rows, so that
+     scene no longer owns its own branch-root visibility ladder.
+   - Chakra Scene widget preview overrides are now explicitly
+     `ChakraEditSession`-scoped (`set_edit_session(...)`) instead of generic
+     state overrides, which better documents the boundary between scene-local
+     edit state and runtime-authoritative chakra data.
    - `scenes/inventory_scene.py` synthetic zoom schemas now also fall back to
      deterministic `entity_body.child_specs_for_entity(...)` output when the
      realized graph is unavailable, so the deeper zoom/view helpers stay on the
@@ -316,8 +345,9 @@ Not yet complete:
    - Structural-vs-streaming distinctions are not yet encoded consistently
      enough; some high-frequency values still travel through paths that were
      originally designed for structural invalidation.
-   - Legacy `ChakraState` still drives gameplay/runtime abilities through
-     compatibility adapter paths.
+   - The deleted `ChakraState` facade no longer blocks runtime work, but
+     legacy raw `body_schema` fallback paths still need to be isolated and
+     trimmed before the chakra/body read path is fully unified.
    - The docs now lock in that every chakra is an entity; implementation still
      has to catch up to that simplification.
    - Long-term target is to dissolve remaining authoritative topology out of
@@ -446,6 +476,352 @@ Not yet complete:
     - Item clone helpers (`clone_entity`, `_clone_entity_for_drop`,
       `_clone_entity_for_trade`) confirmed already deleted; spring_cleaning entry
       marked DONE.
+
+## Completion Roadmap For The Remaining Large Architectural Pieces (2026-04-21)
+
+This section answers a narrower execution question than the phase descriptions
+above: what are the biggest remaining architectural cuts, and in what order
+should they be completed so we do not delete one compatibility layer only to
+quietly rebuild the same split somewhere else.
+
+The remaining work clusters into two large programs:
+
+1. Read-path consolidation
+   - Finish moving gameplay, scenes, and tests onto shared query/projection
+     surfaces.
+   - Delete `ChakraState`, raw body-schema traversal, and scene-local fallback
+     ladders once they are no longer needed.
+
+2. Authority-path consolidation
+   - Finish turning graph/runtime entities into the only real authority and
+     demote the remaining side stores to explicit caches or delete them.
+   - This includes the loaded-zone actor/entity dicts, attention staging
+     caches, macro-world indexes, POI registries, inventory list caches, and
+     ad hoc LevelState runtime effect dicts.
+
+Recommended dependency order:
+
+1. Close the remaining chakra/body read-model bridges.
+2. Introduce one shared runtime entity/realization query surface.
+3. Cut containment/inventory/equipment fully over to graph authority.
+4. Collapse attention, world-index, and POI lookup onto one realization/index
+   model.
+5. Promote transient runtime side stores into ordinary entities/components.
+6. Finish persistence cleanup and final legacy deletion.
+7. Expand Phase 3 rule data and geometry-aware reducers once the runtime/query
+   surfaces are stable enough to stop moving underneath them.
+
+### Track A - Delete ChakraState And Raw Body-Schema Runtime Reads
+
+Why this is first:
+- The nominal `ChakraState` class is now gone, which removes the easiest path
+  for new code to slip back into the actor-only worldview.
+- The remaining Track A work is to keep shrinking the raw body-schema fallback
+  paths until they are clearly legacy-only instead of a normal runtime option.
+
+Primary targets:
+- `edgecaster/systems/chakras.py`
+- `edgecaster/systems/chakra_items.py`
+- `edgecaster/scenes/chakra_scene.py`
+- `edgecaster/scenes/inventory_scene.py`
+- any tests or docs that still assume a nominal actor-side chakra facade
+
+Execution strategy:
+1. Keep `build_chakra_generator_seed(...)` and related readers accepting thin,
+   dict-like read snapshots rather than a typed facade.
+2. Move the last body-schema recursive readers behind explicit legacy fallback
+   helpers so runtime callers default to `entity_body.py`,
+   `body_view_queries.py`, and `entity_geometry.py`.
+3. Delete or rewrite any stale tests/docs that still talk as if
+   `ChakraState(...)` were a live production surface.
+
+Done looks like:
+- No runtime code constructs or requires a nominal actor-side chakra facade.
+- Remaining body-schema traversal is either gone or clearly isolated as
+  pre-runtime/editor-only fallback.
+- Chakra Scene and Inventory Scene read shared query/view-model helpers rather
+  than open-coding their own ladders.
+
+### Track B - Add One Shared Runtime Entity Query Surface Before Deleting Zone Stores
+
+Why this is second:
+- `LevelState.actors` / `LevelState.entities` are still referenced across AI,
+  actions, combat, scheduling, scenes, and inspection. Deleting them directly
+  would be noisy and brittle.
+- The safer path is to hide them behind one shared read surface first, then
+  change the backing store later.
+
+Primary targets:
+- `edgecaster/game.py`
+- `edgecaster/systems/session.py`
+- `edgecaster/systems/entity_lifecycle.py`
+- `edgecaster/systems/entity_ops.py`
+- `edgecaster/systems/render_query.py`
+- all actor/entity iteration callsites
+
+Execution strategy:
+1. Introduce or expand a small shared runtime-entity query layer for:
+   - get entity by id
+   - get actor by id
+   - iterate realized actors/entities for a level
+   - iterate realized occupants in a rect/zone/view
+2. Migrate high-fanout consumers (`actions.py`, `combat_actions.py`,
+   `scheduling.py`, `ai.py`, scenes) onto that query layer.
+3. Only after callsites converge, replace the direct dict ownership model with
+   a more explicit realization registry or graph-backed view.
+
+Done looks like:
+- Most code no longer reaches directly into `level.actors` / `level.entities`.
+- Loaded-zone membership becomes a declared cache/projection, not an ambient
+  hidden authority.
+
+### Track C - Finish Graph-Authoritative Inventory And Equipment
+
+Why this is third:
+- Inventory is the cleanest player-facing containment loop and is already
+  partially cut over. Finishing it validates the graph-authority contract
+  before the harder world-scale cuts.
+
+Primary targets:
+- `edgecaster/systems/inventory.py`
+- `edgecaster/systems/equipment.py`
+- `edgecaster/systems/trade.py`
+- `edgecaster/systems/entity_graph_ops.py`
+- remaining `game.inventories` direct readers/writers
+
+Execution strategy:
+1. Keep `get_inventory(...)` graph-first, but remove the assumption that the
+   fallback list is acceptable long-term.
+2. Represent equipment slots purely as socket-typed containment edges.
+3. Migrate trade, split-stack, startup-item, and bag/container flows fully onto
+   graph attach/detach/reparent operations.
+4. Demote `game.inventories` to an event-consistent UI cache or delete it once
+   no caller needs stable list references.
+
+Done looks like:
+- Inventory and equipment are containment queries, not side dictionaries.
+- List caches are rebuildable views only.
+
+### Track D - Unify Attention, World Index, And POI Lookup Into One Realization/Index Model
+
+Why this is fourth:
+- `attn_store`, `world_entity_index`, and `poi_registry` currently solve
+  related lookup problems with different ontologies.
+- This is the biggest remaining source of "cache that sometimes behaves like
+  truth" outside the loaded-zone dicts.
+
+Primary targets:
+- `edgecaster/systems/attention.py`
+- `edgecaster/systems/world_entity_index.py`
+- `edgecaster/systems/poi_registry.py`
+- `edgecaster/systems/poi_worldgen.py`
+- `edgecaster/systems/aggregate_resolution.py`
+- `edgecaster/systems/site_placement.py`
+
+Execution strategy:
+1. Separate three concerns explicitly:
+   - containment/identity authority -> `entity_graph`
+   - realization lifecycle -> `entity_lifecycle`
+   - spatial/semantic lookup indexes -> one declared index layer
+2. Add shared query helpers for:
+   - query by semantic id / kind
+   - query by ABS rect
+   - query realized vs collapsed status
+3. Port world-map, overmap, inspection, and attention consumers to those
+   shared queries before deleting store-specific APIs.
+4. Collapse `poi_registry` toward semantic-id queries on ordinary entities.
+5. Collapse `world_entity_index` and `AttentionCellStore` toward one spatial
+   index model keyed by `entity_id` plus realization state.
+
+Done looks like:
+- POIs, macro entities, staged attention entities, and loaded-zone entities are
+  different realization states of one ontology.
+- Lookup APIs stop caring which legacy store happened to answer the question.
+
+### Track E - Promote LevelState Sidecar Runtime Effects Into Entities
+
+Why this comes after the index/lifecycle work:
+- Effect entities need the realization/index path to be stable enough that they
+  do not immediately create a second transient-special-case architecture.
+
+Primary targets:
+- `LevelState.choking_vines_state`
+- `LevelState.rune_choking_vines_state`
+- `LevelState.thrown_knives_state`
+- later candidates such as siege/trial/bespoke event state
+
+Execution strategy:
+1. Treat each effect family as transient entities/components with TTL and
+   geometry instead of bespoke dict payloads.
+2. Keep high-churn contact itself out of persistent graph edges; derive it from
+   footprints or an ephemeral contact index.
+3. Let scheduling and rendering query those entities through the same runtime
+   query surfaces as everything else.
+
+Done looks like:
+- Pattern effects, projectiles, and similar runtime phenomena stop depending on
+  special `LevelState` fields to exist.
+
+### Track F - Persistence And Save/Load Cleanup
+
+Why this is late:
+- Persistence should freeze after the authority/query paths are stable enough
+  that we are not redesigning the on-disk bridge every few slices.
+
+Primary targets:
+- `game.entity_state`
+- `edgecaster/systems/entity_snapshots.py`
+- remaining lineage compatibility reads
+- save/load paths for inventories, POIs, and collapsed descendants
+
+Execution strategy:
+1. Finish the `entity_id`-only contract for lifecycle/ownership truth.
+2. Replace broad `last_known_*` snapshot payloads with more typed component or
+   entity deltas where practical.
+3. Keep lineage as provenance/history only, not fallback identity.
+4. Re-run migration tests after each deletion of a persistence bridge.
+
+Done looks like:
+- Persistence no longer depends on legacy lineage fallback to reconstruct truth.
+- Snapshot/apply logic is typed enough that geometry/channels/equipment/LoD
+  changes do not need ad hoc patch keys.
+
+### Track G - Phase 3 Rule Engine Expansion Should Follow The Surface Stabilization
+
+Why this runs alongside, not ahead of, the storage cleanup:
+- Reducer/rule work becomes much cleaner once the read surfaces and authority
+  boundaries stop shifting under it.
+
+Primary targets:
+- `edgecaster/state/chakra_component.py`
+- `edgecaster/systems/chakra_reducer.py`
+- `edgecaster/content/chakra_rules.yaml`
+- `edgecaster/content/chakra_layouts.yaml`
+
+Execution strategy:
+1. Keep the reducer pure and orchestration-owned.
+2. Expand data so rules can read geometry-aware structure without reintroducing
+   actor-only assumptions.
+3. Route more gameplay reads through projection/query helpers backed by reducer
+   outputs instead of bespoke per-system calculations.
+
+Done looks like:
+- Channel evaluation is shared across bodies, items, buildings, and larger
+  structures.
+- Rule content can grow without requiring new one-off runtime ladders.
+
+### Recommended Near-Term Slice Order
+
+If we want the next several large steps in practical order, the recommendation is:
+
+1. Slice XCVI: replace remaining test `ChakraState(...)` construction and
+   delete the class if that reaches zero production dependence.
+2. Finish the last Chakra Scene / Inventory Scene body-schema fallback cuts so
+   scene reads stay on `body_view_queries.py` and `entity_geometry.py`.
+3. Introduce the shared runtime entity query layer and begin migrating
+   high-fanout `level.actors` / `level.entities` callers.
+4. Finish graph-authoritative equipment + inventory deletion of list-backed
+   write paths.
+5. Design the single realization/index surface that can subsume
+   `AttentionCellStore`, `world_entity_index`, and eventually `poi_registry`.
+6. After that surface exists, convert one transient runtime state family
+   (`thrown_knives_state` or `choking_vines_state`) into real entities as the
+   proof slice.
+
+This order keeps us deleting the smallest but most architecture-distorting
+compatibility layers first, then attacking the bigger shared-runtime surfaces
+with fewer moving parts still attached.
+
+96. Phase 8 Legacy Removal Slice XCVI (2026-04-21):
+    - `systems/chakras.py`: Deleted the nominal `ChakraState` class. Query and
+      fallback seed helpers now accept thin snapshot-shaped payloads
+      (`dict`, `ChakraViewState`, or light attribute-style objects) without a
+      dedicated facade type.
+    - Updated remaining ChakraState-oriented production comments/docs to refer
+      to snapshot-shaped read inputs and direct `ChakraComponent` authority.
+    - Migrated remaining direct test construction of `ChakraState(...)` to
+      plain snapshot dicts, `ChakraViewState`, or state-like `SimpleNamespace`
+      payloads.
+    - Remaining Track A work is the raw body-schema fallback cleanup, not the
+      actor-side facade deletion itself.
+
+95. Phase 8 Legacy Removal Slice XCV (2026-04-21):
+    - `systems/chakras.py`: Made the three body-schema geometry helpers private by
+      adding `_` prefix — they are only ever called within `chakras.py` and are the
+      last-resort fallback path, not part of the public API:
+        * `get_chakra_connections_recursive` → `_get_chakra_connections_recursive`
+        * `get_all_chakra_positions_recursive` → `_get_all_chakra_positions_recursive`
+        * `get_active_chakra_generator_graph` → `_get_active_chakra_generator_graph`
+    - Updated all 3 internal self-recursion call sites and the one external call site
+      in `build_chakra_generator_seed` (the schema-fallback branch).
+    - `tests/test_entity_body_expansion.py`: Updated the patch target from
+      `chakra_system.get_active_chakra_generator_graph` to
+      `chakra_system._get_active_chakra_generator_graph` to match the rename.
+    - 675 tests pass.
+
+94. Phase 8 Legacy Removal Slice XCIV (2026-04-21):
+    - `systems/chakras.py`: Loosened `build_chakra_generator_seed` parameter
+      annotation from `chakra_state: ChakraState` to `chakra_state: Any` — the
+      function already duck-types via `_coerce_chakra_query_snapshot` internally and
+      production callers (e.g. `build_chakra_generator_seed_for_actor`) already pass
+      `ChakraViewState` objects, not `ChakraState`.
+    - `_build_seed_from_realized_body_tree`: Removed the stale "ChakraState facade
+      is still being migrated away elsewhere" comment — that migration completed in
+      Slices XCI-XCII.
+    - Updated the `[LEGACY_DELETE]` header on `ChakraState` to reflect current
+      state: actor write path deleted (Slices XCI-XCII), class now only a plain
+      value type used by tests and the schema-fallback seed path; deletion is safe
+      once tests and the fallback are fully migrated to `ChakraViewState`/dicts.
+    - 675 tests pass.
+
+93. Phase 8 Legacy Removal Slice XCIII (2026-04-21):
+    - `systems/chakras.py`: Deleted `can_unlock_full_chakra_id(chakra_state: ChakraState, full_id)`
+      (10 lines) — thin wrapper around `can_unlock_full_chakra_id_from_unlocked` with zero
+      production callers; the `_from_unlocked` variant is the preferred read-path that avoids
+      materializing a full `ChakraState` object.
+    - Merged the "Check unlockability" docstring from the deleted function into
+      `can_unlock_full_chakra_id_from_unlocked`, which is now the sole public API.
+    - 675 tests pass.
+
+92. Phase 8 Legacy Removal Slice XCII (2026-04-21):
+    - `state/actors.py`: Removed `chakra_state: Optional[Any] = None` field from the `Actor`
+      dataclass (4 lines including comment block). No production code reads `actor.chakra_state`;
+      write helpers stopped writing it in Slice XCI. The field was an `Optional[Any]` sentinel
+      that no longer served any runtime purpose.
+    - `tests/test_entity_body_expansion.py`: Refactored the test that previously stored a
+      `ChakraState` on `actor.chakra_state` to use a plain local variable instead; the actor
+      object is no longer mutated by the test setup for this path.
+    - 675 tests pass.
+
+91. Phase 8 Legacy Removal Slice XCI (2026-04-21):
+    - `systems/chakra_items.py`: Deleted `_rebuild_chakra_state_from_component` (~24 lines) and
+      `_refresh_actor_chakra_cache_from_component` (~28 lines) — the last helpers that wrote
+      `actor.chakra_state` from the component authority. No production callers read
+      `actor.chakra_state`; the write was purely for the migration-era compatibility cache.
+    - Removed the 4 call sites of `_refresh_actor_chakra_cache_from_component` from
+      `apply_chakra_state_snapshot`, `restore_actor_chakra_component_snapshot`,
+      `unlock_actor_chakra`, and `toggle_actor_chakra`.
+    - Simplified `_authoritative_chakra_snapshot`: removed the `getattr(actor, "chakra_state",...)`
+      fallback branch — `structural_chakra_projection` is always the sole read source now.
+    - `tests/test_chakra_items_state_bridge.py`: Updated 6 tests:
+      * `test_apply_chakra_state_snapshot_accepts_dict_payload_and_rebuilds_cache` → renamed
+        `test_apply_chakra_state_snapshot_accepts_dict_payload`; removed legacy `actor.chakra_state`
+        assertions; added component node/active assertions.
+      * `test_set_actor_chakra_alignments_persists_through_shared_snapshot_bridge`: removed
+        `actor.chakra_state.alignments` assertions.
+      * `test_set_actor_chakra_pattern_root_persists_through_shared_snapshot_bridge`: removed
+        `actor.chakra_state.pattern_root` assertions.
+      * `test_unlock_actor_chakra_syncs_component`: removed `chakra_state=ChakraState(...)` from
+        actor setup; replaced `actor.chakra_state.unlocked/active` assertions with component checks.
+      * `test_unlock_actor_chakra_rebuilds_present_cache_from_component_and_prunes_stale_nodes`
+        → replaced with `test_unlock_actor_chakra_returns_false_for_already_unlocked_node` testing
+        idempotency on the component (the "stale pruning" behavior was cache-only, now dead).
+      * `test_restore_actor_chakra_component_snapshot_restores_component_and_state`: removed the
+        "chakra_state should be rebuilt" comment and `actor.chakra_state` assertions.
+    - `actor.chakra_state: Optional[Any] = None` still exists on the Actor dataclass as a
+      dormant field; it is no longer written by any helper in the write path. Removal of the
+      field itself is a later slice.
+    - 675 tests pass.
 
 90. Phase 8 Legacy Removal Slice XC (2026-04-20):
     - `systems/chakra_items.py`: Deleted `_structural_legacy_node_ids` helper (~29 lines) and the

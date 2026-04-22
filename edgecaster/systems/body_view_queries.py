@@ -681,3 +681,97 @@ def body_nodes_for_owner(game: Any, owner: Any) -> list[dict[str, Any]]:
         )
 
     return result
+
+
+def body_node_gating_chain_for_owner(
+    game: Any,
+    owner: Any,
+    full_id: str,
+) -> list[str]:
+    """Return the branch-root ancestry that gates a body node for UI callers."""
+    try:
+        from edgecaster.systems.chakras import is_branch_root
+    except Exception:
+        return []
+
+    node_id = str(full_id or "").strip()
+    if not node_id:
+        return []
+
+    rows = body_nodes_for_owner(game, owner)
+    row_by_id = {
+        str(row.get("full_id", "") or ""): row
+        for row in rows
+        if str(row.get("full_id", "") or "")
+    }
+    gating_chain: list[str] = []
+    parts = node_id.split(".")
+    for index in range(1, len(parts)):
+        ancestor = ".".join(parts[:index])
+        anc_row = row_by_id.get(ancestor)
+        anc_proto_id = str((anc_row or {}).get("node_proto_id", "") or "")
+        if anc_row and is_branch_root(anc_proto_id):
+            gating_chain.append(ancestor)
+    return gating_chain
+
+
+def body_node_child_count_for_owner(
+    game: Any,
+    owner: Any,
+    full_id: str,
+) -> int:
+    """Return the number of direct body-node children for a given node id."""
+    node_id = str(full_id or "").strip()
+    if not node_id:
+        return 0
+    rows = body_nodes_for_owner(game, owner)
+    return sum(
+        1
+        for row in rows
+        if str(row.get("parent_full_id", "") or "").strip() == node_id
+    )
+
+
+def body_node_row_for_owner(
+    game: Any,
+    owner: Any,
+    full_id: str,
+) -> Optional[dict[str, Any]]:
+    """Return the matching body-node row for a given full id, if present."""
+    node_id = str(full_id or "").strip()
+    if not node_id:
+        return None
+    for row in body_nodes_for_owner(game, owner):
+        if str(row.get("full_id", "") or "").strip() == node_id:
+            return row
+    return None
+
+
+def visible_body_nodes_for_owner(
+    game: Any,
+    owner: Any,
+    unlocked_node_ids: Any,
+) -> list[dict[str, Any]]:
+    """Return body-node rows visible under the current unlocked branch roots."""
+    unlocked: set[str] = set()
+    try:
+        for raw in (unlocked_node_ids or []):
+            node_id = str(raw or "").strip()
+            if node_id:
+                unlocked.add(node_id)
+    except Exception:
+        unlocked = set()
+
+    rows = body_nodes_for_owner(game, owner)
+    if not rows:
+        return []
+
+    visible_rows: list[dict[str, Any]] = []
+    for row in rows:
+        full_id = str(row.get("full_id", "") or "").strip()
+        if not full_id:
+            continue
+        gating_chain = body_node_gating_chain_for_owner(game, owner, full_id)
+        if all(ancestor in unlocked for ancestor in gating_chain):
+            visible_rows.append(row)
+    return visible_rows

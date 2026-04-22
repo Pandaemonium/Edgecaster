@@ -41,11 +41,6 @@ class Actor(Entity):
     # (Action names from edgecaster.systems.actions.)
     actions: tuple[str, ...] = field(default_factory=tuple)
 
-    # Chakra state for pattern generation (optional - initialized on spawn)
-    # Stores unlocked/active chakras and alignment offsets.
-    # See edgecaster.systems.chakras for full documentation.
-    chakra_state: Optional[Any] = None
-
     # statuses/tags are inherited from Entity
 
     @property

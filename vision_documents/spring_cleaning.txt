@@ -1,14 +1,14 @@
 Title: Spring Cleaning - Actionable Plan
 Purpose: track active cleanup, migration, and correctness work that should continue shaping near-term implementation.
 Status: active-plan
-Last verified: 2026-04-18
+Last verified: 2026-04-21
 Canonical for: active cleanup and refactor follow-up work
 Related docs: `vision_documents/the_yoga.txt`, `vision_documents/architecture.txt`, `vision_documents/entity_chakra_unification_master_plan.txt`, `vision_documents/documentation_review_plan.md`
 Related code: `edgecaster/`, `tests/`
 Supersedes: none
 
 SPRING CLEANING - ACTIONABLE PLAN
-Updated: 2026-04-12
+Updated: 2026-04-21
 Status: UI migration largely complete; map zoom refactor complete; game.py decomposition largely complete
 
 Legend:
@@ -16,6 +16,54 @@ Legend:
 [BEHAVIOR] gameplay change
 [VISION] long-term direction
 [YOGA] required for observer-driven reality (see the_yoga.txt)
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] chakra read-model cleanup (2026-04-21)
+  - `edgecaster/systems/chakra_items.py` now exposes
+    `coerce_chakra_view_state(...)` as the shared bridge from ChakraState-like
+    input onto the thinner `ChakraViewState` read model.
+  - `edgecaster/scenes/chakra_scene.py` and
+    `edgecaster/systems/chakras.py` now use that helper instead of open-coding
+    "state-like" field checks for provider/runtime seed reads.
+  - `edgecaster/systems/body_view_queries.py` now exposes
+    `visible_body_nodes_for_owner(...)`, and Chakra Scene list rows now use
+    that shared unlocked-branch visibility filter instead of a scene-local
+    branch-root walk.
+  - `edgecaster/systems/chakras.py` now exposes
+    `can_unlock_full_chakra_id_from_unlocked(...)`, and the thin unlock/query
+    helpers now use that unlocked-set path instead of constructing temporary
+    `ChakraState` wrappers for read-only prereq checks.
+  - Focused regressions cover read-model coercion plus visible body-node
+    filtering under locked branch roots.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] scene query session cleanup (2026-04-21)
+  - `edgecaster/systems/chakras.py` now exposes
+    `list_visible_chakra_nodes_for_entity_from_unlocked(...)` so scene callers
+    can ask for the current unlocked-or-unlockable body hierarchy without
+    rebuilding a local visibility ladder.
+  - `edgecaster/scenes/character_creation_scene.py` monk picker now uses that
+    shared ordered node list instead of traversing `entity_body` specs locally.
+  - `edgecaster/systems/body_view_queries.py` now exposes
+    `body_node_gating_chain_for_owner(...)` and
+    `body_node_child_count_for_owner(...)`, and Chakra Scene tooltips now read
+    branch metadata through that shared query surface.
+  - `edgecaster/scenes/chakra_scene.py` widget-local preview overrides are now
+    explicitly `edit_session` overrides, clarifying that realign-mode preview
+    state is scene-local and non-authoritative.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] shared body-spec query cleanup (2026-04-21)
+  - `edgecaster/systems/chakras.py` now exposes
+    `get_active_chakra_generator_graph_for_entity(...)` as the shared
+    actor/body-spec graph read for unexpanded-actor seed generation, so new
+    callers do not need to rebuild their own schema/spec traversal ladders.
+  - `edgecaster/systems/chakras.py`
+    `can_unlock_chakra_for_entity_from_unlocked(...)` now serves as the thin
+    deterministic unlock query for callers that already have an unlocked-node
+    set and only need the shared prerequisite check.
+  - `edgecaster/scenes/character_creation_scene.py` monk chakra selection now
+    routes through that shared unlock helper instead of keeping its own
+    scene-local prefix/prerequisite gate.
+  - Focused regressions cover shared unlock queries, actor body-spec seed graph
+    reads, and Monk branch ordering in character creation.
 
 [PROGRESS][ENTITY_CHAKRA][PHASE_8] inventory/query legacy trim (2026-04-20)
   - `Game.player_inventory` deleted. Production callers now read through
@@ -1411,11 +1459,12 @@ PHASE 7 — SCALE-INVARIANCE AND PERFORMANCE HARDENING
 -------------------------------------------------------------------------------
 PHASE 8 — LEGACY REMOVAL
 
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] ChakraState class elimination
+[DONE][ENTITY_CHAKRA][PHASE_8] ChakraState class elimination
   - File: edgecaster/systems/chakras.py
-  - ChakraState (set of active node strings) replaced by entity chakra graph.
-  - body_schema dict tree replaced by chakra node hierarchy.
-  - O(n) parent lookups eliminated by graph edge traversal.
+  - Completed 2026-04-21.
+  - Nominal `ChakraState` facade deleted from production code.
+  - Remaining Track A work is body-schema fallback cleanup and doc/test
+    cleanup around snapshot-shaped chakra inputs.
 
 [DONE][ENTITY_CHAKRA][PHASE_8] lineage_state dict removal (already complete)
   - lineage_state was removed from game.py; confirmed no references in codebase.

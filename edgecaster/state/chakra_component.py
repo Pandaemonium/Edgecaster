@@ -174,8 +174,9 @@ def default_core_component(
 #
 # Unification note (Phase 2B → Phase 8):
 # Writing through these helpers makes ChakraComponent the sole write authority.
-# ChakraState is now a read-only derived view: rebuilt on demand by
-# effective_chakra_view / effective_chakra_projection in chakra_items.py.
+# Runtime callers should read through effective_chakra_view /
+# effective_chakra_projection in chakra_items.py rather than reviving a second
+# actor-side facade type.
 # =============================================================================
 
 def unlock_node(comp: ChakraComponent, node_id: str, *, active: bool = False) -> bool:
@@ -201,8 +202,8 @@ def set_node_active(comp: ChakraComponent, node_id: str, *, active: bool) -> Non
     """Set the active flag for a node.
 
     Creates the node as unlocked when not yet in the component. This allows
-    toggling nodes that were unlocked via legacy ChakraState paths before the
-    component was fully populated.
+    toggling nodes that were unlocked via earlier snapshot/bootstrap paths
+    before the component was fully populated.
     """
     nid = str(node_id)
     if nid not in comp.nodes:
