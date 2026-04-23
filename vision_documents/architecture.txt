@@ -226,6 +226,8 @@ Current concern map (authoritative):
     debug inventory conjure pipeline.
 - `edgecaster/systems/inspection.py`
   - Look/examine logic for tile/entity/terrain descriptions, including ABS-space lookups.
+  - Distant ABS tile descriptions now query the shared `SpatialIndex` before
+    falling back to legacy `WorldEntityIndex` / `AttentionCellStore` lookups.
 - `edgecaster/systems/coords.py`
   - Canonical ABS <-> (zone, local) transforms and coordinate helpers.
 - `edgecaster/systems/entity_ops.py`
@@ -239,12 +241,28 @@ Current concern map (authoritative):
   - Attention-driven render candidate assembly (`renderables_in_abs_rect` core path).
   - World proxy staging delegates for sites/POIs/aggregates.
   - Zone-time aggregate detail realization bridge.
+  - Attention-staged entities now mirror into the shared `SpatialIndex` as
+    `realization_state="staged"` entries while `AttentionCellStore` remains the
+    public compatibility store.
   - `sync_attention_instantiation(...)` now short-circuits when the camera view and
     LoD are unchanged and no loaded level is `spatial_dirty`, which keeps the
     advance-time safety-net call from redoing the full realization walk every tick.
   - [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8] `AttentionCellStore` and the delegate
     methods on `Game` are a transitional bridge. The end-state is a shared
     realization/index path driven directly by entity-graph queries.
+- `edgecaster/systems/spatial_index.py`
+  - Shared ABS-space rect index for entity lookups across realization states.
+  - Tracks `entity_id`, rect, depth, `realization_state`, optional
+    `semantic_id`, `kind`, and mirror `source`.
+  - Query helpers support filtering by `source`, `realization_state`, and
+    `kind`; `query_tag(...)` is the tag-discovery surface for content and
+    dialogue callers.
+  - Currently mirrors `AttentionCellStore` staged entities and
+    `WorldEntityIndex` proxy entities, plus POI specs from `POIRegistry`;
+    inspection/distant-look, render candidate, attention warm-window,
+    spatial-music, legendary-lair, rune-anchor id, and dialogue site-location
+    queries now try this shared index before falling back to legacy
+    store-specific queries.
 - `edgecaster/systems/zones.py`
   - Mechanical zone/chunk transitions only (no gameplay rituals).
   - Explicit transitions (stairs/fast travel/edge wrap) now trigger a small prewarm slice around
@@ -254,6 +272,11 @@ Current concern map (authoritative):
   - Owns `spawn_poi_contents`; `poi_spawning.py` facade deleted in Phase 8.
   - Its orchestration logic currently sits outside the canonical entity-graph resolver and is
     slated to be folded into the unified realization pipeline in a future phase.
+- `edgecaster/systems/poi_registry.py`
+  - Transitional semantic/content-state registry for POI specs.
+  - Spatial lookup is moving to `SpatialIndex`: the registry mirrors POI specs
+    into the shared index as collapsed `source="poi_registry"` entries while
+    remaining responsible for POI content-state persistence.
 - `edgecaster/systems/ambient_spawns.py`
   - Active-window ambient hostile population maintenance (tier-aware top-up over time).
   - Called from `Game._advance_time` after per-level scheduling ticks.
@@ -322,8 +345,22 @@ Delegation note:
   `edgecaster/systems/entity_lifecycle.py` for expand/collapse and uses
   `AttentionCellStore`'s hierarchical rect index instead of the older
   single-level ABS bin grid.
+- `Game.spatial_index` is now the shared Track-D mirror index. It is created
+  before `attn_store` and `world_entity_index`, and both of those legacy stores
+  mirror writes into it while callers are migrated.
 - `AttentionCellStore` and these delegate methods are transitional bridges
   marked `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]`.
+- `DungeonScene._confirm_look(...)` and `SpatialMusicDirector` now read staged
+  / proxy candidates from `SpatialIndex` first, with legacy store-specific
+  fallbacks retained until the remaining render/world/POI callers are migrated.
+- `attention.renderables_in_abs_rect(...)`,
+  `attention.sync_attention_instantiation(...)`, and dialogue site-coordinate
+  lookup also read `SpatialIndex` first; their `WorldEntityIndex` /
+  `AttentionCellStore` fallbacks are compatibility paths to delete after
+  writers directly target the shared realization index.
+- `POIRegistry` now mirrors POI specs into `SpatialIndex`; legendary-lair
+  lookup, rune-anchor id allocation, and colosseum spatial-music checks are
+  SpatialIndex-first with POIRegistry fallbacks where content-state still lives.
 
 Key modules (non-exhaustive):
 - systems/actions.py: ActionDef registry (labels, cooldown, cost, etc.)
@@ -334,11 +371,10 @@ Key modules (non-exhaustive):
   directly, so graph-backed and nested container items stay on the same path.
 - systems/combat.py: attack resolution + on-death hooks
 - systems/inventory.py + systems/equipment.py: inventory, equip/unequip, stat mods.
-  `inventory.py` now queries the entity containment graph as the primary path and falls
-  back to legacy list storage for owners not yet in the graph. Flat list storage is a
-  `[LEGACY_DELETE]` bridge; the end-state is graph-authoritative containment queries only.
+  `inventory.py` now queries the entity containment graph as the authoritative path.
+  The old `game.inventories` parallel containment store has been deleted.
   Shared mutation helpers (`add_inventory_item`, `remove_inventory_item_at`) now centralize
-  attach/detach plus cache sync so gameplay/content callers do not hand-roll list-cache
+  attach/detach so gameplay/content callers do not hand-roll containment
   mutation and graph patching separately. Shared recursive inventory walkers now live here
   too, so event/system callers do not each keep their own inventory traversal ladders.
 - systems/trade.py: merchant pricing + transaction commit.

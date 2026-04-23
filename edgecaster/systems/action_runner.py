@@ -40,11 +40,20 @@ def _telemetry(game: "Game", event: str, **payload: Any) -> None:
 
 
 def _actor_inventory(game: "Game", actor_id: str) -> list[Any]:
-    """Read actor inventory through the shared inventory query surface."""
+    """Read actor inventory and equipped items through the shared query surface."""
     try:
-        return list(inventory_system.get_inventory(game, str(actor_id)))
+        inv = list(inventory_system.get_inventory(game, str(actor_id)))
     except Exception:
-        return []
+        inv = []
+    try:
+        from edgecaster.systems import chakra_items as chakra_items_system
+        eq = chakra_items_system.equipped_items(game, str(actor_id))
+        for it in eq:
+            if it not in inv:
+                inv.append(it)
+    except Exception:
+        pass
+    return inv
 
 
 # ---------------------------------------------------------------------------

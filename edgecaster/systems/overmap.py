@@ -25,6 +25,8 @@ import time
 import traceback
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
+from edgecaster.systems import spatial_index as spatial_index_system
+
 if TYPE_CHECKING:
     from edgecaster.game import Game
 
@@ -605,6 +607,15 @@ def alloc_rune_anchor_poi_id(game: "Game") -> str:
             existing = {p.id for p in poi_reg}
     except Exception:
         existing = set()
+    try:
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            existing.update(
+                str(entry.entity_id)
+                for entry in idx.query_kind("rune_anchor")
+            )
+    except Exception:
+        pass
     while True:
         pid = f"rune_anchor_{i:03d}"
         if pid not in existing:

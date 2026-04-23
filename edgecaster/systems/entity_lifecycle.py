@@ -26,6 +26,7 @@ from edgecaster.systems import aggregate_resolution as aggregate_system
 from edgecaster.systems import entity_body as entity_body_system
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import entity_snapshots as entity_snapshots_system
+from edgecaster.systems import spatial_index as spatial_index_system
 from edgecaster.systems import spawning as spawning_system
 
 
@@ -512,7 +513,8 @@ def _build_staged_actor(
     Post-construction behaviors are tag-driven — no hardcoded npc_id switches:
     - show_exact_hp: set via spec_tags["show_exact_hp"]
     - auto-regen: set via spec_tags["auto_regen_amount"] + spec_tags["auto_regen_interval"]
-    - merchant init: triggered by spec["merchant_id"] or spec_tags["merchant_id"]
+    - merchant identity: set from spec["merchant_id"] or spec_tags["merchant_id"];
+      stock initialization is deferred to dialogue/trade UI
     """
     spec_tags = (spec.get("tags") or {}) if isinstance(spec, dict) else {}
     zone_w, zone_h = _zone_dims(game)
@@ -600,21 +602,14 @@ def _build_staged_actor(
         except Exception:
             pass
 
-    # Merchant initialization: any NPC with a merchant_id kicks off stock setup.
-    # Read from top-level spec first (enemies.yaml field), then spec_tags fallback.
+    # Merchant identity is attached here, but inventory restock is intentionally
+    # deferred until dialogue/trade UI asks for it. Attention expansion can
+    # realize many town NPCs at once; spawning full shop stock during that pass
+    # makes camera/zone realization far too heavy.
     merchant_id = spec.get("merchant_id") or spec_tags.get("merchant_id")
     if merchant_id:
         actor.tags["merchant_id"] = merchant_id
-        try:
-            from edgecaster.systems import trade as trade_system
-
-            getter = getattr(game, "get_zone_for_render", None)
-            if callable(getter):
-                level = getter((abs_pos[0] // zone_w, abs_pos[1] // zone_h, int(zz)))
-                if level is not None:
-                    trade_system.ensure_merchant_initialized(game, level, actor)
-        except Exception:
-            pass
+        actor.tags["merchant_initialization_deferred"] = True
 
     return actor
 
@@ -667,8 +662,19 @@ def find_runtime_entity(game: object, entity_id: str) -> Optional[object]:
     except Exception:
         pass
 
-    attn_store = getattr(game, "attn_store", None)
+    # SpatialIndex covers staged (attn_store) and proxy (world_entity_index) entities.
     try:
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            entry = idx.get(eid)
+            if entry is not None:
+                return entry.obj
+    except Exception:
+        pass
+
+    # Fallback for runtimes/tests without SpatialIndex wired.
+    try:
+        attn_store = getattr(game, "attn_store", None)
         if attn_store is not None:
             obj = getattr(attn_store, "entities", {}).get(eid)
             if obj is not None:
@@ -689,36 +695,6 @@ def find_runtime_entity(game: object, entity_id: str) -> Optional[object]:
     except Exception:
         pass
 
-    # WorldEntityIndex lookup.  Use _ent_cells (entity-key → zone-set) for a
-    # targeted search rather than scanning all zone buckets — O(entity_zones)
-    # instead of O(all_zones * refs_per_zone).  Fall back to the full scan if
-    # _ent_cells is absent (old index instances or test doubles).
-    try:
-        index = getattr(game, "world_entity_index", None)
-        buckets = getattr(index, "_by_zone", None)
-        if isinstance(buckets, dict):
-            ent_cells = getattr(index, "_ent_cells", None)
-            if isinstance(ent_cells, dict):
-                # Fast path: look up only the zones this entity occupies.
-                entity_key = f"id:{eid}"
-                zones = ent_cells.get(entity_key)
-                if zones:
-                    for zc in zones:
-                        for ref in buckets.get(zc, ()):
-                            ent = getattr(ref, "ent", None)
-                            if ent is not None and _entity_id(ent) == eid:
-                                return ent
-            else:
-                # Fallback: full scan for index instances without _ent_cells.
-                for refs in buckets.values():
-                    for ref in refs:
-                        ent = getattr(ref, "ent", None)
-                        if ent is None:
-                            continue
-                        if _entity_id(ent) == eid:
-                            return ent
-    except Exception:
-        pass
     return None
 
 
@@ -1051,17 +1027,17 @@ def _promote_staged_children_to_zone(game: object, child_ids: List[str]) -> None
     promotion for any child still sitting in attn_store rather than in a level
     cache, so collision, talk detection, and wall-blocking all work correctly.
     """
-    attn_store = getattr(game, "attn_store", None)
-    if attn_store is None:
+    spatial_index = spatial_index_system.get_game_spatial_index(game)
+    if spatial_index is None:
         return
-    staged = getattr(attn_store, "entities", {})
     zone_w, zone_h = _zone_dims(game)
 
     for cid in child_ids:
-        obj = staged.get(cid)
-        if obj is None:
-            # Already promoted to a level cache on a previous tick.
+        si_entry = spatial_index.get(cid)
+        if si_entry is None:
+            # Already promoted to a level cache (and despawned from staged) on a previous tick.
             continue
+        obj = si_entry.obj
 
         # Derive absolute position and z-level from the object itself.
         abs_pos = getattr(obj, "abs_pos", None)
@@ -1072,12 +1048,8 @@ def _promote_staged_children_to_zone(game: object, child_ids: List[str]) -> None
         except (TypeError, IndexError, ValueError):
             continue
 
-        # Use eid_to_bin as a fallback for zz if the object has no z attr.
         zz_obj = getattr(obj, "z", None) or getattr(obj, "zz", None)
-        if zz_obj is None:
-            bin_entry = getattr(attn_store, "eid_to_bin", {}).get(cid)
-            zz_obj = int(bin_entry[3]) if bin_entry is not None and len(bin_entry) >= 4 else 0
-        zz = int(zz_obj)
+        zz = int(zz_obj) if zz_obj is not None else int(si_entry.zz)
 
         # Check whether the target zone is currently loaded before doing work.
         getter = getattr(game, "get_zone_for_render", None)

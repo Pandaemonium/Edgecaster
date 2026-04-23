@@ -104,84 +104,26 @@ def _add_to_stack(target: Any, amount: int) -> int:
 # Inventory Access
 # ---------------------------------------------------------------------------
 
-def _inventory_graph_authority_owners(game: "Game") -> set[str]:
-    """Return the set of owners whose inventory is graph-backed."""
-    raw = getattr(game, "_inventory_graph_authority_owners", None)
-    if isinstance(raw, set):
-        return raw
-    owners: set[str] = set()
-    try:
-        setattr(game, "_inventory_graph_authority_owners", owners)
-    except Exception:
-        pass
-    return owners
-
-
-def _mark_inventory_graph_authority(game: "Game", *owner_ids: str) -> None:
-    """Remember that an owner's inventory should mirror graph edges exactly."""
-    owners = _inventory_graph_authority_owners(game)
-    for owner_id in owner_ids:
-        oid = str(owner_id or "").strip()
-        if oid:
-            owners.add(oid)
-
-
-def _cache_looks_graph_managed(cache: List["Entity"], owner_id: str) -> bool:
-    """Best-effort detection for caches already populated via graph attaches."""
-    oid = str(owner_id or "")
-    for item in cache:
-        try:
-            parent_id = str(getattr(item, "parent_entity_id", "") or "")
-        except Exception:
-            parent_id = ""
-        try:
-            socket_id = str(getattr(item, "socket_id", "") or "")
-        except Exception:
-            socket_id = ""
-        if parent_id == oid and socket_id == "inventory":
-            return True
-    return False
-
-
 def get_inventory(game: "Game", owner_id: str) -> List["Entity"]:
     """Return the inventory list for a given owner id.
 
-    Queries containment edges from entity_graph when available, then syncs
-    the result back into the list cache so callers that hold direct references
-    to game.inventories[oid] continue to reflect live state.
-
-    Falls back to the legacy list cache when the graph has no inventory edges
-    (e.g., before the first pickup or for NPCs that were not graph-registered).
+    Queries containment edges from entity_graph. This is the absolute source
+    of truth for inventory contents.
     """
     oid = str(owner_id)
-    cache = game.inventories.setdefault(oid, [])
+    resolved: List[Any] = []
     graph = getattr(game, "entity_graph", None)
     if graph is not None:
         try:
-            if _cache_looks_graph_managed(cache, oid):
-                _mark_inventory_graph_authority(game, oid)
             get_children = getattr(graph, "get_children", None)
-            if not callable(get_children):
-                return cache
-            raw_child_ids = get_children(oid, socket_id="inventory")
-            if not isinstance(raw_child_ids, (list, tuple, set)):
-                return cache
-            child_ids = list(raw_child_ids)
-            graph_authoritative = bool(child_ids) or oid in _inventory_graph_authority_owners(game)
-            if graph_authoritative:
-                resolved: List[Any] = []
-                for cid in child_ids:
-                    obj = entity_lifecycle_system.find_runtime_entity(game, cid)
+            if callable(get_children):
+                for cid in get_children(oid, socket_id="inventory"):
+                    obj = entity_lifecycle_system.find_runtime_entity(game, str(cid))
                     if obj is not None:
                         resolved.append(obj)
-                # Replace in-place to preserve direct references held by UI code.
-                cache[:] = resolved
-                _mark_inventory_graph_authority(game, oid)
-                return cache
         except Exception:
             pass
-    # Legacy list-backed fallback.
-    return cache
+    return resolved
 
 
 def get_player_inventory(game: "Game") -> List["Entity"]:
@@ -200,8 +142,8 @@ def iter_inventory_root_owner_ids(
     """Yield known top-level inventory owners without duplicating ids.
 
     This is the shared discovery surface for systems that need to walk
-    inventory trees without treating ``game.inventories`` as the sole
-    authority for which owners exist.
+    inventory trees after list-backed ``game.inventories`` authority has been
+    deleted.
     """
     seen: set[str] = set()
 
@@ -225,14 +167,6 @@ def iter_inventory_root_owner_ids(
             if isinstance(collection, dict):
                 for owner_id in collection.keys():
                     yield from _yield_once(owner_id)
-
-    inventories = getattr(game, "inventories", None)
-    if isinstance(inventories, dict):
-        for owner_id in list(inventories.keys()):
-            yield from _yield_once(owner_id)
-
-    for owner_id in sorted(_inventory_graph_authority_owners(game)):
-        yield from _yield_once(owner_id)
 
 
 def iter_inventory_tree(
@@ -283,53 +217,33 @@ def add_inventory_item(game: "Game", owner_id: str, ent: Any) -> None:
     except Exception:
         pass
 
-    _mark_inventory_graph_authority(game, oid)
-
-    cache = get_inventory(game, oid)
-    if not any(existing is ent for existing in cache):
-        cache.append(ent)
-
 
 def remove_inventory_item(game: "Game", owner_id: str, ent: Any, *, reason: Optional[str] = None) -> bool:
-    """Detach a specific inventory item and keep the list cache in sync."""
+    """Detach a specific inventory item."""
     oid = str(owner_id or "")
     if not oid or ent is None:
         return False
 
-    cache = get_inventory(game, oid)
-    found = False
-    found_index: Optional[int] = None
-    ent_id = str(getattr(ent, "id", "") or "")
-    for idx, existing in enumerate(list(cache)):
-        if existing is ent:
-            found = True
-            found_index = idx
-            break
-        if ent_id and str(getattr(existing, "id", "") or "") == ent_id:
-            found = True
-            found_index = idx
-            ent = existing
-            break
-    if not found:
-        return False
+    is_attached = False
+    if str(getattr(ent, "parent_entity_id", "")) == oid and str(getattr(ent, "socket_id", "")) == "inventory":
+        is_attached = True
+    else:
+        graph = getattr(game, "entity_graph", None)
+        if graph:
+            node = graph.get_node(getattr(ent, "id", ""))
+            if node and node.parent_entity_id == oid and node.socket_id == "inventory":
+                is_attached = True
+
+    if not is_attached:
+        # verify via get_inventory just in case
+        inv = get_inventory(game, oid)
+        if ent not in inv:
+            return False
 
     try:
         entity_graph_ops_system.detach_entity_from_parent(game, ent)
     except Exception:
         pass
-    _mark_inventory_graph_authority(game, oid)
-
-    # Graph-backed caches will be refreshed by the next get_inventory() call,
-    # but remove the local reference immediately so current callers do not keep
-    # stale direct-list state.
-    if found_index is not None and 0 <= found_index < len(cache):
-        if cache[found_index] is ent:
-            cache.pop(found_index)
-        else:
-            for idx, existing in enumerate(list(cache)):
-                if existing is ent:
-                    cache.pop(idx)
-                    break
 
     if reason:
         _mark_entity_removed(game, ent, reason=reason)
@@ -591,7 +505,6 @@ def drop_inventory_item_qty(game: "Game", index: int, qty: Optional[int] = None)
         clear_equipped_tags=False,
     )
     entity_graph_ops_system.detach_entity_from_parent(game, dropped)
-    _mark_inventory_graph_authority(game, game.player_id)
     dropped.pos = player.pos
     level.entities[dropped.id] = dropped
 
@@ -741,7 +654,6 @@ def move_item_between_inventories(
         dst_owner_id=dest_owner_id,
         socket_id="inventory",
     )
-    _mark_inventory_graph_authority(game, src_owner_id, dest_owner_id)
 
     name = getattr(ent, "name", None) or "item"
     article = "an" if name and name[0].lower() in "aeiou" else "a"
@@ -839,7 +751,6 @@ def move_item_between_inventories_qty(
         clear_equipped_tags=True,
         socket_id="inventory",
     )
-    _mark_inventory_graph_authority(game, src_owner_id, dest_owner_id)
 
     # Logging
     name = getattr(ent, "name", None) or "item"
@@ -895,8 +806,21 @@ def get_equipped_in_slot(
     slot_id: str
 ) -> Optional["Entity"]:
     """Return the inventory entity currently tagged as equipped in `slot_id`, if any."""
-    inv = get_inventory(game, str(owner_id))
+    oid = str(owner_id)
     sid = str(slot_id)
+
+    graph = getattr(game, "entity_graph", None)
+    if graph is not None:
+        child_ids = list(graph.get_children(oid, socket_id=sid))
+        for cid in child_ids:
+            try:
+                obj = entity_lifecycle_system.find_runtime_entity(game, cid)
+                if obj is not None:
+                    return obj
+            except Exception:
+                pass
+
+    inv = get_inventory(game, str(owner_id))
     for ent in inv:
         tags = getattr(ent, "tags", {}) or {}
         cur = tags.get("equipped_slot") or tags.get("equipped")
@@ -914,6 +838,10 @@ def unequip_slot(game: "Game", owner_id: str, slot_id: str) -> None:
     tags.pop("equipped_slot", None)
     tags.pop("equipped", None)
     try:
+        entity_graph_ops_system.reparent_entity(game, ent, parent_id=str(owner_id), socket_id="inventory")
+    except Exception:
+        pass
+    try:
         setattr(ent, "tags", tags)
     except Exception:
         pass
@@ -924,22 +852,39 @@ def unequip_slot(game: "Game", owner_id: str, slot_id: str) -> None:
 
 def unequip_item(game: "Game", owner_id: str, item_id: str) -> None:
     """Clear equipped tags from the given inventory item if present."""
-    inv = get_inventory(game, str(owner_id))
+    oid = str(owner_id)
     iid = str(item_id)
-    for ent in inv:
-        if str(getattr(ent, "id", "")) != iid:
-            continue
-        tags = getattr(ent, "tags", {}) or {}
-        tags.pop("equipped_slot", None)
-        tags.pop("equipped", None)
-        try:
-            setattr(ent, "tags", tags)
-        except Exception:
-            pass
-        game.refresh_actor_actions(str(owner_id))
-        # Refresh FOV in case equipment affected view radius
-        _refresh_fov_if_player(game, owner_id)
+
+    ent = None
+    try:
+        ent = entity_lifecycle_system.find_runtime_entity(game, iid)
+    except Exception:
+        pass
+
+    if ent is None:
+        inv = get_inventory(game, oid)
+        for e in inv:
+            if str(getattr(e, "id", "")) == iid:
+                ent = e
+                break
+
+    if ent is None:
         return
+
+    tags = getattr(ent, "tags", {}) or {}
+    tags.pop("equipped_slot", None)
+    tags.pop("equipped", None)
+    try:
+        entity_graph_ops_system.reparent_entity(game, ent, parent_id=oid, socket_id="inventory")
+    except Exception:
+        pass
+    try:
+        setattr(ent, "tags", tags)
+    except Exception:
+        pass
+    game.refresh_actor_actions(oid)
+    # Refresh FOV in case equipment affected view radius
+    _refresh_fov_if_player(game, owner_id)
 
 
 def equip_item_to_slot(
@@ -957,34 +902,45 @@ def equip_item_to_slot(
     iid = str(item_id)
     sid = str(slot_id)
 
-    inv = get_inventory(game, oid)
-    for ent in inv:
-        if str(getattr(ent, "id", "")) != iid:
-            continue
+    ent = None
+    try:
+        ent = entity_lifecycle_system.find_runtime_entity(game, iid)
+    except Exception:
+        pass
 
-        # Validate slot compatibility before mutating currently equipped state.
-        allowed, reason = equip_rules.can_equip_item_in_slot(ent, sid)
-        if not allowed:
-            if oid == str(getattr(game, "player_id", "")) and reason:
-                game.log.add(str(reason))
-            return
+    if ent is None:
+        inv = get_inventory(game, oid)
+        for e in inv:
+            if str(getattr(e, "id", "")) == iid:
+                ent = e
+                break
 
-        # Ensure only one item occupies a slot.
-        unequip_slot(game, oid, sid)
-
-        # Unification note: equipment is still represented as tags on a
-        # list-owned inventory item. Phase 4 should turn this into socket-typed
-        # containment edges so equip/unequip no longer bypasses the graph model.
-        tags = getattr(ent, "tags", {}) or {}
-        tags["equipped_slot"] = sid
-        try:
-            setattr(ent, "tags", tags)
-        except Exception:
-            pass
-        game.refresh_actor_actions(oid)
-        # Refresh FOV in case equipment affected view radius
-        _refresh_fov_if_player(game, oid)
+    if ent is None:
         return
+
+    # Validate slot compatibility before mutating currently equipped state.
+    allowed, reason = equip_rules.can_equip_item_in_slot(ent, sid)
+    if not allowed:
+        if oid == str(getattr(game, "player_id", "")) and reason:
+            game.log.add(str(reason))
+        return
+
+    # Ensure only one item occupies a slot.
+    unequip_slot(game, oid, sid)
+
+    tags = getattr(ent, "tags", {}) or {}
+    tags["equipped_slot"] = sid
+    try:
+        entity_graph_ops_system.reparent_entity(game, ent, parent_id=oid, socket_id=sid)
+    except Exception:
+        pass
+    try:
+        setattr(ent, "tags", tags)
+    except Exception:
+        pass
+    game.refresh_actor_actions(oid)
+    # Refresh FOV in case equipment affected view radius
+    _refresh_fov_if_player(game, oid)
 
 
 def equip_item_to_slot_qty(

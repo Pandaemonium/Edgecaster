@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from edgecaster.events import DialogueChoice, DialogueNode, DialogueTree
 from edgecaster import prototypes
+from edgecaster.systems import spatial_index as spatial_index_system
 
 from . import npcs as npc_content
 
@@ -52,23 +53,28 @@ def _npc_def_from_proto(npc_id: str) -> dict:
 
 
 def _find_site_zonecoord(game: Any, site_kind: str):
-    wie = getattr(game, "world_entity_index", None)
-    if wie is None:
-        return None
     try:
-        zone_w = int(getattr(wie, "zone_w", 60) or 60)
-        zone_h = int(getattr(wie, "zone_h", 40) or 40)
-        by_zone = getattr(wie, "_by_zone", {}) or {}
-        for zc, lst in by_zone.items():
-            for ref in lst:
-                ent = getattr(ref, "ent", None)
-                tags = getattr(ent, "tags", None) or {}
-                if str(tags.get("site_kind") or "") == str(site_kind):
-                    zx, zy, zz = map(int, getattr(ref, "zone_coord", zc))
-                    lx, ly = map(int, getattr(ref, "local_pos", (zone_w // 2, zone_h // 2)))
-                    return (zx, zy, zz, lx, ly)
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            cfg = getattr(game, "cfg", None)
+            zone_w = int(getattr(cfg, "world_width", 60) or 60)
+            zone_h = int(getattr(cfg, "world_height", 40) or 40)
+            for entry in idx.query_tag("site_kind", str(site_kind)):
+                ent = getattr(entry, "obj", None)
+                zc = getattr(ent, "zone_coord", None)
+                lp = getattr(ent, "local_pos", None)
+                if zc is None or lp is None:
+                    ax, ay = spatial_index_system.entry_anchor(entry)
+                    zx = int(float(ax) // float(zone_w))
+                    zy = int(float(ay) // float(zone_h))
+                    zc = (zx, zy, int(getattr(entry, "zz", 0) or 0))
+                    lp = (int(float(ax) - zx * zone_w), int(float(ay) - zy * zone_h))
+                zx, zy, zz = map(int, zc)
+                lx, ly = map(int, lp)
+                return (zx, zy, zz, lx, ly)
     except Exception:
-        return None
+        pass
+
     return None
 
 

@@ -187,10 +187,9 @@ class TestInventory:
         inv = game_instance.get_inventory(game_instance.player_id)
         assert isinstance(inv, list)
 
-    def test_inventories_dict_exists(self, game_instance):
-        """inventories dict should exist."""
-        assert hasattr(game_instance, 'inventories')
-        assert isinstance(game_instance.inventories, dict)
+    def test_inventories_dict_deleted(self, game_instance):
+        """game.inventories should not exist as a parallel containment store."""
+        assert not hasattr(game_instance, 'inventories')
 
 
 class TestEntityState:

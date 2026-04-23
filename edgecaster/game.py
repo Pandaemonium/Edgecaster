@@ -73,6 +73,7 @@ from edgecaster.state.actors import Actor, Stats, Human
 from edgecaster.state.entities import Entity
 from edgecaster.state.entity_graph import EntityGraphStore
 from edgecaster.enemies import factory as enemy_factory
+from edgecaster.systems.spatial_index import SpatialIndex
 from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.systems import aggregate_resolution as aggregate_system
 
@@ -412,7 +413,12 @@ class Game:
         # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
         # Transitional attention cache. End-state uses unified graph + quadtree index.
         # Attention-staged entities (Route 2: no rectangular zones as ontology)
-        self.attn_store: attention_system.AttentionCellStore = attention_system.AttentionCellStore(bin_size=int(getattr(cfg, 'attn_bin_size', 32) or 32))
+        spatial_bin_size = int(getattr(cfg, 'attn_bin_size', 32) or 32)
+        self.spatial_index: SpatialIndex = SpatialIndex(bin_size=spatial_bin_size)
+        self.attn_store: attention_system.AttentionCellStore = attention_system.AttentionCellStore(
+            bin_size=spatial_bin_size,
+            spatial_index=self.spatial_index,
+        )
         # Track which child entities are active per aggregate (agg_id -> {slot:int -> eid:str})
         self._attn_active_agg_children: Dict[str, Dict[int, str]] = {}
         # Track which staged structure tiles are active per POI/site (parent_id -> set[eid])
@@ -422,9 +428,10 @@ class Game:
         # records may still be read during migration as compatibility fallback.
         self.entity_state: Dict[str, Dict[str, Any]] = {}
         # Authoritative containment graph. Records parent/socket relationships
-        # for all runtime entities. The parallel stores (LevelState.actors,
-        # LevelState.entities, inventories, attn_store, world_entity_index,
-        # poi_registry) remain as caches; writes go here first via
+        # for all runtime entities. The remaining parallel stores
+        # (LevelState.actors, LevelState.entities, attn_store,
+        # world_entity_index, poi_registry) are being narrowed into
+        # caches/indexes; containment writes go here first via
         # entity_graph_ops.attach_entity_to_parent / detach_entity_from_parent.
         # [ENTITY_CHAKRA][PHASE_2C]
         self.entity_graph: EntityGraphStore = EntityGraphStore()
@@ -460,7 +467,11 @@ class Game:
         zone_h_init = int(getattr(getattr(self, "cfg", None), "world_height", 40) or 40)
         # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
         # Transitional macro index. End-state folds macro entities into unified graph.
-        self.world_entity_index: WorldEntityIndex = WorldEntityIndex(zone_w=zone_w_init, zone_h=zone_h_init)
+        self.world_entity_index: WorldEntityIndex = WorldEntityIndex(
+            zone_w=zone_w_init,
+            zone_h=zone_h_init,
+            spatial_index=self.spatial_index,
+        )
         self._world_entity_index_wh = (zone_w_init, zone_h_init)  # Prevent recreation later
         self._world_entities_built: bool = False
         # Ensure fixed/world sites are available immediately (important for Starttsgard cutover).
@@ -473,6 +484,10 @@ class Game:
         # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
         # Transitional semantic registry. End-state uses semantic_id queries on entity graph.
         self.poi_registry: POIRegistry = get_poi_registry(zone_w=zone_w_init, zone_h=zone_h_init)
+        try:
+            self.poi_registry.attach_spatial_index(self.spatial_index)
+        except Exception:
+            pass
         self.poi_locations: Dict[str, Tuple[int, int, int]] = {}
 
         # Build world proxies for map-visible POIs.
@@ -494,11 +509,6 @@ class Game:
         # Optional per-zone overrides (quest/scripts can set these).
         self.zone_difficulty_overrides: Dict[Tuple[int, int, int], float] = {}
 
-        # Inventories: mapping from owner id to a list of carried Entities.
-        # Initially empty; per-owner lists are created lazily via get_inventory().
-        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-        # End-state: inventory is containment graph queries, not separate dict storage.
-        self.inventories: Dict[str, List[Entity]] = {}
         # Per-actor fractal blade runtime state.
         self.blade_states: Dict[str, blade_runtime_system.BladeState] = {}
         # Simple SFX cache for lightweight sounds
@@ -747,16 +757,12 @@ class Game:
         except Exception:
             pass
 
-        # B2: Register the player in the entity graph and mark inventory authority.
-        # The player bypasses register_actor (which does this for NPCs), so without
-        # this block the player has no graph node and _mark_inventory_graph_authority
-        # is never called — meaning get_inventory falls back to the legacy list cache
-        # even when graph-attached items exist.
+        # B2: Register the player in the entity graph. The player bypasses
+        # register_actor (which does this for NPCs), so this explicit graph node
+        # keeps player inventory/equipment containment graph-authoritative.
         try:
             from edgecaster.systems import entity_graph_ops as _egops
-            from edgecaster.systems.inventory import _mark_inventory_graph_authority as _miga
             _egops.register_entity(self, player, lod_state="expanded")
-            _miga(self, self.player_id)
         except Exception:
             pass
 
@@ -1489,10 +1495,15 @@ class Game:
         base = dict(getattr(self.character, "stats", {}) or {})
         oid = str(owner_id) if owner_id is not None else str(getattr(self, "player_id", ""))
         try:
-            inv = list(self.get_inventory(oid))
+            from edgecaster.systems import chakra_items as _ci
+            eq_items = _ci.equipped_items(self, oid)
         except Exception:
-            inv = []
-        mods = equipment_system.collect_equip_mods(inv)
+            try:
+                inv = list(self.get_inventory(oid))
+                eq_items = [it for it in inv if equipment_system.is_equipped(it)]
+            except Exception:
+                eq_items = []
+        mods = equipment_system.collect_equip_mods(eq_items)
         return equipment_system.apply_mods(base, mods)
 
 

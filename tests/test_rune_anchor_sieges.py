@@ -59,7 +59,6 @@ def _make_game_and_level():
         random=lambda: 0.0,
     )
     game.log = SimpleNamespace(add=MagicMock())
-    game.inventories = {}
     game._level = lambda: level
     game._player = lambda: player
     game._debug = lambda _msg: None
@@ -119,11 +118,11 @@ def test_channel_fracture_consumes_crystal_and_advances_state():
         fracture.progress = fracture.required_channels
 
     player.pos = target.pos
-    crystal = SimpleNamespace(id="c1", tags={"item_type": "coherence_crystal", "quantity": 2})
-    game.inventories[player.id] = [crystal]
+    crystal = SimpleNamespace(id="c1", parent_entity_id=player.id, socket_id="inventory", tags={"item_type": "coherence_crystal", "quantity": 2})
 
-    with patch("edgecaster.systems.rune_anchor_sieges._spawn_wave") as mock_wave:
-        rune_anchor_sieges.channel_fracture(game, player.id)
+    with patch("edgecaster.systems.inventory.get_inventory", return_value=[crystal]):
+        with patch("edgecaster.systems.rune_anchor_sieges._spawn_wave") as mock_wave:
+            rune_anchor_sieges.channel_fracture(game, player.id)
 
     assert target.repaired is True
     assert int(crystal.tags.get("quantity", 0)) == 1
@@ -246,8 +245,7 @@ def test_anchor_purge_consumes_crystals_and_hits_hostiles():
     assert siege is not None
 
     player.pos = siege.anchor_pos
-    crystal = SimpleNamespace(id="c1", tags={"item_type": "coherence_crystal", "quantity": 4})
-    game.inventories[player.id] = [crystal]
+    crystal = SimpleNamespace(id="c1", parent_entity_id=player.id, socket_id="inventory", tags={"item_type": "coherence_crystal", "quantity": 4})
 
     enemy = SimpleNamespace(
         id="enemy_1",
@@ -263,8 +261,9 @@ def test_anchor_purge_consumes_crystals_and_hits_hostiles():
     level.entities[enemy.id] = enemy
 
     hp_before = int(enemy.stats.hp)
-    with patch("edgecaster.systems.rune_anchor_sieges._spawn_wave"):
-        rune_anchor_sieges.purge_anchor(game, player.id)
+    with patch("edgecaster.systems.inventory.get_inventory", return_value=[crystal]):
+        with patch("edgecaster.systems.rune_anchor_sieges._spawn_wave"):
+            rune_anchor_sieges.purge_anchor(game, player.id)
 
     assert int(crystal.tags.get("quantity", 0)) == 2
     assert int(enemy.stats.hp) < hp_before

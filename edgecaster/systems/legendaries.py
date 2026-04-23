@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from edgecaster import prototypes
 from edgecaster.state.pois import ABSRect, POISpec, StructureSpec
+from edgecaster.systems import spatial_index as spatial_index_system
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,15 @@ def alloc_legendary_lair_poi_id(game: Optional["Game"] = None) -> str:
             existing = {p.id for p in poi_reg}
     except Exception:
         existing = set()
+    try:
+        idx = spatial_index_system.get_game_spatial_index(game) if game is not None else None
+        if idx is not None:
+            existing.update(
+                str(entry.entity_id)
+                for entry in idx.query_kind("legendary_lair")
+            )
+    except Exception:
+        pass
     i = 0
     while True:
         pid = f"legendary_lair_{i:03d}"
@@ -88,6 +98,15 @@ def alloc_rune_anchor_poi_id(game: Optional["Game"] = None) -> str:
             existing = {p.id for p in poi_reg}
     except Exception:
         existing = set()
+    try:
+        idx = spatial_index_system.get_game_spatial_index(game) if game is not None else None
+        if idx is not None:
+            existing.update(
+                str(entry.entity_id)
+                for entry in idx.query_kind("rune_anchor")
+            )
+    except Exception:
+        pass
     i = 0
     while True:
         pid = f"rune_anchor_{i:03d}"
@@ -387,19 +406,38 @@ def get_nearest_legendary_lairs(
         ox, oy = 0, 0
 
     scored: List[Tuple[int, str, Tuple[int, int, int]]] = []
-    poi_reg = getattr(game, "poi_registry", None)
-    if poi_reg is not None:
-        cfg = getattr(game, "cfg", None)
-        zone_w = int(getattr(cfg, "world_width", 60) or 60)
-        zone_h = int(getattr(cfg, "world_height", 40) or 40)
+    cfg = getattr(game, "cfg", None)
+    zone_w = int(getattr(cfg, "world_width", 60) or 60)
+    zone_h = int(getattr(cfg, "world_height", 40) or 40)
+
+    try:
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            for entry in idx.query_kind("legendary_lair"):
+                poi = entry.obj
+                if isinstance(poi, POISpec):
+                    ax, ay = poi.anchor_abs
+                    zz = int(poi.depth)
+                    poi_id = str(poi.id)
+                else:
+                    ax, ay = spatial_index_system.entry_anchor(entry)
+                    zz = int(entry.zz)
+                    poi_id = str(entry.entity_id)
+                zx, zy = int(ax) // zone_w, int(ay) // zone_h
+                d2 = (zx - ox) * (zx - ox) + (zy - oy) * (zy - oy)
+                scored.append((d2, poi_id, (zx, zy, zz)))
+    except Exception:
+        scored = []
+
+    if not scored:
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is None:
+            return []
         for poi in poi_reg.get_by_kind("legendary_lair"):
             ax, ay = poi.anchor_abs
             zx, zy, zz = int(ax) // zone_w, int(ay) // zone_h, int(poi.depth)
             d2 = (zx - ox) * (zx - ox) + (zy - oy) * (zy - oy)
             scored.append((d2, poi.id, (zx, zy, zz)))
-    else:
-        # Registry is authoritative; no legacy fallback in yoga mode.
-        return []
 
     scored.sort(key=lambda t: (t[0], t[1]))
     return [(pid, coord) for _, pid, coord in scored[:n]]

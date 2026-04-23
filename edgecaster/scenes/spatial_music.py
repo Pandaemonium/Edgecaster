@@ -7,6 +7,7 @@ from typing import Any, Iterable, Optional, Sequence, Tuple
 from edgecaster.scenes.audio_manager import MusicRequest
 from edgecaster.state.pois import ABSRect as POIABSRect
 from edgecaster.content.pois import get_poi_registry
+from edgecaster.systems import spatial_index as spatial_index_system
 
 ABSRect = Tuple[float, float, float, float]
 
@@ -211,51 +212,23 @@ class SpatialMusicDirector:
 
     def _find_tagged_world_entity(self, game: Any, rect: ABSRect, *, tag: str) -> Optional[Tuple[float, float, float]]:
         """Return (abs_x, abs_y, est_abs_size) for the first matching entity in rect."""
-        world_index = getattr(game, "world_entity_index", None)
-        if world_index is None:
-            return None
-
         ax0, ay0, ax1, ay1 = _norm_rect(rect)
         tag = str(tag)
-
-        # Prefer the index's own zone_w/h (authoritative for its refs)
-        zone_w = float(getattr(world_index, "zone_w", 60) or 60)
-        zone_h = float(getattr(world_index, "zone_h", 40) or 40)
         zz = int(getattr(getattr(game, "zone_coord", (0, 0, 0)), 2, 0) if not isinstance(getattr(game, "zone_coord", None), tuple) else game.zone_coord[2])
 
-        # Query only relevant zone buckets; this is already O(num_buckets_in_view).
         try:
-            refs = world_index.query_abs_rect((ax0, ay0, ax1, ay1), z=zz, zone_span_cap=None)
-        except Exception:
-            try:
-                refs = world_index.query_abs_rect((ax0, ay0, ax1, ay1), z=zz)
-            except Exception:
-                try:
-                    refs = world_index.query_abs_rect((ax0, ay0, ax1, ay1))
-                except Exception:
-                    return None
-
-        for ref in (refs or []):
-            try:
-                ent = getattr(ref, "ent", None)
-                if ent is None:
-                    continue
+            for entry in spatial_index_system.query_game_spatial_rect(game, (ax0, ay0, ax1, ay1), zz=zz):
+                ent = entry.obj
                 tags = getattr(ent, "tags", None) or {}
                 if not bool(tags.get(tag, False)):
                     continue
-
-                zx, zy, _z = getattr(ref, "zone_coord", (0, 0, zz))
-                ox, oy = getattr(ref, "local_pos", (0, 0))
-                ax = float(zx) * zone_w + float(ox)
-                ay = float(zy) * zone_h + float(oy)
-
+                ax, ay = spatial_index_system.entry_anchor(entry)
                 if not _point_in_rect((ax, ay), (ax0, ay0, ax1, ay1)):
                     continue
-
                 est = self._estimate_entity_abs_size(ent)
-                return (ax, ay, float(est))
-            except Exception:
-                continue
+                return (float(ax), float(ay), float(est))
+        except Exception:
+            pass
 
         return None
 
@@ -293,10 +266,6 @@ class SpatialMusicDirector:
         manager.audio.interrupt_then_resume(req, resume_to=resume_to)
 
     def _player_in_colosseum(self, game: Any, player_abs: Tuple[float, float]) -> bool:
-        poi_reg = getattr(game, "poi_registry", None)
-        if poi_reg is None:
-            return False
-
         px, py = map(float, player_abs)
 
         # Best guess of current depth (but we will also try depth=0)
@@ -330,6 +299,34 @@ class SpatialMusicDirector:
             hay = " ".join([poi_id, kind_txt, tag_kind])
 
             return bool(kw) and any(k in hay for k in kw)
+
+        # Track D: POIRegistry mirrors POI specs into SpatialIndex. Prefer that
+        # shared geometry surface; the registry-specific path below is a
+        # compatibility fallback while POIRegistry still owns content state.
+        for depth in (zz, 0):
+            try:
+                entries = spatial_index_system.query_game_spatial_rect(
+                    game,
+                    (px, py, px + 1.0, py + 1.0),
+                    zz=depth,
+                    source="poi_registry",
+                )
+            except Exception:
+                entries = []
+            for entry in entries:
+                poi_spec = entry.obj
+                try:
+                    fp = _footprint_to_rect(getattr(poi_spec, "footprint", None))
+                    if fp is None:
+                        fp = entry.rect
+                    if _point_in_rect((px, py), _norm_rect(fp)) and _matches(poi_spec):
+                        return True
+                except Exception:
+                    continue
+
+        poi_reg = getattr(game, "poi_registry", None)
+        if poi_reg is None:
+            return False
 
         # 1) Fast exact point query (preferred)
         for depth in (zz, 0):

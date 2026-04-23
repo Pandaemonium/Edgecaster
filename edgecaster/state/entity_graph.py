@@ -1,8 +1,8 @@
 """Authoritative entity containment graph.
 
 EntityGraphStore is the write-first authority for parent/child containment
-relationships between runtime entities. The six parallel stores on Game
-(LevelState.actors, LevelState.entities, game.inventories, game.attn_store,
+relationships between runtime entities. The remaining parallel stores on Game
+(LevelState.actors, LevelState.entities, game.attn_store,
 game.world_entity_index, game.poi_registry) remain as caches and compatibility
 facades while migration proceeds; this graph is where containment and identity
 relationships are definitively recorded.

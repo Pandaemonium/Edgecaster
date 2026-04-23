@@ -17,6 +17,7 @@ import math
 from typing import TYPE_CHECKING, Optional, Tuple
 
 from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import spatial_index as spatial_index_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -387,9 +388,11 @@ def kill_actor(
             try:
                 killer_actor = entity_ops_system.get_actor(level, killer_id)
                 if killer_actor is None:
-                    attn = getattr(game, "attn_store", None)
-                    if attn is not None:
-                        killer_actor = getattr(attn, "entities", {}).get(killer_id)
+                    idx = spatial_index_system.get_game_spatial_index(game)
+                    if idx is not None:
+                        entry = idx.get(killer_id)
+                        if entry is not None:
+                            killer_actor = entry.obj
             except Exception:
                 pass
         if killer_actor is None:

@@ -593,12 +593,9 @@ def transfer_inventory_entity(
     try:
         from edgecaster.systems import inventory as inventory_system
 
-        owner_ids = [str(dst_owner_id)]
+        inventory_system.get_inventory(game, str(dst_owner_id))
         if src_owner_id:
-            owner_ids.insert(0, src_owner_id)
-        inventory_system._mark_inventory_graph_authority(game, *owner_ids)
-        for owner_id in owner_ids:
-            inventory_system.get_inventory(game, owner_id)
+            inventory_system.get_inventory(game, src_owner_id)
     except Exception:
         pass
 
@@ -644,7 +641,6 @@ def transfer_split_quantity(
     try:
         from edgecaster.systems import inventory as inventory_system
 
-        inventory_system._mark_inventory_graph_authority(game, str(dst_owner_id))
         inventory_system.get_inventory(game, str(dst_owner_id))
     except Exception:
         pass

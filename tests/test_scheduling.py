@@ -84,7 +84,6 @@ class TestAdvanceTime:
         game._player().stats.coherence = 100
         game.character = MagicMock()
         game.character.stats = {"int": 5}
-        game.inventories = {}
         return game
 
     @pytest.fixture
@@ -326,7 +325,6 @@ class TestCooldownTick:
     def test_decrements_cooldowns(self):
         """Should decrement entity cooldowns by delta."""
         game = MagicMock()
-        game.inventories = {}
 
         actor = MagicMock()
         actor.id = "actor_1"
@@ -344,7 +342,6 @@ class TestCooldownTick:
     def test_removes_expired_cooldowns(self):
         """Should remove cooldowns that reach zero."""
         game = MagicMock()
-        game.inventories = {}
 
         actor = MagicMock()
         actor.id = "actor_1"
@@ -362,18 +359,20 @@ class TestCooldownTick:
     def test_ticks_inventory_items(self):
         """Should tick cooldowns on inventory items."""
         game = MagicMock()
+        game.player_id = "player"
 
         wand = MagicMock()
         wand.id = "wand_1"
         wand.cooldowns = {"zap": 40}
 
-        game.inventories = {"player": [wand]}
+        game.entity_graph = SimpleNamespace(get_children=lambda oid, socket_id=None: ["wand_1"] if oid == "player" else [])
 
         level = MagicMock()
         level.actors = {}
         level.entities = {}
 
-        cooldown_tick(game, level, 15)
+        with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=wand):
+            cooldown_tick(game, level, 15)
 
         assert wand.cooldowns["zap"] == 25
 
@@ -388,8 +387,6 @@ class TestCooldownTick:
 
         game = SimpleNamespace(
             player_id="player",
-            inventories={},
-            _inventory_graph_authority_owners={"player"},
             entity_graph=SimpleNamespace(
                 get_children=lambda owner_id, socket_id=None: {
                     "player": ["bag_1"],

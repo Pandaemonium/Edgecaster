@@ -496,30 +496,9 @@ def place_sites_for_type(
 ) -> List[SiteSpec]:
     debug = getattr(game, "_debug", None)
 
-    # If the world_entity_index is not ready yet, defer placement.
-    # Game.__init__ creates the index later; the attention loop will call ensure_world_sites().
     if getattr(game, "world_entity_index", None) is None:
-        setattr(game, "_sites_need_world_index", True)
         return []
 
-
-    # Ensure the WorldEntityIndex exists. Game.__init__ may call this before attention.py
-    # has created the index, so we defensively create it here (idempotent).
-    if getattr(game, "world_entity_index", None) is None:
-        try:
-            from edgecaster.systems.world_entity_index import WorldEntityIndex
-            cfg0 = getattr(game, "cfg", None)
-            zw = int(getattr(cfg0, "world_width", 60) or 60) if cfg0 else 60
-            zh = int(getattr(cfg0, "world_height", 40) or 40) if cfg0 else 40
-            game.world_entity_index = WorldEntityIndex(zone_w=zw, zone_h=zh)
-            # Track dims like other systems do (helps with later rebuild logic).
-            game._world_entity_index_wh = (zw, zh)
-            if debug:
-                debug(f"[site_placement] Created WorldEntityIndex early (zone_w={zw}, zone_h={zh})")
-        except Exception:
-            if debug:
-                debug("[site_placement] Failed to create WorldEntityIndex; aborting site placement")
-            return
     suit = compute_suitability(site_cfg, climate)
 
     resolution = climate.get("resolution", 1)
@@ -620,29 +599,28 @@ def place_all_sites(game: "Game") -> None:
     """
     debug = getattr(game, "_debug", None)
 
-    climate = _sample_climate_grid(game, resolution=8)
-    if not climate:
+    if getattr(game, "world_entity_index", None) is None:
         if debug:
-            debug("[site_placement] No climate data available")
+            debug("[site_placement] world_entity_index not ready; deferring placement.")
         return
 
     site_types = load_site_type_configs_from_prototypes()
-    if not site_types:
-        if debug:
-            debug("[site_placement] No site types loaded from prototypes")
-        return
-
-    world_seed = _world_seed(game)
-    rng = np.random.default_rng(world_seed)
+    
+    procedural_site_types = {}
+    for kind, site_cfg in site_types.items():
+        proto_id = f"site_{kind}"
+        try:
+            p = prototypes.resolve_proto(proto_id)
+        except Exception:
+            p = {}
+        ptags = (p.get("tags") or {}) if isinstance(p, dict) else {}
+        if ptags.get("fixed_zone_coord") or ptags.get("fixed_anchor_abs"):
+            continue
+        procedural_site_types[kind] = site_cfg
 
     cfg = getattr(game, "cfg", None)
     zone_w = int(getattr(cfg, "world_width", 60) or 60) if cfg else 60
     zone_h = int(getattr(cfg, "world_height", 40) or 40) if cfg else 40
-
-    total_x = int(climate.get("total_x", 1))
-    total_y = int(climate.get("total_y", 1))
-    num_zones_x = max(1, total_x // zone_w)
-    num_zones_y = max(1, total_y // zone_h)
 
     existing_coords: Set[Tuple[int, int]] = set()
     total_placed = 0
@@ -652,85 +630,93 @@ def place_all_sites(game: "Game") -> None:
     # Build lookup of fixed sites by kind so we can place fixed-near sites (Inventor, Academy, etc.)
     fixed_site_by_kind: dict[str, tuple[int, int, int, int, int]] = {}
     try:
-        wie = getattr(game, "world_entity_index", None)
-        if wie is not None:
-            by_zone = getattr(wie, "_by_zone", {}) or {}
-            for zc, refs in by_zone.items():
-                for ref in refs:
-                    ent = getattr(ref, "ent", None)
-                    tags = getattr(ent, "tags", {}) or {}
-                    if tags.get("site") and tags.get("site_kind"):
-                        sk = str(tags.get("site_kind"))
-                        zx, zy, zz = map(int, getattr(ref, "zone_coord", zc))
-                        ox, oy = map(int, getattr(ref, "local_pos", (0, 0)))
+        from edgecaster.systems import spatial_index as spatial_index_system
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            for entry in idx.query_tag("site"):
+                ent = getattr(entry, "obj", None)
+                tags = getattr(ent, "tags", {}) or {}
+                if tags.get("site_kind"):
+                    sk = str(tags.get("site_kind"))
+                    zc = getattr(ent, "zone_coord", None)
+                    lp = getattr(ent, "local_pos", None)
+                    if zc is not None and lp is not None:
+                        zx, zy, zz = map(int, zc)
+                        ox, oy = map(int, lp)
                         fixed_site_by_kind[sk] = (zx, zy, zz, ox, oy)
     except Exception:
         fixed_site_by_kind = {}
 
+    world_map_screens = int(getattr(cfg, "world_map_screens", 10) if cfg else 10)
     total_placed += _place_fixed_near_sites(
         game,
         zone_w=zone_w,
         zone_h=zone_h,
-        num_zones_x=num_zones_x,
-        num_zones_y=num_zones_y,
+        num_zones_x=world_map_screens,
+        num_zones_y=world_map_screens,
         existing_coords=existing_coords,
         fixed_site_by_kind=fixed_site_by_kind,
     )
 
-    for kind, site_cfg in site_types.items():
+    if procedural_site_types:
+        climate = _sample_climate_grid(game, resolution=8)
+        if not climate:
+            if debug:
+                debug("[site_placement] No climate data available, deferring procedural placement")
+            return
 
-        # NEW: skip climate placement for fixed prototypes
-        proto_id = f"site_{kind}"
-        p = prototypes.resolve_proto(proto_id)
-        ptags = (p.get("tags") or {}) if isinstance(p, dict) else {}
-        if ptags.get("fixed_zone_coord") or ptags.get("fixed_anchor_abs"):
-            continue
+        world_seed = _world_seed(game)
+        rng = np.random.default_rng(world_seed)
 
-        specs = place_sites_for_type(game, site_cfg, climate, existing_coords, rng)
+        total_x = int(climate.get("total_x", 1))
+        total_y = int(climate.get("total_y", 1))
 
-        for spec in specs:
-            zx, zy, zz = map(int, spec.coord)
-            ox = zone_w // 2
-            oy = zone_h // 2
+        for kind, site_cfg in procedural_site_types.items():
+            specs = place_sites_for_type(game, site_cfg, climate, existing_coords, rng)
 
-            proto_id = f"site_{spec.kind}"
-            site_proto = prototypes.resolve_proto(proto_id)
-            if not site_proto:
-                continue
+            for spec in specs:
+                zx, zy, zz = map(int, spec.coord)
+                ox = zone_w // 2
+                oy = zone_h // 2
 
-            eid = f"site:{spec.id}"
+                proto_id = f"site_{spec.kind}"
+                site_proto = prototypes.resolve_proto(proto_id)
+                if not site_proto:
+                    continue
 
-            ent = spawn_factory.build_entity_from_spec(
-                spec=site_proto,
-                eid=eid,
-                pos=(ox, oy),
-                overrides={
-                    "kind": "feature",
-                    "base_size": 64,
-                    "tags": {
-                        "world_entity": True,
-                        "site": True,
-                        "site_id": spec.id,
-                        "site_kind": spec.kind,
-                        "site_seed": int(spec.seed or 0),
-                        "site_biome": str(getattr(spec.biome, "name", str(spec.biome))),
-                        **(spec.tags or {}),
+                eid = f"site:{spec.id}"
+
+                ent = spawn_factory.build_entity_from_spec(
+                    spec=site_proto,
+                    eid=eid,
+                    pos=(ox, oy),
+                    overrides={
+                        "kind": "feature",
+                        "base_size": 64,
+                        "tags": {
+                            "world_entity": True,
+                            "site": True,
+                            "site_id": spec.id,
+                            "site_kind": spec.kind,
+                            "site_seed": int(spec.seed or 0),
+                            "site_biome": str(getattr(spec.biome, "name", str(spec.biome))),
+                            **(spec.tags or {}),
+                        },
                     },
-                },
-            )
+                )
 
-            entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-            game.world_entity_index.add(
-                ent,
-                zone_coord=(zx, zy, zz),
-                local_pos=(ox, oy),
-            )
+                entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
+                game.world_entity_index.add(
+                    ent,
+                    zone_coord=(zx, zy, zz),
+                    local_pos=(ox, oy),
+                )
 
-            existing_coords.add((zx, zy))
-            total_placed += 1
+                existing_coords.add((zx, zy))
+                total_placed += 1
 
-        if debug and specs:
-            debug(f"[site_placement] Placed {len(specs)} {kind}")
+            if debug and specs:
+                debug(f"[site_placement] Placed {len(specs)} {kind}")
 
     if debug:
         debug(f"[site_placement] Total sites placed: {total_placed}")
@@ -738,8 +724,8 @@ def place_all_sites(game: "Game") -> None:
     # record outcome so ensure_world_sites can decide if it should retry
     game._site_placement_total = int(total_placed)
 
-    # Only mark complete if we actually placed something
-    game.site_placement_complete = (total_placed > 0)
+    # Mark complete so we don't retry every frame if 0 sites are placed.
+    game.site_placement_complete = True
 
 
 
@@ -773,7 +759,7 @@ def ensure_world_sites(game: "Game") -> None:
         placed_total = int(getattr(game, "_site_placement_total", 0) or 0)
         complete = bool(getattr(game, "site_placement_complete", False))
 
-        if complete and placed_total > 0:
+        if complete:
             setattr(game, "_sites_need_world_index", False)
             setattr(game, "_sites_placed_for_index_id", idx_id)
             dbg = getattr(game, "_debug", None)

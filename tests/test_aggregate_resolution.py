@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from edgecaster import prototypes
 from edgecaster.systems import aggregate_resolution as ar
+from edgecaster.systems.spatial_index import SpatialIndex
 from edgecaster.systems.world_entity_index import WorldEntityIndex
 
 
@@ -192,7 +193,9 @@ def test_children_fixed_actor_inference_without_hardcoded_id_list() -> None:
 def test_unique_world_root_continent_spawns_once() -> None:
     prototypes.clear_proto_caches()
     game = _dummy_game(4242)
-    game.world_entity_index = WorldEntityIndex(zone_w=64, zone_h=64)
+    spatial_index = SpatialIndex(bin_size=64)
+    game.spatial_index = spatial_index
+    game.world_entity_index = WorldEntityIndex(zone_w=64, zone_h=64, spatial_index=spatial_index)
     game._agg_worldgen_done = set()
     game.cfg = SimpleNamespace(
         seed=4242,
@@ -224,15 +227,8 @@ def test_unique_world_root_continent_spawns_once() -> None:
         kinds=("world_continent",),
     )
 
-    refs = game.world_entity_index.query_abs_rect((0.0, 0.0, 20000.0, 20000.0), z=0)
-    continents = []
-    for r in refs:
-        ent = getattr(r, "ent", None)
-        if ent is None:
-            continue
-        tags = getattr(ent, "tags", {}) or {}
-        if isinstance(tags, dict) and str(tags.get("aggregate_kind", "")) == "world_continent":
-            continents.append(ent)
+    entries = spatial_index.query_tag("aggregate_kind", "world_continent")
+    continents = [entry.obj for entry in entries]
     ids = {str(getattr(e, "id", "")) for e in continents}
     assert ids == {"agg:world_continent:root:0"}
     assert len(continents) == 1

@@ -17,6 +17,7 @@ from edgecaster.patterns import motion as pattern_motion
 from edgecaster.ui.ability_bar import AbilityBarState
 from edgecaster.systems.actions import get_action, describe_entity_for_look
 from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import spatial_index as spatial_index_system
 from edgecaster.visuals import VisualProfile, apply_visual_panel  
 from edgecaster.ui.widgets import WidgetContext, VBox, HBox, LabelWidget, ButtonWidget, ListWidget
 from edgecaster.systems import rune_audio as rune_audio_system
@@ -1240,30 +1241,20 @@ class DungeonScene(Scene):
                     continue
                 _add_candidate(ent)
 
-        # 2) World index entities (POIs, structures, macro).
+        # 2) Shared realization/spatial index entities (POIs, structures, staged detail).
         try:
-            world_index = getattr(game, "world_entity_index", None)
-            if world_index is not None:
-                zz = int(getattr(game, "zone_coord", (0, 0, 0))[2])
-                for ref in world_index.query_abs_rect((ax, ay, ax + 1, ay + 1), z=zz, zone_span_cap=1):
-                    obj = ref.ent
-                    zx0, zy0, _z = ref.zone_coord
-                    ox, oy = ref.local_pos
-                    abs_x = float(zx0) * float(world_index.zone_w) + float(ox)
-                    abs_y = float(zy0) * float(world_index.zone_h) + float(oy)
-                    _add_candidate(obj, abs_x=abs_x, abs_y=abs_y)
+            zz = int(getattr(game, "zone_coord", (0, 0, 0))[2])
+            spatial_entries = spatial_index_system.query_game_spatial_rect(
+                game,
+                (ax, ay, ax + 1, ay + 1),
+                zz=zz,
+            )
+            for entry in spatial_entries:
+                abs_x, abs_y = spatial_index_system.entry_anchor(entry)
+                _add_candidate(entry.obj, abs_x=abs_x, abs_y=abs_y)
         except Exception:
-            pass
+            spatial_entries = []
 
-        # 3) Attention-staged entities (derived, lightweight).
-        try:
-            attn_store = getattr(game, "attn_store", None)
-            if attn_store is not None:
-                zz = int(getattr(game, "zone_coord", (0, 0, 0))[2])
-                for obj, abs_x, abs_y in attn_store.query_abs_rect((ax, ay, ax + 1, ay + 1), zz=zz):
-                    _add_candidate(obj, abs_x=float(abs_x), abs_y=float(abs_y))
-        except Exception:
-            pass
 
         # LOD-best filtering: keep entities closest to the camera LOD.
         candidates = list(seen.values())

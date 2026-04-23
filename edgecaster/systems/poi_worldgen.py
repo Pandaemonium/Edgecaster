@@ -703,13 +703,6 @@ def realize_poi_npc_spec(
             pass
 
     spawning_system.register_actor(game, level, actor, schedule_ai=False)
-    # register_actor already marks inventory graph authority; repeat here for
-    # clarity and in case this helper is called outside of register_actor.
-    try:
-        from edgecaster.systems.inventory import _mark_inventory_graph_authority
-        _mark_inventory_graph_authority(game, actor.id)
-    except Exception:
-        pass
     registry.mark_npc_spawned(poi_id, spec_key, actor.id)
     return actor
 

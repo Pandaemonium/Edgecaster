@@ -55,11 +55,11 @@ def coerce_chakra_view_state(
     *,
     default_root: Optional[str] = None,
 ) -> Optional[ChakraViewState]:
-    """Coerce snapshot-like input into a ChakraViewState.
+    """Coerce ChakraState-like or dict-like input into a ChakraViewState.
 
     This is the preferred read-model bridge for scene and runtime callers that
-    need a thin consumer-shaped snapshot without reviving a separate facade
-    type as an authority-bearing object.
+    need a thin consumer-shaped snapshot without reviving ChakraState as an
+    authoritative type.
     """
     if state is None:
         return None
@@ -87,7 +87,7 @@ def _normalized_chakra_snapshot_payload(
     *,
     default_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Normalize snapshot-like chakra payloads."""
+    """Normalize ChakraState-like or dict-like snapshot payloads."""
     if isinstance(state, dict):
         unlocked_raw = state.get("unlocked", set()) or set()
         active_raw = state.get("active", set()) or set()
@@ -480,7 +480,7 @@ def _component_state_overrides(comp: Any) -> tuple[dict[str, tuple[float, float]
 
 
 def _is_compat_component_node(node: Any) -> bool:
-    """Return True for actor-side compat nodes mirrored from snapshot writes."""
+    """Return True for actor-side compat nodes mirrored from ChakraState."""
     if node is None:
         return False
     if isinstance(node, dict):
@@ -495,7 +495,7 @@ def _is_compat_component_node(node: Any) -> bool:
 
 
 def _component_chakra_projection(actor: Any) -> Optional[dict[str, Any]]:
-    """Return component-backed chakra primitives without constructing a facade object."""
+    """Return component-backed chakra primitives without constructing ChakraState."""
     comp = _coerce_actor_chakra_component(actor)
     if comp is None:
         return None
@@ -823,9 +823,9 @@ def restore_actor_chakra_component_snapshot(
 ) -> None:
     """Restore a full ChakraComponent from a snapshot dict.
 
-    Used by the chakra-scene undo system. Assigns the restored component to
-    the actor and fires dirty marks for every node in the restored component
-    so the renderer refreshes.
+    Used by the chakra-scene undo system.  Assigns the restored component to
+    the actor, rebuilds the ChakraState view, and fires dirty marks for every
+    node in the restored component so the renderer refreshes.
 
     [ENTITY_CHAKRA][PHASE_3]
     """
@@ -971,12 +971,27 @@ def toggle_actor_chakra(actor: Any, node_id: str, *, active: Optional[bool] = No
 
 def equipped_items(game: Any, actor_id: str) -> list[Any]:
     """Return all equipped inventory items for actor."""
+    out: list[Any] = []
+    graph = getattr(game, "entity_graph", None)
+    if graph is not None:
+        try:
+            from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
+            for cid in graph.get_children(str(actor_id)):
+                node = graph.get_node(cid)
+                if node and node.socket_id and node.socket_id not in ("inventory", "body", "resolve"):
+                    obj = entity_lifecycle_system.find_runtime_entity(game, cid)
+                    if obj is not None:
+                        out.append(obj)
+        except Exception:
+            pass
+
     try:
         inv = game.get_inventory(str(actor_id))
     except Exception:
         inv = []
-    out: list[Any] = []
     for it in inv:
+        if it in out:
+            continue
         try:
             if equipment_system.is_equipped(it):
                 out.append(it)
@@ -1039,9 +1054,9 @@ def auto_active_nodes(game: Any, actor_id: str) -> set[str]:
 def effective_unlocked_nodes(game: Any, actor: Any) -> set[str]:
     """Return actor unlocked chakras including temporary equipped unlocks.
 
-    Reads directly from the component node list rather than building a larger
-    facade snapshot, so this is safe to call on hot paths like the per-tick
-    charge loop without per-tick allocation overhead.
+    Reads directly from the component node list rather than building a full
+    ChakraState, so this is safe to call on hot paths like the per-tick charge
+    loop without per-tick ChakraState allocation overhead.
     """
     unlocked, _ = _component_node_sets(actor)
     root = _baseline_chakra_root(actor)
@@ -1054,9 +1069,9 @@ def effective_unlocked_nodes(game: Any, actor: Any) -> set[str]:
 def effective_active_nodes(game: Any, actor: Any) -> set[str]:
     """Return active chakras including explicit item auto-activations.
 
-    Reads directly from the component node list rather than building a larger
-    facade snapshot, so this is safe to call on hot paths like the per-tick
-    charge loop without per-tick allocation overhead.
+    Reads directly from the component node list rather than building a full
+    ChakraState, so this is safe to call on hot paths like the per-tick charge
+    loop without per-tick ChakraState allocation overhead.
     """
     _, active = _component_node_sets(actor)
     root = _baseline_chakra_root(actor)
@@ -1067,12 +1082,12 @@ def effective_active_nodes(game: Any, actor: Any) -> set[str]:
 
 
 def effective_chakra_projection(game: Any, actor: Any) -> Optional[dict[str, Any]]:
-    """Return rich runtime chakra primitives without constructing a facade object.
+    """Return rich runtime chakra primitives without constructing ChakraState.
 
     This is the preferred runtime read for gameplay code that needs more than
-    just active/unlocked sets. The payload shape intentionally stays simple so
-    more fields can be added later without forcing another actor-centric
-    compatibility class.
+    just active/unlocked sets but does not need the legacy ChakraState facade
+    itself.  The payload shape intentionally stays simple so more fields can be
+    added later without forcing another actor-centric compatibility class.
     """
     projection = structural_chakra_projection(actor)
     if projection is None:

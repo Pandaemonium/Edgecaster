@@ -29,7 +29,7 @@ class POIRegistry:
     - Tracks content state for persistence
     """
 
-    def __init__(self, *, zone_w: int = 60, zone_h: int = 40):
+    def __init__(self, *, zone_w: int = 60, zone_h: int = 40, spatial_index: object | None = None):
         """Initialize the registry.
 
         Args:
@@ -38,9 +38,11 @@ class POIRegistry:
         """
         self.zone_w = zone_w
         self.zone_h = zone_h
+        self.spatial_index = spatial_index
 
         # Primary storage by ID
         self._pois: Dict[str, POISpec] = {}
+        self._spatial_ids: Dict[str, str] = {}
 
         # Spatial indices
         # (zx, zy, depth) -> list of POI IDs that overlap this zone
@@ -70,6 +72,7 @@ class POIRegistry:
 
         self._pois[spec.id] = spec
         self._index_poi(spec)
+        self._mirror_poi_to_spatial_index(spec)
 
     def get(self, poi_id: str) -> Optional[POISpec]:
         """Get a POI by ID."""
@@ -79,9 +82,32 @@ class POIRegistry:
         """Remove a POI and update indices. Returns True if removed."""
         spec = self._pois.pop(poi_id, None)
         if spec:
+            self._remove_spatial_mirror(str(poi_id))
             self._unindex_poi(spec)
             return True
         return False
+
+    def attach_spatial_index(self, spatial_index: object | None) -> None:
+        """Mirror existing and future POIs into the shared SpatialIndex.
+
+        [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
+        POIRegistry remains a semantic/content-state bridge. SpatialIndex is
+        the shared realization query surface for POI geometry while callers are
+        migrated away from registry-specific spatial lookups.
+        """
+        old_index = self.spatial_index
+        if old_index is not None:
+            for spatial_id in list(self._spatial_ids.values()):
+                try:
+                    old_index.remove(spatial_id, source="poi_registry")
+                except Exception:
+                    pass
+        self._spatial_ids.clear()
+        self.spatial_index = spatial_index
+        if spatial_index is None:
+            return
+        for spec in list(self._pois.values()):
+            self._mirror_poi_to_spatial_index(spec)
 
     def __contains__(self, poi_id: str) -> bool:
         return poi_id in self._pois
@@ -381,6 +407,37 @@ class POIRegistry:
     # =========================================================================
     # Internal Indexing
     # =========================================================================
+
+    def _remove_spatial_mirror(self, poi_id: str) -> None:
+        spatial_id = self._spatial_ids.pop(str(poi_id), None)
+        if spatial_id and self.spatial_index is not None:
+            try:
+                self.spatial_index.remove(spatial_id, source="poi_registry")
+            except Exception:
+                pass
+
+    def _mirror_poi_to_spatial_index(self, spec: POISpec) -> None:
+        if self.spatial_index is None:
+            return
+        try:
+            rect = (
+                float(spec.footprint.x0),
+                float(spec.footprint.y0),
+                float(spec.footprint.x1),
+                float(spec.footprint.y1),
+            )
+            spatial_id = self.spatial_index.add_or_update(
+                spec,
+                rect,
+                int(spec.depth),
+                "collapsed",
+                semantic_id=str(spec.id),
+                kind=str(spec.kind),
+                source="poi_registry",
+            )
+            self._spatial_ids[str(spec.id)] = str(spatial_id)
+        except Exception:
+            pass
 
     def _index_poi(self, spec: POISpec) -> None:
         """Add POI to all indices."""

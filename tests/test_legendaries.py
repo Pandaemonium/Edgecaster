@@ -22,6 +22,7 @@ from edgecaster.systems.legendaries import (
     init_legendaries,
 )
 from edgecaster.systems.poi_registry import POIRegistry
+from edgecaster.systems.spatial_index import SpatialIndex
 
 
 def _make_registry(zone_w: int = 60, zone_h: int = 40) -> POIRegistry:
@@ -83,6 +84,31 @@ class TestPoiIdAllocation:
         pid = alloc_legendary_lair_poi_id(game)
 
         assert pid == "legendary_lair_002"
+
+    def test_alloc_legendary_lair_avoids_spatial_index_collision(self):
+        game = SimpleNamespace(poi_registry=None, spatial_index=SpatialIndex())
+        footprint = ABSRect.from_zone_coord(0, 0, 60, 40)
+        poi = POISpec(
+            id="legendary_lair_000",
+            kind="legendary_lair",
+            name="Lair",
+            footprint=footprint,
+            depth=0,
+            anchor_abs=footprint.center,
+            structure_specs=[StructureSpec(kind="legendary_lair")],
+        )
+        game.spatial_index.add_or_update(
+            poi,
+            (float(footprint.x0), float(footprint.y0), float(footprint.x1), float(footprint.y1)),
+            0,
+            "collapsed",
+            kind="legendary_lair",
+            source="poi_registry",
+        )
+
+        pid = alloc_legendary_lair_poi_id(game)
+
+        assert pid == "legendary_lair_001"
 
     def test_alloc_rune_anchor_returns_string(self):
         game = MagicMock()
@@ -257,3 +283,41 @@ class TestGetNearestLegendaryLairs:
     def test_handles_invalid_n(self, mock_game_with_lairs):
         assert get_nearest_legendary_lairs(mock_game_with_lairs, n=0) == []
         assert get_nearest_legendary_lairs(mock_game_with_lairs, n=-1) == []
+
+    def test_reads_spatial_index_without_registry(self):
+        game = SimpleNamespace(
+            cfg=SimpleNamespace(world_width=60, world_height=40),
+            zone_coord=(0, 0, 0),
+            poi_registry=None,
+            spatial_index=SpatialIndex(),
+        )
+        for poi_id, coord in (
+            ("legendary_lair_000", (3, 0, 0)),
+            ("legendary_lair_001", (1, 0, 0)),
+            ("legendary_lair_002", (2, 0, 0)),
+        ):
+            footprint = ABSRect.from_zone_coord(coord[0], coord[1], 60, 40)
+            poi = POISpec(
+                id=poi_id,
+                kind="legendary_lair",
+                name=poi_id,
+                footprint=footprint,
+                depth=coord[2],
+                anchor_abs=footprint.center,
+                structure_specs=[StructureSpec(kind="legendary_lair")],
+            )
+            game.spatial_index.add_or_update(
+                poi,
+                (float(footprint.x0), float(footprint.y0), float(footprint.x1), float(footprint.y1)),
+                coord[2],
+                "collapsed",
+                kind="legendary_lair",
+                source="poi_registry",
+            )
+
+        result = get_nearest_legendary_lairs(game, n=2, from_coord=(0, 0, 0))
+
+        assert result == [
+            ("legendary_lair_001", (1, 0, 0)),
+            ("legendary_lair_002", (2, 0, 0)),
+        ]

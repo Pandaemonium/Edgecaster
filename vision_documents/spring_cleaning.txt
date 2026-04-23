@@ -117,6 +117,11 @@ Legend:
     `entity_body` specs, and actor-facing projections suppress the temporary
     default `{entity_id}:core` shell when a real body root is available.
 
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.15: Store Collapse (2026-04-23)
+  - Stripped dead `_by_zone` and `_ent_cells` bucket structures from `WorldEntityIndex`.
+  - Stripped dead `bins`, `eid_to_bin`, `entity_rects`, and `entity_cells` from `AttentionCellStore`.
+  - Both are now thin, write-only mirrors that pass entities into `SpatialIndex`.
+
 ===============================================================================
 SLICE 1 — TARGETMODE (FOUNDATION COMPLETE)
 
@@ -2094,6 +2099,11 @@ Owner: Claude audit (2026-02-13)
     ownership/cache write paths and inventory/equipment flows tracked under
     Track C and later lifecycle/index cleanup.
 
+[DONE][ENTITY_CHAKRA][PHASE_8] Track C.1: Graph-Authoritative Inventory (2026-04-22)
+  - `get_inventory` now exclusively builds the list from `entity_graph` queries.
+  - Removed legacy graph-authority marking functions as the graph is now the sole truth.
+  - The `game.inventories` dict is now purely an event-consistent UI cache.
+
 ===============================================================================
 CODEBASE AUDIT — REFRESH (2026-02-18)
 
@@ -2914,3 +2924,228 @@ Owner: Claude audit (2026-02-18)
   - Added regressions:
       - helper add path syncs cache and owner metadata
       - helper remove path detaches and persists removal reason
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track C hardening + Track D SpatialIndex mirror (2026-04-22)
+  - Files: edgecaster/systems/inventory.py, edgecaster/systems/spawning.py,
+           edgecaster/game.py, edgecaster/state/entity_graph.py,
+           edgecaster/systems/spatial_index.py, edgecaster/systems/attention.py,
+           edgecaster/systems/world_entity_index.py,
+           edgecaster/systems/inspection.py, tests/test_spatial_index.py,
+           tests/test_inspection.py, tests/test_inventory.py,
+           tests/test_scheduling.py, tests/test_game_refactor.py
+  - Track C:
+      - Removed dead `_mark_inventory_graph_authority` references from
+        inventory movement and actor registration paths.
+      - Updated tests so `game.inventories` is asserted absent rather than
+        required.
+      - `game.inventories` is now considered deleted, not a bridge awaiting
+        another cutover.
+  - Track D:
+      - `Game` now owns `spatial_index`.
+      - `AttentionCellStore` mirrors staged entities into `SpatialIndex` and
+        removes only attention-sourced mirror entries on despawn.
+      - `WorldEntityIndex` mirrors proxy entities into `SpatialIndex` and
+        removes only world-index-sourced mirror entries on clear/update.
+      - `SpatialIndex` entries now carry a `source`, and lower-priority proxy
+        writes cannot downgrade already-staged/realized entries for the same
+        entity id.
+      - `inspection.describe_abs_tile_at(...)` now queries `SpatialIndex`
+        first and falls back to legacy store-specific queries only when the
+        shared index has no hits.
+  - Added regressions:
+      - source guard prevents proxy overwrite of staged entries
+      - AttentionCellStore mirrors staged entries
+      - WorldEntityIndex mirrors proxy entries
+      - distant tile inspection can describe a SpatialIndex entry
+  - Remaining deletion condition:
+      - Delete `AttentionCellStore`, `WorldEntityIndex`, and `POIRegistry`
+        only after render, attention warm-window, world-map, overmap,
+        legendary/POI, and spatial-music callers use shared SpatialIndex /
+        entity-graph query helpers with parity tests.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track D reader cutover + Starttsgard sync fix (2026-04-22)
+  - Files: edgecaster/systems/entity_lifecycle.py,
+           edgecaster/scenes/dungeon.py,
+           edgecaster/scenes/spatial_music.py,
+           tests/test_entity_lifecycle.py, tests/test_spatial_music.py
+  - Deferred resolver/lifecycle merchant stock initialization until the player
+    opens dialogue/trade UI. Attention expansion should realize NPCs, not spawn
+    every merchant's full inventory during camera/zone warmup.
+  - `DungeonScene._confirm_look(...)` now reads staged/proxy candidates from
+    `SpatialIndex` first, falling back to `WorldEntityIndex` and
+    `AttentionCellStore` only when the shared index has no hits.
+  - `SpatialMusicDirector._find_tagged_world_entity(...)` now reads tagged
+    world entities from `SpatialIndex` first, then falls back to
+    `WorldEntityIndex`.
+  - Added regressions:
+      - staged merchant actor carries merchant identity but not initialized stock
+      - spatial music tagged-entity lookup works from `SpatialIndex`
+  - Remaining deletion condition:
+      - Keep the old store-specific fallbacks until render/world-map/POI and
+        attention warm-window callers have parity tests on the shared query
+        surface.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track D render/attention/dialogue SpatialIndex cutover (2026-04-23)
+  - Files: edgecaster/systems/attention.py,
+           edgecaster/systems/world_entity_index.py,
+           edgecaster/content/dialogues.py,
+           tests/test_spatial_index.py,
+           tests/test_attention_suppression.py,
+           tests/test_dialogues.py
+  - `attention.renderables_in_abs_rect(...)` now reads world-proxy and
+    attention-staged candidates from `SpatialIndex` first.
+  - `attention.sync_attention_instantiation(...)` now reads proxy/staged
+    parent candidates from `SpatialIndex` before touching legacy stores.
+  - `WorldEntityIndex.add(...)` mirrors `local_pos` onto proxy entities so
+    shared-index readers do not need to scan private world-index buckets to
+    reconstruct local render coordinates.
+  - `content.dialogues._find_site_zonecoord(...)` now uses `SpatialIndex`
+    first for site-marker discovery and falls back to `WorldEntityIndex._by_zone`
+    only as a compatibility path.
+  - Added regressions:
+      - renderables use SpatialIndex world proxies before WorldEntityIndex
+      - renderables use SpatialIndex staged entities before AttentionCellStore
+      - attention sync uses SpatialIndex proxy refs before WorldEntityIndex
+      - dialogue site lookup uses SpatialIndex before scanning `_by_zone`
+  - Remaining deletion condition:
+      - Delete the `renderables_in_abs_rect`, `sync_attention_instantiation`,
+        and dialogue fallback reads once all world/POI/site writers directly
+        register into the shared realization index and broad gameplay tests
+        cover the no-legacy-store runtime.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track D filtered SpatialIndex API + no-legacy-store hardening (2026-04-23)
+  - Files: edgecaster/systems/spatial_index.py,
+           edgecaster/systems/attention.py,
+           edgecaster/content/dialogues.py,
+           tests/test_spatial_index.py,
+           tests/test_attention_suppression.py,
+           tests/test_dialogues.py
+  - `SpatialIndex.query_rect(...)` now supports `source`, `realization_state`,
+    and `kind` filters. Multi-value filters are supported for callers that need
+    collapsed/proxy or similar grouped states.
+  - `SpatialIndex.query_tag(...)` is now the named tag lookup surface for
+    content/dialogue code that needs semantic tag discovery.
+  - Attention render and sync readers now use filtered SpatialIndex queries
+    instead of hand-filtering raw entries.
+  - Added no-legacy-store regressions for render and dialogue, plus
+    world-index-absent attention-sync coverage.
+  - Remaining deletion condition:
+      - The remaining old-store fallback branches should stay marked
+        `[LEGACY_DELETE]` until POI/site/aggregate writers can register into
+        the shared realization index directly and the game has a broad
+        no-legacy-store runtime smoke test.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track D POIRegistry SpatialIndex mirror + POI-reader cutover (2026-04-23)
+  - Files: edgecaster/systems/poi_registry.py,
+           edgecaster/game.py,
+           edgecaster/systems/legendaries.py,
+           edgecaster/systems/overmap.py,
+           edgecaster/scenes/spatial_music.py,
+           tests/test_spatial_index.py,
+           tests/test_legendaries.py,
+           tests/test_overmap.py,
+           tests/test_spatial_music.py
+  - `POIRegistry` now mirrors POI specs into `SpatialIndex` as collapsed
+    `source="poi_registry"` entries. Attaching a SpatialIndex to an already
+    loaded registry mirrors existing POIs.
+  - `Game.__init__` attaches the shared `spatial_index` to the global
+    POIRegistry before POI world proxies are built.
+  - Legendary-lair nearest queries and legendary/rune-anchor id allocation now
+    consult SpatialIndex before falling back to POIRegistry.
+  - Overmap rune-anchor id allocation now respects SpatialIndex collisions.
+  - Spatial music colosseum detection now checks POI specs mirrored into
+    SpatialIndex before using registry-specific point/rect lookups.
+  - Added no-registry regressions for nearest lair lookup, rune-anchor id
+    allocation, and colosseum detection.
+  - Remaining deletion condition:
+      - Keep POIRegistry for content-state persistence (`spawned_npcs`,
+        `removed_items`, visited/cleared flags) until that state has a graph or
+        entity-state home. Spatial lookup responsibilities should continue
+        moving to SpatialIndex.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track D legacy fallback block deletion (2026-04-21)
+  - Files: edgecaster/systems/attention.py,
+           tests/test_attention_suppression.py
+  - Deleted all 4 `[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]` fallback blocks
+    from `attention.py`:
+      - `sync_attention_instantiation(...)` proxy fallback to
+        `WorldEntityIndex.query_abs_rect(...)` (no longer reached — SpatialIndex
+        is always populated when game is wired)
+      - `sync_attention_instantiation(...)` staged fallback to
+        `AttentionCellStore.query_abs_rect(...)`
+      - `renderables_in_abs_rect(...)` proxy fallback to
+        `WorldEntityIndex.query_abs_rect(...)`
+      - `renderables_in_abs_rect(...)` staged fallback to
+        `AttentionCellStore.query_abs_rect(...)`
+  - Updated `test_sync_attention_instantiation_rechecks_when_loaded_level_is_dirty`
+    to wire `SpatialIndex` instead of a `_WorldIndex` call-counter stub;
+    assertion now checks `_last_view_abs_rect` was set rather than counting
+    legacy store calls.
+  - 700 tests passing after deletion.
+  - Remaining deletion candidates (safe once no caller reads them directly):
+      - `WorldEntityIndex.query_abs_rect(...)` — now write-only in production;
+        only `tests/test_aggregate_resolution.py` still calls it directly for
+        a world-continent grep test.
+      - `AttentionCellStore.query_abs_rect(...)` — no production read callers
+        remain; only the internal cell-store unit test exercises it.
+      - Once those two test callers are ported, both `query_abs_rect` methods
+        can be deleted and the class-level `[LEGACY_DELETE]` comments on
+        `AttentionCellStore` should be updated.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track D query_abs_rect deletion + remaining production fallbacks (2026-04-23)
+  - Files: edgecaster/systems/world_entity_index.py,
+           edgecaster/systems/attention.py,
+           edgecaster/systems/inspection.py,
+           edgecaster/scenes/dungeon.py,
+           edgecaster/scenes/spatial_music.py,
+           tests/test_world_entity_index.py,
+           tests/test_attention_store.py,
+           tests/test_aggregate_resolution.py
+  - Deleted `WorldEntityIndex.query_abs_rect(...)` — no callers remaining.
+  - Deleted `AttentionCellStore.query_abs_rect(...)` — no callers remaining.
+  - Deleted legacy `if not spatial_entries:` fallback blocks from
+    `inspection.py` and `dungeon.py` (`_confirm_look`).
+  - Deleted world_index fallback section from
+    `spatial_music._find_tagged_world_entity(...)`.
+  - Ported `test_world_entity_index.py`: tests now verify that `add()` mirrors
+    entities into the shared `SpatialIndex` with the correct footprint rect,
+    queried via `SpatialIndex.query_rect(...)`.
+  - Ported `test_attention_store.py`: tests now verify that `stage()` mirrors
+    entities into `SpatialIndex` with footprint-rect geometry.
+  - Ported `test_aggregate_resolution.py:test_unique_world_root_continent_spawns_once`:
+    now wires `SpatialIndex` into the test game and verifies continent dedup
+    via `SpatialIndex.query_tag(...)`.
+  - 700 tests passing after all deletions.
+  - Remaining deletion condition:
+      - `WorldEntityIndex` and `AttentionCellStore` are now write-only legacy
+        mirrors. Entire classes can be deleted once their write paths
+        (mirroring into SpatialIndex) are subsumed into the entity-graph
+        spawn/despawn lifecycle, and all spawn code registers directly into
+        the shared realization index.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track D legacy read elimination in entity_lifecycle + dialogues + combat (2026-04-23)
+  - Files: edgecaster/systems/entity_lifecycle.py,
+           edgecaster/content/dialogues.py,
+           edgecaster/systems/combat.py
+  - `find_runtime_entity(...)` now checks `SpatialIndex.get(eid)` before the
+    `attn_store.entities` and `WorldEntityIndex._ent_cells` scans. The complex
+    WIE `_ent_cells`/`_by_zone` scan (~30 lines) is fully deleted.
+    `attn_store.entities` fallback retained for runtimes without SpatialIndex.
+  - `_promote_staged_children_to_zone(...)` now reads the staged entity object
+    and its z-level from `SpatialIndex.get(cid)` (`.obj`, `.zz`) instead of
+    `attn_store.entities` and `attn_store.eid_to_bin`.
+  - `dialogues._find_site_zonecoord(...)`: deleted the `[LEGACY_DELETE]` block
+    that scanned `WorldEntityIndex._by_zone` after the SpatialIndex primary
+    path; `_by_zone` is no longer read anywhere outside of the WIE itself.
+  - `combat._kill_actor(...)` killer lookup now uses `SpatialIndex.get(killer_id)`
+    instead of `attn_store.entities.get(killer_id)`.
+  - 700 tests passing.
+  - Remaining deletion condition:
+      - `attn_store.entities` fallback in `find_runtime_entity` can be deleted
+        once all test fixtures wire a `SpatialIndex` (or when `attn_store.stage`
+        is unified into the entity-graph lifecycle).
+      - `attn_store.entities` dict itself can be removed once no code reads it
+        directly (only `_promote_staged_children_to_zone` and the fallback above).
+      - `WorldEntityIndex._by_zone` and `_ent_cells` are now write-only
+        internal structures; deletion is safe once `WorldEntityIndex.add()` is
+        replaced by direct SpatialIndex registration in the spawn paths.

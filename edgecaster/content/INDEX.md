@@ -2,7 +2,7 @@
 
 Purpose: map the content files in `edgecaster/content/` by loader and runtime consumer.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-23
 Canonical for: content-folder navigation
 Related docs: `edgecaster/content/AGENTS.md`, `vision_documents/architecture.txt`
 Related code: `edgecaster/content/`, `edgecaster/prototypes.py`, `edgecaster/spawn_factory.py`
@@ -21,7 +21,7 @@ These feed the unified prototype bucket in `edgecaster/prototypes.py`:
 
 ## Dedicated Content Loaders
 
-- `pois.py` + `pois.yaml` - POI registry loading and legacy-format conversion
+- `pois.py` + `pois.yaml` - POI registry loading and legacy-format conversion; loaded POI specs are mirrored into the shared `SpatialIndex` by the runtime registry attachment path
 - `factions.py` + `factions.yaml` + `factions_data.py` - faction data and helpers
 - `merchants.py` + `merchants.yaml` - merchant stock/pricing definitions
 - `sealing_runes.py` + `sealing_runes.yaml` - rune-trial/sealing content
@@ -31,7 +31,7 @@ These feed the unified prototype bucket in `edgecaster/prototypes.py`:
 
 ## Dialogue And NPC Fallback Layer
 
-- `dialogues.py` - dialogue tree construction and quest/dialogue effects
+- `dialogues.py` - dialogue tree construction and quest/dialogue effects; site-coordinate lookup reads shared `SpatialIndex` first, with legacy `WorldEntityIndex` scanning only as a compatibility fallback
 - `npcs.py` - lightweight NPC fallback definitions and dialogue-facing metadata
 
 ## Maintenance Rules

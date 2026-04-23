@@ -2,7 +2,7 @@
 
 Purpose: map the main scene roles inside `edgecaster/scenes/`.
 Status: active-plan
-Last verified: 2026-04-10
+Last verified: 2026-04-22
 Canonical for: scenes-folder navigation
 Related docs: `edgecaster/scenes/AGENTS.md`, `vision_documents/architecture.txt`
 Related code: `edgecaster/scenes/`
@@ -16,7 +16,7 @@ Supersedes: none
 
 ## Main Gameplay
 
-- `dungeon.py` - main live gameplay scene and `DungeonUIState`
+- `dungeon.py` - main live gameplay scene and `DungeonUIState`; look targeting should prefer shared `SpatialIndex` queries before legacy store-specific fallbacks
 
 ## Heavy Overlay / Interaction Scenes
 
@@ -47,7 +47,7 @@ Supersedes: none
 - `pause_menu_scene.py`
 - `saved_games_scene.py`
 - `audio_manager.py`
-- `spatial_music.py`
+- `spatial_music.py` - location-aware music cues; tagged world entity probes should prefer shared `SpatialIndex` queries
 
 ## Maintenance Rules
 

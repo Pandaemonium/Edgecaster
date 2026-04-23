@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from edgecaster.state.entities import Entity
 from edgecaster.state.entity_graph import EntityGraphStore
@@ -67,6 +68,30 @@ def _resolver_parent() -> Entity:
             ],
         },
     )
+
+
+def test_staged_merchant_actor_defers_stock_initialization() -> None:
+    game = _DummyGame()
+
+    base_actor = SimpleNamespace(tags={})
+    with patch("edgecaster.systems.entity_lifecycle.enemy_factory.spawn_enemy", return_value=base_actor):
+        actor = entity_lifecycle_system._build_staged_actor(
+            game,
+            eid="merchant:test",
+            npc_id="merchant",
+            name="Merchant",
+            glyph="@",
+            color=(255, 255, 255),
+            abs_pos=(12, 12),
+            local_pos=(12, 12),
+            owner_id="site:test_parent",
+            zz=0,
+            spec={"tags": {"merchant_id": "general_store"}},
+        )
+
+    assert actor.tags["merchant_id"] == "general_store"
+    assert actor.tags["merchant_initialization_deferred"] is True
+    assert "merchant_initialized" not in actor.tags
 
 
 def test_expand_and_collapse_are_idempotent_and_persist_snapshots() -> None:

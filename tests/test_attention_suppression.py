@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from edgecaster.systems import attention
+from edgecaster.systems.spatial_index import SpatialIndex
 
 
 class _DummyGame:
@@ -197,24 +198,19 @@ def test_sync_attention_instantiation_skips_unchanged_clean_view() -> None:
 
 
 def test_sync_attention_instantiation_rechecks_when_loaded_level_is_dirty() -> None:
-    class _WorldIndex:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def query_abs_rect(self, *_args, **_kwargs):
-            self.calls += 1
-            return []
-
+    # When spatial_dirty=True the function must NOT short-circuit; it must proceed
+    # past the early-return guard and reach the point where it sets _last_view_abs_rect.
+    spatial_index = SpatialIndex(bin_size=8)
     level = SimpleNamespace(
         spatial_dirty=True,
         world=SimpleNamespace(width=10, height=10),
     )
-    world_index = _WorldIndex()
     g = SimpleNamespace(
         levels={(0, 0, 0): level},
         zone_coord=(0, 0, 0),
         cfg=SimpleNamespace(world_width=10, world_height=10, entity_render_pad_tiles=0.0, render_max_zone_span=1),
-        world_entity_index=world_index,
+        spatial_index=spatial_index,
+        world_entity_index=None,
         attn_store=object(),
         _attn_last_sync_abs_rect=(0.0, 0.0, 10.0, 10.0),
         _attn_last_sync_cam_lod=0.0,
@@ -227,7 +223,86 @@ def test_sync_attention_instantiation_rechecks_when_loaded_level_is_dirty() -> N
     with patch("edgecaster.systems.site_placement.ensure_world_sites", lambda _game: None):
         attention.sync_attention_instantiation(g, (0.0, 0.0, 10.0, 10.0), cam_lod=0.0)
 
-    assert world_index.calls == 1
+    assert g._last_view_abs_rect == (0.0, 0.0, 10.0, 10.0)
+
+
+def test_sync_attention_instantiation_reads_proxy_refs_from_spatial_index_first() -> None:
+    class _LegacyWorldIndex:
+        def query_abs_rect(self, *_args, **_kwargs):
+            raise AssertionError("SpatialIndex-backed attention sync should not query WorldEntityIndex")
+
+    spatial_index = SpatialIndex(bin_size=8)
+    proxy = SimpleNamespace(
+        id="site:1",
+        tags={"site_kind": "test_site"},
+        abs_pos=(4, 4),
+        zone_coord=(0, 0, 0),
+        local_pos=(4, 4),
+    )
+    spatial_index.add_or_update(
+        proxy,
+        (4.0, 4.0, 5.0, 5.0),
+        0,
+        "proxy",
+        source="world_entity_index",
+    )
+    level = SimpleNamespace(
+        spatial_dirty=False,
+        world=SimpleNamespace(width=10, height=10),
+    )
+    game = SimpleNamespace(
+        cfg=SimpleNamespace(world_width=10, world_height=10, entity_render_pad_tiles=0.0, render_max_zone_span=1),
+        zone_coord=(0, 0, 0),
+        spatial_index=spatial_index,
+        world_entity_index=_LegacyWorldIndex(),
+        attn_store=object(),
+        levels={(0, 0, 0): level},
+        _clamp_zone_window=lambda zx0, zx1, zy0, zy1, **_kwargs: (zx0, zx1, zy0, zy1, False),
+        _ensure_world_aggregate_entities=lambda **_kwargs: None,
+        _get_player_abs=lambda: (5.0, 5.0),
+    )
+
+    with patch("edgecaster.systems.site_placement.ensure_world_sites", lambda _game: None):
+        attention.sync_attention_instantiation(game, (0.0, 0.0, 10.0, 10.0), cam_lod=5.0)
+
+    assert game._last_view_abs_rect == (0.0, 0.0, 10.0, 10.0)
+
+
+def test_sync_attention_instantiation_reads_spatial_proxy_without_world_index() -> None:
+    spatial_index = SpatialIndex(bin_size=8)
+    proxy = SimpleNamespace(
+        id="site:1",
+        tags={"site_kind": "test_site"},
+        abs_pos=(4, 4),
+        zone_coord=(0, 0, 0),
+        local_pos=(4, 4),
+    )
+    spatial_index.add_or_update(
+        proxy,
+        (4.0, 4.0, 5.0, 5.0),
+        0,
+        "proxy",
+    )
+    level = SimpleNamespace(
+        spatial_dirty=False,
+        world=SimpleNamespace(width=10, height=10),
+    )
+    game = SimpleNamespace(
+        cfg=SimpleNamespace(world_width=10, world_height=10, entity_render_pad_tiles=0.0, render_max_zone_span=1),
+        zone_coord=(0, 0, 0),
+        spatial_index=spatial_index,
+        world_entity_index=None,
+        attn_store=object(),
+        levels={(0, 0, 0): level},
+        _clamp_zone_window=lambda zx0, zx1, zy0, zy1, **_kwargs: (zx0, zx1, zy0, zy1, False),
+        _ensure_world_aggregate_entities=lambda **_kwargs: None,
+        _get_player_abs=lambda: (5.0, 5.0),
+    )
+
+    with patch("edgecaster.systems.site_placement.ensure_world_sites", lambda _game: None):
+        attention.sync_attention_instantiation(game, (0.0, 0.0, 10.0, 10.0), cam_lod=5.0)
+
+    assert game._last_view_abs_rect == (0.0, 0.0, 10.0, 10.0)
 
 
 def test_resolve_depth_respects_parent_cap_and_bias() -> None:

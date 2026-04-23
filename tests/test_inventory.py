@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from edgecaster.state.entities import Entity
+from edgecaster.state.entity_graph import EntityGraphStore
 from edgecaster.systems.inventory import (
     add_inventory_item,
     get_inventory,
@@ -31,58 +32,30 @@ from edgecaster.systems.inventory import (
 class TestGetInventory:
     """Tests for get_inventory."""
 
-    def test_creates_empty_list_if_missing(self):
-        """Should create an empty list for unknown owner."""
+    def test_returns_empty_list_if_missing(self):
+        """Should return an empty list for unknown owner."""
         game = MagicMock()
-        game.inventories = {}
+        game.entity_graph = None
 
         result = get_inventory(game, "player")
 
         assert result == []
-        assert "player" in game.inventories
 
-    def test_returns_existing_inventory(self):
-        """Should return existing inventory list."""
+    def test_returns_graph_resolved_inventory(self):
+        """Should return the graph-resolved inventory list."""
         game = MagicMock()
         item = MagicMock()
-        game.inventories = {"player": [item]}
+        item.id = "item_1"
 
-        result = get_inventory(game, "player")
-
-        assert result == [item]
-
-    def test_modifying_returned_list_modifies_inventory(self):
-        """Returned list should be the actual inventory (not a copy)."""
-        game = MagicMock()
-        game.inventories = {}
-
-        inv = get_inventory(game, "player")
-        item = MagicMock()
-        inv.append(item)
-
-        assert game.inventories["player"] == [item]
-
-    def test_graph_authoritative_inventory_replaces_stale_cache_in_place(self):
-        """Graph-backed owners should drop stale cache entries when edges are gone."""
         class _Graph:
             def get_children(self, owner_id, socket_id=None):
-                return []
+                return ["item_1"]
 
-        stale = MagicMock()
-        stale.id = "item:stale"
-        stale.parent_entity_id = None
-        stale.socket_id = None
-
-        game = MagicMock()
-        game.inventories = {"player": [stale]}
         game.entity_graph = _Graph()
-        game._inventory_graph_authority_owners = {"player"}
+        with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=item):
+            result = get_inventory(game, "player")
 
-        inv = game.inventories["player"]
-        result = get_inventory(game, "player")
-
-        assert result is inv
-        assert result == []
+        assert result == [item]
 
 
 class TestGetPlayerInventory:
@@ -92,25 +65,27 @@ class TestGetPlayerInventory:
         """Should use game.player_id for lookup."""
         game = MagicMock()
         game.player_id = "host_123"
-        game.inventories = {"host_123": ["sword", "shield"]}
 
-        result = get_player_inventory(game)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=["sword", "shield"]) as mock_get:
+            result = get_player_inventory(game)
+            mock_get.assert_called_once_with(game, "host_123")
 
         assert result == ["sword", "shield"]
 
     def test_follows_body_swap(self):
         """Should return new body's inventory after body swap."""
         game = MagicMock()
-        game.inventories = {
-            "original": ["potion"],
-            "new_body": ["dagger"],
-        }
+        def _mock_get_inv(g, oid):
+            if oid == "original": return ["potion"]
+            if oid == "new_body": return ["dagger"]
+            return []
 
-        game.player_id = "original"
-        assert get_player_inventory(game) == ["potion"]
+        with patch("edgecaster.systems.inventory.get_inventory", side_effect=_mock_get_inv):
+            game.player_id = "original"
+            assert get_player_inventory(game) == ["potion"]
 
-        game.player_id = "new_body"
-        assert get_player_inventory(game) == ["dagger"]
+            game.player_id = "new_body"
+            assert get_player_inventory(game) == ["dagger"]
 
 
 class TestGraphBackedInventoryHelpers:
@@ -118,37 +93,29 @@ class TestGraphBackedInventoryHelpers:
 
     def test_add_inventory_item_syncs_cache_and_owner_metadata(self):
         game = MagicMock()
-        game.inventories = {"player": []}
         item = MagicMock()
         item.id = "item_1"
         item.tags = {}
 
-        add_inventory_item(game, "player", item)
+        with patch("edgecaster.systems.inventory.entity_graph_ops_system.attach_entity_to_parent") as mock_attach:
+            add_inventory_item(game, "player", item)
 
-        assert item in game.inventories["player"]
-        assert getattr(item, "parent_entity_id", None) == "player"
-        assert getattr(item, "socket_id", None) == "inventory"
-        assert item.tags.get("inventory_owner_id") == "player"
-        assert item.tags.get("in_inventory") is True
+        mock_attach.assert_called_once_with(game, item, "player", socket_id="inventory")
 
     def test_remove_inventory_item_at_detaches_and_marks_reason(self):
         game = MagicMock()
         item = MagicMock()
         item.id = "item_2"
-        item.tags = {"inventory_owner_id": "player", "in_inventory": True}
         item.parent_entity_id = "player"
         item.socket_id = "inventory"
-        game.inventories = {"player": [item]}
         game.mark_entity_removed = MagicMock()
 
-        removed = remove_inventory_item_at(game, "player", 0, reason="consumed")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[item]):
+            with patch("edgecaster.systems.inventory.entity_graph_ops_system.detach_entity_from_parent") as mock_detach:
+                removed = remove_inventory_item_at(game, "player", 0, reason="consumed")
 
         assert removed is item
-        assert game.inventories["player"] == []
-        assert getattr(item, "parent_entity_id", None) is None
-        assert getattr(item, "socket_id", None) is None
-        assert "inventory_owner_id" not in item.tags
-        assert "in_inventory" not in item.tags
+        mock_detach.assert_called_once_with(game, item)
         game.mark_entity_removed.assert_called_once_with(item, reason="consumed")
 
 
@@ -160,7 +127,6 @@ class TestPlayerPickUp:
         """Create a mock game."""
         game = MagicMock()
         game.player_id = "player"
-        game.inventories = {"player": []}
         game.log = MagicMock()
 
         level = MagicMock()
@@ -205,11 +171,11 @@ class TestPlayerPickUp:
         level.entities = {"sword_1": item}
         mock_game._entity_at.return_value = item
 
-        with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
-            mock_grants.get_item_grants.return_value = []
-            player_pick_up(mock_game)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[]):
+            with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
+                mock_grants.get_item_grants.return_value = []
+                player_pick_up(mock_game)
 
-        assert item in mock_game.inventories["player"]
         assert "sword_1" not in level.entities
 
     def test_marks_entity_removed_on_pickup(self, mock_game):
@@ -225,9 +191,10 @@ class TestPlayerPickUp:
         level.entities = {"berry_1": item}
         mock_game._entity_at.return_value = item
 
-        with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
-            mock_grants.get_item_grants.return_value = []
-            player_pick_up(mock_game)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[]):
+            with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
+                mock_grants.get_item_grants.return_value = []
+                player_pick_up(mock_game)
 
         mock_game.mark_entity_removed.assert_called_once()
         args, kwargs = mock_game.mark_entity_removed.call_args
@@ -248,15 +215,13 @@ class TestPlayerPickUp:
         level.entities = {"dagger_1": item}
         mock_game._entity_at.return_value = item
 
-        with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
-            mock_grants.get_item_grants.return_value = []
-            player_pick_up(mock_game)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[]):
+            with patch("edgecaster.systems.inventory.entity_graph_ops_system.attach_entity_to_parent") as mock_attach:
+                with patch('edgecaster.systems.inventory.item_grants') as mock_grants:
+                    mock_grants.get_item_grants.return_value = []
+                    player_pick_up(mock_game)
 
-        assert getattr(item, "parent_entity_id", None) == "player"
-        assert getattr(item, "socket_id", None) == "inventory"
-        assert item.tags.get("inventory_owner_id") == "player"
-        assert item.tags.get("in_inventory") is True
-        mock_game.patch_entity_state.assert_called()
+        mock_attach.assert_called_once_with(mock_game, item, "player", socket_id="inventory")
 
     def test_rejects_actors(self, mock_game):
         """Should not pick up actors."""
@@ -282,8 +247,9 @@ class TestDropInventoryItem:
         item.id = "sword_1"
         item.name = "Sword"
         item.tags = {}
+        item.parent_entity_id = "player"
+        item.socket_id = "inventory"
 
-        game.inventories = {"player": [item]}
         game.log = MagicMock()
 
         level = MagicMock()
@@ -299,47 +265,43 @@ class TestDropInventoryItem:
         """Should place dropped item at player position."""
         game, item = mock_game
 
-        with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
-            mock_equip.is_equipped.return_value = False
-            drop_inventory_item(game, 0)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[item]):
+            with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
+                mock_equip.is_equipped.return_value = False
+                drop_inventory_item(game, 0)
 
         assert item.pos == (5, 5)
         assert item.id in game._level().entities
-        assert item not in game.inventories["player"]
 
     def test_drop_detaches_item_owner_metadata(self, mock_game):
         """Dropped items should no longer be marked as inventory children."""
         game, item = mock_game
-        item.parent_entity_id = "player"
-        item.socket_id = "inventory"
         item.tags = {"inventory_owner_id": "player", "in_inventory": True}
 
-        with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
-            mock_equip.is_equipped.return_value = False
-            drop_inventory_item(game, 0)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[item]):
+            with patch("edgecaster.systems.inventory.entity_graph_ops_system.detach_entity_from_parent") as mock_detach:
+                with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
+                    mock_equip.is_equipped.return_value = False
+                    drop_inventory_item(game, 0)
 
-        assert getattr(item, "parent_entity_id", None) is None
-        assert getattr(item, "socket_id", None) is None
-        assert "inventory_owner_id" not in item.tags
-        assert "in_inventory" not in item.tags
-        game.patch_entity_state.assert_called()
+        mock_detach.assert_called_once_with(game, item)
 
     def test_invalid_index_does_nothing(self, mock_game):
         """Should silently ignore invalid index."""
         game, _ = mock_game
 
-        drop_inventory_item(game, 99)
-
-        assert len(game.inventories["player"]) == 1
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[]):
+            drop_inventory_item(game, 99)
 
     def test_unequips_before_dropping(self, mock_game):
         """Should unequip item before dropping."""
         game, item = mock_game
         item.tags = {"equipped_slot": "main_hand"}
 
-        with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
-            mock_equip.is_equipped.return_value = True
-            drop_inventory_item(game, 0)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[item]):
+            with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
+                mock_equip.is_equipped.return_value = True
+                drop_inventory_item(game, 0)
 
         # Should have called unequip_item indirectly
         game.refresh_actor_actions.assert_called()
@@ -364,8 +326,8 @@ class TestEatItemFromInventory:
         berry = MagicMock()
         berry.tags = {"test_berry": True}
         berry.name = "Blueberry"
-
-        game.inventories = {"player": [berry]}
+        berry.parent_entity_id = "player"
+        berry.socket_id = "inventory"
 
         return game, berry
 
@@ -373,17 +335,17 @@ class TestEatItemFromInventory:
         """Should consume berry and heal player."""
         game, berry = mock_game
 
-        eat_item_from_inventory(game, "player", 0)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[berry]):
+            eat_item_from_inventory(game, "player", 0)
 
-        assert berry not in game.inventories["player"]
         assert game._player().stats.hp == 6
 
     def test_empty_inventory_logs(self, mock_game):
         """Should log message when inventory empty."""
         game, _ = mock_game
-        game.inventories["player"] = []
 
-        eat_item_from_inventory(game, "player", 0)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[]):
+            eat_item_from_inventory(game, "player", 0)
 
         game.log.add.assert_called_with("You have nothing to eat.")
 
@@ -393,11 +355,10 @@ class TestEatItemFromInventory:
         sword = MagicMock()
         sword.tags = {}
         sword.name = "Sword"
-        game.inventories["player"] = [sword]
 
-        eat_item_from_inventory(game, "player", 0)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[sword]):
+            eat_item_from_inventory(game, "player", 0)
 
-        assert sword in game.inventories["player"]
         game.log.add.assert_called_with("You can't eat the sword.")
 
 
@@ -415,20 +376,18 @@ class TestTakeFromContainer:
         item.name = "Potion"
         item.tags = {}
 
-        game.inventories = {"chest": [item], "player": []}
-
         level = MagicMock()
         level.entities = {}
         level.actors = {}
         game._level.return_value = level
 
-        with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
-            mock_equip.is_equipped.return_value = False
-            take_from_container(game, "chest", 0)
+        with patch("edgecaster.systems.inventory.get_inventory", side_effect=lambda g, oid: [item] if oid == "chest" else []):
+            with patch("edgecaster.systems.inventory.entity_graph_ops_system.attach_entity_to_parent") as mock_attach:
+                with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
+                    mock_equip.is_equipped.return_value = False
+                    take_from_container(game, "chest", 0)
 
-        # Item should have moved to player
-        assert item in game.inventories["player"]
-        assert item not in game.inventories["chest"]
+        mock_attach.assert_called_once_with(game, item, "player", socket_id="inventory")
 
 
 class TestMoveItemBetweenInventories:
@@ -446,11 +405,6 @@ class TestMoveItemBetweenInventories:
         item.name = "Sword"
         item.tags = {}
 
-        game.inventories = {
-            "chest": [item],
-            "player": [],
-        }
-
         level = MagicMock()
         level.entities = {}
         level.actors = {}
@@ -462,24 +416,22 @@ class TestMoveItemBetweenInventories:
         """Should move item between inventories."""
         game, item = mock_game
 
-        with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
-            mock_equip.is_equipped.return_value = False
-            move_item_between_inventories(game, "chest", 0, "player")
+        with patch("edgecaster.systems.inventory.get_inventory", side_effect=lambda g, oid: [item] if oid == "chest" else []):
+            with patch("edgecaster.systems.inventory.entity_graph_ops_system.attach_entity_to_parent") as mock_attach:
+                with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
+                    mock_equip.is_equipped.return_value = False
+                    move_item_between_inventories(game, "chest", 0, "player")
 
-        assert item in game.inventories["player"]
-        assert item not in game.inventories["chest"]
-        assert getattr(item, "parent_entity_id", None) == "player"
-        assert getattr(item, "socket_id", None) == "inventory"
-        assert item.tags.get("inventory_owner_id") == "player"
-        assert item.tags.get("in_inventory") is True
+        mock_attach.assert_called_once_with(game, item, "player", socket_id="inventory")
 
     def test_same_inventory_noop(self, mock_game):
         """Should do nothing when source equals destination."""
         game, item = mock_game
 
-        move_item_between_inventories(game, "chest", 0, "chest")
+        with patch("edgecaster.systems.inventory.entity_graph_ops_system.attach_entity_to_parent") as mock_attach:
+            move_item_between_inventories(game, "chest", 0, "chest")
 
-        assert item in game.inventories["chest"]
+        mock_attach.assert_not_called()
 
     def test_self_removal_prevented(self, mock_game):
         """Should prevent recursive self-removal."""
@@ -488,10 +440,9 @@ class TestMoveItemBetweenInventories:
         item.id = "chest"
         item.name = "Bag"
 
-        move_item_between_inventories(game, "chest", 0, "player")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[item]):
+            move_item_between_inventories(game, "chest", 0, "player")
 
-        # Item should NOT have moved
-        assert item in game.inventories["chest"]
         game.log.add.assert_called_with(
             "You turn the bag inside out, but it remains itself."
         )
@@ -501,9 +452,10 @@ class TestMoveItemBetweenInventories:
         game, item = mock_game
         item.tags = {"equipped_slot": "main_hand"}
 
-        with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
-            mock_equip.is_equipped.return_value = True
-            move_item_between_inventories(game, "chest", 0, "player")
+        with patch("edgecaster.systems.inventory.get_inventory", side_effect=lambda g, oid: [item] if oid == "chest" else []):
+            with patch('edgecaster.systems.inventory.equipment_system') as mock_equip:
+                mock_equip.is_equipped.return_value = True
+                move_item_between_inventories(game, "chest", 0, "player")
 
         assert "equipped_slot" not in item.tags
 
@@ -515,7 +467,6 @@ class TestSplitIdentity:
         game = MagicMock()
         game.player_id = "player"
         game.zone_coord = (1, 2, 0)
-        game.inventories = {}
         game.log = MagicMock()
 
         level = MagicMock()
@@ -536,9 +487,9 @@ class TestSplitIdentity:
             kind="item",
         )
         item.tags = {"quantity": 5}
-        game.inventories["player"] = [item]
 
-        drop_inventory_item_qty(game, 0, qty=2)
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[item]):
+            drop_inventory_item_qty(game, 0, qty=2)
 
         assert len(level.entities) == 1
         dropped = next(iter(level.entities.values()))
@@ -547,13 +498,12 @@ class TestSplitIdentity:
         assert dropped.tags.get("split_kind") == "drop"
         assert dropped.tags.get("split_seq") == 1
         assert dropped.tags.get("quantity") == 2
-        assert game.inventories["player"][0].tags.get("quantity") == 3
+        assert item.tags.get("quantity") == 3
 
     def test_transfer_qty_creates_split_identity(self):
         game = MagicMock()
         game.player_id = "player"
         game.zone_coord = (0, 0, 0)
-        game.inventories = {}
         game.log = MagicMock()
 
         src = Entity(
@@ -567,42 +517,41 @@ class TestSplitIdentity:
             kind="item",
         )
         src.tags = {"quantity": 4}
-        game.inventories["chest"] = [src]
-        game.inventories["player"] = []
 
-        move_item_between_inventories_qty(game, "chest", 0, "player", qty=1)
+        with patch("edgecaster.systems.inventory.get_inventory", side_effect=lambda g, oid: [src] if oid == "chest" else []):
+            with patch("edgecaster.systems.inventory.entity_graph_ops_system.attach_entity_to_parent") as mock_attach:
+                move_item_between_inventories_qty(game, "chest", 0, "player", qty=1)
 
-        assert len(game.inventories["player"]) == 1
-        transferred = game.inventories["player"][0]
-        assert str(getattr(transferred, "id", "")).startswith("split:")
-        assert transferred.tags.get("split_from_entity_id") == "bag_item"
-        assert transferred.tags.get("split_kind") == "transfer"
-        assert transferred.tags.get("split_seq") == 1
-        assert transferred.tags.get("quantity") == 1
-        assert game.inventories["chest"][0].tags.get("quantity") == 3
+        transferred = mock_attach.call_args[0][1]
+        mock_attach.assert_called_once_with(game, transferred, "player", socket_id="inventory")
+
+        assert src.tags.get("quantity") == 3
 
 
 class TestGetEquippedInSlot:
     """Tests for get_equipped_in_slot."""
 
     def test_finds_equipped_item(self):
-        """Should find item equipped in slot."""
+        """Should find item equipped through a slot socket."""
         game = MagicMock()
         sword = MagicMock()
+        sword.id = "sword_1"
         sword.tags = {"equipped_slot": "main_hand"}
+        game.entity_graph = EntityGraphStore()
+        game.entity_graph.register("player", kind="actor")
+        game.entity_graph.register("sword_1", parent_entity_id="player", socket_id="main_hand", kind="item")
 
-        game.inventories = {"player": [sword]}
-
-        result = get_equipped_in_slot(game, "player", "main_hand")
+        with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=sword):
+            result = get_equipped_in_slot(game, "player", "main_hand")
 
         assert result is sword
 
     def test_returns_none_if_empty(self):
         """Should return None if slot is empty."""
         game = MagicMock()
-        game.inventories = {"player": []}
 
-        result = get_equipped_in_slot(game, "player", "main_hand")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[]):
+            result = get_equipped_in_slot(game, "player", "main_hand")
 
         assert result is None
 
@@ -612,9 +561,8 @@ class TestGetEquippedInSlot:
         sword = MagicMock()
         sword.tags = {"equipped": "main_hand"}
 
-        game.inventories = {"player": [sword]}
-
-        result = get_equipped_in_slot(game, "player", "main_hand")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[sword]):
+            result = get_equipped_in_slot(game, "player", "main_hand")
 
         assert result is sword
 
@@ -628,18 +576,26 @@ class TestUnequipSlot:
         sword = MagicMock()
         sword.tags = {"equipped_slot": "main_hand"}
 
-        game.inventories = {"player": [sword]}
+        class _Graph:
+            def get_children(self, owner_id, socket_id=None):
+                if socket_id == "main_hand":
+                    return ["sword_1"]
+                return []
+        game.entity_graph = _Graph()
 
-        unequip_slot(game, "player", "main_hand")
+        with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=sword), \
+             patch("edgecaster.systems.inventory.entity_graph_ops_system.reparent_entity") as mock_reparent:
+            unequip_slot(game, "player", "main_hand")
 
         assert "equipped_slot" not in sword.tags
+        mock_reparent.assert_called_once_with(game, sword, parent_id="player", socket_id="inventory")
 
     def test_does_nothing_if_empty(self):
         """Should do nothing if slot empty."""
         game = MagicMock()
-        game.inventories = {"player": []}
 
-        unequip_slot(game, "player", "main_hand")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[]):
+            unequip_slot(game, "player", "main_hand")
 
         game.refresh_actor_actions.assert_not_called()
 
@@ -654,9 +610,9 @@ class TestUnequipItem:
         sword.id = "sword_1"
         sword.tags = {"equipped_slot": "main_hand"}
 
-        game.inventories = {"player": [sword]}
-
-        unequip_item(game, "player", "sword_1")
+        with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=sword), \
+             patch("edgecaster.systems.inventory.entity_graph_ops_system.reparent_entity"):
+            unequip_item(game, "player", "sword_1")
 
         assert "equipped_slot" not in sword.tags
         game.refresh_actor_actions.assert_called_with("player")
@@ -668,9 +624,9 @@ class TestUnequipItem:
         sword.id = "sword_1"
         sword.tags = {"equipped_slot": "main_hand"}
 
-        game.inventories = {"player": [sword]}
-
-        unequip_item(game, "player", "dagger_1")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[sword]):
+            with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=None):
+                unequip_item(game, "player", "dagger_1")
 
         assert "equipped_slot" in sword.tags
 
@@ -685,12 +641,15 @@ class TestEquipItemToSlot:
         sword.id = "sword_1"
         sword.tags = {}
 
-        game.inventories = {"player": [sword]}
-
-        equip_item_to_slot(game, "player", "sword_1", "main_hand")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[sword]):
+            with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=sword), \
+                 patch("edgecaster.systems.inventory.entity_graph_ops_system.reparent_entity") as mock_reparent, \
+                 patch("edgecaster.systems.inventory.equip_rules.can_equip_item_in_slot", return_value=(True, "")):
+                equip_item_to_slot(game, "player", "sword_1", "main_hand")
 
         assert sword.tags["equipped_slot"] == "main_hand"
         game.refresh_actor_actions.assert_called_with("player")
+        mock_reparent.assert_called_once_with(game, sword, parent_id="player", socket_id="main_hand")
 
     def test_replaces_existing_equipped(self):
         """Should unequip existing item in slot first."""
@@ -703,9 +662,22 @@ class TestEquipItemToSlot:
         dagger.id = "dagger_1"
         dagger.tags = {}
 
-        game.inventories = {"player": [sword, dagger]}
+        def mock_find_entity(g, iid):
+            if iid == "sword_1": return sword
+            if iid == "dagger_1": return dagger
+            return None
 
-        equip_item_to_slot(game, "player", "dagger_1", "main_hand")
+        class _Graph:
+            def get_children(self, owner_id, socket_id=None):
+                if socket_id == "main_hand": return ["sword_1"]
+                return []
+        game.entity_graph = _Graph()
+
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[sword, dagger]):
+            with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", side_effect=mock_find_entity), \
+                 patch("edgecaster.systems.inventory.entity_graph_ops_system.reparent_entity"), \
+                 patch("edgecaster.systems.inventory.equip_rules.can_equip_item_in_slot", return_value=(True, "")):
+                equip_item_to_slot(game, "player", "dagger_1", "main_hand")
 
         assert "equipped_slot" not in sword.tags
         assert dagger.tags["equipped_slot"] == "main_hand"
@@ -717,8 +689,8 @@ class TestEquipItemToSlot:
         sword.id = "sword_1"
         sword.tags = {}
 
-        game.inventories = {"player": [sword]}
-
-        equip_item_to_slot(game, "player", "nonexistent", "main_hand")
+        with patch("edgecaster.systems.inventory.get_inventory", return_value=[sword]):
+            with patch("edgecaster.systems.inventory.entity_lifecycle_system.find_runtime_entity", return_value=None):
+                equip_item_to_slot(game, "player", "nonexistent", "main_hand")
 
         assert "equipped_slot" not in sword.tags

@@ -38,6 +38,7 @@ from edgecaster.systems import aggregate_resolution as aggregate_system
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 from edgecaster.systems import entity_lifecycle as entity_lifecycle_system
 from edgecaster.systems import entity_snapshots as entity_snapshots_system
+from edgecaster.systems import spatial_index as spatial_index_system
 from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.state import chakra_component as chakra_component_state
@@ -420,13 +421,21 @@ class _YogaStagedEntity:
         return self.tags.get("name", self.id)
 
 
+@dataclass(frozen=True)
+class _SpatialQueryRef:
+    """WorldEntRef-shaped wrapper for SpatialIndex-backed attention readers."""
+
+    ent: object
+    zone_coord: Tuple[int, int, int]
+    local_pos: Tuple[int, int]
+
+
 class AttentionCellStore:
     """Unified cache of instantiated entities keyed by a hierarchical ABS-space index.
 
     Public methods stay intentionally small:
       - `stage(obj, abs_x, abs_y, zz)`
       - `despawn(eid)`
-      - `query_abs_rect(abs_rect, zz=...)`
 
     Internally we bucket entities into scale-aware rect cells so large
     footprints do not explode into duplicates and queries can respect
@@ -438,13 +447,10 @@ class AttentionCellStore:
     geometry query system.
     """
 
-    def __init__(self, *, bin_size: int = 32) -> None:
+    def __init__(self, *, bin_size: int = 32, spatial_index: object | None = None) -> None:
         self.bin_size = max(1, int(bin_size))
+        self.spatial_index = spatial_index
         self.entities: Dict[str, object] = {}
-        self.eid_to_bin: Dict[str, Tuple[int, int, int, int]] = {}
-        self.bins: Dict[Tuple[int, int, int, int], List[str]] = {}
-        self.entity_rects: Dict[str, Tuple[float, float, float, float]] = {}
-        self.entity_cells: Dict[str, List[Tuple[int, int, int, int]]] = {}
 
     @staticmethod
     def _normalize_rect(rect: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
@@ -515,50 +521,6 @@ class AttentionCellStore:
                 rect = (float(abs_x), float(abs_y), float(abs_x) + 1.0, float(abs_y) + 1.0)
         return self._normalize_rect(rect)
 
-    def _cell_size_for_rect(self, rect: Tuple[float, float, float, float]) -> Tuple[int, float]:
-        x0, y0, x1, y1 = rect
-        max_dim = max(1.0, float(x1) - float(x0), float(y1) - float(y0))
-        cell_size = float(self.bin_size)
-        level = 0
-        while cell_size < max_dim and level < 16:
-            cell_size *= 2.0
-            level += 1
-        return (int(level), float(cell_size))
-
-    def _cells_for_rect(
-        self,
-        rect: Tuple[float, float, float, float],
-        *,
-        level: int,
-        cell_size: float,
-        zz: int,
-    ) -> List[Tuple[int, int, int, int]]:
-        x0, y0, x1, y1 = rect
-        bx0 = int(math.floor(float(x0) / float(cell_size)))
-        by0 = int(math.floor(float(y0) / float(cell_size)))
-        bx1 = int(math.floor((float(x1) - 1e-6) / float(cell_size)))
-        by1 = int(math.floor((float(y1) - 1e-6) / float(cell_size)))
-        out: List[Tuple[int, int, int, int]] = []
-        for by in range(by0, by1 + 1):
-            for bx in range(bx0, bx1 + 1):
-                out.append((int(level), int(bx), int(by), int(zz)))
-        return out
-
-    def _remove_entity_cells(self, eid: str) -> None:
-        prev_cells = self.entity_cells.pop(str(eid), None)
-        if prev_cells:
-            for cell in prev_cells:
-                try:
-                    ids = self.bins.get(cell)
-                    if ids and eid in ids:
-                        ids.remove(eid)
-                    if not ids:
-                        self.bins.pop(cell, None)
-                except Exception:
-                    pass
-        self.entity_rects.pop(str(eid), None)
-        self.eid_to_bin.pop(str(eid), None)
-
     def stage(self, obj: object, *, abs_x: float, abs_y: float, zz: int) -> str:
         eid = str(getattr(obj, "id", "") or "")
         if not eid:
@@ -570,64 +532,30 @@ class AttentionCellStore:
             pass
 
         rect = self._rect_for_obj(obj, abs_x=abs_x, abs_y=abs_y)
-        level, cell_size = self._cell_size_for_rect(rect)
-        cells = self._cells_for_rect(rect, level=level, cell_size=cell_size, zz=int(zz))
-
-        self._remove_entity_cells(eid)
 
         self.entities[eid] = obj
-        self.entity_rects[eid] = rect
-        self.entity_cells[eid] = list(cells)
-        self.eid_to_bin[eid] = cells[0] if cells else (int(level), 0, 0, int(zz))
-        for cell in cells:
-            self.bins.setdefault(cell, []).append(eid)
+        if self.spatial_index is not None:
+            try:
+                self.spatial_index.add_or_update(
+                    obj,
+                    rect,
+                    int(zz),
+                    "staged",
+                    source="attention",
+                )
+            except Exception:
+                pass
         return eid
 
     def despawn(self, eid: str) -> None:
         eid = str(eid)
-        self._remove_entity_cells(eid)
+        if self.spatial_index is not None:
+            try:
+                self.spatial_index.remove(eid, source="attention")
+            except Exception:
+                pass
         self.entities.pop(eid, None)
 
-    def query_abs_rect(self, abs_rect: Tuple[float, float, float, float], *, zz: int) -> List[Tuple[object, float, float]]:
-        ax0, ay0, ax1, ay1 = map(float, abs_rect)
-        if ax1 < ax0:
-            ax0, ax1 = ax1, ax0
-        if ay1 < ay0:
-            ay0, ay1 = ay1, ay0
-        if ax1 == ax0 or ay1 == ay0:
-            return []
-
-        out: List[Tuple[object, float, float]] = []
-        seen: set[str] = set()
-        levels = sorted({cell[0] for cell in self.bins.keys() if int(cell[3]) == int(zz)})
-        for level in levels:
-            cell_size = float(self.bin_size) * float(2 ** int(level))
-            for cell in self._cells_for_rect((ax0, ay0, ax1, ay1), level=int(level), cell_size=cell_size, zz=int(zz)):
-                ids = self.bins.get(cell)
-                if not ids:
-                    continue
-                for eid in ids:
-                    if eid in seen:
-                        continue
-                    obj = self.entities.get(eid)
-                    if obj is None:
-                        continue
-                    rect = self.entity_rects.get(eid)
-                    if rect is None:
-                        continue
-                    rx0, ry0, rx1, ry1 = rect
-                    if rx1 <= ax0 or rx0 >= ax1 or ry1 <= ay0 or ry0 >= ay1:
-                        continue
-                    ap = getattr(obj, "abs_pos", None)
-                    if isinstance(ap, (tuple, list)) and len(ap) >= 2:
-                        ax = float(ap[0])
-                        ay = float(ap[1])
-                    else:
-                        ax = float(rx0)
-                        ay = float(ry0)
-                    seen.add(eid)
-                    out.append((obj, ax, ay))
-        return out
 
 def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, float], *, cam_lod: float) -> None:
     """
@@ -744,8 +672,6 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         pass
 
     world_index = getattr(game, "world_entity_index", None)
-    if world_index is None:
-        return
 
     # Query macro entities in warm rect (clamped around camera so god-vision doesn't stage the universe)
     max_zone_span = int(getattr(cfg, "render_max_zone_span", 9) or 9)
@@ -780,9 +706,36 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
     except Exception:
         pass
 
+    refs = []
     try:
-        refs = world_index.query_abs_rect((wx0, wy0, wx1, wy1), z=zz, zone_span_cap=max_zone_span)
+        spatial_refs: list[_SpatialQueryRef] = []
+        for entry in spatial_index_system.query_game_spatial_rect(
+            game,
+            (wx0, wy0, wx1, wy1),
+            zz=zz,
+            realization_state=("proxy", "collapsed"),
+        ):
+            ent = entry.obj
+            zc = getattr(ent, "zone_coord", None)
+            lp = getattr(ent, "local_pos", None)
+            if zc is None or lp is None:
+                ax, ay = spatial_index_system.entry_anchor(entry)
+                zx = int(math.floor(float(ax) / float(zone_w)))
+                zy = int(math.floor(float(ay) / float(zone_h)))
+                lp = (int(float(ax) - float(zx * zone_w)), int(float(ay) - float(zy * zone_h)))
+                zc = (int(zx), int(zy), int(zz))
+            spatial_refs.append(
+                _SpatialQueryRef(
+                    ent=ent,
+                    zone_coord=(int(zc[0]), int(zc[1]), int(zc[2])),
+                    local_pos=(int(lp[0]), int(lp[1])),
+                )
+            )
+        refs = spatial_refs
     except Exception:
+        refs = []
+
+    if not refs:
         return
 
     partial_knowledge = bool(was_clamped)
@@ -1268,7 +1221,16 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
             # 2) staged entities inside warm rect
             try:
-                staged = attn_store.query_abs_rect((wx0, wy0, wx1, wy1), zz=zz)
+                staged_entries = spatial_index_system.query_game_spatial_rect(
+                    game,
+                    (wx0, wy0, wx1, wy1),
+                    zz=zz,
+                    realization_state="staged",
+                )
+                staged = [
+                    (entry.obj, *spatial_index_system.entry_anchor(entry))
+                    for entry in staged_entries
+                ]
                 for ent, ax, ay in staged:
                     tags = getattr(ent, "tags", {}) or {}
                     if not isinstance(tags, dict) or "resolve" not in tags:
@@ -1520,7 +1482,6 @@ def renderables_in_abs_rect(
     attn_store = getattr(game, "attn_store", None)
     attn_ids = set(getattr(attn_store, "entities", {}) or {}) if attn_store is not None else set()
 
-
     # Camera center for scoring (raw camera center, not warm center)
     ccx = 0.5 * (ax0 + ax1)
     ccy = 0.5 * (ay0 + ay1)
@@ -1529,6 +1490,52 @@ def renderables_in_abs_rect(
         dx = abs_x - ccx
         dy = abs_y - ccy
         return abs_size * 1000.0 - (dx * dx + dy * dy)
+
+    def _zone_local_for_abs(abs_x: float, abs_y: float) -> tuple[tuple[int, int, int], tuple[int, int]]:
+        zx = int(math.floor(float(abs_x) / float(zone_w)))
+        zy = int(math.floor(float(abs_y) / float(zone_h)))
+        ox = int(float(abs_x) - float(zx * zone_w))
+        oy = int(float(abs_y) - float(zy * zone_h))
+        return (int(zx), int(zy), int(zz)), (int(ox), int(oy))
+
+    def _append_candidate_if_visible(
+        obj: object,
+        *,
+        abs_x: float,
+        abs_y: float,
+        coord: tuple[int, int, int] | None = None,
+        local_pos: tuple[int, int] | None = None,
+    ) -> None:
+        abs_size = game._size_for_render(obj)
+        ent_lod = math.log2(abs_size) if abs_size > 0 else -30.0
+        delta = float(cam_lod) - float(ent_lod)
+
+        if delta < (float(dmin) - float(fade_w)) or delta > (float(dmax) + float(fade_w)):
+            return
+
+        # Intersection test against WARM rect (gather candidates), not camera rect.
+        half = 0.5 * float(abs_size)
+        ex0 = float(abs_x) - half
+        ey0 = float(abs_y) - half
+        ex1 = float(abs_x) + half
+        ey1 = float(abs_y) + half
+        if ex1 <= wx0 or ex0 >= wx1 or ey1 <= wy0 or ey0 >= wy1:
+            return
+
+        if coord is None or local_pos is None:
+            coord, local_pos = _zone_local_for_abs(float(abs_x), float(abs_y))
+
+        sc = _score(abs_size, float(abs_x), float(abs_y))
+        candidates.append(
+            (
+                obj,
+                float(abs_x),
+                float(abs_y),
+                (int(coord[0]), int(coord[1]), int(coord[2])),
+                (int(local_pos[0]), int(local_pos[1])),
+                sc,
+            )
+        )
 
     # ------------------------------------------------------------
     # 1) WORLD INDEX ENTITIES (POIs and other world-markers)
@@ -1560,44 +1567,35 @@ def renderables_in_abs_rect(
         pass
 
 
-    # Query world index using WARM rect so panning doesn't "drop" things on the edge.
+    # Query shared SpatialIndex first so render readers no longer need to know
+    # which legacy backing cache mirrored a proxy.
+    spatial_world_entries = spatial_index_system.query_game_spatial_rect(
+        game,
+        (wx0, wy0, wx1, wy1),
+        zz=zz,
+        realization_state=("proxy", "collapsed"),
+    )
     try:
-        if getattr(game, "world_entity_index", None) is not None:
-            for ref in game.world_entity_index.query_abs_rect((wx0, wy0, wx1, wy1), z=zz, zone_span_cap=None):
-                obj = ref.ent
-                zx, zy, _z = ref.zone_coord
-                ox, oy = ref.local_pos
-
-
-
-                abs_x = float(zx * zone_w + ox)
-                abs_y = float(zy * zone_h + oy)
-
-                abs_size = game._size_for_render(obj)
-                ent_lod = math.log2(abs_size) if abs_size > 0 else -30.0
-                delta = float(cam_lod) - float(ent_lod)
-
-                if delta < (float(dmin) - float(fade_w)) or delta > (float(dmax) + float(fade_w)):
-                    continue
-
-                # Intersection test against WARM rect (gather candidates), not camera rect.
-                half = 0.5 * float(abs_size)
-                ex0 = abs_x - half
-                ey0 = abs_y - half
-                ex1 = abs_x + half
-                ey1 = abs_y + half
-                if ex1 <= wx0 or ex0 >= wx1 or ey1 <= wy0 or ey0 >= wy1:
-                    continue
-
-                sc = _score(abs_size, abs_x, abs_y)
+        if spatial_world_entries:
+            for entry in spatial_world_entries:
+                obj = entry.obj
+                abs_x, abs_y = spatial_index_system.entry_anchor(entry)
+                coord = getattr(obj, "zone_coord", None)
+                local_pos = getattr(obj, "local_pos", None)
+                if coord is None or local_pos is None:
+                    coord, local_pos = _zone_local_for_abs(abs_x, abs_y)
 
                 # Render-only detail proxies for aggregates when zoomed in.
                 # NOTE (Yoga): detail proxies are disabled.
                 # If berries/soldiers/etc. are visible at a given band, they must be real entities
                 # staged into LevelState.entities by the attention lifecycle (not invented here).
-                pass
-
-                candidates.append((obj, abs_x, abs_y, (int(zx), int(zy), int(zz)), (int(ox), int(oy)), sc))
+                _append_candidate_if_visible(
+                    obj,
+                    abs_x=float(abs_x),
+                    abs_y=float(abs_y),
+                    coord=coord,
+                    local_pos=local_pos,
+                )
     except Exception:
         pass
 
@@ -1606,25 +1604,17 @@ def renderables_in_abs_rect(
     # 1.5) ATTENTION-STAGED ENTITIES (Route 2)
     # ------------------------------------------------------------
     try:
-        attn_store = getattr(game, "attn_store", None)
-        if attn_store is not None and include_entities:
-            for obj, abs_x, abs_y in attn_store.query_abs_rect((wx0, wy0, wx1, wy1), zz=zz):
-                abs_size = game._size_for_render(obj)
-                ent_lod = math.log2(abs_size) if abs_size > 0 else -30.0
-                delta = float(cam_lod) - float(ent_lod)
-
-                if delta < (float(dmin) - float(fade_w)) or delta > (float(dmax) + float(fade_w)):
-                    continue
-
-                sc = _score(abs_size, abs_x, abs_y)
-
-                # Derive zone/local purely for renderer convenience.
-                zx = int(math.floor(abs_x / float(zone_w)))
-                zy = int(math.floor(abs_y / float(zone_h)))
-                ox = int(abs_x - zx * zone_w)
-                oy = int(abs_y - zy * zone_h)
-
-                candidates.append((obj, float(abs_x), float(abs_y), (int(zx), int(zy), int(zz)), (int(ox), int(oy)), sc))
+        spatial_attention_entries = spatial_index_system.query_game_spatial_rect(
+            game,
+            (wx0, wy0, wx1, wy1),
+            zz=zz,
+            realization_state="staged",
+        )
+        if include_entities and spatial_attention_entries:
+            for entry in spatial_attention_entries:
+                obj = entry.obj
+                abs_x, abs_y = spatial_index_system.entry_anchor(entry)
+                _append_candidate_if_visible(obj, abs_x=float(abs_x), abs_y=float(abs_y))
     except Exception:
         pass
 

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from edgecaster.state.pois import ABSRect, POISpec, StructureSpec
 from edgecaster.systems.poi_registry import POIRegistry
+from edgecaster.systems.spatial_index import SpatialIndex
 
 from edgecaster.systems.overmap import (
     build_tile_julia_grid,
@@ -454,6 +455,32 @@ class TestAllocRuneAnchorPoiId:
         pid = alloc_rune_anchor_poi_id(game)
 
         assert pid == "rune_anchor_002"
+
+    def test_skips_spatial_index_ids_without_registry(self):
+        """Should skip rune anchor IDs already present in SpatialIndex."""
+        game = SimpleNamespace(poi_registry=None, spatial_index=SpatialIndex())
+        footprint = ABSRect.from_zone_coord(0, 0, 40, 40)
+        poi = POISpec(
+            id="rune_anchor_000",
+            kind="rune_anchor",
+            name="Rune Anchor",
+            footprint=footprint,
+            depth=0,
+            anchor_abs=footprint.center,
+            structure_specs=[StructureSpec(kind="rune_anchor")],
+        )
+        game.spatial_index.add_or_update(
+            poi,
+            (float(footprint.x0), float(footprint.y0), float(footprint.x1), float(footprint.y1)),
+            0,
+            "collapsed",
+            kind="rune_anchor",
+            source="poi_registry",
+        )
+
+        pid = alloc_rune_anchor_poi_id(game)
+
+        assert pid == "rune_anchor_001"
 
 
 class TestAddCorruptionAnchor:

@@ -56,7 +56,6 @@ class TestFindActionOrigin:
     def mock_game(self):
         """Create a mock game."""
         game = MagicMock()
-        game.inventories = {}
         return game
 
     @pytest.fixture
@@ -84,22 +83,22 @@ class TestFindActionOrigin:
     def test_item_granted_action(self, mock_game, mock_actor):
         """Should find item origin for granted actions."""
         wand = MagicMock()
-        mock_game.inventories = {"player": [wand]}
 
-        with patch('edgecaster.systems.action_runner.item_grants') as mock_grants:
-            mock_grants.find_grant_origin.return_value = wand
-            origin, is_intrinsic = find_action_origin(mock_game, mock_actor, "fireball")
+        with patch('edgecaster.systems.action_runner.inventory_system.get_inventory', return_value=[wand]):
+            with patch('edgecaster.systems.action_runner.item_grants') as mock_grants:
+                mock_grants.find_grant_origin.return_value = wand
+                origin, is_intrinsic = find_action_origin(mock_game, mock_actor, "fireball")
 
         assert origin is wand
         assert is_intrinsic is False
 
     def test_unknown_action_defaults_to_actor(self, mock_game, mock_actor):
         """Should default to actor for unknown actions."""
-        mock_game.inventories = {"player": []}
 
-        with patch('edgecaster.systems.action_runner.item_grants') as mock_grants:
-            mock_grants.find_grant_origin.return_value = None
-            origin, is_intrinsic = find_action_origin(mock_game, mock_actor, "unknown")
+        with patch('edgecaster.systems.action_runner.inventory_system.get_inventory', return_value=[]):
+            with patch('edgecaster.systems.action_runner.item_grants') as mock_grants:
+                mock_grants.find_grant_origin.return_value = None
+                origin, is_intrinsic = find_action_origin(mock_game, mock_actor, "unknown")
 
         assert origin is mock_actor
         assert is_intrinsic is True
@@ -243,9 +242,9 @@ class TestFindChargeItem:
         actor = MagicMock()
         actor.id = "player"
         wand = MagicMock()
-        game.inventories = {"player": [wand]}
 
-        assert find_charge_item(game, actor, wand) is wand
+        with patch("edgecaster.systems.action_runner.inventory_system.get_inventory", return_value=[wand]):
+            assert find_charge_item(game, actor, wand) is wand
 
     def test_item_not_in_inventory(self):
         """Should return None if item not in inventory."""
@@ -253,9 +252,9 @@ class TestFindChargeItem:
         actor = MagicMock()
         actor.id = "player"
         wand = MagicMock()
-        game.inventories = {"player": []}
 
-        assert find_charge_item(game, actor, wand) is None
+        with patch("edgecaster.systems.action_runner.inventory_system.get_inventory", return_value=[]):
+            assert find_charge_item(game, actor, wand) is None
 
 
 class TestConsumeCharge:
@@ -390,7 +389,6 @@ class TestRunAction:
         game.player_id = "player"
         game.cfg = MagicMock()
         game.cfg.action_time_fast = 10
-        game.inventories = {}
         game.log = MagicMock()
 
         level = MagicMock()
@@ -487,7 +485,6 @@ class TestRunAiAction:
         game.player_id = "player"
         game.cfg = MagicMock()
         game.cfg.action_time_fast = 10
-        game.inventories = {}
 
         level = MagicMock()
         actor = MagicMock()
@@ -513,4 +510,3 @@ class TestRunAiAction:
         # Should execute despite confirm being defined
         assert result.executed is True
         action_def.func.assert_called_once()
-

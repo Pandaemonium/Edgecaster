@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 
 from edgecaster.math_utils import smoothstep_range
 from edgecaster.systems import entity_ops as entity_ops_system
+from edgecaster.systems import spatial_index as spatial_index_system
 
 
 def describe_current_tile(game, for_examine: bool = False) -> None:
@@ -85,32 +86,22 @@ def describe_abs_tile_at(game, abs_pos: Tuple[int, int], *, cam_lod: float | Non
         candidates: list[tuple[object, float]] = []
         zz = int(getattr(game, "zone_coord", (0, 0, 0))[2])
 
-        world_index = getattr(game, "world_entity_index", None)
-        if world_index is not None:
-            for ref in world_index.query_abs_rect((ax, ay, ax + 1, ay + 1), z=zz, zone_span_cap=1):
-                obj = ref.ent
-                zx0, zy0, _z = ref.zone_coord
-                ox, oy = ref.local_pos
-                abs_x = float(zx0) * float(world_index.zone_w) + float(ox)
-                abs_y = float(zy0) * float(world_index.zone_h) + float(oy)
-                abs_size = game._size_for_render(obj)
-                if not _intersects_tile(abs_x, abs_y, abs_size):
-                    continue
-                delta = _lod_delta(abs_size)
-                if delta is None:
-                    continue
-                candidates.append((obj, float(delta)))
+        spatial_entries = spatial_index_system.query_game_spatial_rect(
+            game,
+            (ax, ay, ax + 1, ay + 1),
+            zz=zz,
+        )
+        for entry in spatial_entries:
+            obj = entry.obj
+            abs_x, abs_y = spatial_index_system.entry_anchor(entry)
+            abs_size = game._size_for_render(obj)
+            if not _intersects_tile(abs_x, abs_y, abs_size):
+                continue
+            delta = _lod_delta(abs_size)
+            if delta is None:
+                continue
+            candidates.append((obj, float(delta)))
 
-        attn_store = getattr(game, "attn_store", None)
-        if attn_store is not None:
-            for obj, abs_x, abs_y in attn_store.query_abs_rect((ax, ay, ax + 1, ay + 1), zz=zz):
-                abs_size = game._size_for_render(obj)
-                if not _intersects_tile(float(abs_x), float(abs_y), abs_size):
-                    continue
-                delta = _lod_delta(abs_size)
-                if delta is None:
-                    continue
-                candidates.append((obj, float(delta)))
 
         if candidates:
             # Prefer entities whose LOD best matches the camera.

@@ -2,7 +2,7 @@
 
 Purpose: map the main module clusters in `edgecaster/systems/` so agents can find the right ownership area quickly.
 Status: active-plan
-Last verified: 2026-04-21 (updated with chakra scene/query-surface notes)
+Last verified: 2026-04-23 (updated with Track D render/attention SpatialIndex reader migration)
 Canonical for: systems-folder navigation and ownership hints
 Related docs: `edgecaster/systems/AGENTS.md`, `vision_documents/architecture.txt`, `vision_documents/spring_cleaning.txt`
 Related code: `edgecaster/systems/`
@@ -64,7 +64,8 @@ Supersedes: none
 - `entity_snapshots.py`
 - `entity_lifecycle.py`
 - `entity_geometry.py`
-- `attention.py`
+- `spatial_index.py` *(shared ABS rect / semantic / kind / realization-state index with filtered rect queries and tag queries; currently mirrors attention-staged, world-proxy, and POIRegistry entities while legacy stores are migrated; render, attention sync, inspection, distant look, spatial music, legendary-lair/rune-anchor lookup, and dialogue site lookup read it first)*
+- `attention.py` *(attention lifecycle and render candidate assembly; Track D readers now query `SpatialIndex` before legacy attention/world-index fallbacks)*
 - `aggregate_resolution.py`
 - `world_entity_index.py`
 - `zones.py`
@@ -76,7 +77,7 @@ Supersedes: none
 
 - `spawning.py`
 - `ambient_spawns.py`
-- `poi_registry.py`
+- `poi_registry.py` *(transitional POI spec/content-state registry; mirrors POI specs into `SpatialIndex` while content-state persistence remains here)*
 - `poi_worldgen.py` *(unified POI realization entrypoint; `poi_spawning.py` deleted 2026-04-13; tagged [LEGACY_DELETE] pending full resolver/entity-graph pipeline convergence)*
 - `site_placement.py`
 - `sites.py` *(legacy — no longer the main source of truth for prototype-driven site placement; prefer `site_placement.py` + `content/site_types.yaml`)*
@@ -86,11 +87,11 @@ Supersedes: none
 
 ### Inventory, Equipment, Economy, And Social Systems
 
-- `inventory.py` *(graph-first inventory queries, recursive inventory-tree walkers, and shared add/remove helpers; list caches remain a compatibility bridge while callers migrate off direct `game.inventories` reads)*
+- `inventory.py` *(graph-authoritative inventory queries, recursive inventory-tree walkers, equipment socket containment, and shared add/remove helpers)*
 - `equipment.py`
 - `equip_rules.py`
 - `item_grants.py`
-- `trade.py` *(merchant/player inventory reads now go through the shared inventory query surface; direct list mutation is compatibility-only during the remaining cache bridge period)*
+- `trade.py` *(merchant/player inventory reads go through the shared inventory query surface)*
 - `reputation.py`
 - `quests.py`
 - `factions.py`

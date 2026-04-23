@@ -84,7 +84,7 @@ work that survived the earlier POI/entity unification plan.
 
 -------------------------------------------------------------------------------
 
-## Current Snapshot (2026-04-19)
+## Current Snapshot (2026-04-22)
 
 Implemented and stable:
 
@@ -129,6 +129,11 @@ Implemented and stable:
    - Inventory/trade split callsites now use shared graph-op split directly.
    - Trade item moves (single + proposal flow) now route through shared
      graph transfer operations.
+   - Inventory queries are now graph-authoritative; `game.inventories` has
+     been deleted as a parallel containment store.
+   - Equipment slots are modeled as socket-typed graph containment edges:
+     inventory items live on `socket_id="inventory"` and equipped items live
+     on their slot socket.
 
 5. Chakra substrate kickoff:
    - Typed chakra dataclasses now exist:
@@ -307,6 +312,9 @@ Implemented and stable:
      (`BodyNodeSpec.abs_pos`) and preserved through realization via
      `body_float_pos`; the remaining work is to promote that from a body-node
      convention into a generic entity geometry contract.
+   - `edgecaster/systems/spatial_index.py` now defines the shared
+     `SpatialIndex` substrate intended to replace separate attention,
+     world-entity, and POI lookup stores.
 
 8. Actor-body layered expansion kickoff:
    - `edgecaster/systems/entity_body.py` now maps authored actor anatomy into
@@ -334,7 +342,7 @@ Not yet complete:
 
 1. Unified graph storage is not authoritative yet.
    - Parallel stores still exist (`LevelState.actors/entities`, `attn_store`,
-     `world_entity_index`, `poi_registry`, `inventories`).
+     `world_entity_index`, `poi_registry`).
    - Plan clarification: `entity_graph`, runtime entities, and component/channel
      payloads are the intended authorities. The listed side stores should
      converge toward caches/indexes/projections rather than remaining peer
@@ -364,9 +372,10 @@ Not yet complete:
      migrated to import `poi_worldgen` directly.
    - `poi_worldgen.py` itself still carries a `[LEGACY_DELETE]` tag pending
      full resolver/entity-graph realization pipeline convergence.
-4. Split-stack operations still create child entities in list-backed inventories.
-   - Shared graph-op split is in place, but final graph-authoritative stack
-     storage is not complete.
+4. Split-stack, container, and equipment flows need post-cutover cleanup.
+   - Shared graph-op split and graph-authoritative inventory containment are
+     in place. Remaining work is to audit tests, stale docs, and leftover
+     compatibility fallbacks now that list-backed inventory authority is gone.
 5. Read compatibility still merges legacy lineage state where present.
    - This is intentional for migration safety, but the long-term goal is for
      lineage to be provenance/context only, not a fallback persistence identity.
@@ -575,34 +584,34 @@ Done looks like:
 ✓ Loaded-zone membership becomes a declared cache/projection, not an ambient
   hidden authority.
 
-### Track C - Finish Graph-Authoritative Inventory And Equipment
+### Track C - Finish Graph-Authoritative Inventory And Equipment (COMPLETE)
 
 Why this is third:
-- Inventory is the cleanest player-facing containment loop and is already
-  partially cut over. Finishing it validates the graph-authority contract
-  before the harder world-scale cuts.
+- Inventory was the cleanest player-facing containment loop to finish first.
+  Completing it validates the graph-authority contract before the harder
+  world-scale cuts.
 
 Primary targets:
 - `edgecaster/systems/inventory.py`
 - `edgecaster/systems/equipment.py`
 - `edgecaster/systems/trade.py`
 - `edgecaster/systems/entity_graph_ops.py`
-- remaining `game.inventories` direct readers/writers
+- stale inventory compatibility fallbacks, tests, and docs
 
 Execution strategy:
-1. Keep `get_inventory(...)` graph-first, but remove the assumption that the
-   fallback list is acceptable long-term.
-2. Represent equipment slots purely as socket-typed containment edges.
-3. Migrate trade, split-stack, startup-item, and bag/container flows fully onto
-   graph attach/detach/reparent operations.
-4. Demote `game.inventories` to an event-consistent UI cache or delete it once
-   no caller needs stable list references.
+1. `get_inventory(...)` now builds from graph containment instead of falling
+   back to an owner list.
+2. Equipment slots are represented as socket-typed containment edges.
+3. Trade, split-stack, startup-item, and bag/container flows should continue to
+   route through graph attach/detach/reparent operations.
+4. `game.inventories` has been deleted as a parallel containment store.
+   Remaining work is cleanup and parity hardening, not authority design.
 
 Done looks like:
 - Inventory and equipment are containment queries, not side dictionaries.
 - List caches are rebuildable views only.
 
-### Track D - Unify Attention, World Index, And POI Lookup Into One Realization/Index Model
+### Track D - Unify Attention, World Index, And POI Lookup Into One Realization/Index Model (STARTED)
 
 Why this is fourth:
 - `attn_store`, `world_entity_index`, and `poi_registry` currently solve
@@ -612,6 +621,7 @@ Why this is fourth:
 
 Primary targets:
 - `edgecaster/systems/attention.py`
+- `edgecaster/systems/spatial_index.py`
 - `edgecaster/systems/world_entity_index.py`
 - `edgecaster/systems/poi_registry.py`
 - `edgecaster/systems/poi_worldgen.py`
@@ -632,6 +642,21 @@ Execution strategy:
 4. Collapse `poi_registry` toward semantic-id queries on ordinary entities.
 5. Collapse `world_entity_index` and `AttentionCellStore` toward one spatial
    index model keyed by `entity_id` plus realization state.
+
+Current status:
+- Slice D.1 established `SpatialIndex` in `edgecaster/systems/spatial_index.py`
+  as the intended shared hierarchical ABS-rect index. It tracks absolute
+  geometry, realization state, semantic ID, and kind, and is designed to subsume
+  `AttentionCellStore`, `WorldEntityIndex`, and `POIRegistry` once those callers
+  are migrated.
+- Slice D.2/D.3 started wiring the index into runtime: `Game` now owns
+  `spatial_index`, `AttentionCellStore` mirrors staged entities into it,
+  `WorldEntityIndex` mirrors proxy entities into it, and distant-look
+  inspection uses the shared query surface before falling back to legacy stores.
+- Slice D.4 moved additional low-risk readers onto that shared query surface:
+  dungeon look targeting and spatial music tagged-world-entity probes now read
+  `SpatialIndex` first, with legacy store-specific fallbacks retained during
+  migration.
 
 Done looks like:
 - POIs, macro entities, staged attention entities, and loaded-zone entities are
@@ -774,6 +799,66 @@ with fewer moving parts still attached.
     - Remaining direct `.actors` / `.entities` touches are now concentrated in
       ownership/cache write paths and inventory flows that belong to Track C+
       follow-up work, not general runtime reads.
+
+100. Phase 8 Legacy Removal Slice C.1 (2026-04-22):
+    - Made `get_inventory` strictly graph-authoritative by deleting the list-cache fallback.
+    - Removed `_mark_inventory_graph_authority`, `_inventory_graph_authority_owners`, and `_cache_looks_graph_managed` bridging code.
+    - The `game.inventories` dict is now purely an event-consistent UI cache updated by the graph, not a parallel store.
+
+101. Phase 8 Legacy Removal Slice C.2 (2026-04-22):
+    - Refactored the equipment system to model equipped items as graph sockets (`socket_id=slot_id`).
+    - `equip_item_to_slot` reparents the item from `socket_id="inventory"` to the specific slot.
+    - `unequip_item` reparents the item back to `socket_id="inventory"`.
+    - `get_equipped_in_slot` and `equipped_items` now query the entity graph for non-inventory sockets.
+    - Upgraded `action_runner`, `game.py` stat calculation, and `remove_inventory_item` to be aware of items that have transitioned into equipment sockets.
+
+102. Phase 8 Legacy Removal Slice C.3 & C.4 (2026-04-22):
+    - Purged all remaining write paths to the `game.inventories` dict.
+    - Demoted and deleted `game.inventories`. Inventory queries now rely strictly on `entity_graph` containment edges.
+    - `get_inventory` returns a freshly built list, fully completing the single-source-of-truth cutover for item containment.
+
+103. Phase 8 Legacy Removal Slice D.1 (2026-04-22):
+    - Established `SpatialIndex` in `edgecaster/systems/spatial_index.py` as the unified hierarchical rect index.
+    - Designed to subsume `AttentionCellStore`, `WorldEntityIndex`, and `POIRegistry` by tracking absolute geometry, realization state, semantic ID, and kind.
+
+104. Phase 8 Legacy Removal Slice C.5 (2026-04-22):
+    - Finished Track C hardening by removing dead `_mark_inventory_graph_authority` references from inventory movement and actor registration paths.
+    - Updated tests so `game.inventories` is asserted absent instead of treated as required state.
+    - Updated inventory/equipment docs and system index notes to describe graph-authoritative containment rather than list-cache bridging.
+
+105. Phase 8 Legacy Removal Slice D.2 & D.3 (2026-04-22):
+    - `Game` now owns `spatial_index` and passes it into `AttentionCellStore` and `WorldEntityIndex`.
+    - `AttentionCellStore.stage(...)` mirrors staged entities into `SpatialIndex`; `despawn(...)` removes only the attention-sourced mirror entry.
+    - `WorldEntityIndex.add(...)` mirrors proxy entities into `SpatialIndex`; `clear(...)` removes only world-index-sourced mirror entries.
+    - `SpatialIndex` entries now carry a mirror `source` and protect higher-realization entries from lower-priority proxy downgrades.
+    - `systems/inspection.py` distant-look queries now use the shared spatial query surface first, with old store-specific queries left as fallback.
+
+106. Phase 8 Legacy Removal Slice D.4 (2026-04-22):
+    - Fixed Starttsgard attention-sync performance by deferring merchant stock initialization for resolver/lifecycle-spawned merchants until dialogue/trade UI opens.
+    - `scenes/dungeon.py` look targeting now gathers staged/proxy candidates from `SpatialIndex` first, falling back to `WorldEntityIndex` and `AttentionCellStore` only when the shared index has no hits.
+    - `scenes/spatial_music.py` tagged world-entity probes now query `SpatialIndex` first before falling back to `WorldEntityIndex`.
+    - Added regressions for deferred staged-merchant initialization and spatial-music SpatialIndex lookup.
+
+107. Phase 8 Legacy Removal Slice D.5-D.7 (2026-04-23):
+    - `attention.renderables_in_abs_rect(...)` now gathers world proxy and attention-staged render candidates from `SpatialIndex` first, with the old `WorldEntityIndex` / `AttentionCellStore` reads retained only as compatibility fallbacks.
+    - `attention.sync_attention_instantiation(...)` now consumes proxy and staged parent candidates through the shared `SpatialIndex` query surface before falling back to legacy store queries.
+    - `WorldEntityIndex.add(...)` now mirrors `local_pos` onto proxy entities as metadata so SpatialIndex-backed readers can reconstruct render/local coordinates without scanning private world-index buckets.
+    - `content.dialogues._find_site_zonecoord(...)` now finds site markers through `SpatialIndex` first and only scans `WorldEntityIndex._by_zone` as a legacy fallback.
+    - Added regressions for renderable proxy/staged SpatialIndex reads, attention-sync proxy reads, and dialogue site lookup from SpatialIndex.
+
+108. Phase 8 Legacy Removal Slice D.8-D.9 (2026-04-23):
+    - Added first-class `SpatialIndex.query_rect(...)` filters for `source`, `realization_state`, and `kind`, including multi-value realization filters for collapsed/proxy render candidates.
+    - Added `SpatialIndex.query_tag(...)` so content/dialogue callers can use a named query API instead of reaching into `SpatialIndex.entries`.
+    - Updated attention render and attention-sync readers to use filtered SpatialIndex queries for collapsed/proxy and staged candidates.
+    - Hardened no-legacy-store behavior with regressions proving renderables can read collapsed/proxy and staged SpatialIndex entries without `WorldEntityIndex` or `AttentionCellStore`, attention sync can read proxy refs without `WorldEntityIndex`, and dialogue site lookup works without `WorldEntityIndex`.
+
+109. Phase 8 Legacy Removal Slice D.10-D.12 (2026-04-23):
+    - `POIRegistry` now accepts/attaches a shared `SpatialIndex` and mirrors POI specs into it as `source="poi_registry"`, `realization_state="collapsed"` entries keyed by stable POI id.
+    - `Game.__init__` attaches the shared `spatial_index` to the global POI registry after loading, so existing YAML POIs and future dynamic POIs get mirrored.
+    - `systems/legendaries.py` now checks SpatialIndex kind entries when allocating legendary/rune-anchor POI ids and reads nearest legendary lairs from SpatialIndex before falling back to `poi_registry`.
+    - `systems/overmap.py` rune-anchor id allocation now also respects SpatialIndex collisions.
+    - `SpatialMusicDirector._player_in_colosseum(...)` now checks POI specs mirrored into SpatialIndex before using POIRegistry point/rect queries.
+    - Added regressions for POIRegistry mirroring, attaching an index to an existing registry, no-registry legendary-lair lookup, no-registry rune-anchor id allocation, and no-registry colosseum music detection.
 
 95. Phase 8 Legacy Removal Slice XCV (2026-04-21):
     - `systems/chakras.py`: Made the three body-schema geometry helpers private by
@@ -2025,9 +2110,10 @@ land in the right places.
      items, buildings, and sites do not drift into parallel shape definitions.
 
 5. `edgecaster/systems/entity_graph_ops.py` and `edgecaster/systems/inventory.py`
-   - Attach/detach and inventory lists are still compatibility surfaces.
-   - Final cutover is graph-authoritative containment with inventories as
-     materialized views, not the primary store.
+   - Attach/detach/reparent operations are now the graph-authoritative item
+     containment path.
+   - Remaining cleanup is to remove stale inventory compatibility language,
+     tests, and fallback assumptions now that `game.inventories` is gone.
 
 6. `edgecaster/systems/attention.py` and `edgecaster/game.py`
    - Persistence currently round-trips scalar runtime deltas (stats, tags,
@@ -2035,7 +2121,7 @@ land in the right places.
    - De-realization/re-realization will not be truly unified until those
      patches flow through the same stable-`entity_id` persistence path.
 
-7. `edgecaster/systems/poi_worldgen.py`, `edgecaster/systems/poi_spawning.py`,
+7. `edgecaster/systems/poi_worldgen.py`,
    `edgecaster/systems/world_entity_index.py`, and `edgecaster/systems/aggregate_resolution.py`
    - World proxies and realized entities still split ontology.
    - End-state should treat POI/world roots as ordinary entities whose attention
@@ -2246,13 +2332,14 @@ Legacy deletion priority order:
 
 1. Point-query and schema-fallback bridges (`_legacy_query`,
    `_legacy_rect_probe`, body-schema fallback ladders, etc.).
-2. Remaining list-backed inventory mutation paths.
+2. Stale inventory compatibility fallbacks, tests, and docs that still assume
+   list-backed inventory authority.
 3. Runtime `ChakraState` facade once projection/query replacements are
    complete. Scene-local edit-session objects may survive only if explicitly
    renamed and documented as non-authoritative.
 4. Duplicate POI orchestration path once one graph-native path fully owns
    registration.
-5. Parallel stores (`inventories`, `attn_store`, `world_entity_index`,
+5. Parallel stores (`attn_store`, `world_entity_index`,
    `poi_registry`, `LevelState.actors/entities`) once they are documented as
    caches/indexes only and are rebuildable from the unified substrate.
 6. Body-specific float-position tags once a generic entity geometry
