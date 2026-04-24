@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from edgecaster import lorenz
 from edgecaster.patterns import builder
 from edgecaster.systems import damage_policy as damage_policy_system
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +323,7 @@ def reset_on_zone_change(game: "Game", player: "Actor") -> None:
     lvl.pattern_anchor = None
     lvl.activation_points = []
     lvl.activation_ttl = 0
-    lvl.choking_vines_state = None
-    lvl.rune_choking_vines_state = None
+    entity_ops_system.remove_entities_by_kind(lvl, "aggressive_vines", "rune_choking_vines")
     lvl.acidic_pattern = False
     lvl.fern_active = False
     lvl.fern_growth_tips = []

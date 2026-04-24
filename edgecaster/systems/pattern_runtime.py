@@ -27,6 +27,15 @@ def _normalize_chakra_node_id(node_id: Any) -> str:
     return node_text.replace(":", ".").replace("/", ".")
 
 
+def _clear_pattern_bound_runtime_entities(level: Any) -> None:
+    """Delete transient entities whose geometry is invalidated by pattern edits."""
+    entity_ops_system.remove_entities_by_kind(
+        level,
+        "aggressive_vines",
+        "rune_choking_vines",
+    )
+
+
 def _average_reduced_charge(actor: Any, active_node_ids: set[str] | None = None) -> Optional[float]:
     """Return average charge from the reducer snapshot when a usable one exists."""
     effective_channels = getattr(actor, "_chakra_effective_channels", None)
@@ -107,8 +116,6 @@ def act_polygon(self, actor_id: str) -> None:
     st["activation_points"] = []
     st["activation_ttl"] = 0
     st["pattern_motion"] = None
-    st["choking_vines_state"] = None
-    st["rune_choking_vines_state"] = None
 
     # Sync the current zone view to canonical state immediately.
     self._sync_level_pattern_view(level)
@@ -119,8 +126,7 @@ def act_polygon(self, actor_id: str) -> None:
     level.fern_active = False
     level.fern_growth_tips = []
     level.fern_accum = 0.0
-    level.choking_vines_state = None
-    level.rune_choking_vines_state = None
+    _clear_pattern_bound_runtime_entities(level)
 
     self._commit_pattern_state_from_level(level)
 
@@ -163,8 +169,6 @@ def act_star(self, actor_id: str) -> None:
     st["activation_points"] = []
     st["activation_ttl"] = 0
     st["pattern_motion"] = None
-    st["choking_vines_state"] = None
-    st["rune_choking_vines_state"] = None
 
     self._sync_level_pattern_view(level)
 
@@ -173,8 +177,7 @@ def act_star(self, actor_id: str) -> None:
     level.fern_active = False
     level.fern_growth_tips = []
     level.fern_accum = 0.0
-    level.choking_vines_state = None
-    level.rune_choking_vines_state = None
+    _clear_pattern_bound_runtime_entities(level)
 
     self._commit_pattern_state_from_level(level)
 
@@ -184,7 +187,7 @@ def act_star(self, actor_id: str) -> None:
 def chakra_modifiers(self, actor_id: str):
     """Return ChakraModifiers for the given actor (resonance + charge)."""
     try:
-        actor = entity_ops_system.get_actor(self._level(), actor_id)
+        actor = self._level().actors.get(actor_id)
     except Exception:
         actor = None
     if actor is None:
@@ -226,7 +229,7 @@ def consume_chakra_charge(self, actor_id: str, amount: float) -> None:
 def act_chakra(self, actor_id: str) -> None:
     """Apply the actor's active chakra graph as a custom generator shape."""
     level = self._level()
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None:
         return
 
@@ -305,8 +308,7 @@ def act_chakra(self, actor_id: str) -> None:
         self.log.add("Pattern capped at max vertices.")
 
     level.pattern = builder.Pattern.from_segments(segs)
-    level.choking_vines_state = None
-    level.rune_choking_vines_state = None
+    _clear_pattern_bound_runtime_entities(level)
     # Preserve chakra seed metadata for future ability targeting.
     try:
         import json
@@ -409,8 +411,7 @@ def apply_fractal_op(self, lvl: Any, kind: str) -> None:
         segs = segs[: self.cfg.max_vertices]
         self.log.add("Pattern capped at max vertices.")
     lvl.pattern = builder.Pattern.from_segments(segs)
-    lvl.choking_vines_state = None
-    lvl.rune_choking_vines_state = None
+    _clear_pattern_bound_runtime_entities(lvl)
     self._commit_pattern_state_from_level(lvl)
 
 

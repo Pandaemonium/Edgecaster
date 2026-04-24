@@ -468,7 +468,7 @@ def _action_move(game: Any, actor_id: str, **kwargs: Any) -> None:
     level = game._level()
     # Status: rooted prevents movement.
     try:
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         if actor and game._has_status(actor, "rooted"):
             if actor_id == getattr(game, "player_id", ""):
                 game.log.add("You are rooted and cannot move!")
@@ -497,7 +497,7 @@ def _action_brute_move(game: Any, actor_id: str, **kwargs: Any) -> None:
     level = game._level()
     # Status: rooted prevents movement.
     try:
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         if actor and game._has_status(actor, "rooted"):
             return
     except Exception:
@@ -514,11 +514,7 @@ def _debug_yawp(game: Any, actor_id: str, **kwargs: Any) -> None:
     It also rotates the current scene's visual profile by 90 degrees as
     a visual test (typically the dungeon scene).
     """
-    actor = None
-    try:
-        actor = entity_ops_system.get_actor(game._level(), actor_id)
-    except Exception:
-        actor = getattr(getattr(game, "actors", {}), "get", lambda *_: None)(actor_id)
+    actor = getattr(getattr(game, "actors", {}), "get", lambda *_: None)(actor_id)
     if actor is not None:
         who = getattr(actor, "name", "Something")
     else:
@@ -559,11 +555,7 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
     """
     import random
 
-    actor = None
-    try:
-        actor = entity_ops_system.get_actor(game._level(), actor_id)
-    except Exception:
-        actor = getattr(getattr(game, "actors", {}), "get", lambda *_: None)(actor_id)
+    actor = getattr(getattr(game, "actors", {}), "get", lambda *_: None)(actor_id)
     if actor is None:
         return
 
@@ -571,13 +563,11 @@ def _action_imp_taunt(game: Any, actor_id: str, **kwargs: Any) -> None:
 
     # Get player name if possible
     level = game._level() if hasattr(game, "_level") else None
-    player = None
-    if level is not None:
-        player = entity_ops_system.get_actor(level, getattr(game, "player_id", ""))
-    if player is None:
-        player_name = "you"
-    else:
+    if level is not None and getattr(game, "player_id", None) in level.actors:
+        player = level.actors[game.player_id]
         player_name = getattr(player, "name", "you")
+    else:
+        player_name = "you"
 
     VERBS = [
         "taunts",
@@ -654,7 +644,7 @@ def _action_war_drum(game: Any, actor_id: str, **kwargs: Any) -> None:
     if not hasattr(game, "_level"):
         return
     level = game._level()
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = getattr(getattr(level, "actors", {}), "get", lambda *_: None)(actor_id)
     if actor is None:
         return
 
@@ -685,14 +675,14 @@ def _action_war_drum(game: Any, actor_id: str, **kwargs: Any) -> None:
 
     # Who is "hostile"? Use the same reputation-driven hostility logic as AI.
     player_id = getattr(game, "player_id", None)
-    player = entity_ops_system.get_actor(level, player_id)
+    player = getattr(getattr(level, "actors", {}), "get", lambda *_: None)(player_id)
     if player is None:
         return
 
     tick_offset = -abs(reduction)
 
     affected = 0
-    for other in list(entity_ops_system.iter_actors(level)):
+    for other in list(getattr(level, "actors", {}).values()):
         if other is None or not getattr(other, "alive", True):
             continue
 
@@ -1072,7 +1062,7 @@ def _confirm_self_damage_ignite(game: Any, actor_id: str, **kwargs: Any) -> Conf
 
     try:
         level = game._level()
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         pattern = getattr(level, "pattern", None)
         anchor = getattr(level, "pattern_anchor", None)
     except Exception:
@@ -1182,7 +1172,7 @@ def _confirm_self_damage_freeze(game: Any, actor_id: str, **kwargs: Any) -> Conf
 
     try:
         level = game._level()
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         pattern = getattr(level, "pattern", None)
         anchor = getattr(level, "pattern_anchor", None)
     except Exception:
@@ -1328,17 +1318,45 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
         edges = []
 
     try:
-        level.sparkle_state = {
-            "t0": float(time.monotonic()),
-            # Edges fade back in more slowly than the crackle.
-            "duration_s": 2.0,
-            "spark_duration_s": 1.0,
-            "seed": seed,
-            # Snapshot the geometry at cast time so the effect doesn't jump if the
-            # player immediately edits the rune after casting.
-            "verts": [(float(x), float(y)) for (x, y) in verts_world],
-            "edges": edges,
-        }
+        eid = game._new_id()
+        from edgecaster.state.entities import Entity
+        
+        cx = sum(x for x, y in verts_world) / len(verts_world)
+        cy = sum(y for x, y in verts_world) / len(verts_world)
+        pos = (int(cx), int(cy))
+        
+        ent = Entity(
+            id=eid,
+            name="Sparkle",
+            pos=pos,
+            abs_pos=game.abs_from_zone_local(level.coord, pos) if hasattr(game, "abs_from_zone_local") else pos,
+            glyph="*",
+            color=(255, 245, 180),
+            kind="sparkle_effect",
+            render_layer=0,
+            tags={
+                "t0": float(time.monotonic()),
+                "duration_s": 2.0,
+                "spark_duration_s": 1.0,
+                "seed": seed,
+                "verts": [(float(x), float(y)) for (x, y) in verts_world],
+                "edges": edges,
+            }
+        )
+        level.entities[eid] = ent
+        try:
+            from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+            entity_graph_ops_system.register_entity(game, ent, lod_state="expanded")
+        except Exception:
+            pass
+            
+        def remove_sparkle():
+            try:
+                entity_ops_system.remove_entity(level, eid)
+            except Exception:
+                pass
+        import edgecaster.systems.scheduling as scheduling
+        scheduling.schedule(game, level, int(2.0 / getattr(game.cfg, "action_time_fast", 10) * 10), remove_sparkle)
     except Exception:
         pass
 
@@ -1401,7 +1419,7 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
                 pass
 
         # Actors run canonical death handling; HP-bearing non-actors are removed.
-        if entity_ops_system.get_actor(level, tid) is not None:
+        if tid in getattr(level, "actors", {}):
             try:
                 if int(getattr(stats, "hp", 0)) <= 0:
                     if hasattr(game, "_kill_actor"):
@@ -1413,12 +1431,12 @@ def _action_sparkle(game: Any, actor_id: str, **kwargs: Any) -> None:
                         )
             except Exception:
                 pass
-        elif int(getattr(stats, "hp", 0)) <= 0 and entity_ops_system.get_entity(level, tid) is not None:
+        elif int(getattr(stats, "hp", 0)) <= 0 and tid in getattr(level, "entities", {}):
             try:
                 if hasattr(game, "_remove_entity"):
                     game._remove_entity(level, obj, reason="destroyed_sparkle")
                 else:
-                    entity_ops_system.remove_entity(level, tid)
+                    del level.entities[tid]
             except Exception:
                 pass
 
@@ -1457,7 +1475,7 @@ def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
 
     actor = None
     try:
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = getattr(level, "actors", {}).get(actor_id)
     except Exception:
         actor = None
 
@@ -1627,25 +1645,49 @@ def _action_lightning(game: Any, actor_id: str, **kwargs: Any) -> None:
         start_tile = None
 
     try:
-        level.lightning_state = {
-            "t0": float(time.monotonic()),
-            # TUNING: bolt VFX timing (renderer reads these; no simulation depends on them).
-            # - duration_s: how long the bolt animates (seconds)
-            # - flash_s: how long the initial flash lasts (seconds)
-            "duration_s": 0.26,
-            "flash_s": 0.08,
-            "seed": seed,
-            # Snapshot the footprint so the effect doesn't jump if the rune moves/edits.
-            "mask_tiles": sorted(touched, key=lambda p: (p[1], p[0])),
-            "start_tile": start_tile,
-            "target_tiles": [
-                (int(getattr(t, "pos", (0, 0))[0]), int(getattr(t, "pos", (0, 0))[1]))
-                for t in targets
-            ],
-            # Snapshot the rune geometry for edge-constrained lightning VFX.
-            "verts": [(float(x), float(y)) for (x, y) in verts_world],
-            "edges": [(int(e.a), int(e.b)) for e in getattr(pattern, "edges", []) or []],
-        }
+        eid = game._new_id()
+        from edgecaster.state.entities import Entity
+        
+        pos = start_tile if start_tile else (0, 0)
+        
+        ent = Entity(
+            id=eid,
+            name="Lightning",
+            pos=pos,
+            abs_pos=game.abs_from_zone_local(level.coord, pos) if hasattr(game, "abs_from_zone_local") else pos,
+            glyph="*",
+            color=(185, 250, 255),
+            kind="lightning_effect",
+            render_layer=0,
+            tags={
+                "t0": float(time.monotonic()),
+                "duration_s": 0.26,
+                "flash_s": 0.08,
+                "seed": seed,
+                "mask_tiles": sorted(touched, key=lambda p: (p[1], p[0])),
+                "start_tile": start_tile,
+                "target_tiles": [
+                    (int(getattr(t, "pos", (0, 0))[0]), int(getattr(t, "pos", (0, 0))[1]))
+                    for t in targets
+                ],
+                "verts": [(float(x), float(y)) for (x, y) in verts_world],
+                "edges": [(int(e.a), int(e.b)) for e in getattr(pattern, "edges", []) or []],
+            }
+        )
+        level.entities[eid] = ent
+        try:
+            from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+            entity_graph_ops_system.register_entity(game, ent, lod_state="expanded")
+        except Exception:
+            pass
+            
+        def remove_lightning():
+            try:
+                entity_ops_system.remove_entity(level, eid)
+            except Exception:
+                pass
+        import edgecaster.systems.scheduling as scheduling
+        scheduling.schedule(game, level, 10, remove_lightning)
     except Exception:
         pass
 
@@ -1872,7 +1914,7 @@ def _action_flagellate_self(game: Any, actor_id: str, **kwargs: Any) -> None:
     if not hasattr(game, "_level"):
         return
     level = game._level()
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = getattr(level, "actors", {}).get(actor_id)
     if actor is None:
         return
 
@@ -1962,7 +2004,7 @@ def _action_ground_slam(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
 
@@ -1995,7 +2037,7 @@ def _action_ground_slam(game: Any, actor_id: str, **kwargs: Any) -> None:
 
     def resolve() -> None:
         # Guard: caster still alive?
-        caster = entity_ops_system.get_actor(level, actor_id)
+        caster = level.actors.get(actor_id)
         if caster is None or not getattr(caster, "alive", True):
             level.deferred_actions = [
                 da for da in getattr(level, "deferred_actions", [])
@@ -2180,14 +2222,14 @@ def _setup_deferred_aoe(
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None:
         return
 
     deferred_id = f"{actor_id}_{action_name}_{level.current_tick}"
 
     def resolve() -> None:
-        caster = entity_ops_system.get_actor(level, actor_id)
+        caster = level.actors.get(actor_id)
         if caster is None or not getattr(caster, "alive", True):
             level.deferred_actions = [
                 da for da in getattr(level, "deferred_actions", [])
@@ -2231,17 +2273,17 @@ def _setup_deferred_aoe(
                 )
             if int(getattr(target.stats, "hp", 0)) <= 0:
                 try:
-                    if entity_ops_system.get_actor(level, tid) is not None:
+                    if tid in getattr(level, "actors", {}):
                         game._kill_actor(
                             level, target,
                             killer_id=actor_id,
                             killer_is_player=caster_is_player,
                         )
-                    elif entity_ops_system.get_entity(level, tid) is not None:
+                    elif tid in getattr(level, "entities", {}):
                         if hasattr(game, "_remove_entity"):
                             game._remove_entity(level, target, reason=f"destroyed_{action_name}")
                         else:
-                            entity_ops_system.remove_entity(level, tid)
+                            del level.entities[tid]
                 except Exception:
                     pass
 
@@ -2317,7 +2359,7 @@ def _action_bear_maul(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2357,7 +2399,7 @@ def _action_haymaker(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2397,7 +2439,7 @@ def _action_thorn_burst(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
 
@@ -2435,7 +2477,7 @@ def _action_chain_smash(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2475,7 +2517,7 @@ def _action_blood_drain(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2515,7 +2557,7 @@ def _action_devouring_lunge(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2555,7 +2597,7 @@ def _action_lash(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2595,7 +2637,7 @@ def _action_venom_snap(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2635,7 +2677,7 @@ def _action_ember_pounce(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2675,7 +2717,7 @@ def _action_bone_lance(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2715,7 +2757,7 @@ def _action_fire_breath(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", True):
         return
     try:
@@ -2773,7 +2815,7 @@ def _chakra_active_tokens(game: Any, actor_id: str) -> set[str]:
         from edgecaster.systems import chakra_items as chakra_items_system
 
         level = game._level()
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         if actor is None:
             return set()
         active = chakra_items_system.effective_active_nodes(game, actor)
@@ -2814,7 +2856,7 @@ def _action_chakra_pulse(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None:
         return
 
@@ -2823,8 +2865,7 @@ def _action_chakra_pulse(game: Any, actor_id: str, **kwargs: Any) -> None:
     push_dist = 2
 
     pushed_any = False
-    for target in list(entity_ops_system.iter_actors(level)):
-        tid = str(getattr(target, "id", "") or "")
+    for tid, target in list(level.actors.items()):
         if tid == actor_id:
             continue
         if not getattr(target, "alive", True):
@@ -2957,7 +2998,7 @@ def _action_iron_skin(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None:
         return
 
@@ -2981,7 +3022,7 @@ def _action_third_eye(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None:
         return
 
@@ -3005,13 +3046,13 @@ def _action_root_grasp(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None:
         return
 
     # Target the player's position (for enemies) or cursor (for player).
     # For simplicity, target a radius-2 diamond centered on the nearest enemy.
-    player = entity_ops_system.get_actor(level, getattr(game, "player_id", ""))
+    player = level.actors.get(getattr(game, "player_id", ""))
     if player is None:
         return
 
@@ -3019,8 +3060,7 @@ def _action_root_grasp(game: Any, actor_id: str, **kwargs: Any) -> None:
         # Player usage: target nearest hostile.
         best_target = None
         best_dist = 999
-        for t in entity_ops_system.iter_actors(level):
-            tid = str(getattr(t, "id", "") or "")
+        for tid, t in level.actors.items():
             if tid == actor_id or not getattr(t, "alive", True):
                 continue
             if not game.is_hostile(actor, t):
@@ -3059,7 +3099,7 @@ def _action_root_grasp(game: Any, actor_id: str, **kwargs: Any) -> None:
     deferred_id = f"{actor_id}_root_grasp_{level.current_tick}"
 
     def resolve() -> None:
-        caster = entity_ops_system.get_actor(level, actor_id)
+        caster = level.actors.get(actor_id)
         if caster is None or not getattr(caster, "alive", True):
             level.deferred_actions = [
                 da for da in getattr(level, "deferred_actions", [])
@@ -3074,8 +3114,7 @@ def _action_root_grasp(game: Any, actor_id: str, **kwargs: Any) -> None:
 
         tile_set = set(tiles)
         rooted_any = False
-        for target in list(entity_ops_system.iter_actors(level)):
-            tid = str(getattr(target, "id", "") or "")
+        for tid, target in list(level.actors.items()):
             if tid == actor_id:
                 continue
             if not getattr(target, "alive", True):
@@ -3128,7 +3167,7 @@ def _action_phantom_limb(game: Any, actor_id: str, **kwargs: Any) -> None:
         level = game._level()
     except Exception:
         return
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None:
         return
 
@@ -3152,7 +3191,7 @@ def _action_spinal_surge(game: Any, actor_id: str, **kwargs: Any) -> None:
         from edgecaster.systems import chakra_items as chakra_items_system
 
         level = game._level()
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         if actor is None:
             return
         active = chakra_items_system.effective_active_nodes(game, actor)

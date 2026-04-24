@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+import math
 
 from edgecaster.state import chakra_component as chakra_component_state
 from edgecaster.systems import chakra_content as chakra_content_system
@@ -46,6 +47,7 @@ class ChannelRule:
     combine: str = "additive"          # additive | override | max | min
     clamp_min: Optional[float] = None  # None = no lower bound
     clamp_max: Optional[float] = None  # None = no upper bound
+    distance_decay: Optional[float] = None # None = no distance decay
 
 
 @dataclass(frozen=True)
@@ -54,12 +56,35 @@ class EdgeKindRule:
     propagation: str = "automatic"  # automatic | none | opt_in
 
 
+@dataclass(frozen=True)
+class ResonanceRule:
+    """Active-node resonance rule."""
+    id: str
+    requires_any_sets: List[List[str]]
+    grants: Dict[str, float]
+    requires_shape: Optional[str] = None
+
+
+@dataclass
+class ChakraModifiers:
+    """Aggregate modifiers derived from resonances + charge."""
+    mana_cost_mult: float = 1.0
+    damage_mult: float = 1.0
+    radius_bonus: float = 0.0
+    neighbor_depth_bonus: int = 0
+    chakra_amp_mult: float = 1.0
+    charge_gain_mult: float = 1.0
+    charge_cap_bonus: float = 0.0
+    charge_consume_mult: float = 1.0
+
+
 @dataclass
 class ChakraRules:
     """Parsed representation of chakra_rules.yaml."""
     channel_default: ChannelRule = field(default_factory=ChannelRule)
     per_channel: Dict[str, ChannelRule] = field(default_factory=dict)
     edge_kinds: Dict[str, EdgeKindRule] = field(default_factory=dict)
+    resonances: Dict[str, ResonanceRule] = field(default_factory=dict)
 
     def channel_rule(self, channel_name: str) -> ChannelRule:
         return self.per_channel.get(str(channel_name), self.channel_default)
@@ -113,6 +138,7 @@ def _parse_rules(raw: Dict[str, Any]) -> ChakraRules:
             combine=str(ch_raw.get("combine") or default_channel_rule.combine),
             clamp_min=c_min,
             clamp_max=c_max,
+            distance_decay=ch_raw.get("distance_decay"),
         )
 
     # Edge kind rules
@@ -124,10 +150,25 @@ def _parse_rules(raw: Dict[str, Any]) -> ChakraRules:
             propagation=str(ek_raw.get("propagation") or "automatic"),
         )
 
+    # Resonance rules
+    resonances: Dict[str, ResonanceRule] = {}
+    for res_name, res_raw in (raw.get("resonances") or {}).items():
+        if not isinstance(res_raw, dict):
+            continue
+        req_sets = res_raw.get("requires_any_sets", [])
+        grants = res_raw.get("grants", {})
+        resonances[str(res_name)] = ResonanceRule(
+            id=str(res_name),
+            requires_any_sets=[[str(x) for x in s] for s in req_sets],
+            grants={str(k): float(v) for k, v in grants.items()},
+            requires_shape=str(res_raw.get("requires_shape")) if res_raw.get("requires_shape") else None
+        )
+
     return ChakraRules(
         channel_default=default_channel_rule,
         per_channel=per_channel,
         edge_kinds=edge_kinds,
+        resonances=resonances,
     )
 
 
@@ -143,6 +184,75 @@ def load_rules(*, force_reload: bool = False) -> ChakraRules:
 def clear_rules_cache() -> None:
     global _RULES_INSTANCE
     _RULES_INSTANCE = None
+
+
+def get_active_resonances(active_nodes: set[str], rules: Optional[ChakraRules] = None, comp: Optional[chakra_component_state.ChakraComponent] = None) -> List[str]:
+    if rules is None:
+        rules = load_rules()
+    bonuses = []
+    active = {str(n) for n in active_nodes if n}
+    
+    def _has(node_id: str) -> bool:
+        if node_id in active:
+            return True
+        suffix = f".{node_id}"
+        return any(a.endswith(suffix) for a in active)
+        
+    for res_rule in rules.resonances.values():
+        if res_rule.requires_any_sets:
+            matched = False
+            for req_set in res_rule.requires_any_sets:
+                if all(_has(req) for req in req_set):
+                    matched = True
+                    break
+            if not matched:
+                continue
+                
+        if res_rule.requires_shape == "triangle" and comp is not None:
+            pts = []
+            for nid in active:
+                node = comp.nodes.get(nid)
+                if node and node.abs_pos:
+                    pts.append(node.abs_pos)
+            is_triangle = False
+            if len(pts) >= 3:
+                for i in range(len(pts)):
+                    for j in range(i+1, len(pts)):
+                        for k in range(j+1, len(pts)):
+                            x1, y1 = pts[i]
+                            x2, y2 = pts[j]
+                            x3, y3 = pts[k]
+                            area = abs(x1*(y2-y3) + x2*(y3-y1) + x3*(y1-y2)) / 2.0
+                            if area > 0.05:
+                                is_triangle = True
+                                break
+                        if is_triangle: break
+                    if is_triangle: break
+            if not is_triangle:
+                continue
+                
+        bonuses.append(res_rule.id)
+    return bonuses
+
+def evaluate_resonance_modifiers(active_nodes: set[str], rules: Optional[ChakraRules] = None, comp: Optional[chakra_component_state.ChakraComponent] = None) -> ChakraModifiers:
+    if rules is None:
+        rules = load_rules()
+    mods = ChakraModifiers()
+    active_res = get_active_resonances(active_nodes, rules, comp=comp)
+    for res_id in active_res:
+        rule = rules.resonances.get(res_id)
+        if not rule:
+            continue
+        for k, v in rule.grants.items():
+            if k == "mana_cost_mult": mods.mana_cost_mult *= v
+            elif k == "damage_mult": mods.damage_mult *= v
+            elif k == "radius_bonus": mods.radius_bonus += v
+            elif k == "neighbor_depth_bonus": mods.neighbor_depth_bonus += int(v)
+            elif k == "chakra_amp_mult": mods.chakra_amp_mult *= v
+            elif k == "charge_gain_mult": mods.charge_gain_mult *= v
+            elif k == "charge_cap_bonus": mods.charge_cap_bonus += v
+            elif k == "charge_consume_mult": mods.charge_consume_mult *= v
+    return mods
 
 
 # ---------------------------------------------------------------------------
@@ -319,15 +429,34 @@ def reduce_component(
             if dirty_node_ids is not None:
                 if nid not in dirty_node_ids and child_id not in dirty_node_ids:
                     continue
+            
+            edge = None
+            for e in comp.edges.values():
+                if e.src_node_id == nid and e.dst_node_id == child_id:
+                    edge = e
+                    break
+            weight = float(edge.weight) if edge else 1.0
+            
+            dist = 0.0
+            pos_a = active_nodes[nid].abs_pos
+            pos_b = active_nodes[child_id].abs_pos
+            if pos_a and pos_b:
+                dist = math.hypot(pos_b[0] - pos_a[0], pos_b[1] - pos_a[1])
+
             for ch_name, parent_val in effective.get(nid, {}).items():
                 rule = rules.channel_rule(ch_name)
                 child_channels = effective.setdefault(child_id, {})
+                
+                propagated_val = parent_val * weight
+                if rule.distance_decay is not None and dist > 0:
+                    propagated_val *= max(0.0, 1.0 - (float(rule.distance_decay) * dist))
+
                 if ch_name in child_channels:
                     # Child has its own value — combine with parent.
-                    combined = _combine(parent_val, child_channels[ch_name], rule.combine)
+                    combined = _combine(propagated_val, child_channels[ch_name], rule.combine)
                 else:
                     # Child inherits parent value.
-                    combined = parent_val
+                    combined = propagated_val
                 child_channels[ch_name] = _apply_clamp(combined, rule)
 
     # Apply clamp pass on root nodes (intrinsic values were never clamped).
@@ -335,5 +464,18 @@ def reduce_component(
         for ch_name in list(effective.get(nid, {})):
             rule = rules.channel_rule(ch_name)
             effective[nid][ch_name] = _apply_clamp(effective[nid][ch_name], rule)
+
+    # Bake resonance modifiers into the root node's effective channels.
+    root_id = str(comp.root_node_id or "")
+    if root_id and root_id in effective:
+        mods = evaluate_resonance_modifiers(set(active_nodes.keys()), rules, comp=comp)
+        effective[root_id]["res_mana_cost_mult"] = float(mods.mana_cost_mult)
+        effective[root_id]["res_damage_mult"] = float(mods.damage_mult)
+        effective[root_id]["res_radius_bonus"] = float(mods.radius_bonus)
+        effective[root_id]["res_neighbor_depth_bonus"] = float(mods.neighbor_depth_bonus)
+        effective[root_id]["res_chakra_amp_mult"] = float(mods.chakra_amp_mult)
+        effective[root_id]["res_charge_gain_mult"] = float(mods.charge_gain_mult)
+        effective[root_id]["res_charge_cap_bonus"] = float(mods.charge_cap_bonus)
+        effective[root_id]["res_charge_consume_mult"] = float(mods.charge_consume_mult)
 
     return effective

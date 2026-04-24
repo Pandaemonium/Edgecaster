@@ -491,6 +491,44 @@ def test_tick_actor_chakra_charge_skips_dirty_churn_while_charging() -> None:
     assert game.entity_graph.get_node(actor.entity_id).dirty is False
 
 
+def test_tick_actor_chakra_charge_uses_reducer_resonance_modifiers(monkeypatch) -> None:
+    actor = SimpleNamespace(
+        id="actor:test:charge:mods",
+        entity_id="actor:test:charge:mods",
+        body_schema={"root": "body"},
+        chakra_component=ChakraComponent(
+            root_node_id="body",
+            nodes={"body": ChakraNode(node_id="body", active=True, channels={"charge": 0.0})},
+            tags={},
+        ),
+        chakra_state=None,
+    )
+    game = SimpleNamespace(
+        entity_graph=EntityGraphStore(),
+        get_inventory=lambda _aid: [],
+    )
+    game.entity_graph.register(actor.entity_id, kind="actor")
+
+    called: dict[str, object] = {}
+
+    def _fake_evaluate(active_nodes, rules=None, comp=None):
+        called["active_nodes"] = set(active_nodes)
+        called["comp"] = comp
+        return SimpleNamespace(charge_gain_mult=2.0, charge_cap_bonus=0.5)
+
+    monkeypatch.setattr(
+        chakra_items_system.chakra_reducer_system,
+        "evaluate_resonance_modifiers",
+        _fake_evaluate,
+    )
+
+    chakra_items_system.tick_actor_chakra_charge(actor, game, 1, charging=True)
+
+    assert called["active_nodes"] == {"body"}
+    assert called["comp"] is actor.chakra_component
+    assert float(actor.chakra_component.nodes["body"].channels.get("charge", 0.0)) == 0.008
+
+
 def test_tick_actor_chakra_charge_marks_graph_dirty_when_only_decaying() -> None:
     actor = SimpleNamespace(
         id="actor:test:charge:2",

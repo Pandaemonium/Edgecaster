@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
 
 
-def test_attach_entity_to_parent_sets_runtime_fields_and_state_patch() -> None:
+def test_attach_entity_to_parent_sets_runtime_fields() -> None:
     game = MagicMock()
     ent = SimpleNamespace(
         id="item:1",
@@ -21,10 +21,10 @@ def test_attach_entity_to_parent_sets_runtime_fields_and_state_patch() -> None:
     assert ent.socket_id == "inventory"
     assert ent.tags.get("inventory_owner_id") == "player:1"
     assert ent.tags.get("in_inventory") is True
-    game.patch_entity_state.assert_called_once()
+    game.patch_entity_state.assert_not_called()
 
 
-def test_detach_entity_from_parent_clears_runtime_fields_and_state_patch() -> None:
+def test_detach_entity_from_parent_clears_runtime_fields() -> None:
     game = MagicMock()
     ent = SimpleNamespace(
         id="item:2",
@@ -39,7 +39,7 @@ def test_detach_entity_from_parent_clears_runtime_fields_and_state_patch() -> No
     assert ent.socket_id is None
     assert "inventory_owner_id" not in ent.tags
     assert "in_inventory" not in ent.tags
-    game.patch_entity_state.assert_called_once()
+    game.patch_entity_state.assert_not_called()
 
 
 def test_reparent_entity_attaches_or_detaches() -> None:

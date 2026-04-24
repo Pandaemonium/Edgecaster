@@ -3,7 +3,7 @@
 EntityGraphStore is the write-first authority for parent/child containment
 relationships between runtime entities. The remaining parallel stores on Game
 (LevelState.actors, LevelState.entities, game.attn_store,
-game.world_entity_index, game.poi_registry) remain as caches and compatibility
+game.poi_registry) remain as caches and compatibility
 facades while migration proceeds; this graph is where containment and identity
 relationships are definitively recorded.
 
@@ -41,6 +41,7 @@ class EntityGraphNode:
     rule_id: Optional[str] = None
     tags: Dict[str, Any] = field(default_factory=dict)
     dirty: bool = True  # New nodes start dirty so the first reduction pass includes them.
+    obj: Optional[Any] = None
 
 
 class EntityGraphStore:
@@ -86,6 +87,7 @@ class EntityGraphStore:
         layout_id: Optional[str] = None,
         rule_id: Optional[str] = None,
         tags: Optional[Dict[str, Any]] = None,
+        obj: Optional[Any] = None,
     ) -> EntityGraphNode:
         """Register or update a node in the graph.
 
@@ -115,6 +117,8 @@ class EntityGraphStore:
             next_lod_state = str(existing.lod_state or "expanded")
         if existing is not None and not next_tags:
             next_tags = dict(existing.tags or {})
+        if existing is not None and obj is None:
+            obj = existing.obj
 
         if existing is not None and existing.semantic_id and existing.semantic_id != next_semantic_id:
             if self.semantic_index.get(existing.semantic_id) == eid:
@@ -135,6 +139,7 @@ class EntityGraphStore:
             rule_id=next_rule_id,
             tags=next_tags,
             dirty=next_dirty,
+            obj=obj,
         )
         self.nodes[eid] = node
 

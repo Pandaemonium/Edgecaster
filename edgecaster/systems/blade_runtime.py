@@ -16,7 +16,6 @@ import math
 from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Sequence, Tuple
 
 from edgecaster.systems import damage_policy as damage_policy_system
-from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.patterns import builder
 
 if TYPE_CHECKING:
@@ -71,7 +70,7 @@ def actor_uses_blade_melee(game: "Game", actor_id: str) -> bool:
             return True
         # Mirror blade clones also use blade melee
         level = game._level()
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         if actor is not None:
             tags = getattr(actor, "tags", None) or {}
             if tags.get("mirror_blade_clone"):
@@ -165,7 +164,7 @@ def blade_stat_snapshot(game: "Game", actor_id: str) -> BladeStatSnapshot:
     # Status: phantom_limb extends all blade reach by 2.
     try:
         level = game._level()
-        actor = entity_ops_system.get_actor(level, actor_id)
+        actor = level.actors.get(actor_id)
         if actor and game._has_status(actor, "phantom_limb"):
             slash_reach += 2.0
             thrust_reach += 2.0
@@ -329,7 +328,7 @@ def act_blade_attack(
     only when no valid actor context exists.
     """
     level = game._level()
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", False):
         return False
 
@@ -519,7 +518,7 @@ def act_throwing_knife(
     - damages hostile actors that the flight segment intersects.
     """
     level = game._level()
-    actor = entity_ops_system.get_actor(level, actor_id)
+    actor = level.actors.get(actor_id)
     if actor is None or not getattr(actor, "alive", False):
         return False
 
@@ -595,11 +594,26 @@ def act_throwing_knife(
         "hit_ids": [],
     }
 
-    active = getattr(level, "thrown_knives_state", None)
-    if not isinstance(active, list):
-        active = []
-    active.append(knife)
-    level.thrown_knives_state = active
+    eid = game._new_id()
+    from edgecaster.state.entities import Entity
+    
+    ent = Entity(
+        id=eid,
+        name="Throwing Knife",
+        pos=actor.pos,
+        abs_pos=(int(start_x), int(start_y)),
+        glyph="/",
+        color=(200, 200, 200),
+        kind="throwing_knife",
+        render_layer=0,
+        tags=knife,
+    )
+    level.entities[eid] = ent
+    try:
+        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+        entity_graph_ops_system.register_entity(game, ent, lod_state="expanded")
+    except Exception:
+        pass
 
     # Dynamic cooldown (RES lowers cooldown). We set it here so static registry
     # cooldown can remain 0 and not overwrite the scaled value.
@@ -736,26 +750,24 @@ def _build_blade_shape_preview(
 
 def advance_thrown_knives(game: "Game", level: Any, delta: int) -> None:
     """Advance visible thrown-knife projectiles and apply contact damage."""
-    state = getattr(level, "thrown_knives_state", None)
-    if not isinstance(state, list) or not state:
-        return
     if delta <= 0:
         return
+    import edgecaster.systems.entity_ops as entity_ops_system
 
-    knives = list(state)
-    for _ in range(int(delta)):
-        if not knives:
-            break
-        next_knives: List[dict] = []
-        for knife in knives:
-            try:
-                alive = _step_thrown_knife(game, level, knife)
-            except Exception:
-                alive = False
-            if alive:
-                next_knives.append(knife)
-        knives = next_knives
-    level.thrown_knives_state = knives
+    for ent in list(entity_ops_system.iter_entities(level)):
+        if getattr(ent, "kind", "") == "throwing_knife":
+            knife = getattr(ent, "tags", {})
+            alive = True
+            for _ in range(int(delta)):
+                try:
+                    alive = _step_thrown_knife(game, level, knife)
+                except Exception:
+                    alive = False
+                if not alive:
+                    break
+            if not alive:
+                entity_ops_system.remove_entity(level, ent.id)
+
 
 
 def _step_thrown_knife(game: "Game", level: Any, knife: dict) -> bool:

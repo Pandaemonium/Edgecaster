@@ -24,6 +24,7 @@ import numpy as np
 from edgecaster import prototypes
 from edgecaster import spawn_factory  # <-- IMPORTANT: bind spawn_factory name here
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+from edgecaster.systems.world_entity_index import register_proxy_entity
 from edgecaster.systems.entity_identity import stable_int_hash
 
 from edgecaster.climate import (
@@ -52,7 +53,7 @@ def _place_fixed_sites(game: "Game", *, zone_w: int, zone_h: int, existing_coord
     Place any site_* prototypes tagged with fixed_zone_coord or fixed_anchor_abs directly into WIE.
     Returns number placed.
     """
-    if getattr(game, "world_entity_index", None) is None:
+    if getattr(game, "spatial_index", None) is None:
         return 0
 
     placed = 0
@@ -114,7 +115,7 @@ def _place_fixed_sites(game: "Game", *, zone_w: int, zone_h: int, existing_coord
         )
 
         entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-        game.world_entity_index.add(ent, zone_coord=(zx, zy, zz), local_pos=(ox, oy))
+        register_proxy_entity(game, ent, zone_coord=(zx, zy, zz), local_pos=(ox, oy))
         existing_coords.add((zx, zy))
         placed += 1
 
@@ -394,8 +395,7 @@ def _place_fixed_near_sites(
     fixed_site_by_kind[kind] = (zx, zy, zz, ox, oy)
     """
     placed = 0
-    wie = getattr(game, "world_entity_index", None)
-    if wie is None:
+    if getattr(game, "spatial_index", None) is None:
         return 0
 
     bucket = prototypes.get_master_bucket()
@@ -481,7 +481,7 @@ def _place_fixed_near_sites(
         )
 
         entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-        game.world_entity_index.add(ent, zone_coord=(int(zx), int(zy), int(zz)), local_pos=(int(ox), int(oy)))
+        register_proxy_entity(game, ent, zone_coord=(int(zx), int(zy), int(zz)), local_pos=(int(ox), int(oy)))
         placed += 1
 
     return placed
@@ -496,7 +496,7 @@ def place_sites_for_type(
 ) -> List[SiteSpec]:
     debug = getattr(game, "_debug", None)
 
-    if getattr(game, "world_entity_index", None) is None:
+    if getattr(game, "spatial_index", None) is None:
         return []
 
     suit = compute_suitability(site_cfg, climate)
@@ -599,9 +599,9 @@ def place_all_sites(game: "Game") -> None:
     """
     debug = getattr(game, "_debug", None)
 
-    if getattr(game, "world_entity_index", None) is None:
+    if getattr(game, "spatial_index", None) is None:
         if debug:
-            debug("[site_placement] world_entity_index not ready; deferring placement.")
+            debug("[site_placement] spatial_index not ready; deferring placement.")
         return
 
     site_types = load_site_type_configs_from_prototypes()
@@ -706,11 +706,7 @@ def place_all_sites(game: "Game") -> None:
                 )
 
                 entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-                game.world_entity_index.add(
-                    ent,
-                    zone_coord=(zx, zy, zz),
-                    local_pos=(ox, oy),
-                )
+                register_proxy_entity(game, ent, zone_coord=(zx, zy, zz), local_pos=(ox, oy))
 
                 existing_coords.add((zx, zy))
                 total_placed += 1
@@ -730,30 +726,26 @@ def place_all_sites(game: "Game") -> None:
 
 
 def ensure_world_sites(game: "Game") -> None:
-    """Ensure world-map site entities are present in game.world_entity_index.
+    """Ensure world-map site entities are registered into spatial_index.
 
-    This is an idempotent bridge for init order:
-    - Game.__init__ currently calls place_all_sites(self) before creating world_entity_index.
-    - We therefore defer placement until the first attention pass, when the index exists.
-
-    This function is safe to call every frame; it will only place once per index lifecycle.
+    Idempotent bridge for init order: Game.__init__ calls place_all_sites before
+    spatial_index is ready, so placement is deferred to the first attention pass.
+    Safe to call every frame; places once then sets a done flag.
     """
     try:
-        if getattr(game, "world_entity_index", None) is None:
+        if getattr(game, "spatial_index", None) is None:
             return
 
-        # If we've already placed for this specific index instance, we're done.
-        idx_id = id(getattr(game, "world_entity_index"))
-        if getattr(game, "_sites_placed_for_index_id", None) == idx_id:
+        if getattr(game, "_sites_placed_for_spatial_index", False):
             return
 
         # Only place if requested (or if nothing placed yet).
         need = bool(getattr(game, "_sites_need_world_index", True))
         if not need:
-            setattr(game, "_sites_placed_for_index_id", idx_id)
+            setattr(game, "_sites_placed_for_spatial_index", True)
             return
 
-        # Try placing. Do NOT clear need/mark-done until we confirm success.
+        # Try placing. Do NOT mark done until we confirm success.
         place_all_sites(game)
 
         placed_total = int(getattr(game, "_site_placement_total", 0) or 0)
@@ -761,18 +753,14 @@ def ensure_world_sites(game: "Game") -> None:
 
         if complete:
             setattr(game, "_sites_need_world_index", False)
-            setattr(game, "_sites_placed_for_index_id", idx_id)
+            setattr(game, "_sites_placed_for_spatial_index", True)
             dbg = getattr(game, "_debug", None)
             if dbg:
-                dbg(f"[site_placement] ensure_world_sites: placed {placed_total} sites into WorldEntityIndex")
+                dbg(f"[site_placement] ensure_world_sites: placed {placed_total} sites into spatial_index")
         else:
             # keep it armed to retry later (e.g. climate not ready yet)
             setattr(game, "_sites_need_world_index", True)
 
-
-    except Exception as e:
+    except Exception:
         # If anything goes wrong, allow a retry later but keep the game running.
         setattr(game, "_sites_need_world_index", True)
-        dbg = getattr(game, "_debug", None)
-        if dbg:
-            dbg(f"[site_placement] ensure_world_sites error: {e!r}")

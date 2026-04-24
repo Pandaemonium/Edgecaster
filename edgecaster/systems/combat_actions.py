@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.state.actors import Actor
+from edgecaster.state.entities import Entity
 from edgecaster.systems import damage_policy as damage_policy_system
 from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import entity_ops as entity_ops_system
@@ -539,7 +540,11 @@ def act_throw_flask(
     # Find the equipped flask
     from edgecaster.systems.item_grants import find_grant_origin
 
-    inv = self.get_inventory(actor_id)
+    try:
+        from edgecaster.systems import action_runner
+        inv = action_runner._actor_inventory(self, actor_id)
+    except Exception:
+        inv = self.get_inventory(actor_id)
     flask = find_grant_origin(inv, "throw_flask")
 
     if flask is None:
@@ -790,7 +795,24 @@ def act_ignite(self, actor_id: str) -> None:
         "direct_tiles": [],
         "indirect_tiles": [],
     }
-    level.ignite_state = state
+    eid = self._new_id()
+    ent = Entity(
+        id=eid,
+        name="Ignite",
+        pos=actor.pos,
+        abs_pos=actor.abs_pos,
+        glyph="*",
+        color=(255, 80, 40),
+        kind="ignite_effect",
+        render_layer=0,
+        tags=state,
+    )
+    level.entities[eid] = ent
+    try:
+        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+        entity_graph_ops_system.register_entity(self, ent, lod_state="expanded")
+    except Exception:
+        pass
     if actor_id == self.player_id:
         self.log.add("You ignite the pattern!")
 
@@ -817,11 +839,11 @@ def act_ignite(self, actor_id: str) -> None:
 
     def apply_tick() -> None:
         if state.get("remaining", 0) <= 0:
-            level.ignite_state = None
+            entity_ops_system.remove_entity(level, eid)
             return
         anchor = getattr(level, "pattern_anchor", None)
         if anchor is None:
-            level.ignite_state = None
+            entity_ops_system.remove_entity(level, eid)
             return
         # Decay multiplier
         mult = state["remaining"] / duration
@@ -853,7 +875,7 @@ def act_ignite(self, actor_id: str) -> None:
 
         if not direct_tiles:
             state["remaining"] = 0
-            level.ignite_state = None
+            entity_ops_system.remove_entity(level, eid)
             return
 
         # Indirect tiles: neighbors of direct
@@ -949,7 +971,7 @@ def act_ignite(self, actor_id: str) -> None:
         if state["remaining"] > 0:
             self._schedule(level, 1, apply_tick)
         else:
-            level.ignite_state = None
+            entity_ops_system.remove_entity(level, eid)
 
     # First tick immediately
     apply_tick()
@@ -985,7 +1007,24 @@ def act_regrow(self, actor_id: str) -> None:
         "direct_tiles": [],
         "indirect_tiles": [],
     }
-    level.regrow_state = state
+    eid = self._new_id()
+    ent = Entity(
+        id=eid,
+        name="Regrow",
+        pos=actor.pos,
+        abs_pos=actor.abs_pos,
+        glyph="*",
+        color=(80, 255, 120),
+        kind="regrow_effect",
+        render_layer=0,
+        tags=state,
+    )
+    level.entities[eid] = ent
+    try:
+        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+        entity_graph_ops_system.register_entity(self, ent, lod_state="expanded")
+    except Exception:
+        pass
     if actor_id == self.player_id:
         self.log.add("You flood the pattern with renewal.")
 
@@ -1012,11 +1051,11 @@ def act_regrow(self, actor_id: str) -> None:
 
     def apply_tick() -> None:
         if state.get("remaining", 0) <= 0:
-            level.regrow_state = None
+            entity_ops_system.remove_entity(level, eid)
             return
         anchor = getattr(level, "pattern_anchor", None)
         if anchor is None:
-            level.regrow_state = None
+            entity_ops_system.remove_entity(level, eid)
             return
         mult = state["remaining"] / duration
 
@@ -1046,7 +1085,7 @@ def act_regrow(self, actor_id: str) -> None:
 
         if not direct_tiles:
             state["remaining"] = 0
-            level.regrow_state = None
+            entity_ops_system.remove_entity(level, eid)
             return
 
         indirect_tiles: dict[tuple[int, int], float] = {}
@@ -1105,7 +1144,7 @@ def act_regrow(self, actor_id: str) -> None:
         if state["remaining"] > 0:
             self._schedule(level, 1, apply_tick)
         else:
-            level.regrow_state = None
+            entity_ops_system.remove_entity(level, eid)
 
     apply_tick()
 
@@ -1880,7 +1919,24 @@ def act_aggressive_vines(self, actor_id: str) -> None:
         "base_damage": 1.6,
         "ensnare_slow_mult": 1.30,
     }
-    level.choking_vines_state = state
+    eid = self._new_id()
+    ent = Entity(
+        id=eid,
+        name="Aggressive Vines",
+        pos=actor.pos,
+        abs_pos=actor.abs_pos,
+        glyph="~",
+        color=(48, 210, 110),
+        kind="aggressive_vines",
+        render_layer=0,
+        tags=state,
+    )
+    level.entities[eid] = ent
+    try:
+        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+        entity_graph_ops_system.register_entity(self, ent, lod_state="expanded")
+    except Exception:
+        pass
 
     # Optional compatibility overlay: localize current tip positions.
     level.activation_points = [
@@ -2223,7 +2279,7 @@ def act_choking_vines(self, actor_id: str) -> None:
             self.log.add("The vines fail to find purchase.")
         return
 
-    level.rune_choking_vines_state = {
+    state: dict[str, Any] = {
         "caster_id": str(actor_id),
         "duration": 60,
         "remaining": 60,
@@ -2254,10 +2310,30 @@ def act_choking_vines(self, actor_id: str) -> None:
         # Leave verbose diagnostics off in normal play.
         "debug_verbose": False,
     }
+    entity_ops_system.remove_entities_by_kind(level, "rune_choking_vines")
+    eid = self._new_id()
+    ent = Entity(
+        id=eid,
+        name="Choking Vines",
+        pos=actor.pos,
+        abs_pos=actor.abs_pos,
+        glyph="~",
+        color=(72, 214, 96),
+        kind="rune_choking_vines",
+        render_layer=0,
+        tags=state,
+    )
+    level.entities[eid] = ent
+    try:
+        from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+
+        entity_graph_ops_system.register_entity(self, ent, lod_state="expanded")
+    except Exception:
+        pass
     _d(
-        f"cast state created: tips={len(tips)} remaining={level.rune_choking_vines_state.get('remaining')} "
-        f"growth_budget={level.rune_choking_vines_state.get('growth_budget')} "
-        f"reseed_per_tick={level.rune_choking_vines_state.get('reseed_per_tick')}"
+        f"cast state created: tips={len(tips)} remaining={state.get('remaining')} "
+        f"growth_budget={state.get('growth_budget')} "
+        f"reseed_per_tick={state.get('reseed_per_tick')}"
     )
 
     # Brief activation hint at seed vertices.
@@ -2279,9 +2355,6 @@ def rune_choking_vines_tick(game: "Game", level: Any, delta: int) -> None:
     """Advance rune-mutating Choking Vines for `delta` heartbeats."""
     if delta <= 0:
         return
-    state = getattr(level, "rune_choking_vines_state", None)
-    if not state:
-        return
     _dbg = getattr(game, "_debug", None)
     def _d(msg: str) -> None:
         try:
@@ -2290,43 +2363,51 @@ def rune_choking_vines_tick(game: "Game", level: Any, delta: int) -> None:
         except Exception:
             pass
 
-    try:
-        remaining = int(state.get("remaining", 0))
-    except Exception:
-        _d("tick abort: invalid remaining -> clearing state")
-        level.rune_choking_vines_state = None
-        return
-    if bool(state.get("debug_verbose", False)):
-        _d(
-            f"tick start: delta={int(delta)} remaining={remaining} "
-            f"tips={len(list(state.get('tips', []) or []))} "
-            f"verts={len(getattr(getattr(level, 'pattern', None), 'vertices', []) or [])} "
-            f"edges={len(getattr(getattr(level, 'pattern', None), 'edges', []) or [])}"
-        )
+    tips_to_show = []
 
-    for _ in range(int(delta)):
-        if remaining <= 0:
-            break
-        _step_rune_choking_vines(game, level, state)
-        remaining -= 1
-        state["remaining"] = remaining
+    for ent in list(entity_ops_system.iter_entities(level)):
+        if getattr(ent, "kind", "") == "rune_choking_vines":
+            state = getattr(ent, "tags", {})
+            try:
+                remaining = int(state.get("remaining", 0))
+            except Exception:
+                _d("tick abort: invalid remaining -> clearing state")
+                entity_ops_system.remove_entity(level, ent.id)
+                continue
 
-    if remaining <= 0:
-        _d("tick complete: duration expired -> clearing state")
-        level.rune_choking_vines_state = None
+            if bool(state.get("debug_verbose", False)):
+                _d(
+                    f"tick start: delta={int(delta)} remaining={remaining} "
+                    f"tips={len(list(state.get('tips', []) or []))} "
+                    f"verts={len(getattr(getattr(level, 'pattern', None), 'vertices', []) or [])} "
+                    f"edges={len(getattr(getattr(level, 'pattern', None), 'edges', []) or [])}"
+                )
+
+            for _ in range(int(delta)):
+                if remaining <= 0:
+                    break
+                _step_rune_choking_vines(game, level, state)
+                remaining -= 1
+                state["remaining"] = remaining
+
+            if remaining <= 0:
+                _d("tick complete: duration expired -> clearing state")
+                entity_ops_system.remove_entity(level, ent.id)
+            else:
+                tips_to_show.extend(list(state.get("tips", []) or []))
 
     # Keep activation overlay tied to current vine tip vertices.
     try:
-        pattern = getattr(level, "pattern", None)
-        tips = list(state.get("tips", []) or [])
-        if pattern is not None:
-            level.activation_points = [
-                tuple(pattern.vertices[int(t["vertex"])].pos)
-                for t in tips
-                if 0 <= int(t.get("vertex", -1)) < len(pattern.vertices)
-            ]
-            if level.activation_points:
-                level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 3)
+        if tips_to_show:
+            pattern = getattr(level, "pattern", None)
+            if pattern is not None:
+                level.activation_points = [
+                    tuple(pattern.vertices[int(t["vertex"])].pos)
+                    for t in tips_to_show
+                    if 0 <= int(t.get("vertex", -1)) < len(pattern.vertices)
+                ]
+                if level.activation_points:
+                    level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 3)
     except Exception:
         pass
 

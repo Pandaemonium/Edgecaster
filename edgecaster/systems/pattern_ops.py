@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns import builder
 from edgecaster.patterns import motion as pattern_motion
+from edgecaster.systems import entity_ops as entity_ops_system
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +154,6 @@ def try_place_terminus(game: "Game", target_abs: Tuple[int, int]) -> None:
         st["activation_points"] = []
         st["activation_ttl"] = 0
         st["pattern_motion"] = None
-        st["choking_vines_state"] = None
-        st["rune_choking_vines_state"] = None
 
         # Keep level view consistent immediately.
         game._sync_level_pattern_view(lvl)
@@ -163,8 +162,7 @@ def try_place_terminus(game: "Game", target_abs: Tuple[int, int]) -> None:
         lvl.fern_active = False
         lvl.fern_growth_tips = []
         lvl.fern_accum = 0.0
-        lvl.choking_vines_state = None
-        lvl.rune_choking_vines_state = None
+        entity_ops_system.remove_entities_by_kind(lvl, "aggressive_vines", "rune_choking_vines")
         if hasattr(game, "_commit_pattern_state_from_level"):
             game._commit_pattern_state_from_level(lvl)
         
@@ -191,8 +189,6 @@ def reset_pattern(game: "Game") -> None:
     st["activation_points"] = []
     st["activation_ttl"] = 0
     st["pattern_motion"] = None
-    st["choking_vines_state"] = None
-    st["rune_choking_vines_state"] = None
 
     game._sync_level_pattern_view(lvl)
 
@@ -200,8 +196,7 @@ def reset_pattern(game: "Game") -> None:
     lvl.fern_active = False
     lvl.fern_growth_tips = []
     lvl.fern_accum = 0.0
-    lvl.choking_vines_state = None
-    lvl.rune_choking_vines_state = None
+    entity_ops_system.remove_entities_by_kind(lvl, "aggressive_vines", "rune_choking_vines")
 
     player = game._player()
     player.stats.coherence = player.stats.max_coherence

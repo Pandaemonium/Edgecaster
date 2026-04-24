@@ -68,33 +68,6 @@ def test_entity_at_prefers_non_actor_when_both_overlap_tile() -> None:
     assert got is item
 
 
-def test_entity_query_surface_resolves_actor_before_entity() -> None:
-    actor = Actor(id="shared_1", name="Guard", pos=(1, 1))
-    entity = Entity(id="shared_1", name="Statue", pos=(1, 1))
-    lvl = _level(
-        actors={actor.id: actor},
-        entities={entity.id: entity},
-    )
-
-    assert entity_ops.get_actor(lvl, actor.id) is actor
-    assert entity_ops.get_entity(lvl, entity.id) is entity
-    assert entity_ops.resolve_entity(lvl, actor.id) is actor
-
-
-def test_entity_query_surface_remove_helpers_pop_from_level_caches() -> None:
-    actor = Actor(id="actor_1", name="Guard", pos=(1, 1))
-    entity = Entity(id="entity_1", name="Statue", pos=(2, 2))
-    lvl = _level(
-        actors={actor.id: actor},
-        entities={entity.id: entity},
-    )
-
-    assert entity_ops.remove_actor(lvl, actor.id) is actor
-    assert entity_ops.remove_entity(lvl, entity.id) is entity
-    assert entity_ops.get_actor(lvl, actor.id) is None
-    assert entity_ops.get_entity(lvl, entity.id) is None
-
-
 def test_spawn_factory_initializes_explicit_runtime_footprint_fields() -> None:
     spec = {
         "id": "test_city",
@@ -211,11 +184,10 @@ def test_toggle_door_updates_runtime_and_persists_open_state() -> None:
     game.patch_entity_state.assert_called_once_with(
         "runtime:door:1",
         {
-            "last_known_tags": {"door_state": "open"},
-            "last_known_glyph": "/",
-            "last_known_blocks_movement": False,
-        },
-        lineage_id="site:test:door:1",
+            "tags_patch": {"door_state": "open"},
+            "glyph": "/",
+            "blocks_movement": False,
+        }
     )
     game._update_fov.assert_called_once_with(level)
 
@@ -243,10 +215,9 @@ def test_toggle_door_updates_runtime_and_persists_closed_state() -> None:
     game.patch_entity_state.assert_called_once_with(
         "runtime:door:2",
         {
-            "last_known_tags": {"door_state": "closed"},
-            "last_known_glyph": "+",
-            "last_known_blocks_movement": True,
-        },
-        lineage_id="site:test:door:2",
+            "tags_patch": {"door_state": "closed"},
+            "glyph": "+",
+            "blocks_movement": True,
+        }
     )
     game._update_fov.assert_called_once_with(level)

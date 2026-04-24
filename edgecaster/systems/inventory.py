@@ -208,11 +208,6 @@ def add_inventory_item(game: "Game", owner_id: str, ent: Any) -> None:
         return
 
     try:
-        entity_lifecycle_system._track_runtime_entity(game, ent)
-    except Exception:
-        pass
-
-    try:
         entity_graph_ops_system.attach_entity_to_parent(game, ent, oid, socket_id="inventory")
     except Exception:
         pass

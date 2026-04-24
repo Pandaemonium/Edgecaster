@@ -22,17 +22,9 @@ class _DummyGame:
         st.update(dict(fields))
         self.entity_state[str(entity_id)] = st
 
-    def get_effective_entity_state(self, entity_or_id: object, *, lineage_id: object = None) -> dict:
+    def get_effective_entity_state(self, entity_or_id: object) -> dict:
         eid = str(entity_or_id or "").strip()
-        lid = str(lineage_id or "").strip()
         primary = dict(self.entity_state.get(eid, {}) or {})
-        if lid and lid != eid:
-            fallback = dict(self.entity_state.get(lid, {}) or {})
-            if not primary:
-                return fallback
-            out = dict(fallback)
-            out.update(primary)
-            return out
         return primary
 
 
@@ -48,26 +40,6 @@ def test_mark_removed_prefers_entity_state_when_entity_id_present() -> None:
     attention._mark_removed(g, entity_id="ent:3", reason="pickup")
     assert g.entity_state_updates == [("ent:3", {"removed": True, "removed_reason": "pickup"})]
 
-
-def test_is_suppressed_checks_lineage_state() -> None:
-    g = _DummyGame()
-    g.entity_state["lineage:door:1"] = {"removed": True}
-    assert attention._is_suppressed(
-        g,
-        entity_id="runtime:door:1",
-        lineage_id="lineage:door:1",
-    ) is True
-
-
-def test_is_suppressed_prefers_entity_state_over_legacy_lineage_lifecycle() -> None:
-    g = _DummyGame()
-    g.entity_state["runtime:door:2"] = {"removed": False}
-    g.entity_state["lineage:door:2"] = {"removed": True}
-    assert attention._is_suppressed(
-        g,
-        entity_id="runtime:door:2",
-        lineage_id="lineage:door:2",
-    ) is False
 
 
 def test_apply_persisted_entity_state_applies_runtime_fields() -> None:
@@ -89,15 +61,15 @@ def test_apply_persisted_entity_state_applies_runtime_fields() -> None:
                 self.mana = self.max_mana
 
     g = _DummyGame()
-    g.entity_state["lineage:obj:1"] = {
-        "last_known_hp": 3,
-        "last_known_max_hp": 12,
-        "last_known_mana": 2,
-        "last_known_max_mana": 5,
-        "last_known_tags": {"door_state": "open"},
-        "last_known_glyph": "/",
-        "last_known_blocks_movement": False,
-        "last_known_statuses": {"frozen": 2},
+    g.entity_state["runtime:obj:1"] = {
+        "hp": 3,
+        "max_hp": 12,
+        "mana": 2,
+        "max_mana": 5,
+        "tags_patch": {"door_state": "open"},
+        "glyph": "/",
+        "blocks_movement": False,
+        "statuses": {"frozen": 2},
     }
     obj = SimpleNamespace(
         tags={"lineage_id": "lineage:obj:1", "door_state": "closed"},
@@ -111,7 +83,6 @@ def test_apply_persisted_entity_state_applies_runtime_fields() -> None:
         g,
         obj,
         entity_id="runtime:obj:1",
-        lineage_id="lineage:obj:1",
     )
     assert ok is True
     assert obj.stats.hp == 3
@@ -124,50 +95,28 @@ def test_apply_persisted_entity_state_applies_runtime_fields() -> None:
     assert obj.statuses.get("frozen") == 2
 
 
-def test_apply_persisted_entity_state_returns_false_when_removed() -> None:
+def test_apply_persisted_entity_state_does_not_reinject_lineage_into_tags() -> None:
     g = _DummyGame()
-    g.entity_state["lineage:obj:dead"] = {"removed": True}
-    obj = SimpleNamespace(tags={"lineage_id": "lineage:obj:dead"})
-    ok = attention._apply_persisted_entity_state(
-        g,
-        obj,
-        entity_id="runtime:obj:dead",
-        lineage_id="lineage:obj:dead",
-    )
-    assert ok is False
-
-
-def test_apply_persisted_entity_state_prefers_entity_record_over_legacy_removed() -> None:
-    class _Stats:
-        def __init__(self) -> None:
-            self.hp = 8
-            self.max_hp = 10
-            self.mana = 1
-            self.max_mana = 3
-
-        def clamp(self) -> None:
-            pass
-
-    g = _DummyGame()
-    g.entity_state["runtime:obj:live"] = {"removed": False, "last_known_hp": 6}
-    g.entity_state["lineage:obj:live"] = {"removed": True, "last_known_tags": {"legacy_flag": True}}
+    g.entity_state["runtime:obj:2"] = {
+        "tags_patch": {"door_state": "open"},
+    }
     obj = SimpleNamespace(
-        tags={"lineage_id": "lineage:obj:live"},
+        tags={},
         glyph="+",
         blocks_movement=True,
-        stats=_Stats(),
+        stats=None,
         statuses={},
         cooldowns={},
     )
+
     ok = attention._apply_persisted_entity_state(
         g,
         obj,
-        entity_id="runtime:obj:live",
-        lineage_id="lineage:obj:live",
+        entity_id="runtime:obj:2",
     )
+
     assert ok is True
-    assert obj.stats.hp == 6
-    assert obj.tags.get("legacy_flag") is True
+    assert obj.tags == {"door_state": "open"}
 
 
 def test_resolve_depth_defaults_follow_lod_curve() -> None:
@@ -303,6 +252,110 @@ def test_sync_attention_instantiation_reads_spatial_proxy_without_world_index() 
         attention.sync_attention_instantiation(game, (0.0, 0.0, 10.0, 10.0), cam_lod=5.0)
 
     assert game._last_view_abs_rect == (0.0, 0.0, 10.0, 10.0)
+
+
+def test_sync_attention_instantiation_aggregate_detail_works_without_entities_dict() -> None:
+    class _StageOnlyAttentionStore:
+        def __init__(self, spatial_index: SpatialIndex) -> None:
+            self._spatial_index = spatial_index
+            self._ids: set[str] = set()
+
+        def stage(self, obj, *, abs_x: float, abs_y: float, zz: int) -> str:  # noqa: ANN001
+            eid = str(getattr(obj, "id", "") or "")
+            if not eid:
+                raise ValueError("staged object missing id")
+            try:
+                if getattr(obj, "abs_pos", None) is None:
+                    obj.abs_pos = (int(abs_x), int(abs_y))
+            except Exception:
+                pass
+            self._spatial_index.add_or_update(
+                obj,
+                (float(abs_x), float(abs_y), float(abs_x) + 1.0, float(abs_y) + 1.0),
+                int(zz),
+                "staged",
+                source="attention",
+            )
+            self._ids.add(eid)
+            return eid
+
+        def get(self, eid: str):  # noqa: ANN001
+            entry = self._spatial_index.get(str(eid))
+            if entry is None:
+                return None
+            if str(getattr(entry, "source", "") or "") != "attention":
+                return None
+            return entry.obj
+
+        def ids(self) -> set[str]:
+            return set(self._ids)
+
+        def despawn(self, eid: str) -> None:
+            self._spatial_index.remove(str(eid), source="attention")
+            self._ids.discard(str(eid))
+
+    spatial_index = SpatialIndex(bin_size=8)
+    aggregate = SimpleNamespace(
+        id="agg:berries:test",
+        kind="aggregate",
+        abs_pos=(5, 5),
+        zone_coord=(0, 0, 0),
+        local_pos=(5, 5),
+        tags={
+            "aggregate": True,
+            "aggregate_kind": "berry_patch",
+            "detail_mode": "cluster",
+            "detail_child": "blueberry",
+            "detail_child_type": "entity",
+        },
+    )
+    spatial_index.add_or_update(
+        aggregate,
+        (5.0, 5.0, 6.0, 6.0),
+        0,
+        "proxy",
+        source="world_entity_index",
+    )
+    store = _StageOnlyAttentionStore(spatial_index)
+    level = SimpleNamespace(
+        spatial_dirty=False,
+        world=SimpleNamespace(width=10, height=10),
+        entities={},
+        actors={},
+    )
+    game = SimpleNamespace(
+        cfg=SimpleNamespace(
+            world_width=10,
+            world_height=10,
+            entity_render_pad_tiles=0.0,
+            render_max_zone_span=1,
+            entity_lod_fade_w=0.6,
+        ),
+        zone_coord=(0, 0, 0),
+        spatial_index=spatial_index,
+        world_entity_index=None,
+        attn_store=store,
+        levels={(0, 0, 0): level},
+        _attn_active_agg_children={},
+        _clamp_zone_window=lambda zx0, zx1, zy0, zy1, **_kwargs: (zx0, zx1, zy0, zy1, False),
+        _ensure_world_aggregate_entities=lambda **_kwargs: None,
+        _get_player_abs=lambda: (5.0, 5.0),
+        get_zone_for_render=lambda _coord: level,
+    )
+
+    with patch("edgecaster.systems.site_placement.ensure_world_sites", lambda _game: None):
+        with patch(
+            "edgecaster.systems.aggregate_resolution.compute_cluster_children_layout",
+            lambda *_args, **_kwargs: ("blueberry", [(5, 5)]),
+        ):
+            attention.sync_attention_instantiation(game, (0.0, 0.0, 10.0, 10.0), cam_lod=0.0)
+
+    expected_eid = attention.aggregate_system.entity_id_from_lineage(
+        attention.aggregate_system.aggregate_slot_lineage_id("agg:berries:test", "blueberry", 0)
+    )
+    assert expected_eid in level.entities
+    assert expected_eid in store.ids()
+    assert store.get(expected_eid) is level.entities[expected_eid]
 
 
 def test_resolve_depth_respects_parent_cap_and_bias() -> None:

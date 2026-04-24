@@ -82,57 +82,39 @@ def _effective_entity_state(
     game: object,
     *,
     entity_id: str | None,
-    lineage_id: str | None,
 ) -> Dict[str, Any]:
+    lookup_key = str(entity_id or "").strip()
     try:
         getter = getattr(game, "get_effective_entity_state", None)
-        if callable(getter):
-            key = str(entity_id or "").strip() or str(lineage_id or "").strip()
-            return dict(getter(key, lineage_id=lineage_id) or {})
+        if callable(getter) and lookup_key:
+            return dict(getter(lookup_key) or {})
     except Exception:
         pass
 
     store = getattr(game, "entity_state", None)
-    if not isinstance(store, dict):
+    if not isinstance(store, dict) or not lookup_key:
         return {}
-
-    out: Dict[str, Any] = {}
-    lid = str(lineage_id or "").strip()
-    eid = str(entity_id or "").strip()
-    if lid:
-        state = store.get(lid)
-        if isinstance(state, dict):
-            out.update(dict(state))
-    if eid:
-        state = store.get(eid)
-        if isinstance(state, dict):
-            out.update(dict(state))
-    return out
+    state = store.get(lookup_key)
+    return dict(state) if isinstance(state, dict) else {}
 
 
 def _is_suppressed(
     game: object,
     *,
     entity_id: str,
-    lineage_id: Optional[str],
 ) -> bool:
-    state = _effective_entity_state(game, entity_id=entity_id, lineage_id=lineage_id)
+    state = _effective_entity_state(game, entity_id=entity_id)
     return bool(state.get("removed")) or bool(state.get("dead"))
 
 
 def _mark_entity_live(
     game: object,
     entity_id: str,
-    *,
-    lineage_id: Optional[str] = None,
 ) -> None:
     try:
         patch = getattr(game, "patch_entity_state", None)
         if callable(patch):
-            if lineage_id:
-                patch(str(entity_id), removed=False, dead=False, lineage_id=str(lineage_id))
-            else:
-                patch(str(entity_id), removed=False, dead=False)
+            patch(str(entity_id), removed=False, dead=False)
     except Exception:
         pass
 
@@ -146,22 +128,10 @@ def _coerce_chakra_component_for_entity(ent: object):
     if not eid:
         return None
 
-    max_hp = None
-    try:
-        stats = getattr(ent, "stats", None)
-        if stats is not None:
-            raw_hp = getattr(stats, "max_hp", None)
-            if raw_hp is not None:
-                max_hp = float(raw_hp)
-    except Exception:
-        max_hp = None
-
     try:
         comp = chakra_component_state.coerce_chakra_component(
             raw,
             entity_id=eid,
-            max_hp=max_hp,
-            mass=1.0,
         )
         setattr(ent, "chakra_component", comp)
         return comp
@@ -328,30 +298,6 @@ def _zone_local_for_entity(game: object, ent: object) -> Tuple[Tuple[int, int, i
     return ((0, 0, 0), (0, 0))
 
 
-def _runtime_entity_registry(game: object) -> Dict[str, object]:
-    """Internal runtime-object registry for realized entities outside level/attn caches."""
-    # [LEGACY_DELETE][ENTITY_CHAKRA][RUNTIME_REGISTRY]
-    # This is a migration bridge until one authoritative runtime-entity registry
-    # exists for *all* live entities instead of attention/level/world caches plus
-    # this extra fallback for internal realized subtrees.
-    raw = getattr(game, "_runtime_entity_index", None)
-    if isinstance(raw, dict):
-        return raw
-    raw = {}
-    try:
-        setattr(game, "_runtime_entity_index", raw)
-    except Exception:
-        pass
-    return raw
-
-
-def _track_runtime_entity(game: object, obj: object) -> None:
-    eid = _entity_id(obj)
-    if not eid:
-        return
-    _runtime_entity_registry(game)[eid] = obj
-
-
 def _stage_object(game: object, obj: object, *, abs_x: int, abs_y: int, zz: int) -> None:
     attn_store = getattr(game, "attn_store", None)
     try:
@@ -359,7 +305,21 @@ def _stage_object(game: object, obj: object, *, abs_x: int, abs_y: int, zz: int)
             attn_store.stage(obj, abs_x=int(abs_x), abs_y=int(abs_y), zz=int(zz))
     except Exception:
         pass
-    _track_runtime_entity(game, obj)
+
+
+def _attn_store_get(attn_store: object, eid: str) -> object | None:
+    if attn_store is None:
+        return None
+    entity_id = str(eid or "").strip()
+    if not entity_id:
+        return None
+    try:
+        getter = getattr(attn_store, "get", None)
+        if callable(getter):
+            return getter(entity_id)
+    except Exception:
+        pass
+    return None
 
 
 def _mirror_entity_into_loaded_zone(game: object, obj: object, *, abs_x: int, abs_y: int, zz: int) -> None:
@@ -379,7 +339,6 @@ def _mirror_entity_into_loaded_zone(game: object, obj: object, *, abs_x: int, ab
             level.spatial_dirty = True
         except Exception:
             pass
-        _track_runtime_entity(game, obj)
     except Exception:
         pass
 
@@ -408,7 +367,6 @@ def _register_actor_in_loaded_zone(game: object, actor: object, *, abs_x: int, a
                 attn_store.despawn(eid)
         except Exception:
             pass
-        _track_runtime_entity(game, actor)
     except Exception:
         pass
 
@@ -422,7 +380,7 @@ def _remove_runtime_entity(game: object, entity_id: str) -> Optional[object]:
     attn_store = getattr(game, "attn_store", None)
     try:
         if attn_store is not None:
-            found = getattr(attn_store, "entities", {}).get(eid)
+            found = _attn_store_get(attn_store, eid)
             attn_store.despawn(eid)
     except Exception:
         found = found
@@ -451,13 +409,6 @@ def _remove_runtime_entity(game: object, entity_id: str) -> Optional[object]:
                         level.spatial_dirty = True
                     except Exception:
                         pass
-    except Exception:
-        pass
-    try:
-        reg = _runtime_entity_registry(game)
-        if found is None:
-            found = reg.get(eid)
-        reg.pop(eid, None)
     except Exception:
         pass
     return found
@@ -655,14 +606,17 @@ def find_runtime_entity(game: object, entity_id: str) -> Optional[object]:
     if not eid:
         return None
 
+    # First, check the unified entity graph for the definitive runtime object
     try:
-        obj = _runtime_entity_registry(game).get(eid)
-        if obj is not None:
-            return obj
+        graph = getattr(game, "entity_graph", None)
+        if graph is not None:
+            node = graph.get_node(eid)
+            if node is not None and getattr(node, "obj", None) is not None:
+                return node.obj
     except Exception:
         pass
 
-    # SpatialIndex covers staged (attn_store) and proxy (world_entity_index) entities.
+    # SpatialIndex covers staged (attn_store) and proxy entities.
     try:
         idx = spatial_index_system.get_game_spatial_index(game)
         if idx is not None:
@@ -672,26 +626,24 @@ def find_runtime_entity(game: object, entity_id: str) -> Optional[object]:
     except Exception:
         pass
 
-    # Fallback for runtimes/tests without SpatialIndex wired.
-    try:
-        attn_store = getattr(game, "attn_store", None)
-        if attn_store is not None:
-            obj = getattr(attn_store, "entities", {}).get(eid)
-            if obj is not None:
-                return obj
-    except Exception:
-        pass
-
+    # Scan loaded zone dicts for zone-realized actors.
     try:
         levels = getattr(game, "levels", None)
         if isinstance(levels, dict):
             for level in levels.values():
-                obj = getattr(level, "entities", {}).get(eid)
+                obj = getattr(level, "entities", {}).get(eid) or getattr(level, "actors", {}).get(eid)
                 if obj is not None:
                     return obj
-                obj = getattr(level, "actors", {}).get(eid)
-                if obj is not None:
-                    return obj
+    except Exception:
+        pass
+
+    # Final fallback for tests without SpatialIndex wired.
+    try:
+        attn_store = getattr(game, "attn_store", None)
+        if attn_store is not None:
+            obj = _attn_store_get(attn_store, eid)
+            if obj is not None:
+                return obj
     except Exception:
         pass
 
@@ -722,8 +674,8 @@ def _materialize_child(
         except Exception:
             pass
         _link_parent_child_chakra(parent_ent, existing)
-        state = _effective_entity_state(game, entity_id=eid, lineage_id=lineage_id)
-        if not entity_snapshots_system.apply_entity_snapshot(existing, state, lineage_id=lineage_id):
+        state = _effective_entity_state(game, entity_id=eid)
+        if not entity_snapshots_system.apply_entity_snapshot(existing, state):
             return None
         return existing
 
@@ -808,20 +760,20 @@ def _materialize_child(
         pass
     _link_parent_child_chakra(parent_ent, obj)
 
-    state = _effective_entity_state(game, entity_id=eid, lineage_id=lineage_id)
-    if not entity_snapshots_system.apply_entity_snapshot(obj, state, lineage_id=lineage_id):
+    state = _effective_entity_state(game, entity_id=eid)
+    if not entity_snapshots_system.apply_entity_snapshot(obj, state):
         return None
 
     if child_type == "actor":
         _stage_object(game, obj, abs_x=abs_x, abs_y=abs_y, zz=zz)
-        _mark_entity_live(game, eid, lineage_id=lineage_id)
+        _mark_entity_live(game, eid)
         _register_actor_in_loaded_zone(game, obj, abs_x=abs_x, abs_y=abs_y, zz=zz)
     elif child_type == "staged":
         _stage_object(game, obj, abs_x=abs_x, abs_y=abs_y, zz=zz)
-        _mark_entity_live(game, eid, lineage_id=lineage_id)
+        _mark_entity_live(game, eid)
     else:
         _stage_object(game, obj, abs_x=abs_x, abs_y=abs_y, zz=zz)
-        _mark_entity_live(game, eid, lineage_id=lineage_id)
+        _mark_entity_live(game, eid)
         _mirror_entity_into_loaded_zone(game, obj, abs_x=abs_x, abs_y=abs_y, zz=zz)
 
     return obj
@@ -843,7 +795,6 @@ def _materialize_body_child(
         except Exception:
             pass
         _link_parent_child_chakra(parent_ent, existing)
-        _track_runtime_entity(game, existing)
         return existing
 
     try:
@@ -978,7 +929,15 @@ def _materialize_body_child(
     except Exception:
         pass
 
-    _track_runtime_entity(game, obj)
+    # Mirror into the loaded zone so find_runtime_entity can locate the body node.
+    try:
+        abs_x = int(round(float(spec.abs_pos[0])))
+        abs_y = int(round(float(spec.abs_pos[1])))
+        zz = int(getattr(owner_ent, "zone_coord", (0, 0, 0))[2] if hasattr(owner_ent, "zone_coord") else 0)
+        _mirror_entity_into_loaded_zone(game, obj, abs_x=abs_x, abs_y=abs_y, zz=zz)
+    except Exception:
+        pass
+
     _mark_entity_live(game, eid)
     return obj
 
@@ -1001,12 +960,10 @@ def _remove_resolved_subtree(game: object, root_entity_id: str) -> None:
 
     runtime_obj = find_runtime_entity(game, eid)
     if runtime_obj is not None:
-        lineage_id = _normalize_optional_lineage_id(_tags(runtime_obj).get("lineage_id"))
         entity_snapshots_system.persist_entity_snapshot(
             game,
             runtime_obj,
             entity_id=eid,
-            lineage_id=lineage_id,
         )
     _remove_runtime_entity(game, eid)
     try:
@@ -1161,8 +1118,7 @@ def expand_entity(game: object, entity_id: str, *, reason: str = "attention") ->
     realized_set: set[str] = set()
     for intent in intents:
         child_id = str(intent.eid or "").strip()
-        lineage_id = _normalize_optional_lineage_id(intent.lineage_id)
-        if not child_id or _is_suppressed(game, entity_id=child_id, lineage_id=lineage_id):
+        if not child_id or _is_suppressed(game, entity_id=child_id):
             continue
         obj = _materialize_child(game, parent_ent=parent_ent, parent_id=parent_id, intent=intent)
         if obj is None or child_id in realized_set:

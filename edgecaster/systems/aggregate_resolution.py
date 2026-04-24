@@ -28,6 +28,7 @@ import random
 from edgecaster import prototypes
 from edgecaster import spawn_factory
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+from edgecaster.systems.world_entity_index import register_proxy_entity
 from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems.entity_identity import stable_int_hash
 
@@ -351,11 +352,7 @@ def _ensure_unique_world_root(
 
     try:
         entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-        game.world_entity_index.add(
-            ent,
-            zone_coord=(int(zx), int(zy), int(zz)),
-            local_pos=(int(ox), int(oy)),
-        )
+        register_proxy_entity(game, ent, zone_coord=(int(zx), int(zy), int(zz)), local_pos=(int(ox), int(oy)))
     except Exception:
         pass
     if isinstance(done, set):
@@ -386,7 +383,7 @@ def ensure_world_aggregates(
     if not hasattr(game, "_agg_worldgen_done"):
         game._agg_worldgen_done = set()  # type: ignore[attr-defined]
 
-    if getattr(game, "world_entity_index", None) is None:
+    if getattr(game, "spatial_index", None) is None:
         return
 
     if kinds is None:
@@ -544,11 +541,7 @@ def ensure_world_aggregates(
 
                     try:
                         entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-                        game.world_entity_index.add(
-                            ent,
-                            zone_coord=(int(zx), int(zy), int(zz)),
-                            local_pos=(int(ox), int(oy)),
-                        )
+                        register_proxy_entity(game, ent, zone_coord=(int(zx), int(zy), int(zz)), local_pos=(int(ox), int(oy)))
                     except Exception:
                         pass
 

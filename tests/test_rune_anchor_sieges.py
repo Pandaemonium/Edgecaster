@@ -98,7 +98,7 @@ def test_attach_siege_to_level_creates_runtime_state():
 
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
 
-    siege = getattr(level, "rune_anchor_siege", None)
+    siege = rune_anchor_sieges._get_siege(level)
     assert siege is not None
     assert siege.siege_id == "starter_anchor"
     assert len(siege.fractures) >= 1
@@ -108,7 +108,7 @@ def test_attach_siege_to_level_creates_runtime_state():
 def test_channel_fracture_consumes_crystal_and_advances_state():
     game, level, player = _make_game_and_level()
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
-    siege = level.rune_anchor_siege
+    siege = rune_anchor_sieges._get_siege(level)
     assert siege is not None
 
     # Pre-complete all but one fracture so a single channel can enter stabilize phase.
@@ -133,7 +133,7 @@ def test_channel_fracture_consumes_crystal_and_advances_state():
 def test_sync_zone_siege_auto_grants_and_revokes_actions():
     game, level, player = _make_game_and_level()
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
-    siege = level.rune_anchor_siege
+    siege = rune_anchor_sieges._get_siege(level)
     assert siege is not None
 
     rune_anchor_sieges.sync_zone_siege(game, level, level.coord)
@@ -161,7 +161,7 @@ def test_sync_zone_siege_auto_grants_and_revokes_actions():
 def test_catastrophe_pulse_telegraph_and_resolve_hits_player():
     game, level, player = _make_game_and_level()
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
-    siege = level.rune_anchor_siege
+    siege = rune_anchor_sieges._get_siege(level)
     assert siege is not None
 
     rune_anchor_sieges._begin_catastrophe_telegraph(game, level, siege, tick=0)
@@ -179,7 +179,7 @@ def test_catastrophe_pulse_telegraph_and_resolve_hits_player():
 def test_catastrophe_pulse_hits_large_footprint_actor_overlap() -> None:
     game, level, _player = _make_game_and_level()
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
-    siege = level.rune_anchor_siege
+    siege = rune_anchor_sieges._get_siege(level)
     assert siege is not None
 
     tile = tuple(siege.anchor_pos)
@@ -207,7 +207,7 @@ def test_catastrophe_pulse_hits_large_footprint_actor_overlap() -> None:
 def test_sapper_reopens_repaired_fracture():
     game, level, _player = _make_game_and_level()
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
-    siege = level.rune_anchor_siege
+    siege = rune_anchor_sieges._get_siege(level)
     assert siege is not None
 
     fracture = siege.fractures[0]

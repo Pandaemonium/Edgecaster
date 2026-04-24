@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from edgecaster import prototypes
 from edgecaster.systems import aggregate_resolution as ar
 from edgecaster.systems.spatial_index import SpatialIndex
-from edgecaster.systems.world_entity_index import WorldEntityIndex
 
 
 def _dummy_game(seed: int = 1234) -> object:
@@ -195,7 +194,6 @@ def test_unique_world_root_continent_spawns_once() -> None:
     game = _dummy_game(4242)
     spatial_index = SpatialIndex(bin_size=64)
     game.spatial_index = spatial_index
-    game.world_entity_index = WorldEntityIndex(zone_w=64, zone_h=64, spatial_index=spatial_index)
     game._agg_worldgen_done = set()
     game.cfg = SimpleNamespace(
         seed=4242,

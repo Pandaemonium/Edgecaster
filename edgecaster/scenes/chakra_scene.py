@@ -44,15 +44,11 @@ from .base import (
 
 from edgecaster.ui.widgets import Widget, WidgetContext, ButtonWidget
 from edgecaster.math_utils import lerp, smoothstep, lerp_rgb
-from edgecaster.systems.chakras import (
-    check_resonance_bonuses_from_active_nodes,
-    get_resonance_modifiers,
-    CHARGE_MAX_BASE,
-    is_branch_root,
-)
+from edgecaster.systems.chakras import is_branch_root
+from edgecaster.systems.chakra_reducer import get_active_resonances, evaluate_resonance_modifiers
+from edgecaster.systems.chakra_items import CHARGE_MAX_BASE
 from edgecaster.systems import chakra_items as chakra_items_system
 from edgecaster.systems import body_view_queries as body_view_queries_system
-from edgecaster.systems import entity_ops as entity_ops_system
 
 if TYPE_CHECKING:
     from .manager import SceneManager
@@ -119,6 +115,21 @@ TOOLTIP_WARN = (200, 120, 120)
 
 # =============================================================================
 # HELPER FUNCTIONS
+# =============================================================================
+
+
+def _is_chakra_state_like(state: Any) -> bool:
+    """Return True when *state* exposes the fields Chakra Scene expects."""
+    required = (
+        "unlocked",
+        "active",
+        "alignments",
+        "generators",
+        "charges",
+    )
+    return all(hasattr(state, attr) for attr in required)
+
+
 @dataclass
 class ChakraEditSession:
     """Non-authoritative scene-local editing snapshot for Chakra Scene.
@@ -137,16 +148,13 @@ class ChakraEditSession:
 
     @classmethod
     def from_state(cls, state: Any, *, alignments: Optional[Dict[str, Tuple[float, float]]] = None) -> "ChakraEditSession":
-        view = chakra_items_system.coerce_chakra_view_state(state)
-        if view is None:
-            view = chakra_items_system.ChakraViewState()
         return cls(
-            unlocked=set(view.unlocked),
-            active=set(view.active),
-            alignments=dict(alignments if alignments is not None else view.alignments),
-            generators=dict(view.generators),
-            charges=dict(view.charges),
-            pattern_root=view.pattern_root,
+            unlocked=set(getattr(state, "unlocked", set()) or set()),
+            active=set(getattr(state, "active", set()) or set()),
+            alignments=dict(alignments if alignments is not None else (getattr(state, "alignments", {}) or {})),
+            generators=dict(getattr(state, "generators", {}) or {}),
+            charges=dict(getattr(state, "charges", {}) or {}),
+            pattern_root=getattr(state, "pattern_root", None),
         )
 
 def _draw_vertical_gradient(
@@ -319,9 +327,8 @@ class ChakraSilhouetteWidget(Widget):
         # Particle system for activation bursts
         self._particles: List[Particle] = []
 
-        # Optional scene-local edit session override used for preview while the
-        # player is dragging alignments. This is not runtime authority.
-        self.edit_session_override: Optional[ChakraEditSession] = None
+        # Optional state override (used for "realign preview" without committing)
+        self.state_override: Optional[Any] = None
 
         # Current pattern root (for highlighting)
         self._pattern_root: Optional[str] = None
@@ -346,9 +353,9 @@ class ChakraSilhouetteWidget(Widget):
         self._chakra_points.clear()
         self._connections.clear()
 
-    def set_edit_session(self, session: Optional[ChakraEditSession]) -> None:
-        """Override render reads with a local edit-session snapshot."""
-        self.edit_session_override = session
+    def set_state_override(self, state: Optional[Any]) -> None:
+        """Override chakra state for preview (e.g., while realigning)."""
+        self.state_override = state
         self._chakra_points.clear()
         self._connections.clear()
 
@@ -388,8 +395,7 @@ class ChakraSilhouetteWidget(Widget):
 
         Positions come from body_schema_rel_pos tags stored at entity creation
         time (body-graph-scale units), scaled by CHAKRA_LAYOUT_SCALE for UI
-        display. Alignment offsets from the current chakra snapshot are applied
-        on top.
+        display.  Alignment offsets from ChakraState are applied on top.
 
         Uses body_view_queries.body_nodes_for_owner, which falls back to
         deterministic entity_body specs when the realized graph is absent.
@@ -400,9 +406,9 @@ class ChakraSilhouetteWidget(Widget):
         if self.actor is None:
             return
 
-        render_state = self._get_render_state()
-        if getattr(render_state, "pattern_root", None) in render_state.active:
-            self._pattern_root = render_state.pattern_root
+        chakra_state = self._get_state()
+        if getattr(chakra_state, "pattern_root", None) in chakra_state.active:
+            self._pattern_root = chakra_state.pattern_root
         else:
             self._pattern_root = None
 
@@ -426,16 +432,16 @@ class ChakraSilhouetteWidget(Widget):
             base_y = float(rel[1]) * scale_factor
             chakra_local_scale = local_scale_raw * scale_factor
 
-            align = render_state.alignments.get(full_id)
+            align = chakra_state.alignments.get(full_id)
             if align and len(align) >= 2:
                 pos_x = base_x + float(align[0]) * chakra_local_scale * 0.5
                 pos_y = base_y + float(align[1]) * chakra_local_scale * 0.5
             else:
                 pos_x, pos_y = base_x, base_y
 
-            if full_id in render_state.active:
+            if full_id in chakra_state.active:
                 state_str = "active"
-            elif full_id in render_state.unlocked:
+            elif full_id in chakra_state.unlocked:
                 state_str = "unlocked"
             else:
                 state_str = "locked"
@@ -681,7 +687,7 @@ class ChakraSilhouetteWidget(Widget):
 
     def _draw_energy_flows(self, surface: pygame.Surface, now_ms: int) -> None:
         """Draw energy flow lines between connected active chakras."""
-        render_state = self._get_render_state()
+        chakra_state = self._get_state()
 
         for parent_id, child_id in self._connections:
             if not self._is_visible(parent_id) or not self._is_visible(child_id):
@@ -693,7 +699,7 @@ class ChakraSilhouetteWidget(Widget):
                 continue
 
             # Only draw flow if both are active
-            both_active = parent_id in render_state.active and child_id in render_state.active
+            both_active = parent_id in chakra_state.active and child_id in chakra_state.active
 
             # Base line (always visible but dimmer for inactive)
             alpha = 80 if both_active else 20
@@ -969,16 +975,15 @@ class ChakraSilhouetteWidget(Widget):
 
         return super().handle_event(event, ctx)
 
-    def _get_render_state(self) -> Any:
-        """Return the scene render state: edit session first, runtime view second."""
-        if self.edit_session_override is not None:
-            return self.edit_session_override
+    def _get_state(self) -> Any:
+        """Return state override when present, otherwise actor state."""
+        if self.state_override is not None:
+            return self.state_override
         if self._state_provider is not None:
             try:
                 state = self._state_provider()
-                coerced = chakra_items_system.coerce_chakra_view_state(state)
-                if coerced is not None:
-                    return coerced
+                if _is_chakra_state_like(state):
+                    return state
             except Exception:
                 pass
         if self.actor is None:
@@ -1149,16 +1154,16 @@ class PatternPreviewWidget(Widget):
         self._pattern_surface: Optional[pygame.Surface] = None
         self._dirty: bool = True
         self._anim_time_ms: int = 0
-        self.edit_session_override: Optional[ChakraEditSession] = None
+        self.state_override: Optional[Any] = None
 
     def set_actor(self, actor: Any) -> None:
         """Update the actor and mark pattern as dirty."""
         self.actor = actor
         self._dirty = True
 
-    def set_edit_session(self, session: Optional[ChakraEditSession]) -> None:
-        """Override preview reads with a scene-local edit session."""
-        self.edit_session_override = session
+    def set_state_override(self, state: Optional[Any]) -> None:
+        """Override chakra state for preview (e.g., while realigning)."""
+        self.state_override = state
         self._dirty = True
 
     def mark_dirty(self) -> None:
@@ -1235,20 +1240,18 @@ class PatternPreviewWidget(Widget):
 
         _preview_game = getattr(self, "game", None)
 
-        if self.edit_session_override is not None:
-            render_state = self.edit_session_override
+        if self.state_override is not None:
+            chakra_state = self.state_override
         elif self._state_provider is not None:
             try:
-                render_state = chakra_items_system.coerce_chakra_view_state(
-                    self._state_provider()
-                )
+                chakra_state = self._state_provider()
             except Exception:
-                render_state = None
+                chakra_state = None
         else:
-            render_state = None
+            chakra_state = None
 
-        if render_state is None:
-            render_state = _runtime_chakra_view(_preview_game, self.actor)
+        if not _is_chakra_state_like(chakra_state):
+            chakra_state = _runtime_chakra_view(_preview_game, self.actor)
 
         try:
             # Canonical actor-backed seed helper used by runtime cast as well.
@@ -1257,7 +1260,7 @@ class PatternPreviewWidget(Widget):
 
             seed = build_chakra_generator_seed_for_actor(
                 self.actor,
-                chakra_state=render_state,
+                chakra_state=chakra_state,
                 game=_preview_game,
                 # Match runtime cast behavior exactly so preview is WYSIWYG.
                 require_root=True,
@@ -1614,13 +1617,12 @@ class ChakraSelectionScene(PanelScene):
         # Get player actor
         self._actor: Optional[Any] = None
         if game:
-            # Resolve the live actor through the shared query surface instead of
-            # reaching straight into the zone cache dict.
+            # The game stores player_id, and actual actor is in level.actors
             try:
                 player_id = getattr(game, "player_id", None)
                 if player_id:
                     level = game._level()
-                    self._actor = entity_ops_system.get_actor(level, player_id)
+                    self._actor = level.actors.get(player_id)
             except Exception:
                 pass
 
@@ -1735,7 +1737,7 @@ class ChakraSelectionScene(PanelScene):
         self._info.set_chakra(node_id, state)
 
         # Update resonances using active-node set (no body_schema walk needed).
-        resonances = check_resonance_bonuses_from_active_nodes(chakra_state.active)
+        resonances = get_active_resonances(chakra_state.active)
         self._info.set_resonances(resonances)
 
     def _set_selection(self, nodes: Set[str], primary: Optional[str]) -> None:
@@ -1760,16 +1762,31 @@ class ChakraSelectionScene(PanelScene):
         if not self._actor:
             self._list_widget.set_items([])
             return
-        render_state = self._get_ui_state()
-        node_list = body_view_queries_system.visible_body_nodes_for_owner(
-            self.game,
-            self._actor,
-            render_state.unlocked,
-        )
+        chakra_state = self._get_ui_state()
+
+        node_list = _body_nodes_for_actor(self.game, self._actor)
+
+        # Build a lookup so we can walk parent chains for visibility gating.
+        node_by_id = {nd["full_id"]: nd for nd in node_list}
+
+        # Determine visibility: a sub-schema node (full_id contains a dot
+        # whose prefix is a branch root) is only shown when that branch root
+        # is in chakra_state.unlocked.
+        def _is_visible(full_id: str) -> bool:
+            parts = full_id.split(".")
+            for i in range(1, len(parts)):
+                ancestor = ".".join(parts[:i])
+                anc_data = node_by_id.get(ancestor)
+                proto = anc_data["node_proto_id"] if anc_data else ""
+                if is_branch_root(proto) and ancestor not in chakra_state.unlocked:
+                    return False
+            return True
 
         entries: List[ChakraListEntry] = []
         for nd in node_list:
-            fid = str(nd["full_id"])
+            fid = nd["full_id"]
+            if not _is_visible(fid):
+                continue
             # Depth = number of dot-separated segments beyond the top level.
             depth = fid.count(".")
             entries.append(ChakraListEntry(fid, _format_chakra_label(fid), depth))
@@ -1936,44 +1953,52 @@ class ChakraSelectionScene(PanelScene):
         if self._actor is None:
             return None
 
-        render_state = self._get_ui_state()
+        chakra_state = self._get_ui_state()
 
         title = _format_chakra_label(node_id)
         lines: List[Tuple[str, Tuple[int, int, int]]] = []
 
         # State label
-        if node_id in render_state.active:
+        if node_id in chakra_state.active:
             state_label = "Active"
             state_color = COLOR_ACTIVE
-        elif node_id in render_state.unlocked:
+        elif node_id in chakra_state.unlocked:
             state_label = "Unlocked"
             state_color = COLOR_UNLOCKED
         else:
             state_label = "Locked"
             state_color = COLOR_LOCKED
         lines.append((f"State: {state_label}", state_color))
-        if getattr(render_state, "pattern_root", None) == node_id:
+        if getattr(chakra_state, "pattern_root", None) == node_id:
             lines.append(("Pattern Root: yes", TOOLTIP_ACCENT))
 
-        this_node = body_view_queries_system.body_node_row_for_owner(
-            self.game,
-            self._actor,
-            node_id,
-        )
-        proto_id = this_node["node_proto_id"] if this_node else node_id
-        gating_chain = body_view_queries_system.body_node_gating_chain_for_owner(
-            self.game,
-            self._actor,
-            node_id,
-        )
-        child_count = body_view_queries_system.body_node_child_count_for_owner(
-            self.game,
-            self._actor,
-            node_id,
-        )
+        # Resolve gating chain and node metadata from entity graph.
+        node_list = _body_nodes_for_actor(self.game, self._actor)
+        if node_list:
+            node_by_id = {nd["full_id"]: nd for nd in node_list}
+            this_node = node_by_id.get(node_id)
+            proto_id = this_node["node_proto_id"] if this_node else node_id
+
+            # Ancestors that are branch roots form the gating chain.
+            gating_chain: List[str] = []
+            parts = node_id.split(".")
+            for i in range(1, len(parts)):
+                ancestor = ".".join(parts[:i])
+                anc_data = node_by_id.get(ancestor)
+                if anc_data and is_branch_root(anc_data["node_proto_id"]):
+                    gating_chain.append(ancestor)
+
+            # Child count from graph.
+            graph = getattr(self.game, "entity_graph", None)
+            node_eid = f"{getattr(self._actor, 'entity_id', None) or getattr(self._actor, 'id', '')}:body:{node_id}"
+            child_count = len(graph.get_children(node_eid, socket_id="body")) if graph else 0
+        else:
+            gating_chain = []
+            proto_id = node_id
+            child_count = 0
 
         if gating_chain:
-            missing = [g for g in gating_chain if g not in render_state.unlocked]
+            missing = [g for g in gating_chain if g not in chakra_state.unlocked]
             if missing:
                 req = ", ".join(_format_chakra_label(m) for m in missing)
                 lines.append((f"Requires: {req}", TOOLTIP_WARN))
@@ -1990,22 +2015,22 @@ class ChakraSelectionScene(PanelScene):
             lines.append((f"Children: {child_count}", TOOLTIP_TEXT))
 
         # Charge readout (only meaningful for unlocked/active nodes)
-        if node_id in render_state.unlocked or node_id in render_state.active:
-            bonuses = check_resonance_bonuses_from_active_nodes(render_state.active)
-            mods = get_resonance_modifiers(bonuses)
+        if node_id in chakra_state.unlocked or node_id in chakra_state.active:
+            bonuses = get_active_resonances(chakra_state.active)
+            mods = evaluate_resonance_modifiers(chakra_state.active)
             cap = max(0.01, CHARGE_MAX_BASE + mods.charge_cap_bonus)
-            charge = float(render_state.charges.get(node_id, 0.0))
+            charge = float(chakra_state.charges.get(node_id, 0.0))
             pct = int(100 * (charge / cap))
             lines.append((f"Charge: {pct}% ({charge:.2f}/{cap:.2f})", TOOLTIP_ACCENT))
 
         # Alignment offset
-        if node_id in render_state.alignments:
-            dx, dy = render_state.alignments.get(node_id, (0.0, 0.0))
+        if node_id in chakra_state.alignments:
+            dx, dy = chakra_state.alignments.get(node_id, (0.0, 0.0))
             lines.append((f"Alignment: {dx:+.2f}, {dy:+.2f}", TOOLTIP_TEXT))
 
         # Resonance summary
-        if node_id in render_state.active:
-            resonances = check_resonance_bonuses_from_active_nodes(render_state.active)
+        if node_id in chakra_state.active:
+            resonances = get_active_resonances(chakra_state.active)
             if resonances:
                 res_label = ", ".join(r.replace("_", " ").title() for r in resonances[:2])
                 if len(resonances) > 2:
@@ -2136,8 +2161,8 @@ class ChakraSelectionScene(PanelScene):
         )
 
         # Route preview to the working edit-session snapshot.
-        self._silhouette.set_edit_session(self._working_session)
-        self._preview.set_edit_session(self._working_session)
+        self._silhouette.set_state_override(self._working_session)
+        self._preview.set_state_override(self._working_session)
         self._silhouette.set_realign_mode(True, self._compute_realign_limit())
 
         self._silhouette.refresh_points()
@@ -2165,11 +2190,18 @@ class ChakraSelectionScene(PanelScene):
         self._original_alignments = None
         self._working_session = None
 
-        self._silhouette.set_edit_session(None)
-        self._preview.set_edit_session(None)
-        self._silhouette.set_realign_mode(False, 0.0)
-        self._silhouette.refresh_points()
-        self._preview.mark_dirty()
+        silhouette = getattr(self, "_silhouette", None)
+        preview = getattr(self, "_preview", None)
+        if callable(getattr(silhouette, "set_state_override", None)):
+            silhouette.set_state_override(None)
+        if callable(getattr(preview, "set_state_override", None)):
+            preview.set_state_override(None)
+        if callable(getattr(silhouette, "set_realign_mode", None)):
+            silhouette.set_realign_mode(False, 0.0)
+        if callable(getattr(silhouette, "refresh_points", None)):
+            silhouette.refresh_points()
+        if callable(getattr(preview, "mark_dirty", None)):
+            preview.mark_dirty()
 
         self._mode = "activate"
 
@@ -2314,8 +2346,8 @@ class ChakraSelectionScene(PanelScene):
                 eff,
                 alignments=dict(self._pending_alignments),
             )
-            self._silhouette.set_edit_session(self._working_session)
-            self._preview.set_edit_session(self._working_session)
+            self._silhouette.set_state_override(self._working_session)
+            self._preview.set_state_override(self._working_session)
 
         # Convert mouse to unit space
         target_u = self._silhouette.screen_to_unit(pos_px)

@@ -31,10 +31,9 @@ def _make_game(effect_map: dict[str, float] | None = None):
     actor = SimpleNamespace(id="player")
     level = SimpleNamespace(
         actors={"player": actor},
+        entities={},
         pattern=_InputPattern(),
         pattern_motion=object(),
-        choking_vines_state={"x": 1},
-        rune_choking_vines_state={"x": 1},
     )
 
     class _Game:
@@ -205,6 +204,32 @@ def test_act_chakra_skips_schema_resolve_for_component_backed_actor(monkeypatch)
     pattern_runtime.act_chakra(game, "player")
 
     assert captured_body_schemas == [{}]
+
+
+def test_act_chakra_clears_live_vine_entities(monkeypatch) -> None:
+    _patch_chakra_seed_runtime(monkeypatch)
+
+    class _FakeGenerator:
+        def __init__(self, *_args, **_kwargs):
+            return None
+
+        def apply_segments(self, segs, max_segments=20000):
+            return list(segs)
+
+    monkeypatch.setattr(pattern_runtime.builder, "CustomGraphGenerator", _FakeGenerator)
+    monkeypatch.setattr(pattern_runtime.builder, "cleanup_duplicates", lambda segs: segs)
+    monkeypatch.setattr(pattern_runtime.builder, "Pattern", _PatternFactory)
+
+    game, _actor = _make_game()
+    game.level.entities = {
+        "vine:a": SimpleNamespace(id="vine:a", kind="aggressive_vines"),
+        "vine:b": SimpleNamespace(id="vine:b", kind="rune_choking_vines"),
+        "lamp:1": SimpleNamespace(id="lamp:1", kind="lamp"),
+    }
+
+    pattern_runtime.act_chakra(game, "player")
+
+    assert set(game.level.entities.keys()) == {"lamp:1"}
 
 
 def test_chakra_modifiers_prefers_reduced_charge_snapshot(monkeypatch) -> None:

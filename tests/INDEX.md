@@ -34,6 +34,7 @@ Supersedes: none
 ### Combat, Inventory, And Economy
 
 - `test_events.py`
+- `test_blade_runtime.py`
 - `test_combat.py`
 - `test_inventory.py`
 - `test_inventory_scene.py`

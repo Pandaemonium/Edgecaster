@@ -9,6 +9,7 @@ from edgecaster.systems import attention
 from edgecaster.systems import chakras as chakra_system
 from edgecaster.systems import entity_geometry as entity_geometry_system
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+from edgecaster.systems.spatial_index import SpatialIndex
 
 
 class _DummyGame:
@@ -16,7 +17,8 @@ class _DummyGame:
         self.cfg = SimpleNamespace(world_width=64, world_height=64, seed=456)
         self.entity_graph = EntityGraphStore()
         self.entity_state: dict[str, dict] = {}
-        self.attn_store = attention.AttentionCellStore(bin_size=16)
+        self.spatial_index = SpatialIndex(bin_size=16)
+        self.attn_store = attention.AttentionCellStore(bin_size=16, spatial_index=self.spatial_index)
         self.levels: dict[tuple[int, int, int], object] = {}
         self._expanded_entity_children: dict[str, set[str]] = {}
 
@@ -27,20 +29,11 @@ class _DummyGame:
             state.update(dict(patch))
         if fields:
             state.update(dict(fields))
-        if lineage_id:
-            state["lineage_id"] = str(lineage_id)
         self.entity_state[key] = state
 
     def get_effective_entity_state(self, entity_or_id, *, lineage_id=None) -> dict:
         key = str(entity_or_id)
-        state = dict(self.entity_state.get(key, {}) or {})
-        if lineage_id:
-            fallback = self.entity_state.get(str(lineage_id), {})
-            if isinstance(fallback, dict):
-                merged = dict(fallback)
-                merged.update(state)
-                return merged
-        return state
+        return dict(self.entity_state.get(key, {}) or {})
 
     def get_zone_for_render(self, coord):  # noqa: ANN001
         return None

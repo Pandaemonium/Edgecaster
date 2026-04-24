@@ -122,6 +122,33 @@ Legend:
   - Stripped dead `bins`, `eid_to_bin`, `entity_rects`, and `entity_cells` from `AttentionCellStore`.
   - Both are now thin, write-only mirrors that pass entities into `SpatialIndex`.
 
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track E: Transient Entity Promotion (2026-04-23)
+  - Upgraded `choking_vines_state` and `rune_choking_vines_state` from `LevelState` dicts into first-class Entities (`kind="aggressive_vines"` and `kind="rune_choking_vines"`).
+  - Promoted `ignite_state`, `regrow_state`, `sparkle_state`, `lightning_state`, and `thrown_knives_state` into proper Entities as well.
+  - Removed sidecar dicts from `LevelState`.
+  - `choking_vines_tick` and `rune_choking_vines_tick` now iterate through the entity graph rather than polling the level.
+  - Pattern unraveling and resets correctly delete these transient entities.
+  - Promoted `rune_anchor_siege` from `LevelState` dicts into first-class Entity.
+  - Track E is fully complete!
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track F.1: Eradicate Lineage Fallbacks (2026-04-23)
+  - Deleted `_merge_entity_state_records` and removed `lineage_id` fallback from `_entity_state_write_key`.
+  - Removed unused `lineage_id` parameters from `patch_entity_state` and `get_effective_entity_state` in `game.py`.
+  - `entity_id` is now the strict authority for persistence.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_8] Track F.2: Simplify Entity Snapshots (2026-04-23)
+  - Replaced legacy `last_known_*` snapshot payload prefixes in `entity_snapshots.py` with 
+    direct field names (`hp`, `tags_patch`, `glyph`, `blocks_movement`, `statuses`, `cooldowns`).
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_3] Track G.1: Resonance Rule Engine (2026-04-23)
+  - Moved `RESONANCE_EFFECTS` to `chakra_rules.yaml`.
+  - `chakra_reducer.py` now evaluates resonance rules and bakes modifiers into effective channels.
+  - Reducer is now the authoritative source for derived modifiers.
+
+[PROGRESS][ENTITY_CHAKRA][PHASE_3] Track G.2 & G.3: Geometry-Aware Reducers & Layouts (2026-04-23)
+  - Extended rule engine to support `distance_decay` edge propagation and `requires_shape` resonance triggers.
+  - Cleaned up Python-side channel defaults from `coerce_chakra_component` and moved them into `chakra_layouts.yaml`.
+
 ===============================================================================
 SLICE 1 — TARGETMODE (FOUNDATION COMPLETE)
 

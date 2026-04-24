@@ -395,6 +395,13 @@ class TestPatternStateCanonical:
 
         assert "anchor_abs" in state
 
+    def test_pattern_state_omits_legacy_vine_sidecars(self, mock_game):
+        """Canonical pattern state should no longer mirror vine sidecar payloads."""
+        state = mock_game._pattern_state(0)
+
+        assert "choking_vines_state" not in state
+        assert "rune_choking_vines_state" not in state
+
     def test_set_pattern_anchor_abs(self, mock_game):
         """Should be able to set canonical ABS anchor."""
         mock_game._set_pattern_anchor_abs((300, 220))

@@ -24,8 +24,8 @@ def test_build_entity_initializes_default_chakra_component() -> None:
     assert comp.root_node_id == "ent:test_stone:1:core"
     assert comp.root_node_id in comp.nodes
     core = comp.nodes[comp.root_node_id]
-    assert core.channels.get("mass") == 1.0
-    assert core.channels.get("hp") == 1.0
+    assert core.channels.get("mass") == 1.0 
+    assert core.channels.get("hp") == 1.0 # Injected by spawn_factory
 
 
 def test_build_actor_initializes_default_chakra_component_with_hp() -> None:
@@ -49,8 +49,8 @@ def test_build_actor_initializes_default_chakra_component_with_hp() -> None:
     assert comp.root_node_id == "actor:test:1:core"
     assert comp.root_node_id in comp.nodes
     core = comp.nodes[comp.root_node_id]
-    assert core.channels.get("hp") == 17.0
-    assert core.channels.get("mass") == 1.0
+    assert core.channels.get("hp") == 17.0 # Injected by spawn_factory
+    assert core.channels.get("mass") == 1.0 # Injected by spawn_factory
 
 
 def test_existing_chakra_component_dict_is_coerced_and_preserved() -> None:
@@ -84,8 +84,8 @@ def test_existing_chakra_component_dict_is_coerced_and_preserved() -> None:
     assert "relic:root" in comp.nodes
     core = comp.nodes["relic:root"]
     assert core.channels.get("mass") == 2.5
-    # Coercion fills missing default channels.
-    assert core.channels.get("hp") == 1.0
+    # Spawn factory fills missing default channels.
+    assert core.channels.get("hp") == 1.0 
 
 
 def test_layout_component_loader_returns_known_layouts() -> None:

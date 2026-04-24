@@ -6,7 +6,7 @@ from edgecaster.systems.attention import AttentionCellStore
 from edgecaster.systems import attention as attention_system
 from edgecaster.systems.spatial_index import SpatialIndex
 from edgecaster.systems.poi_registry import POIRegistry
-from edgecaster.systems.world_entity_index import WorldEntityIndex
+from edgecaster.systems.world_entity_index import register_proxy_entity
 from edgecaster.state.pois import ABSRect, POISpec, StructureSpec
 
 
@@ -135,12 +135,15 @@ def test_attention_store_mirrors_staged_entities_to_spatial_index() -> None:
     assert idx.get("berry_1") is None
 
 
-def test_world_entity_index_mirrors_proxy_entities_to_spatial_index() -> None:
+def test_register_proxy_entity_mirrors_proxy_entities_to_spatial_index() -> None:
     idx = SpatialIndex(bin_size=8)
-    world_index = WorldEntityIndex(zone_w=10, zone_h=10, spatial_index=idx)
+    game = SimpleNamespace(
+        spatial_index=idx,
+        cfg=SimpleNamespace(world_width=10, world_height=10),
+    )
     obj = SimpleNamespace(id="site_1", kind="site", semantic_id="starttsgard:market")
 
-    world_index.add(obj, zone_coord=(2, 3, 0), local_pos=(4, 5))
+    register_proxy_entity(game, obj, zone_coord=(2, 3, 0), local_pos=(4, 5))
 
     entry = idx.get("site_1")
     assert entry is not None
@@ -150,7 +153,7 @@ def test_world_entity_index_mirrors_proxy_entities_to_spatial_index() -> None:
     assert entry.rect == (24.0, 35.0, 25.0, 36.0)
     assert idx.query_semantic_id("starttsgard:market")[0].entity_id == "site_1"
 
-    world_index.clear()
+    idx.remove("site_1")
     assert idx.get("site_1") is None
 
 
@@ -203,6 +206,29 @@ def test_poi_registry_attach_spatial_index_mirrors_existing_pois() -> None:
 
     assert idx.get("legendary_lair_000") is not None
     assert idx.query_kind("legendary_lair")[0].entity_id == "legendary_lair_000"
+
+
+def test_poi_registry_spatial_queries_use_shared_index_when_attached() -> None:
+    idx = SpatialIndex(bin_size=8)
+    registry = POIRegistry(zone_w=10, zone_h=10, spatial_index=idx)
+    footprint = ABSRect.from_zone_coord(2, 3, 10, 10)
+    poi = POISpec(
+        id="poi_market",
+        kind="city_market",
+        name="Market",
+        footprint=footprint,
+        depth=0,
+        anchor_abs=footprint.center,
+    )
+    registry.add(poi)
+
+    # Simulate the post-migration end state where legacy bucket lookups can go
+    # away without breaking callers that still use the registry API.
+    registry._by_zone.clear()
+
+    assert [spec.id for spec in registry.get_at_zone(2, 3, 0)] == ["poi_market"]
+    assert [spec.id for spec in registry.get_in_abs_rect(footprint, 0)] == ["poi_market"]
+    assert [spec.id for spec in registry.get_at_abs_point(footprint.center[0], footprint.center[1], 0)] == ["poi_market"]
 
 
 def test_renderables_read_world_proxies_from_spatial_index_first() -> None:

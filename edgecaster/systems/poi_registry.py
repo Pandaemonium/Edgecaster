@@ -1,7 +1,9 @@
-"""POI Registry - Central management of yoga-compliant POIs.
+"""POI Registry - Central management of yoga-compliant POI specs.
 
-Provides efficient lookup by ID, zone coordinate, or spatial rect.
-Supports multi-zone POIs, nesting hierarchies, and content state tracking.
+Provides semantic/content-state ownership for POIs plus compatibility lookup
+helpers. When a shared ``SpatialIndex`` is attached, spatial reads should flow
+through that index first so POI geometry is queried on the same surface as
+attention/world proxies instead of maintaining a second read authority here.
 
 Yoga principles:
 - POIs exist in ABS space independent of zone loading
@@ -44,12 +46,6 @@ class POIRegistry:
         self._pois: Dict[str, POISpec] = {}
         self._spatial_ids: Dict[str, str] = {}
 
-        # Spatial indices
-        # (zx, zy, depth) -> list of POI IDs that overlap this zone
-        self._by_zone: Dict[Tuple[int, int, int], List[str]] = {}
-        # (zx, zy) -> list of POI IDs (any depth)
-        self._by_zone_2d: Dict[Tuple[int, int], List[str]] = {}
-
         # Hierarchy indices
         self._by_parent: Dict[str, List[str]] = {}  # parent_id -> child_ids
         self._roots: Set[str] = set()  # POIs with no parent
@@ -88,13 +84,7 @@ class POIRegistry:
         return False
 
     def attach_spatial_index(self, spatial_index: object | None) -> None:
-        """Mirror existing and future POIs into the shared SpatialIndex.
-
-        [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-        POIRegistry remains a semantic/content-state bridge. SpatialIndex is
-        the shared realization query surface for POI geometry while callers are
-        migrated away from registry-specific spatial lookups.
-        """
+        """Mirror existing and future POIs into the shared SpatialIndex."""
         old_index = self.spatial_index
         if old_index is not None:
             for spatial_id in list(self._spatial_ids.values()):
@@ -122,50 +112,72 @@ class POIRegistry:
     # Spatial Queries
     # =========================================================================
 
+    def _query_spatial_index_rect(
+        self,
+        rect: ABSRect,
+        *,
+        depth: int,
+    ) -> List[POISpec]:
+        """Return POIs overlapping *rect* via the shared SpatialIndex."""
+        if self.spatial_index is None:
+            return []
+        try:
+            entries = self.spatial_index.query_rect(
+                (
+                    float(rect.x0),
+                    float(rect.y0),
+                    float(rect.x1),
+                    float(rect.y1),
+                ),
+                int(depth),
+                source="poi_registry",
+            )
+        except Exception:
+            return []
+
+        hit_ids: Set[str] = set()
+        for entry in entries:
+            poi = entry.obj if isinstance(entry.obj, POISpec) else None
+            if poi is None:
+                poi = self._pois.get(str(getattr(entry.obj, "id", "") or entry.entity_id))
+            if poi is None:
+                continue
+            try:
+                if int(getattr(poi, "depth", 0) or 0) != int(depth):
+                    continue
+            except Exception:
+                continue
+            try:
+                if not poi.footprint.overlaps(rect):
+                    continue
+            except Exception:
+                continue
+            hit_ids.add(str(poi.id))
+
+        if not hit_ids:
+            return []
+        return [poi for poi in self._pois.values() if poi.id in hit_ids]
+
     def get_at_zone(
         self, zx: int, zy: int, depth: int = 0
     ) -> List[POISpec]:
         """Get all POIs whose footprints overlap a zone coordinate."""
-        ids = self._by_zone.get((zx, zy, depth), [])
-        return [self._pois[pid] for pid in ids if pid in self._pois]
-
-    def get_at_zone_any_depth(self, zx: int, zy: int) -> List[POISpec]:
-        """Get all POIs at a zone coordinate (any depth)."""
-        ids = self._by_zone_2d.get((zx, zy), [])
-        return [self._pois[pid] for pid in ids if pid in self._pois]
+        zone_rect = ABSRect.from_zone_coord(int(zx), int(zy), self.zone_w, self.zone_h)
+        return self._query_spatial_index_rect(zone_rect, depth=int(depth))
 
     def get_in_abs_rect(
         self, rect: ABSRect, depth: int = 0
     ) -> List[POISpec]:
         """Get all POIs whose footprints overlap the given ABS rect."""
-        result: List[POISpec] = []
-        zones = rect.zone_coords(self.zone_w, self.zone_h)
-        seen: Set[str] = set()
-
-        for zx, zy in zones:
-            for pid in self._by_zone.get((zx, zy, depth), []):
-                if pid not in seen:
-                    seen.add(pid)
-                    poi = self._pois.get(pid)
-                    if poi and poi.footprint.overlaps(rect):
-                        result.append(poi)
-
-        return result
+        return self._query_spatial_index_rect(rect, depth=int(depth))
 
     def get_at_abs_point(
         self, x: int, y: int, depth: int = 0
     ) -> List[POISpec]:
         """Get all POIs containing an absolute point."""
-        zx = x // self.zone_w
-        zy = y // self.zone_h
-        result: List[POISpec] = []
-
-        for pid in self._by_zone.get((zx, zy, depth), []):
-            poi = self._pois.get(pid)
-            if poi and poi.footprint.contains_point(x, y):
-                result.append(poi)
-
-        return result
+        rect = ABSRect(x0=int(x), y0=int(y), x1=int(x) + 1, y1=int(y) + 1)
+        hits = self._query_spatial_index_rect(rect, depth=int(depth))
+        return [poi for poi in hits if poi.footprint.contains_point(int(x), int(y))]
 
     # =========================================================================
     # Hierarchy Queries
@@ -441,30 +453,6 @@ class POIRegistry:
 
     def _index_poi(self, spec: POISpec) -> None:
         """Add POI to all indices."""
-        # Spatial index by zone
-        zones = spec.get_zone_coords(self.zone_w, self.zone_h)
-
-        # Debug logging for POI indexing (only for multi-zone POIs to reduce spam)
-        if len(zones) > 1:
-            try:
-                with open("C:/Games/Edgecaster/debug.log", "a") as f:
-                    f.write(f"[POIRegistry] Indexing multi-zone POI '{spec.id}' ({spec.kind}): zones={sorted(zones)}, footprint=({spec.footprint.x0}, {spec.footprint.y0})-({spec.footprint.x1}, {spec.footprint.y1})\n")
-            except Exception:
-                pass
-
-        for zx, zy in zones:
-            key_3d = (zx, zy, spec.depth)
-            if key_3d not in self._by_zone:
-                self._by_zone[key_3d] = []
-            if spec.id not in self._by_zone[key_3d]:
-                self._by_zone[key_3d].append(spec.id)
-
-            key_2d = (zx, zy)
-            if key_2d not in self._by_zone_2d:
-                self._by_zone_2d[key_2d] = []
-            if spec.id not in self._by_zone_2d[key_2d]:
-                self._by_zone_2d[key_2d].append(spec.id)
-
         # Hierarchy index
         if spec.parent_id:
             if spec.parent_id not in self._by_parent:
@@ -482,23 +470,6 @@ class POIRegistry:
 
     def _unindex_poi(self, spec: POISpec) -> None:
         """Remove POI from all indices."""
-        # Spatial indices
-        zones = spec.get_zone_coords(self.zone_w, self.zone_h)
-        for zx, zy in zones:
-            key_3d = (zx, zy, spec.depth)
-            if key_3d in self._by_zone:
-                try:
-                    self._by_zone[key_3d].remove(spec.id)
-                except ValueError:
-                    pass
-
-            key_2d = (zx, zy)
-            if key_2d in self._by_zone_2d:
-                try:
-                    self._by_zone_2d[key_2d].remove(spec.id)
-                except ValueError:
-                    pass
-
         # Hierarchy index
         if spec.parent_id and spec.parent_id in self._by_parent:
             try:

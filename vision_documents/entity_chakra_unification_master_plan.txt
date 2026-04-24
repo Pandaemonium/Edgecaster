@@ -1,15 +1,15 @@
 Title: Entity + Chakra Unification Master Plan
 Purpose: define the active execution plan for converging entity, geometry/query, inventory, and POI systems toward one unified hierarchical substrate.
 Status: active-plan
-Last verified: 2026-04-21
+Last verified: 2026-04-23
 Canonical for: active entity/chakra unification work
 Related docs: `vision_documents/entity_chakra_unification_vision.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/architecture.txt`
 Related code: `edgecaster/state/`, `edgecaster/systems/`, `edgecaster/content/`
 Supersedes: archived `archived/poi_entity_unification_master_plan.txt`
 
 ## Entity + Chakra Unification Master Plan
-Updated: 2026-04-21
-Status: v1.64 (added completion roadmap for the remaining large architectural pieces)
+Updated: 2026-04-23
+Status: v1.65 (refined the pragmatic refactor endgame around unified authority and maintainability)
 
 This is the execution plan for:
 
@@ -82,9 +82,92 @@ work that survived the earlier POI/entity unification plan.
      channels remain extensible instead of being frozen prematurely into one
      closed struct.
 
+8. Prefer maintainable boundaries over purity churn
+   - We do not need to force every remaining helper or container to disappear
+     if doing so would mostly reshuffle code without clarifying authority.
+   - A thin wrapper may survive if it becomes the one clearly blessed surface
+     instead of a hidden second authority.
+   - The refactor is successful when new work naturally uses the unified
+     surfaces, not when every old noun has been deleted for its own sake.
+
 -------------------------------------------------------------------------------
 
-## Current Snapshot (2026-04-22)
+## Pragmatic Endgame (2026-04-23)
+
+The foundational unification work is now largely in place.  The remaining plan
+should optimize for clear authority and easy maintenance, not abstract purity.
+
+What is already unified enough to build on:
+
+1. Chakra/body runtime authority:
+   - `ChakraComponent`, shared projections, entity-body specs, and reducer
+     helpers are now strong enough that new gameplay should build on them
+     directly instead of reviving `ChakraState` or raw schema traversal.
+
+2. Inventory/equipment containment:
+   - Graph-authoritative sockets are the real source of truth. That track is
+     complete enough that follow-on work should assume it is stable.
+
+3. Spatial read surface:
+   - `SpatialIndex` is now the primary shared spatial query layer for staged,
+     proxy, collapsed, and loaded runtime entities.
+
+4. Transient runtime effects:
+   - The original vine/projectile/effect migration cluster is complete enough
+     that new runtime effect work should spawn/query entities instead of adding
+     new `LevelState` sidecars.
+
+Remaining work that is still architecturally worth doing:
+
+1. Finish the single spatial/query story.
+   - Keep `SpatialIndex` as the only required spatial read surface.
+   - `POIRegistry` spatial methods are now compatibility wrappers over
+     `SpatialIndex` when attached; the remaining work is mainly about
+     deciding whether `AttentionCellStore` should disappear entirely and how
+     far the registry itself should shrink beyond semantic/content-state duty.
+
+2. Finish lineage demotion.
+   - `entity_id` is already the runtime persistence authority.
+   - Snapshot writes no longer route through `lineage_id`, and snapshot apply
+     no longer reinjects lineage-derived identity into runtime tags.
+   - The shared snapshot bridge and resolver lifecycle no longer thread
+     `lineage_id` through restore/suppression lookups; those paths now read
+     persisted state by `entity_id` only.
+   - The remaining job is to confine `lineage_id` to provenance,
+     deterministic resolver history, and the few explicit read-compat shims
+     that still remain rather than letting it quietly participate in identity
+     or suppression truth.
+
+3. Promote only high-value sidecars.
+   - Promote runtime state into entities when shared geometry, lifecycle,
+     inspection, persistence, or rendering clearly benefits.
+   - Do not promote pure local/session/UI state just for symmetry.
+
+4. Keep new gameplay on shared query surfaces.
+   - New systems should prefer `entity_ops`, `entity_geometry`,
+     `entity_lifecycle`, `SpatialIndex`, and reducer/projection helpers over
+     store-specific queries or hand-rolled compatibility ladders.
+
+Deliberate deferrals unless a concrete feature requires them:
+
+- deleting `LevelState.actors` / `LevelState.entities` purely for ontology cleanup
+- flattening `ChakraComponent` into a closed scalar-only struct
+- deleting thin wrappers that already serve as the one clear surface
+- moving every macro system (`blade_states`, gods, factions, sieges) into graph
+  relations before gameplay pressure exists
+- retiring `poi_worldgen.py` before the resolver/realization path offers a
+  simpler replacement
+
+Practical success condition:
+
+- New features can be built without reopening the old split pipelines.
+- Remaining bridges are few, local, documented, and non-authoritative.
+- A subsystem is "done enough" when its authority/query story is clear, even if
+  a thin adapter still exists around the edges.
+
+-------------------------------------------------------------------------------
+
+## Current Snapshot (2026-04-23)
 
 Implemented and stable:
 
@@ -611,7 +694,7 @@ Done looks like:
 - Inventory and equipment are containment queries, not side dictionaries.
 - List caches are rebuildable views only.
 
-### Track D - Unify Attention, World Index, And POI Lookup Into One Realization/Index Model (STARTED)
+### Track D - Unify Attention, World Index, And POI Lookup Into One Realization/Index Model (ADVANCED)
 
 Why this is fourth:
 - `attn_store`, `world_entity_index`, and `poi_registry` currently solve
@@ -657,13 +740,26 @@ Current status:
   dungeon look targeting and spatial music tagged-world-entity probes now read
   `SpatialIndex` first, with legacy store-specific fallbacks retained during
   migration.
+- As of 2026-04-23, `_runtime_entity_registry` and `WorldEntityIndex` have
+  already been removed from the live runtime path.
+- Also as of 2026-04-23, `attention.py` / `entity_lifecycle.py` staged-entity
+  readers no longer depend on raw `attn_store.entities` dict access; they now
+  use an explicit staged-query surface so `AttentionCellStore` behaves more
+  like a narrow staging adapter than a second ad hoc object store.
+- Aggregate/detail realization in `attention.py` is also being narrowed: the
+  cluster-child path now goes through explicit stage/mirror/promote/drop
+  helpers instead of treating the store + level dicts as one intertwined local
+  implementation detail.
+- The remaining D-track question is now narrower and more pragmatic: either
+  delete `AttentionCellStore` / narrow `POIRegistry` further, or explicitly
+  bless them as thin write/service helpers with no competing query semantics.
 
 Done looks like:
 - POIs, macro entities, staged attention entities, and loaded-zone entities are
   different realization states of one ontology.
 - Lookup APIs stop caring which legacy store happened to answer the question.
 
-### Track E - Promote LevelState Sidecar Runtime Effects Into Entities
+### Track E - Promote LevelState Sidecar Runtime Effects Into Entities (MOSTLY COMPLETE)
 
 Why this comes after the index/lifecycle work:
 - Effect entities need the realization/index path to be stable enough that they
@@ -683,11 +779,21 @@ Execution strategy:
 3. Let scheduling and rendering query those entities through the same runtime
    query surfaces as everything else.
 
+Status update (2026-04-23):
+- The vine/projectile cluster is now on the entity-backed runtime path:
+  `aggressive_vines`, `rune_choking_vines`, `sparkle_effect`, and thrown-knife
+  effects no longer depend on dedicated `LevelState` sidecar payloads to tick
+  or render.
+- Pattern resets, coherence unraveling, and zone resets delete those transient
+  entities directly from the loaded runtime entity set.
+- Remaining Track E work is now limited to other bespoke runtime families
+  outside the original vine/projectile migration slice.
+
 Done looks like:
 - Pattern effects, projectiles, and similar runtime phenomena stop depending on
   special `LevelState` fields to exist.
 
-### Track F - Persistence And Save/Load Cleanup
+### Track F - Persistence And Save/Load Cleanup (PARTIAL)
 
 Why this is late:
 - Persistence should freeze after the authority/query paths are stable enough
@@ -706,12 +812,21 @@ Execution strategy:
 3. Keep lineage as provenance/history only, not fallback identity.
 4. Re-run migration tests after each deletion of a persistence bridge.
 
+Status update (2026-04-23):
+- F.1 (`entity_id` persistence authority) and F.2 (snapshot field cleanup) are
+  complete.
+- The remaining F-track work is now selective rather than broad: clean up
+  lingering lineage-aware reads, then reshape save/load only after the runtime
+  authority boundaries are stable enough to freeze.
+- We should not churn persistence formats merely to make the migration feel
+  more "finished" on paper.
+
 Done looks like:
 - Persistence no longer depends on legacy lineage fallback to reconstruct truth.
 - Snapshot/apply logic is typed enough that geometry/channels/equipment/LoD
   changes do not need ad hoc patch keys.
 
-### Track G - Phase 3 Rule Engine Expansion Should Follow The Surface Stabilization
+### Track G - Phase 3 Rule Engine Expansion Should Follow The Surface Stabilization (ACTIVE)
 
 Why this runs alongside, not ahead of, the storage cleanup:
 - Reducer/rule work becomes much cleaner once the read surfaces and authority
@@ -730,6 +845,15 @@ Execution strategy:
 3. Route more gameplay reads through projection/query helpers backed by reducer
    outputs instead of bespoke per-system calculations.
 
+Status update (2026-04-23):
+- The reducer/rule substrate is already strong enough for incremental gameplay
+  work and does not need another architecture-first rewrite before it becomes
+  useful.
+- `ChakraComponent` still carries structural information during migration; that
+  is acceptable for now. Full topology dissolution is a later elegance pass,
+  not a current blocker.
+- Avoid freezing channels into one closed universal struct prematurely.
+
 Done looks like:
 - Channel evaluation is shared across bodies, items, buildings, and larger
   structures.
@@ -737,21 +861,38 @@ Done looks like:
 
 ### Recommended Near-Term Slice Order
 
-If we want the next several large steps in practical order, the recommendation is:
+If we want the next several meaningful steps in practical order, the
+recommendation is now:
 
-1. Slice XCVI: replace remaining test `ChakraState(...)` construction and
-   delete the class if that reaches zero production dependence.
-2. Finish the last Chakra Scene / Inventory Scene body-schema fallback cuts so
-   scene reads stay on `body_view_queries.py` and `entity_geometry.py`.
-3. Introduce the shared runtime entity query layer and begin migrating
-   high-fanout `level.actors` / `level.entities` callers.
-4. Finish graph-authoritative equipment + inventory deletion of list-backed
-   write paths.
-5. Design the single realization/index surface that can subsume
-   `AttentionCellStore`, `world_entity_index`, and eventually `poi_registry`.
-6. After that surface exists, convert one transient runtime state family
-   (`thrown_knives_state` or `choking_vines_state`) into real entities as the
-   proof slice.
+1. Finish the spatial endgame decision:
+   - either delete `AttentionCellStore` as an exposed concept, or bless it as a
+     narrow staging helper that writes only into `SpatialIndex` and never acts
+     like an alternate query authority.
+   - This is partly done now: staged-object readers no longer reach through the
+     raw `attn_store.entities` dict and instead use the store's helper surface.
+   - Aggregate child promotion/despawn now also flows through explicit helper
+     boundaries, which makes the remaining AttentionCellStore deletion surface
+     much smaller.
+2. Narrow `POIRegistry` to semantic/content-state responsibilities only:
+   - spatial reads should stay on `SpatialIndex`; registry logic should exist
+     only where content-state persistence still truly needs it.
+   - This is partly done now: when a shared index is attached, the registry's
+     compatibility spatial reads already delegate to `SpatialIndex`.
+3. Finish lineage demotion:
+   - clean up remaining lineage-aware state fallbacks in attention/lifecycle
+     so `lineage_id` is clearly provenance, not shadow identity.
+   - As of 2026-04-23, the shared snapshot bridge and resolver lifecycle have
+     already dropped lineage-threaded restore/suppression lookups; the
+     remaining work is in higher-level compat surfaces, not the core
+     collapse/rehydrate path.
+4. Promote only the next high-value transient sidecars:
+   - candidates such as `seal_trial`, `rune_anchor_siege`, or similar runtime
+     event families should move only if entity treatment buys us shared
+     geometry/lifecycle/persistence value.
+5. Re-evaluate the loaded-zone containers only after the above:
+   - do not force deletion of `LevelState.actors` / `LevelState.entities`
+     unless a concrete single-container design clearly improves ownership,
+     testing, and maintenance.
 
 This order keeps us deleting the smallest but most architecture-distorting
 compatibility layers first, then attacking the bigger shared-runtime surfaces
@@ -859,6 +1000,25 @@ with fewer moving parts still attached.
     - `systems/overmap.py` rune-anchor id allocation now also respects SpatialIndex collisions.
     - `SpatialMusicDirector._player_in_colosseum(...)` now checks POI specs mirrored into SpatialIndex before using POIRegistry point/rect queries.
     - Added regressions for POIRegistry mirroring, attaching an index to an existing registry, no-registry legendary-lair lookup, no-registry rune-anchor id allocation, and no-registry colosseum music detection.
+
+112. Phase 8 Legacy Removal Slice D.19-D.20 (2026-04-23):
+    - D.19: Removed unused `lineage_id` keyword params from 6 helpers in `attention.py`. Updated internal call site and test fixtures.
+    - D.20: Deleted `AttentionCellStore.entities` dict. `stage()`, `despawn()`, `get()` now read/write exclusively through `SpatialIndex`. Added `SpatialIndex.iter_all()`. Simplified `_attn_store_get` and `_attn_store_ids`. Updated 3 test fixtures to wire a `SpatialIndex` into `AttentionCellStore`. Removed `store.entities.clear()` from `test_attention_store.py`.
+    - 703 tests pass.
+
+111. Phase 8 Legacy Removal Slice D.17-D.18 (2026-04-23):
+    - D.17: Deleted `_runtime_entity_registry` and `_track_runtime_entity` from `entity_lifecycle.py`. Removed all 11 call sites across `entity_lifecycle.py`, `entity_graph_ops.py`, `inventory.py`, and `game.py`. `find_runtime_entity` reordered to: SpatialIndex → level.actors/entities scan → attn_store fallback. Body-node entities (`_materialize_body_child`) now mirrored into `level.entities` via `_mirror_entity_into_loaded_zone` so the level scan can find them.
+    - D.18: Deleted `WorldEntityIndex` class. Replaced by `register_proxy_entity` free function in `world_entity_index.py`. All 8 `game.world_entity_index.add(...)` call sites migrated. All `is None` guards updated to check `game.spatial_index`. `game.world_entity_index` and `WorldEntityIndex` import removed from `game.py`. `ensure_world_sites` idempotency simplified from object-identity `idx_id` to boolean flag. Tests in `test_world_entity_index.py` and `test_spatial_index.py` ported.
+    - 698 tests pass.
+
+110. Phase 8 Legacy Removal Slice D.13-D.16 (2026-04-23):
+    - D.13: Deleted 4 `[LEGACY_DELETE]` fallback blocks from `attention.py` (proxy + staged fallbacks in `sync_attention_instantiation` and `renderables_in_abs_rect`).
+    - D.13: Deleted `AttentionCellStore.query_abs_rect()` and `WorldEntityIndex.query_abs_rect()`.
+    - D.13–D.14: Deleted legacy read fallbacks from `inspection.py`, `dungeon.py`, `spatial_music.py`, `dialogues.py`, `entity_lifecycle.py`, `combat.py`. All callers now read through `SpatialIndex` or the shared entity ops surface.
+    - D.15: Stripped dead `_by_zone`/`_ent_cells` bucket machinery from `WorldEntityIndex` and dead `bins`/`eid_to_bin`/`entity_rects`/`entity_cells` from `AttentionCellStore`. Both are now write-through shims into `SpatialIndex`.
+    - D.16: Deleted `_patch_entity_state` helper from `entity_graph_ops.py` and its two call sites in `attach_entity_to_parent` / `detach_entity_from_parent`. Containment metadata (`owner_id`, `parent_entity_id`, `socket_id`, `in_inventory`) is now graph-authoritative only; the entity_state mirror was dead writes.
+    - Updated `game.entity_state` construction comment to reflect entity_id-only authority (lineage fallback removed by Track F.1).
+    - 698 tests pass.
 
 95. Phase 8 Legacy Removal Slice XCV (2026-04-21):
     - `systems/chakras.py`: Made the three body-schema geometry helpers private by
@@ -3196,36 +3356,37 @@ Actions:
 4. Delete runtime `ChakraState` facade once projection/query replacements land.
    Scene-local edit-session objects may survive only if explicitly renamed and
    documented as non-authoritative.
-5. Consolidate docs and test suites around one architecture.
+5. Delete or explicitly bless thin wrappers:
+   - if a helper now serves as the one clear surface, keep it and drop the
+     "half-legacy" ambiguity instead of deleting it for ceremony.
+6. Consolidate docs and test suites around one architecture.
 
 Done criteria:
 - One hierarchical entity ontology remains.
 - "Chakra" survives as role/query vocabulary, not a separate thing-type.
 - Runtime authority and UI session state are no longer conflated anywhere.
+- Remaining adapters, if any, are clearly non-authoritative and intentionally
+  scoped rather than accidental shadow systems.
 
-Aggressive legacy burn-down targets (2026-04-12):
-- Delete dead attention helpers first:
-  - `edgecaster/systems/attention.py`
-    - `_build_staged_actor(...)`
-    - `_mirror_actor_into_loaded_zone(...)`
-- Then delete the actor/body compatibility shell once runtime queries are ready:
-  - `edgecaster/systems/chakras.py` `ChakraState` + body-schema walkers
-  - `edgecaster/systems/chakra_items.py` ChakraState facade/sync helpers
-  - `edgecaster/scenes/chakra_scene.py` and `edgecaster/scenes/inventory_scene.py`
-    body-schema UI traversal
-  - `edgecaster/systems/pattern_runtime.py` body-schema chakra readers
-  - `edgecaster/spawn_factory.py` runtime `body_schema` copies
-- Then delete the remaining authority bridges:
-  - `edgecaster/game.py` dual entity_id/lineage persistence fallback helpers
-  - `edgecaster/systems/entity_graph_ops.py` legacy entity_state mirroring
-  - `edgecaster/systems/entity_snapshots.py` `last_known_*` payload shape
-  - edgecaster/systems/footprints.py tag-based footprint fallback queries
-  - edgecaster/systems/entity_lifecycle.py RUNTIME_REGISTRY compatibility bridge
-  - `edgecaster/systems/chakras.py` BODY_SCHEMA compatibility bridge
-  - `edgecaster/systems/attention.py` suppression wrappers, sidecar child map,
-    and `AttentionCellStore`
-  - `edgecaster/systems/inventory.py`, `trade.py`, `world_entity_index.py`,
-    `poi_worldgen.py`, `poi_spawning.py`
+Current aggressive legacy burn-down targets (2026-04-23):
+- Finish the remaining spatial-query ambiguity:
+  - `edgecaster/systems/attention.py` `AttentionCellStore`
+  - `edgecaster/systems/poi_registry.py` spatial-query responsibilities
+- Finish remaining lineage-as-identity bleed-through:
+  - `edgecaster/game.py` / `edgecaster/systems/entity_lifecycle.py`
+    lineage-aware effective-state fallbacks
+  - `edgecaster/systems/attention.py` / `edgecaster/systems/entity_snapshots.py`
+    lineage-aware suppression or snapshot shims that still do more than
+    provenance/back-compat
+- Promote only the next high-value transient runtime families:
+  - `seal_trial`
+  - `rune_anchor_siege`
+  - any equivalent event state that clearly benefits from geometry/lifecycle
+- Defer unless they buy clear simplification:
+  - `LevelState.actors` / `LevelState.entities` container merger
+  - `poi_worldgen.py` retirement
+  - `blade_states` graph migration
+  - full `ChakraComponent` topology dissolution
 
 ---
 

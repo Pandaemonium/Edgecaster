@@ -35,7 +35,6 @@ from edgecaster.game import Game
 from edgecaster.state.world import World
 from edgecaster.patterns.activation import project_vertices
 from edgecaster.patterns.library import action_preview_geometry
-from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems.tooltips import resolve_action_tooltip
 from edgecaster.ui.ability_bar import AbilityBarRenderer, AbilityBarWidget
 from edgecaster.visuals import VisualProfile, apply_visual_panel
@@ -483,7 +482,7 @@ class AsciiRenderer:
         glyph_px stays clamped strictly for font/icon legibility.
         """
         try:
-            player = game._player()
+            player = game.actors[game.player_id]
             ap = getattr(player, "abs_pos", None)
             if ap is not None:
                 px, py = int(ap[0]), int(ap[1])
@@ -1240,7 +1239,7 @@ class AsciiRenderer:
         # world map vs zone). We support both so FOV/visibility stays correct.
         try:
             # Newer/most common path
-            player = game._player()
+            player = game.actors[game.player_id]
             player_pos = getattr(player, 'pos', None)
             lvl = game._level()
             world = getattr(lvl, 'world', None)
@@ -1962,7 +1961,7 @@ class AsciiRenderer:
         self.lorenz_surface.fill((0, 0, 0, 0))
 
         # Fallback to the player position if the game didn't set a center yet.
-        player = game._player()
+        player = game.actors[game.player_id]
         px_tile, py_tile = player.pos
         center_x = getattr(game, "lorenz_center_x", float(px_tile))
         center_y = getattr(game, "lorenz_center_y", float(py_tile))
@@ -3168,8 +3167,12 @@ class AsciiRenderer:
 
     def draw_rune_anchor_siege_overlay(self, game: Game) -> None:
         """Draw high-contrast in-world overlay for active rune-anchor sieges."""
-        level = game._level()
-        siege = getattr(level, "rune_anchor_siege", None)
+        try:
+            from edgecaster.systems import rune_anchor_sieges
+            level = game._level()
+            siege = rune_anchor_sieges._get_siege(level)
+        except Exception:
+            return
         if siege is None:
             return
 
@@ -3239,8 +3242,12 @@ class AsciiRenderer:
 
     def draw_rune_anchor_siege_status(self, game: Game) -> None:
         """Draw HUD panel for rune-anchor siege state."""
-        level = game._level()
-        siege = getattr(level, "rune_anchor_siege", None)
+        try:
+            from edgecaster.systems import rune_anchor_sieges
+            level = game._level()
+            siege = rune_anchor_sieges._get_siege(level)
+        except Exception:
+            return
         if siege is None:
             return
 
@@ -3599,7 +3606,7 @@ class AsciiRenderer:
                 # If the caster is mid-edge, include the initial partial segment
                 # from caster tile center to the first path vertex.
                 try:
-                    caster = game._player()
+                    caster = game._level().actors.get(game.player_id)
                 except Exception:
                     caster = None
                 if caster is not None:
@@ -3668,7 +3675,7 @@ class AsciiRenderer:
             try:
                 level = game._level()
                 for aid, dmg in per_actor_damage.items():
-                    actor = entity_ops_system.get_actor(level, aid)
+                    actor = level.actors.get(aid)
                     if actor is None:
                         continue
                     ax, ay = actor.pos
@@ -3878,7 +3885,7 @@ class AsciiRenderer:
         """Subtle pulsing circle showing placement range when selecting a terminus."""
         if not getattr(game, "awaiting_terminus", False):
             return
-        player = game._player()
+        player = game.actors[game.player_id]
         ax, ay = self._local_tile_to_abs(game, player.pos)
         cx_f, cy_f = self.abs_tile_to_screen_px(ax + 0.5, ay + 0.5)
         cx, cy = int(cx_f), int(cy_f)
@@ -4029,44 +4036,49 @@ class AsciiRenderer:
         level = getattr(game, "_level", lambda: None)()
         if level is None:
             return
-        state = getattr(level, "ignite_state", None)
-        if not state:
-            return
-        ox, oy = self._zone_abs_offset(game)
-        direct = state.get("direct_tiles") or []
-        indirect = state.get("indirect_tiles") or []
-        remaining = float(state.get("remaining", 0))
-        duration = float(state.get("duration", 1)) or 1.0
-        tval = pygame.time.get_ticks() / 1000.0
-        flicker = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(tval * 6.0))
-        alpha_scale = (remaining / duration) * flicker
-
+        import edgecaster.systems.entity_ops as entity_ops_system
+        drawn_any = False
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
-        def draw_tile(tile_pos, color):
-            tx, ty = tile_pos
-            px_f, py_f = self.abs_tile_to_screen_px(tx + ox, ty + oy)
-            rect = pygame.Rect(int(px_f), int(py_f), self.tile, self.tile)
-            pygame.draw.rect(overlay, color, rect)
+        for ent in entity_ops_system.iter_entities(level):
+            if getattr(ent, "kind", "") == "ignite_effect":
+                state = getattr(ent, "tags", {})
+                ox, oy = self._zone_abs_offset(game)
+                direct = state.get("direct_tiles") or []
+                indirect = state.get("indirect_tiles") or []
+                remaining = float(state.get("remaining", 0))
+                duration = float(state.get("duration", 1)) or 1.0
+                tval = pygame.time.get_ticks() / 1000.0
+                flicker = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(tval * 6.0))
+                alpha_scale = (remaining / duration) * flicker
 
-        direct_col = (255, 80, 40, int(160 * alpha_scale))
-        indirect_col = (255, 180, 80, int(90 * alpha_scale))
-        for tile in direct:
-            draw_tile(tile, direct_col)
-        for tile in indirect:
-            draw_tile(tile, indirect_col)
+                def draw_tile(tile_pos, color):
+                    tx, ty = tile_pos
+                    px_f, py_f = self.abs_tile_to_screen_px(tx + ox, ty + oy)
+                    rect = pygame.Rect(int(px_f), int(py_f), self.tile, self.tile)
+                    pygame.draw.rect(overlay, color, rect)
 
-        # Subtle pulse outline on pattern anchor area if present
-        anchor = getattr(level, "pattern_anchor", None)
-        if anchor:
-            ax, ay = anchor
-            cx_f, cy_f = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
-            cx, cy = int(cx_f), int(cy_f)
-            radius = self.tile * 1.0
-            col = (255, 120, 60, int(80 * alpha_scale))
-            pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
+                direct_col = (255, 80, 40, int(160 * alpha_scale))
+                indirect_col = (255, 180, 80, int(90 * alpha_scale))
+                for tile in direct:
+                    draw_tile(tile, direct_col)
+                for tile in indirect:
+                    draw_tile(tile, indirect_col)
 
-        self.surface.blit(overlay, (0, 0))
+                # Subtle pulse outline on pattern anchor area if present
+                anchor = getattr(level, "pattern_anchor", None)
+                if anchor:
+                    ax, ay = anchor
+                    cx_f, cy_f = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
+                    cx, cy = int(cx_f), int(cy_f)
+                    radius = self.tile * 1.0
+                    col = (255, 120, 60, int(80 * alpha_scale))
+                    pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
+
+                drawn_any = True
+
+        if drawn_any:
+            self.surface.blit(overlay, (0, 0))
 
     def draw_regrow_overlay(self, game: Game) -> None:
         """
@@ -4075,43 +4087,48 @@ class AsciiRenderer:
         level = getattr(game, "_level", lambda: None)()
         if level is None:
             return
-        state = getattr(level, "regrow_state", None)
-        if not state:
-            return
-        ox, oy = self._zone_abs_offset(game)
-        direct = state.get("direct_tiles") or []
-        indirect = state.get("indirect_tiles") or []
-        remaining = float(state.get("remaining", 0))
-        duration = float(state.get("duration", 1)) or 1.0
-        tval = pygame.time.get_ticks() / 1000.0
-        flicker = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(tval * 5.5))
-        alpha_scale = (remaining / duration) * flicker
-
+        import edgecaster.systems.entity_ops as entity_ops_system
+        drawn_any = False
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
-        def draw_tile(tile_pos, color):
-            tx, ty = tile_pos
-            px_f, py_f = self.abs_tile_to_screen_px(tx + ox, ty + oy)
-            rect = pygame.Rect(int(px_f), int(py_f), self.tile, self.tile)
-            pygame.draw.rect(overlay, color, rect)
+        for ent in entity_ops_system.iter_entities(level):
+            if getattr(ent, "kind", "") == "regrow_effect":
+                state = getattr(ent, "tags", {})
+                ox, oy = self._zone_abs_offset(game)
+                direct = state.get("direct_tiles") or []
+                indirect = state.get("indirect_tiles") or []
+                remaining = float(state.get("remaining", 0))
+                duration = float(state.get("duration", 1)) or 1.0
+                tval = pygame.time.get_ticks() / 1000.0
+                flicker = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(tval * 5.5))
+                alpha_scale = (remaining / duration) * flicker
 
-        direct_col = (80, 255, 120, int(160 * alpha_scale))
-        indirect_col = (80, 220, 200, int(90 * alpha_scale))
-        for tile in direct:
-            draw_tile(tile, direct_col)
-        for tile in indirect:
-            draw_tile(tile, indirect_col)
+                def draw_tile(tile_pos, color):
+                    tx, ty = tile_pos
+                    px_f, py_f = self.abs_tile_to_screen_px(tx + ox, ty + oy)
+                    rect = pygame.Rect(int(px_f), int(py_f), self.tile, self.tile)
+                    pygame.draw.rect(overlay, color, rect)
 
-        anchor = getattr(level, "pattern_anchor", None)
-        if anchor:
-            ax, ay = anchor
-            cx_f, cy_f = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
-            cx, cy = int(cx_f), int(cy_f)
-            radius = self.tile * 1.0
-            col = (120, 255, 180, int(70 * alpha_scale))
-            pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
+                direct_col = (80, 255, 120, int(160 * alpha_scale))
+                indirect_col = (80, 220, 200, int(90 * alpha_scale))
+                for tile in direct:
+                    draw_tile(tile, direct_col)
+                for tile in indirect:
+                    draw_tile(tile, indirect_col)
 
-        self.surface.blit(overlay, (0, 0))
+                anchor = getattr(level, "pattern_anchor", None)
+                if anchor:
+                    ax, ay = anchor
+                    cx_f, cy_f = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
+                    cx, cy = int(cx_f), int(cy_f)
+                    radius = self.tile * 1.0
+                    col = (120, 255, 180, int(70 * alpha_scale))
+                    pygame.draw.circle(overlay, col, (int(cx), int(cy)), int(radius), width=2)
+
+                drawn_any = True
+
+        if drawn_any:
+            self.surface.blit(overlay, (0, 0))
 
     def draw_choking_vines_overlay(self, game: Game) -> None:
         """
@@ -4127,65 +4144,73 @@ class AsciiRenderer:
         level = getattr(game, "_level", lambda: None)()
         if level is None:
             return
-        state = getattr(level, "choking_vines_state", None)
-        if not state:
-            return
 
-        segments = list(state.get("segments", []) or [])
-        tips = list(state.get("tips", []) or [])
-        if not segments and not tips:
-            return
+        import edgecaster.systems.entity_ops as entity_ops_system
 
-        remaining = float(state.get("remaining", 0))
-        duration = float(state.get("duration", 1)) or 1.0
-        pulse = 0.72 + 0.28 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 175.0))
-        alpha_scale = max(0.0, min(1.0, (remaining / duration) * pulse))
-        if alpha_scale <= 1e-4:
-            return
-
+        drawn_any = False
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
-        base_col = (48, 210, 110, int(86 * alpha_scale))
-        core_col = (120, 255, 170, int(165 * alpha_scale))
-        tip_col = (180, 255, 210, int(230 * alpha_scale))
-        base_w = max(1, int(round(self.tile * 0.11)))
-        core_w = max(1, int(round(self.tile * 0.06)))
-        tip_r = max(2, int(round(self.tile * 0.14)))
+        for ent in entity_ops_system.iter_entities(level):
+            if getattr(ent, "kind", "") == "aggressive_vines":
+                state = getattr(ent, "tags", {})
 
-        # Draw tendril segments first.
-        for seg in segments:
-            try:
-                x0, y0, x1, y1 = seg
-            except Exception:
-                continue
-            px0, py0 = self.abs_tile_to_screen_px(float(x0) + 0.5, float(y0) + 0.5)
-            px1, py1 = self.abs_tile_to_screen_px(float(x1) + 0.5, float(y1) + 0.5)
-            p0 = (int(px0), int(py0))
-            p1 = (int(px1), int(py1))
-            pygame.draw.line(overlay, base_col, p0, p1, base_w)
-            pygame.draw.line(overlay, core_col, p0, p1, core_w)
+                segments = list(state.get("segments", []) or [])
+                tips = list(state.get("tips", []) or [])
+                if not segments and not tips:
+                    continue
 
-        # Highlight active growth tips.
-        for tip in tips:
-            try:
-                tx = float(tip.get("x", 0.0))
-                ty = float(tip.get("y", 0.0))
-            except Exception:
-                continue
-            px_f, py_f = self.abs_tile_to_screen_px(tx + 0.5, ty + 0.5)
-            px, py = int(px_f), int(py_f)
-            pygame.draw.circle(overlay, tip_col, (px, py), tip_r)
+                remaining = float(state.get("remaining", 0))
+                duration = float(state.get("duration", 1)) or 1.0
+                pulse = 0.72 + 0.28 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 175.0))
+                alpha_scale = max(0.0, min(1.0, (remaining / duration) * pulse))
+                if alpha_scale <= 1e-4:
+                    continue
 
-        self.surface.blit(overlay, (0, 0))
+                base_col = (48, 210, 110, int(86 * alpha_scale))
+                core_col = (120, 255, 170, int(165 * alpha_scale))
+                tip_col = (180, 255, 210, int(230 * alpha_scale))
+                base_w = max(1, int(round(self.tile * 0.11)))
+                core_w = max(1, int(round(self.tile * 0.06)))
+                tip_r = max(2, int(round(self.tile * 0.14)))
+
+                # Draw tendril segments first.
+                for seg in segments:
+                    try:
+                        x0, y0, x1, y1 = seg
+                    except Exception:
+                        continue
+                    px0, py0 = self.abs_tile_to_screen_px(float(x0) + 0.5, float(y0) + 0.5)
+                    px1, py1 = self.abs_tile_to_screen_px(float(x1) + 0.5, float(y1) + 0.5)
+                    p0 = (int(px0), int(py0))
+                    p1 = (int(px1), int(py1))
+                    pygame.draw.line(overlay, base_col, p0, p1, base_w)
+                    pygame.draw.line(overlay, core_col, p0, p1, core_w)
+
+                # Highlight active growth tips.
+                for tip in tips:
+                    try:
+                        tx = float(tip.get("x", 0.0))
+                        ty = float(tip.get("y", 0.0))
+                    except Exception:
+                        continue
+                    px_f, py_f = self.abs_tile_to_screen_px(tx + 0.5, ty + 0.5)
+                    px, py = int(px_f), int(py_f)
+                    pygame.draw.circle(overlay, tip_col, (px, py), tip_r)
+
+                drawn_any = True
+
+        if drawn_any:
+            self.surface.blit(overlay, (0, 0))
 
     def draw_throwing_knife_overlay(self, game: Game) -> None:
         """Draw active thrown-knife projectiles as spinning rune-like blades."""
         level = getattr(game, "_level", lambda: None)()
         if level is None:
             return
-        knives = list(getattr(level, "thrown_knives_state", []) or [])
-        if not knives:
-            return
+
+        import edgecaster.systems.entity_ops as entity_ops_system
+
+        drawn_any = False
 
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         # Keep knife geometry crisp and readable at all zoom levels:
@@ -4193,56 +4218,60 @@ class AsciiRenderer:
         # This avoids dense edge overlap when zoomed in.
         tip_r = 1 if self.tile >= 20 else 2
 
-        for knife in knives:
-            try:
-                cx = float(knife.get("x", 0.0))
-                cy = float(knife.get("y", 0.0))
-                spin = float(knife.get("spin", 0.0))
-                heading = float(knife.get("heading", 0.0))
-                scale = float(knife.get("shape_scale_tiles", 0.75))
-                verts = list(knife.get("shape_verts", []) or [])
-                segs = list(knife.get("shape_segs", []) or [])
-                travelled = float(knife.get("distance", 0.0))
-                max_dist = max(1e-6, float(knife.get("max_distance", 9.0)))
-            except Exception:
-                continue
-
-            if not verts:
-                continue
-
-            # Fade as the knife approaches its range cap, with a subtle pulse.
-            life = max(0.0, min(1.0, 1.0 - (travelled / max_dist)))
-            pulse = 0.78 + 0.22 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 120.0))
-            alpha = int(max(30, min(255, 230.0 * life * pulse)))
-            halo_col = (120, 240, 255, int(max(18, alpha * 0.42)))
-            core_col = (185, 250, 255, alpha)
-
-            ang = heading + spin
-            c = math.cos(ang)
-            s = math.sin(ang)
-            screen_pts: list[tuple[int, int]] = []
-            for vx, vy in verts:
-                lx = float(vx) * scale
-                ly = float(vy) * scale
-                wx = cx + (lx * c - ly * s)
-                wy = cy + (lx * s + ly * c)
-                px, py = self.abs_tile_to_screen_px(wx, wy)
-                screen_pts.append((int(round(px)), int(round(py))))
-
-            for a_idx, b_idx in segs:
-                if a_idx < 0 or b_idx < 0 or a_idx >= len(screen_pts) or b_idx >= len(screen_pts):
+        for ent in entity_ops_system.iter_entities(level):
+            if getattr(ent, "kind", "") == "throwing_knife":
+                knife = getattr(ent, "tags", {})
+                try:
+                    cx = float(knife.get("x", 0.0))
+                    cy = float(knife.get("y", 0.0))
+                    spin = float(knife.get("spin", 0.0))
+                    heading = float(knife.get("heading", 0.0))
+                    scale = float(knife.get("shape_scale_tiles", 0.75))
+                    verts = list(knife.get("shape_verts", []) or [])
+                    segs = list(knife.get("shape_segs", []) or [])
+                    travelled = float(knife.get("distance", 0.0))
+                    max_dist = max(1e-6, float(knife.get("max_distance", 9.0)))
+                except Exception:
                     continue
-                p0 = screen_pts[a_idx]
-                p1 = screen_pts[b_idx]
-                # Very subtle glow under-pass, then crisp core.
-                pygame.draw.aaline(overlay, halo_col, p0, p1)
-                pygame.draw.aaline(overlay, core_col, p0, p1)
 
-            # Bright center to make the projectile readable at distance.
-            cpx, cpy = self.abs_tile_to_screen_px(cx, cy)
-            pygame.draw.circle(overlay, core_col, (int(round(cpx)), int(round(cpy))), tip_r)
+                if not verts:
+                    continue
 
-        self.surface.blit(overlay, (0, 0))
+                # Fade as the knife approaches its range cap, with a subtle pulse.
+                life = max(0.0, min(1.0, 1.0 - (travelled / max_dist)))
+                pulse = 0.78 + 0.22 * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 120.0))
+                alpha = int(max(30, min(255, 230.0 * life * pulse)))
+                halo_col = (120, 240, 255, int(max(18, alpha * 0.42)))
+                core_col = (185, 250, 255, alpha)
+
+                ang = heading + spin
+                c = math.cos(ang)
+                s = math.sin(ang)
+                screen_pts: list[tuple[int, int]] = []
+                for vx, vy in verts:
+                    lx = float(vx) * scale
+                    ly = float(vy) * scale
+                    wx = cx + (lx * c - ly * s)
+                    wy = cy + (lx * s + ly * c)
+                    px, py = self.abs_tile_to_screen_px(wx, wy)
+                    screen_pts.append((int(round(px)), int(round(py))))
+
+                for a_idx, b_idx in segs:
+                    if a_idx < 0 or b_idx < 0 or a_idx >= len(screen_pts) or b_idx >= len(screen_pts):
+                        continue
+                    p0 = screen_pts[a_idx]
+                    p1 = screen_pts[b_idx]
+                    # Very subtle glow under-pass, then crisp core.
+                    pygame.draw.aaline(overlay, halo_col, p0, p1)
+                    pygame.draw.aaline(overlay, core_col, p0, p1)
+
+                # Bright center to make the projectile readable at distance.
+                cpx, cpy = self.abs_tile_to_screen_px(cx, cy)
+                pygame.draw.circle(overlay, core_col, (int(round(cpx)), int(round(cpy))), tip_r)
+                drawn_any = True
+
+        if drawn_any:
+            self.surface.blit(overlay, (0, 0))
 
     def draw_sparkle_overlay(self, game: Game) -> None:
         """
@@ -4257,27 +4286,9 @@ class AsciiRenderer:
         if level is None:
             return
 
-        state = getattr(level, "sparkle_state", None)
-        if not state:
-            return
+        import edgecaster.systems.entity_ops as entity_ops_system
         ox, oy = self._zone_abs_offset(game)
-
-        try:
-            t0 = float(state.get("t0", 0.0))
-            duration = float(state.get("duration_s", 1.0) or 1.0)
-        except Exception:
-            setattr(level, "sparkle_state", None)
-            return
-
         now = float(time.monotonic())
-        if duration <= 1e-6:
-            setattr(level, "sparkle_state", None)
-            return
-
-        t = (now - t0) / duration
-        if t >= 1.0:
-            setattr(level, "sparkle_state", None)
-            return
 
         overlay = getattr(self, "_sparkle_overlay_surface", None)
         if overlay is None or overlay.get_size() != (self.width, self.height):
@@ -4290,137 +4301,158 @@ class AsciiRenderer:
             glow = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
             setattr(self, "_sparkle_glow_surface", glow)
         glow.fill((0, 0, 0, 0))
+        drawn_any = False
 
-        verts = state.get("verts") or []
-        edges = state.get("edges") or []
+        for ent in entity_ops_system.iter_entities(level):
+            if getattr(ent, "kind", "") != "sparkle_effect":
+                continue
+            state = getattr(ent, "tags", {})
 
-        # Fallback for older states: derive geometry from the current pattern.
-        if (not verts) and game.pattern.vertices and game.pattern_anchor is not None:
             try:
-                verts = project_vertices(game.pattern, game.pattern_anchor)
-                edges = [(int(e.a), int(e.b)) for e in game.pattern.edges]
+                t0 = float(state.get("t0", 0.0))
+                duration = float(state.get("duration_s", 1.0) or 1.0)
             except Exception:
-                verts = []
-                edges = []
+                continue
+            if duration <= 1e-6:
+                continue
 
-        if not verts:
-            return
+            t = (now - t0) / duration
+            if t >= 1.0:
+                continue
 
-        # Edge blackout fades out over time (ease-out).
-        fade = max(0.0, min(1.0, t))
-        blackout_alpha = int(255 * (1.0 - fade) ** 1.7)
-        blackout_alpha = max(0, min(255, blackout_alpha))
+            verts = state.get("verts") or []
+            edges = state.get("edges") or []
 
-        if blackout_alpha > 0 and edges:
-            col = (0, 0, 0, blackout_alpha)
-            width = max(1, int(self.edge_width_base + 2))
-            for a_idx, b_idx in edges:
-                if a_idx < 0 or b_idx < 0 or a_idx >= len(verts) or b_idx >= len(verts):
-                    continue
-                ax, ay = verts[a_idx]
-                bx, by = verts[b_idx]
-                x0, y0 = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
-                x1, y1 = self.abs_tile_to_screen_px(bx + ox + 0.5, by + oy + 0.5)
-                pygame.draw.line(overlay, col, (x0, y0), (x1, y1), width=width)
-                pygame.draw.aaline(overlay, col, (x0, y0), (x1, y1))
+            # Fallback for older effect payloads: derive geometry from the current pattern.
+            if (not verts) and game.pattern.vertices and game.pattern_anchor is not None:
+                try:
+                    verts = project_vertices(game.pattern, game.pattern_anchor)
+                    edges = [(int(e.a), int(e.b)) for e in game.pattern.edges]
+                except Exception:
+                    verts = []
+                    edges = []
 
-        # Crackling sparkles: time-quantized for stability and performance.
-        try:
-            seed = int(state.get("seed", 0))
-        except Exception:
-            seed = 0
-        frame = int((now - t0) / 0.045)  # ~22 Hz
-        rng = random.Random((seed ^ (frame * 0x9E3779B1)) & 0xFFFFFFFF)
+            if not verts:
+                continue
 
-        # More sparkles early, fewer as it settles (use the shorter crackle window).
-        try:
-            spark_dur = float(state.get("spark_duration_s", 1.0) or 1.0)
-        except Exception:
-            spark_dur = 1.0
-        spark_t = 1.0
-        if spark_dur > 1e-6:
-            spark_t = max(0.0, min(1.0, (now - t0) / spark_dur))
-        settle = (1.0 - spark_t) ** 0.5
-        max_sparkles = 90
-        base_sparkles = max(14, min(max_sparkles, len(verts) // 18))
-        sparkle_count = max(8, int(base_sparkles * (0.35 + 0.65 * settle)))
+            # Edge blackout fades out over time (ease-out).
+            fade = max(0.0, min(1.0, t))
+            blackout_alpha = int(255 * (1.0 - fade) ** 1.7)
+            blackout_alpha = max(0, min(255, blackout_alpha))
 
-        # Radius scales with zoom/tile size, but keep readable.
-        base_r = max(1, int(self.tile * 0.08))
-        jitter = max(0, int(self.tile * 0.10))
+            if blackout_alpha > 0 and edges:
+                col = (0, 0, 0, blackout_alpha)
+                width = max(1, int(self.edge_width_base + 2))
+                for a_idx, b_idx in edges:
+                    if a_idx < 0 or b_idx < 0 or a_idx >= len(verts) or b_idx >= len(verts):
+                        continue
+                    ax, ay = verts[a_idx]
+                    bx, by = verts[b_idx]
+                    x0, y0 = self.abs_tile_to_screen_px(ax + ox + 0.5, ay + oy + 0.5)
+                    x1, y1 = self.abs_tile_to_screen_px(bx + ox + 0.5, by + oy + 0.5)
+                    pygame.draw.line(overlay, col, (x0, y0), (x1, y1), width=width)
+                    pygame.draw.aaline(overlay, col, (x0, y0), (x1, y1))
 
-        palette = [
-            (255, 255, 235),
-            (255, 240, 200),
-            (255, 220, 170),
-            (235, 245, 255),
-        ]
+            # Crackling sparkles: time-quantized for stability and performance.
+            try:
+                seed = int(state.get("seed", 0))
+            except Exception:
+                seed = 0
+            frame = int((now - t0) / 0.045)  # ~22 Hz
+            rng = random.Random((seed ^ (frame * 0x9E3779B1)) & 0xFFFFFFFF)
 
-        for _ in range(min(sparkle_count, 200)):
-            idx = rng.randrange(0, len(verts))
-            vx, vy = verts[idx]
-            px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
-            px, py = int(px_f), int(py_f)
-            if jitter:
-                px += rng.randint(-jitter, jitter)
-                py += rng.randint(-jitter, jitter)
+            # More sparkles early, fewer as it settles (use the shorter crackle window).
+            try:
+                spark_dur = float(state.get("spark_duration_s", 1.0) or 1.0)
+            except Exception:
+                spark_dur = 1.0
+            spark_t = 1.0
+            if spark_dur > 1e-6:
+                spark_t = max(0.0, min(1.0, (now - t0) / spark_dur))
+            settle = (1.0 - spark_t) ** 0.5
+            max_sparkles = 90
+            base_sparkles = max(14, min(max_sparkles, len(verts) // 18))
+            sparkle_count = max(8, int(base_sparkles * (0.35 + 0.65 * settle)))
 
-            # Firecracker: mostly small flashes with occasional larger "pops".
-            pop = rng.random()
-            r = base_r + (1 if pop > 0.85 else 0) + (1 if pop > 0.96 else 0)
-            a = int((70 + 185 * (pop ** 0.35)) * (0.25 + 0.75 * settle))
-            a = max(0, min(255, a))
+            # Radius scales with zoom/tile size, but keep readable.
+            base_r = max(1, int(self.tile * 0.08))
+            jitter = max(0, int(self.tile * 0.10))
 
-            rgb = rng.choice(palette)
-            pygame.draw.circle(glow, (*rgb, a), (px, py), r)
-            if r >= 2 and a >= 120:
-                # Tiny cross "sequin" glint.
-                glint = (*rgb, int(a * 0.85))
-                pygame.draw.aaline(glow, glint, (px - r, py), (px + r, py))
-                pygame.draw.aaline(glow, glint, (px, py - r), (px, py + r))
+            palette = [
+                (255, 255, 235),
+                (255, 240, 200),
+                (255, 220, 170),
+                (235, 245, 255),
+            ]
 
-        # Lens flare / starburst: one bright pulse near the rune COM.
-        # This is purely visual, and uses additive blending.
-        if spark_t < 1.0 and len(verts) >= 2:
-            sx = sum(float(v[0]) for v in verts) / max(1, len(verts))
-            sy = sum(float(v[1]) for v in verts) / max(1, len(verts))
-            cx_f, cy_f = self.abs_tile_to_screen_px(sx + ox + 0.5, sy + oy + 0.5)
-            cx, cy = int(cx_f), int(cy_f)
+            for _ in range(min(sparkle_count, 200)):
+                idx = rng.randrange(0, len(verts))
+                vx, vy = verts[idx]
+                px_f, py_f = self.abs_tile_to_screen_px(vx + ox + 0.5, vy + oy + 0.5)
+                px, py = int(px_f), int(py_f)
+                if jitter:
+                    px += rng.randint(-jitter, jitter)
+                    py += rng.randint(-jitter, jitter)
 
-            # Fast attack + exponential-ish decay (matches the inspiration).
-            attack = 0.05
-            decay = max(0.10, spark_dur - attack)
-            elapsed = max(0.0, now - t0)
-            if elapsed <= attack:
-                u = elapsed / max(1e-6, attack)
-                intensity = 1.0 - (1.0 - u) * (1.0 - u)  # ease-out
-            else:
-                d = (elapsed - attack) / max(1e-6, decay)
-                intensity = math.exp(-4.0 * d)
+                # Firecracker: mostly small flashes with occasional larger "pops".
+                pop = rng.random()
+                r = base_r + (1 if pop > 0.85 else 0) + (1 if pop > 0.96 else 0)
+                a = int((70 + 185 * (pop ** 0.35)) * (0.25 + 0.75 * settle))
+                a = max(0, min(255, a))
 
-            intensity = max(0.0, min(1.0, intensity))
-            if intensity > 0.02:
-                radius = max(10, int(self.tile * 1.35))
-                glow_sprite = self._get_radial_sprite(max(6, radius // 2), (255, 255, 255))
-                star_sprite = self._get_starburst_sprite(radius, spikes=8, color=(255, 255, 255))
+                rgb = rng.choice(palette)
+                pygame.draw.circle(glow, (*rgb, a), (px, py), r)
+                if r >= 2 and a >= 120:
+                    # Tiny cross "sequin" glint.
+                    glint = (*rgb, int(a * 0.85))
+                    pygame.draw.aaline(glow, glint, (px - r, py), (px + r, py))
+                    pygame.draw.aaline(glow, glint, (px, py - r), (px, py + r))
 
-                # Rotate faster near the peak, slower later.
-                spin_speed = 720.0
-                spin = spin_speed * (0.25 + 0.75 * intensity)
-                angle = (spin * elapsed) % 360.0
+            # Lens flare / starburst: one bright pulse near the rune COM.
+            # This is purely visual, and uses additive blending.
+            if spark_t < 1.0 and len(verts) >= 2:
+                sx = sum(float(v[0]) for v in verts) / max(1, len(verts))
+                sy = sum(float(v[1]) for v in verts) / max(1, len(verts))
+                cx_f, cy_f = self.abs_tile_to_screen_px(sx + ox + 0.5, sy + oy + 0.5)
+                cx, cy = int(cx_f), int(cy_f)
 
-                punch = 1.0 + 0.15 * math.exp(-40.0 * elapsed)
-                sprite = pygame.transform.rotozoom(star_sprite, angle, punch)
-                sprite.set_alpha(int(255 * intensity))
+                # Fast attack + exponential-ish decay (matches the inspiration).
+                attack = 0.05
+                decay = max(0.10, spark_dur - attack)
+                elapsed = max(0.0, now - t0)
+                if elapsed <= attack:
+                    u = elapsed / max(1e-6, attack)
+                    intensity = 1.0 - (1.0 - u) * (1.0 - u)  # ease-out
+                else:
+                    d = (elapsed - attack) / max(1e-6, decay)
+                    intensity = math.exp(-4.0 * d)
 
-                g = glow_sprite.copy()
-                g.set_alpha(int(200 * intensity))
-                glow.blit(g, g.get_rect(center=(cx, cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
-                glow.blit(sprite, sprite.get_rect(center=(cx, cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
+                intensity = max(0.0, min(1.0, intensity))
+                if intensity > 0.02:
+                    radius = max(10, int(self.tile * 1.35))
+                    glow_sprite = self._get_radial_sprite(max(6, radius // 2), (255, 255, 255))
+                    star_sprite = self._get_starburst_sprite(radius, spikes=8, color=(255, 255, 255))
 
-        # Darken edges first, then add glow/sparkles on top.
-        self.surface.blit(overlay, (0, 0))
-        self.surface.blit(glow, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+                    # Rotate faster near the peak, slower later.
+                    spin_speed = 720.0
+                    spin = spin_speed * (0.25 + 0.75 * intensity)
+                    angle = (spin * elapsed) % 360.0
+
+                    punch = 1.0 + 0.15 * math.exp(-40.0 * elapsed)
+                    sprite = pygame.transform.rotozoom(star_sprite, angle, punch)
+                    sprite.set_alpha(int(255 * intensity))
+
+                    g = glow_sprite.copy()
+                    g.set_alpha(int(200 * intensity))
+                    glow.blit(g, g.get_rect(center=(cx, cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
+                    glow.blit(sprite, sprite.get_rect(center=(cx, cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
+
+            drawn_any = True
+
+        if drawn_any:
+            # Darken edges first, then add glow/sparkles on top.
+            self.surface.blit(overlay, (0, 0))
+            self.surface.blit(glow, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
 
     def draw_lightning_overlay(self, game: Game) -> None:
         """Visual overlay for Lightning (pure VFX; no rules/simulation here)."""
@@ -4428,190 +4460,188 @@ class AsciiRenderer:
         if level is None:
             return
 
-        state = getattr(level, "lightning_state", None)
-        if not state:
-            return
-        ox, oy = self._zone_abs_offset(game)
-
-        try:
-            t0 = float(state.get("t0", 0.0))
-            duration = float(state.get("duration_s", 0.26) or 0.26)
-            flash_s = float(state.get("flash_s", 0.08) or 0.08)
-        except Exception:
-            setattr(level, "lightning_state", None)
-            return
-
+        import edgecaster.systems.entity_ops as entity_ops_system
         now = float(time.monotonic())
-        if duration <= 1e-6:
-            setattr(level, "lightning_state", None)
-            return
 
-        u = (now - t0) / duration
-        if u >= 1.0:
-            setattr(level, "lightning_state", None)
-            return
+        for ent in entity_ops_system.iter_entities(level):
+            if getattr(ent, "kind", "") == "lightning_effect":
+                state = getattr(ent, "tags", {})
+                ox, oy = self._zone_abs_offset(game)
 
-        try:
-            seed = int(state.get("seed", 0))
-        except Exception:
-            seed = 0
-
-        verts = state.get("verts") or []
-        edges = state.get("edges") or []
-        if not verts or not edges:
-            setattr(level, "lightning_state", None)
-            return
-
-        # Cache generated edge-constrained paths so the effect stays thin and stable.
-        paths_world = state.get("_edge_paths_world")
-        if not paths_world:
-            rng = random.Random(seed & 0xFFFFFFFF)
-
-            def edge_polyline(a: tuple[float, float], b: tuple[float, float]) -> list[tuple[float, float]]:
-                """Return a tiny jagged polyline that stays close to the edge segment."""
-                ax, ay = a
-                bx, by = b
-                dx = bx - ax
-                dy = by - ay
-                length = math.hypot(dx, dy)
-                if length <= 1e-6:
-                    return [(ax, ay), (bx, by)]
-
-                # Perpendicular unit vector (for a small jitter that keeps the bolt on-edge).
-                px = -dy / length
-                py = dx / length
-
-                # TUNING: segments per edge (higher => more jagged).
-                steps = int(max(4, min(18, length * 9.0)))
-                out: list[tuple[float, float]] = [(ax, ay)]
-
-                for i in range(1, steps):
-                    t = i / float(steps)
-                    base_x = ax + dx * t
-                    base_y = ay + dy * t
-
-                    # TUNING: jaggedness amplitude in TILE units (keep small to stay on-edge).
-                    amp = 0.06 * (0.35 + 0.65 * (1.0 - abs(2.0 * t - 1.0)))
-                    offset = rng.uniform(-amp, amp)
-                    out.append((base_x + px * offset, base_y + py * offset))
-
-                out.append((bx, by))
-                return out
-
-            paths_world = []
-            for a_idx, b_idx in edges:
-                if a_idx < 0 or b_idx < 0 or a_idx >= len(verts) or b_idx >= len(verts):
+                try:
+                    t0 = float(state.get("t0", 0.0))
+                    duration = float(state.get("duration_s", 0.26) or 0.26)
+                    flash_s = float(state.get("flash_s", 0.08) or 0.08)
+                except Exception:
                     continue
-                paths_world.append(edge_polyline(verts[a_idx], verts[b_idx]))
 
-            state["_edge_paths_world"] = paths_world
+                if duration <= 1e-6:
+                    continue
 
-        # Compute a tight bounding box around the rune footprint (in tile coords).
-        tile_bbox = state.get("_tile_bbox")
-        if tile_bbox is None:
-            xs = [float(v[0]) for v in verts]
-            ys = [float(v[1]) for v in verts]
-            if not xs or not ys:
-                return
-            tile_bbox = (math.floor(min(xs)), math.floor(min(ys)), math.ceil(max(xs)), math.ceil(max(ys)))
-            state["_tile_bbox"] = tile_bbox
+                u = (now - t0) / duration
+                if u >= 1.0:
+                    continue
 
-        min_x, min_y, max_x, max_y = tile_bbox
-        pad_px = int(max(10, self.tile * 2.0))
-        left = int((min_x + ox) * self.tile + self.origin_x) - pad_px
-        top = int((min_y + oy) * self.tile + self.origin_y) - pad_px
-        width = int((max_x - min_x + 1) * self.tile) + pad_px * 2
-        height = int((max_y - min_y + 1) * self.tile) + pad_px * 2
+                try:
+                    seed = int(state.get("seed", 0))
+                except Exception:
+                    seed = 0
 
-        screen_rect = pygame.Rect(0, 0, self.width, self.height)
-        fx_rect = pygame.Rect(left, top, width, height).clip(screen_rect)
-        if fx_rect.w <= 1 or fx_rect.h <= 1:
-            return
+                verts = state.get("verts") or []
+                edges = state.get("edges") or []
+                if not verts or not edges:
+                    continue
 
-        # Local surface for bolt rendering + bloom.
-        bolt = pygame.Surface((fx_rect.w, fx_rect.h), pygame.SRCALPHA)
+                # Cache generated edge-constrained paths so the effect stays thin and stable.
+                paths_world = state.get("_edge_paths_world")
+                if not paths_world:
+                    rng = random.Random(seed & 0xFFFFFFFF)
 
-        def to_local_px(wx: float, wy: float) -> tuple[int, int]:
-            # World-space (tile units) -> local pixel coords (centered on tile centers).
-            px, py = self.abs_tile_to_screen_px(wx + ox + 0.5, wy + oy + 0.5)
-            px -= fx_rect.x
-            py -= fx_rect.y
-            return (int(px), int(py))
+                    def edge_polyline(a: tuple[float, float], b: tuple[float, float]) -> list[tuple[float, float]]:
+                        """Return a tiny jagged polyline that stays close to the edge segment."""
+                        ax, ay = a
+                        bx, by = b
+                        dx = bx - ax
+                        dy = by - ay
+                        length = math.hypot(dx, dy)
+                        if length <= 1e-6:
+                            return [(ax, ay), (bx, by)]
 
-        # TUNING: reveal speed (how quickly the bolt "runs" along the path).
-        reveal = min(1.0, max(0.0, u) * 1.35)
+                        # Perpendicular unit vector (for a small jitter that keeps the bolt on-edge).
+                        px = -dy / length
+                        py = dx / length
 
-        # TUNING: flicker frequency + decay curve.
-        phase = (seed & 0xFFFF) / 65536.0 * math.tau
-        flick = 0.75 + 0.25 * math.sin(60.0 * (now - t0) + phase)
-        intensity = math.exp(-5.0 * max(0.0, u)) * flick
-        max_alpha = 240
-        alpha = int(max(0, min(255, max_alpha * intensity)))
-        if alpha <= 0:
-            return
+                        # TUNING: segments per edge (higher => more jagged).
+                        steps = int(max(4, min(18, length * 9.0)))
+                        out: list[tuple[float, float]] = [(ax, ay)]
 
-        # TUNING: bolt thickness (in pixels). Keep these small so lightning hugs rune edges.
-        core_width = 1
-        glow_width = 2
-        color = (255, 255, 255)
+                        for i in range(1, steps):
+                            t = i / float(steps)
+                            base_x = ax + dx * t
+                            base_y = ay + dy * t
 
-        def draw_polyline(points_world: list[tuple[float, float]]) -> None:
-            if len(points_world) < 2:
-                return
-            pts = [to_local_px(x, y) for (x, y) in points_world]
-            n = max(2, int(len(pts) * reveal))
-            pts = pts[:n]
-            if len(pts) < 2:
-                return
-            pygame.draw.lines(bolt, (*color, int(alpha * 0.12)), False, pts, glow_width)
-            pygame.draw.lines(bolt, (*color, alpha), False, pts, core_width)
-            # Add a few aaliners for extra crispness.
-            for a, b in zip(pts, pts[1:]):
-                pygame.draw.aaline(bolt, (*color, alpha), a, b)
+                            # TUNING: jaggedness amplitude in TILE units (keep small to stay on-edge).
+                            amp = 0.06 * (0.35 + 0.65 * (1.0 - abs(2.0 * t - 1.0)))
+                            offset = rng.uniform(-amp, amp)
+                            out.append((base_x + px * offset, base_y + py * offset))
 
-        for path in paths_world:
-            draw_polyline(path)
+                        out.append((bx, by))
+                        return out
 
-        # TUNING: bloom (blur) size/intensity. Smaller downsample => tighter bloom.
-        def blur_surface(surf: pygame.Surface, downsample: int = 5) -> pygame.Surface:
-            w, h = surf.get_size()
-            ds = max(1, int(downsample))
-            small = pygame.transform.smoothscale(surf, (max(1, w // ds), max(1, h // ds)))
-            return pygame.transform.smoothscale(small, (w, h))
+                    paths_world = []
+                    for a_idx, b_idx in edges:
+                        if a_idx < 0 or b_idx < 0 or a_idx >= len(verts) or b_idx >= len(verts):
+                            continue
+                        paths_world.append(edge_polyline(verts[a_idx], verts[b_idx]))
 
-        bloom = blur_surface(bolt, downsample=2)
-        bloom.set_alpha(int(alpha * 0.22))
+                    state["_edge_paths_world"] = paths_world
 
-        # Optional early flash: briefly over-brightens rune edges (stays thin/on-edge).
-        if flash_s > 1e-6 and (now - t0) < flash_s:
-            flash_u = 1.0 - ((now - t0) / flash_s)
-            flash_a = int(220 * max(0.0, min(1.0, flash_u)))
-            if flash_a > 0:
-                for path in paths_world:
-                    pts = [to_local_px(x, y) for (x, y) in path]
+                # Compute a tight bounding box around the rune footprint (in tile coords).
+                tile_bbox = state.get("_tile_bbox")
+                if tile_bbox is None:
+                    xs = [float(v[0]) for v in verts]
+                    ys = [float(v[1]) for v in verts]
+                    if not xs or not ys:
+                        continue
+                    tile_bbox = (math.floor(min(xs)), math.floor(min(ys)), math.ceil(max(xs)), math.ceil(max(ys)))
+                    state["_tile_bbox"] = tile_bbox
+
+                min_x, min_y, max_x, max_y = tile_bbox
+                pad_px = int(max(10, self.tile * 2.0))
+                left = int((min_x + ox) * self.tile + self.origin_x) - pad_px
+                top = int((min_y + oy) * self.tile + self.origin_y) - pad_px
+                width = int((max_x - min_x + 1) * self.tile) + pad_px * 2
+                height = int((max_y - min_y + 1) * self.tile) + pad_px * 2
+
+                screen_rect = pygame.Rect(0, 0, self.width, self.height)
+                fx_rect = pygame.Rect(left, top, width, height).clip(screen_rect)
+                if fx_rect.w <= 1 or fx_rect.h <= 1:
+                    continue
+
+                # Local surface for bolt rendering + bloom.
+                bolt = pygame.Surface((fx_rect.w, fx_rect.h), pygame.SRCALPHA)
+
+                def to_local_px(wx: float, wy: float) -> tuple[int, int]:
+                    # World-space (tile units) -> local pixel coords (centered on tile centers).
+                    px, py = self.abs_tile_to_screen_px(wx + ox + 0.5, wy + oy + 0.5)
+                    px -= fx_rect.x
+                    py -= fx_rect.y
+                    return (int(px), int(py))
+
+                # TUNING: reveal speed (how quickly the bolt "runs" along the path).
+                reveal = min(1.0, max(0.0, u) * 1.35)
+
+                # TUNING: flicker frequency + decay curve.
+                phase = (seed & 0xFFFF) / 65536.0 * math.tau
+                flick = 0.75 + 0.25 * math.sin(60.0 * (now - t0) + phase)
+                intensity = math.exp(-5.0 * max(0.0, u)) * flick
+                max_alpha = 240
+                alpha = int(max(0, min(255, max_alpha * intensity)))
+                if alpha <= 0:
+                    continue
+
+                # TUNING: bolt thickness (in pixels). Keep these small so lightning hugs rune edges.
+                core_width = 1
+                glow_width = 2
+                color = (255, 255, 255)
+
+                def draw_polyline(points_world: list[tuple[float, float]]) -> None:
+                    if len(points_world) < 2:
+                        return
+                    pts = [to_local_px(x, y) for (x, y) in points_world]
                     n = max(2, int(len(pts) * reveal))
                     pts = pts[:n]
-                    if len(pts) >= 2:
-                        pygame.draw.lines(bolt, (255, 255, 255, flash_a), False, pts, 2)
+                    if len(pts) < 2:
+                        return
+                    pygame.draw.lines(bolt, (*color, int(alpha * 0.12)), False, pts, glow_width)
+                    pygame.draw.lines(bolt, (*color, alpha), False, pts, core_width)
+                    # Add a few aaliners for extra crispness.
+                    for a, b in zip(pts, pts[1:]):
+                        pygame.draw.aaline(bolt, (*color, alpha), a, b)
 
-        # Composite additively onto the main surface.
-        self.surface.blit(bloom, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
-        self.surface.blit(bolt, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
+                for path in paths_world:
+                    draw_polyline(path)
 
-        # Extra punch: starbursts on struck targets.
-        target_tiles = state.get("target_tiles") or []
-        if target_tiles:
-            # TUNING: hit marker size/intensity. Keep this small so it reads as a "spark"
-            # on the creature, not a large white disk.
-            star_radius = max(6, int(self.tile * 0.055))
-            star = self._get_starburst_sprite(star_radius, spikes=8, color=(220, 240, 255))
-            star_a = int(200 * min(1.0, intensity * 1.2))
-            if star_a > 0:
-                for tx, ty in target_tiles:
-                    cx, cy = to_local_px(float(tx), float(ty))
-                    sprite = star.copy()
-                    sprite.set_alpha(star_a)
-                    self.surface.blit(sprite, sprite.get_rect(center=(fx_rect.x + cx, fx_rect.y + cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
+                # TUNING: bloom (blur) size/intensity. Smaller downsample => tighter bloom.
+                def blur_surface(surf: pygame.Surface, downsample: int = 5) -> pygame.Surface:
+                    w, h = surf.get_size()
+                    ds = max(1, int(downsample))
+                    small = pygame.transform.smoothscale(surf, (max(1, w // ds), max(1, h // ds)))
+                    return pygame.transform.smoothscale(small, (w, h))
+
+                bloom = blur_surface(bolt, downsample=2)
+                bloom.set_alpha(int(alpha * 0.22))
+
+                # Optional early flash: briefly over-brightens rune edges (stays thin/on-edge).
+                if flash_s > 1e-6 and (now - t0) < flash_s:
+                    flash_u = 1.0 - ((now - t0) / flash_s)
+                    flash_a = int(220 * max(0.0, min(1.0, flash_u)))
+                    if flash_a > 0:
+                        for path in paths_world:
+                            pts = [to_local_px(x, y) for (x, y) in path]
+                            n = max(2, int(len(pts) * reveal))
+                            pts = pts[:n]
+                            if len(pts) >= 2:
+                                pygame.draw.lines(bolt, (255, 255, 255, flash_a), False, pts, 2)
+
+                # Composite additively onto the main surface.
+                self.surface.blit(bloom, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
+                self.surface.blit(bolt, fx_rect.topleft, special_flags=pygame.BLEND_RGBA_ADD)
+
+                # Extra punch: starbursts on struck targets.
+                target_tiles = state.get("target_tiles") or []
+                if target_tiles:
+                    # TUNING: hit marker size/intensity. Keep this small so it reads as a "spark"
+                    # on the creature, not a large white disk.
+                    star_radius = max(6, int(self.tile * 0.055))
+                    star = self._get_starburst_sprite(star_radius, spikes=8, color=(220, 240, 255))
+                    star_a = int(200 * min(1.0, intensity * 1.2))
+                    if star_a > 0:
+                        for tx, ty in target_tiles:
+                            cx, cy = to_local_px(float(tx), float(ty))
+                            sprite = star.copy()
+                            sprite.set_alpha(star_a)
+                            self.surface.blit(sprite, sprite.get_rect(center=(fx_rect.x + cx, fx_rect.y + cy)).topleft, special_flags=pygame.BLEND_RGBA_ADD)
 
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> List[str]:
         """Simple word-wrap that fits text within max_width."""
@@ -4753,7 +4783,7 @@ class AsciiRenderer:
 
         # Start target cursor at player position (scene/ui_state drives it)
         # YOGA: Set ABS cursor as canonical, local is derived
-        player = game._player()
+        player = game.actors[game.player_id]
         if getattr(self, "ui_state", None) is not None:
             abs_pos = getattr(player, "abs_pos", None)
             if abs_pos is not None:

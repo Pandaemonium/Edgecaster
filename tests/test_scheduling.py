@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from edgecaster.state.chakra_component import ChakraComponent, ChakraEdge, ChakraNode
 from edgecaster.state.entity_graph import EntityGraphStore
 
+from edgecaster.systems import scheduling as scheduling_system
 from edgecaster.systems.scheduling import (
     schedule,
     advance_time,
@@ -157,6 +158,47 @@ class TestAdvanceTime:
             advance_time(mock_game, mock_level, 10)
 
         mock_game._update_fov.assert_called_once_with(mock_level)
+
+
+class TestChokingVinesTick:
+    """Tests for entity-backed aggressive vine ticking."""
+
+    def test_reads_runtime_entities_without_legacy_level_sidecar(self, monkeypatch):
+        calls: list[dict] = []
+
+        def _step(_game, _level, state):
+            calls.append(state)
+
+        monkeypatch.setattr(scheduling_system, "_step_choking_vines", _step)
+
+        vine_state = {
+            "remaining": 1,
+            "tips": [{"x": 2.0, "y": 3.0}],
+        }
+        level = SimpleNamespace(
+            entities={
+                "vine:1": SimpleNamespace(
+                    id="vine:1",
+                    kind="aggressive_vines",
+                    tags=vine_state,
+                )
+            },
+            coord=(0, 0, 0),
+            activation_points=[],
+            activation_ttl=0,
+        )
+        committed: list[bool] = []
+        game = SimpleNamespace(
+            zone_coord=(0, 0, 0),
+            _zone_dims=lambda: (10, 10),
+            _commit_pattern_state_from_level=lambda _lvl: committed.append(True),
+        )
+
+        scheduling_system.choking_vines_tick(game, level, 1)
+
+        assert len(calls) == 1
+        assert "vine:1" not in level.entities
+        assert committed == [True]
 
 
 class TestStartRegen:

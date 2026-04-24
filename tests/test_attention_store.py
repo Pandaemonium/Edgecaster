@@ -48,3 +48,18 @@ def test_attention_store_preserves_point_anchor_queries() -> None:
     hits = spatial_index.query_rect((8.0, 10.0, 10.0, 12.0), 0)
 
     assert [entry.obj.id for entry in hits] == ["point_entity"]
+
+
+def test_attention_store_get_and_ids_can_read_back_spatial_entries() -> None:
+    spatial_index = SpatialIndex(bin_size=4)
+    store = AttentionCellStore(bin_size=16, spatial_index=spatial_index)
+    obj = SimpleNamespace(
+        id="staged_entity",
+        abs_pos=(5, 6),
+    )
+
+    store.stage(obj, abs_x=5, abs_y=6, zz=0)
+
+    assert store.get("staged_entity") is obj
+    assert store.has("staged_entity") is True
+    assert store.ids() == {"staged_entity"}

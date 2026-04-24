@@ -31,6 +31,7 @@ from edgecaster import prototypes
 from edgecaster import spawn_factory
 from edgecaster.enemies import factory as enemy_factory
 from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
+from edgecaster.systems.world_entity_index import register_proxy_entity
 from edgecaster.systems import spawning as spawning_system
 from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems import footprints as footprints_system
@@ -311,8 +312,7 @@ def ensure_poi_world_entities(
         if poi_spec.id not in rumored and poi_spec.id not in discovered:
             return 0
 
-    # Ensure world_entity_index exists
-    if getattr(game, "world_entity_index", None) is None:
+    if getattr(game, "spatial_index", None) is None:
         return 0
 
     created = 0
@@ -338,11 +338,7 @@ def ensure_poi_world_entities(
 
             try:
                 entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-                game.world_entity_index.add(
-                    ent,
-                    zone_coord=ent.zone_coord,
-                    local_pos=ent.pos,
-                )
+                register_proxy_entity(game, ent, zone_coord=ent.zone_coord, local_pos=ent.pos)
                 created += 1
             except Exception:
                 pass
@@ -436,11 +432,7 @@ def _create_colosseum_wall_entities(
                     )
                     try:
                         entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-                        game.world_entity_index.add(
-                            ent,
-                            zone_coord=ent.zone_coord,
-                            local_pos=ent.pos,
-                        )
+                        register_proxy_entity(game, ent, zone_coord=ent.zone_coord, local_pos=ent.pos)
                         created += 1
                     except Exception:
                         pass
@@ -506,11 +498,7 @@ def _create_legendary_lair_world_entities(
             )
             try:
                 entity_graph_ops_system.register_entity(game, ent, lod_state="collapsed")
-                game.world_entity_index.add(
-                    ent,
-                    zone_coord=ent.zone_coord,
-                    local_pos=ent.pos,
-                )
+                register_proxy_entity(game, ent, zone_coord=ent.zone_coord, local_pos=ent.pos)
                 created += 1
             except Exception:
                 pass

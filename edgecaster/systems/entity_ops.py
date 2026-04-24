@@ -17,10 +17,16 @@ if TYPE_CHECKING:
 
 
 def get_actor(level: "LevelState", actor_id: str) -> Optional["Actor"]:
-    return getattr(level, "actors", {}).get(actor_id)
+    actors = getattr(level, "actors", None)
+    if isinstance(actors, dict):
+        return actors.get(actor_id)
+    return None
 
 def get_entity(level: "LevelState", entity_id: str) -> Optional["Entity"]:
-    return getattr(level, "entities", {}).get(entity_id)
+    entities = getattr(level, "entities", None)
+    if isinstance(entities, dict):
+        return entities.get(entity_id)
+    return None
 
 def resolve_entity(level: "LevelState", entity_id: str) -> Optional[Any]:
     actor = get_actor(level, entity_id)
@@ -29,10 +35,16 @@ def resolve_entity(level: "LevelState", entity_id: str) -> Optional[Any]:
     return get_entity(level, entity_id)
 
 def iter_actors(level: "LevelState") -> Iterator["Actor"]:
-    return iter(getattr(level, "actors", {}).values())
+    actors = getattr(level, "actors", None)
+    if isinstance(actors, dict):
+        return iter(actors.values())
+    return iter(())
 
 def iter_entities(level: "LevelState") -> Iterator["Entity"]:
-    return iter(getattr(level, "entities", {}).values())
+    entities = getattr(level, "entities", None)
+    if isinstance(entities, dict):
+        return iter(entities.values())
+    return iter(())
 
 def iter_all(level: "LevelState") -> Iterator[Any]:
     for actor in iter_actors(level):
@@ -51,6 +63,29 @@ def remove_entity(level: "LevelState", entity_id: str) -> Optional["Entity"]:
     if isinstance(entities, dict):
         return entities.pop(entity_id, None)
     return None
+
+
+def remove_entities_by_kind(level: "LevelState", *kinds: str) -> List[str]:
+    """Remove every runtime entity whose ``kind`` matches one of ``kinds``.
+
+    This is intentionally a runtime-store helper, not a graph helper: callers
+    use it when a pattern/effect reset invalidates transient realized entities
+    that should disappear immediately from the loaded level cache.
+    """
+    wanted = {str(kind) for kind in kinds if str(kind)}
+    if not wanted:
+        return []
+
+    removed_ids: List[str] = []
+    for ent in list(iter_entities(level)):
+        ent_id = getattr(ent, "id", None)
+        if ent_id is None:
+            continue
+        if str(getattr(ent, "kind", "")) not in wanted:
+            continue
+        if remove_entity(level, str(ent_id)) is not None:
+            removed_ids.append(str(ent_id))
+    return removed_ids
 
 def _is_suppressed(game: "Game | None", entity: object) -> bool:
     """Return True if *entity* is marked removed/dead in entity_state."""
@@ -275,7 +310,6 @@ def toggle_door(game: "Game", ent: "Entity", level: "LevelState", notify: bool =
         game,
         ent,
         entity_id=str(getattr(ent, "entity_id", "") or getattr(ent, "id", "") or ""),
-        lineage_id=str(tags.get("lineage_id", "") or "") or None,
     )
 
     ent.tags = tags

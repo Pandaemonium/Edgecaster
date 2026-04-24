@@ -367,14 +367,7 @@ class SpatialMusicDirector:
                 # Show nearby POIs by zone bucket, both depths
                 zx = int(px) // int(getattr(poi_reg, "zone_w", 60) or 60)
                 zy = int(py) // int(getattr(poi_reg, "zone_h", 40) or 40)
-                keys = []
-                for depth in (zz, 0):
-                    try:
-                        bucket = getattr(poi_reg, "_by_zone", {}).get((zx, zy, depth), [])
-                    except Exception:
-                        bucket = []
-                    keys.append((depth, len(bucket)))
-                print(f"[spatial_music] colosseum probe player=({int(px)},{int(py)}) zone=({zx},{zy}) buckets={keys}")
+                print(f"[spatial_music] colosseum probe player=({int(px)},{int(py)}) zone=({zx},{zy})")
             except Exception:
                 pass
 

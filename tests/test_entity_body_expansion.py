@@ -15,6 +15,7 @@ from edgecaster.systems.chakras import (
     build_chakra_generator_seed,
     get_active_chakra_generator_graph_for_entity,
 )
+from edgecaster.systems.spatial_index import SpatialIndex
 
 
 class _DummyGame:
@@ -22,7 +23,8 @@ class _DummyGame:
         self.cfg = SimpleNamespace(world_width=64, world_height=64, seed=789)
         self.entity_graph = EntityGraphStore()
         self.entity_state: dict[str, dict] = {}
-        self.attn_store = attention.AttentionCellStore(bin_size=16)
+        self.spatial_index = SpatialIndex(bin_size=16)
+        self.attn_store = attention.AttentionCellStore(bin_size=16, spatial_index=self.spatial_index)
         self.level = SimpleNamespace(
             entities={getattr(actor, "id"): actor},
             actors={getattr(actor, "id"): actor},
@@ -38,20 +40,11 @@ class _DummyGame:
             state.update(dict(patch))
         if fields:
             state.update(dict(fields))
-        if lineage_id:
-            state["lineage_id"] = str(lineage_id)
         self.entity_state[key] = state
 
     def get_effective_entity_state(self, entity_or_id, *, lineage_id=None) -> dict:
         key = str(entity_or_id)
-        state = dict(self.entity_state.get(key, {}) or {})
-        if lineage_id:
-            fallback = self.entity_state.get(str(lineage_id), {})
-            if isinstance(fallback, dict):
-                merged = dict(fallback)
-                merged.update(state)
-                return merged
-        return state
+        return dict(self.entity_state.get(key, {}) or {})
 
     def get_zone_for_render(self, coord):  # noqa: ANN001
         return self.levels.get(tuple(coord))

@@ -2,7 +2,7 @@
 
 Purpose: map the status and role of documents in `vision_documents/` so agents can find trusted material quickly.
 Status: active-plan
-Last verified: 2026-04-11
+Last verified: 2026-04-23
 Canonical for: folder-level reading order and document classification
 Related docs: `vision_documents/aesthetics.md`, `vision_documents/lore_bible.md`, `vision_documents/factions_and_nations.md`, `vision_documents/architecture.txt`, `vision_documents/the_yoga.txt`, `vision_documents/spring_cleaning.txt`, `vision_documents/documentation_review_plan.md`
 Related code: `edgecaster/`, `tests/`
@@ -44,6 +44,10 @@ Supersedes: none
 - `entity_chakra_unification_master_plan.txt`
 - `entity_chakra_unification_overview.md`
 - `fractal_lab_vision.txt`
+
+### Scratch
+
+- `master_plan_updates.txt`
 
 ## Archived On 2026-04-10
 

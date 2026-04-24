@@ -2,13 +2,7 @@
 
 This module centralizes the transient mutable fields we persist for deterministic
 entities that may collapse out of the active attention window and later be
-rehydrated. The current bridge shape remains the existing `last_known_*`
-payloads so migration stays compatible with the entity_state store.
-
-[LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-The `last_known_*` payload shape is a migration bridge. Replace it with typed
-entity/component persistence deltas once collapse/restore and save data both
-flow through the unified entity/chakra model.
+rehydrated.
 """
 
 from __future__ import annotations
@@ -37,10 +31,10 @@ def snapshot_patch_for_entity(obj: object) -> Dict[str, Any]:
         stats = None
     if stats is not None:
         for src, dst in (
-            ("hp", "last_known_hp"),
-            ("max_hp", "last_known_max_hp"),
-            ("mana", "last_known_mana"),
-            ("max_mana", "last_known_max_mana"),
+            ("hp", "hp"),
+            ("max_hp", "max_hp"),
+            ("mana", "mana"),
+            ("max_mana", "max_mana"),
         ):
             try:
                 raw = getattr(stats, src, None)
@@ -59,29 +53,29 @@ def snapshot_patch_for_entity(obj: object) -> Dict[str, Any]:
             if key in tags:
                 kept[str(key)] = tags.get(key)
         if kept:
-            patch["last_known_tags"] = kept
+            patch["tags_patch"] = kept
 
     try:
         glyph = getattr(obj, "glyph", None)
         if glyph is not None:
-            patch["last_known_glyph"] = str(glyph)[:1]
+            patch["glyph"] = str(glyph)[:1]
     except Exception:
         pass
     try:
-        patch["last_known_blocks_movement"] = bool(getattr(obj, "blocks_movement", False))
+        patch["blocks_movement"] = bool(getattr(obj, "blocks_movement", False))
     except Exception:
         pass
 
     try:
         raw_statuses = getattr(obj, "statuses", None)
         if isinstance(raw_statuses, dict) and raw_statuses:
-            patch["last_known_statuses"] = dict(raw_statuses)
+            patch["statuses"] = dict(raw_statuses)
     except Exception:
         pass
     try:
         raw_cooldowns = getattr(obj, "cooldowns", None)
         if isinstance(raw_cooldowns, dict) and raw_cooldowns:
-            patch["last_known_cooldowns"] = dict(raw_cooldowns)
+            patch["cooldowns"] = dict(raw_cooldowns)
     except Exception:
         pass
 
@@ -93,28 +87,26 @@ def persist_entity_snapshot(
     obj: object,
     *,
     entity_id: str,
-    lineage_id: str | None = None,
 ) -> None:
-    """Persist the current mutable runtime delta for an entity."""
+    """Persist the current mutable runtime delta for an entity.
+
+    Snapshot authority lives on ``entity_id``.
+    """
     patch = snapshot_patch_for_entity(obj)
     if not patch:
         return
     try:
         fn = getattr(game, "patch_entity_state", None)
         if callable(fn):
-            lid = str(lineage_id or "").strip()
             try:
-                if lid:
-                    fn(str(entity_id), patch, lineage_id=lid)
-                else:
-                    fn(str(entity_id), patch)
+                fn(str(entity_id), patch)
             except TypeError:
                 fn(str(entity_id), patch)
     except Exception:
         pass
 
 
-def apply_entity_snapshot(obj: object, state: Dict[str, Any], *, lineage_id: str | None = None) -> bool:
+def apply_entity_snapshot(obj: object, state: Dict[str, Any]) -> bool:
     """Apply a persisted snapshot to a runtime object; False means suppress/remove."""
     if not isinstance(state, dict) or not state:
         return True
@@ -125,46 +117,44 @@ def apply_entity_snapshot(obj: object, state: Dict[str, Any], *, lineage_id: str
         tags = getattr(obj, "tags", None)
         if not isinstance(tags, dict):
             tags = {}
-        last_tags = state.get("last_known_tags")
+        last_tags = state.get("tags_patch")
         if isinstance(last_tags, dict):
             tags.update(dict(last_tags))
-        if lineage_id and not tags.get("lineage_id"):
-            tags["lineage_id"] = str(lineage_id)
         setattr(obj, "tags", tags)
     except Exception:
         pass
 
     try:
-        if "last_known_glyph" in state:
-            setattr(obj, "glyph", str(state.get("last_known_glyph") or getattr(obj, "glyph", "?"))[:1] or "?")
+        if "glyph" in state:
+            setattr(obj, "glyph", str(state.get("glyph") or getattr(obj, "glyph", "?"))[:1] or "?")
     except Exception:
         pass
     try:
-        if "last_known_blocks_movement" in state:
-            setattr(obj, "blocks_movement", bool(state.get("last_known_blocks_movement")))
+        if "blocks_movement" in state:
+            setattr(obj, "blocks_movement", bool(state.get("blocks_movement")))
     except Exception:
         pass
 
     stats = getattr(obj, "stats", None)
     if stats is not None:
         try:
-            if "last_known_max_hp" in state:
-                stats.max_hp = max(1, int(state.get("last_known_max_hp", getattr(stats, "max_hp", 1)) or 1))
+            if "max_hp" in state:
+                stats.max_hp = max(1, int(state.get("max_hp", getattr(stats, "max_hp", 1)) or 1))
         except Exception:
             pass
         try:
-            if "last_known_hp" in state:
-                stats.hp = int(state.get("last_known_hp", getattr(stats, "hp", 0)) or 0)
+            if "hp" in state:
+                stats.hp = int(state.get("hp", getattr(stats, "hp", 0)) or 0)
         except Exception:
             pass
         try:
-            if "last_known_max_mana" in state and hasattr(stats, "max_mana"):
-                stats.max_mana = max(0, int(state.get("last_known_max_mana", getattr(stats, "max_mana", 0)) or 0))
+            if "max_mana" in state and hasattr(stats, "max_mana"):
+                stats.max_mana = max(0, int(state.get("max_mana", getattr(stats, "max_mana", 0)) or 0))
         except Exception:
             pass
         try:
-            if "last_known_mana" in state and hasattr(stats, "mana"):
-                stats.mana = int(state.get("last_known_mana", getattr(stats, "mana", 0)) or 0)
+            if "mana" in state and hasattr(stats, "mana"):
+                stats.mana = int(state.get("mana", getattr(stats, "mana", 0)) or 0)
         except Exception:
             pass
         try:
@@ -174,13 +164,13 @@ def apply_entity_snapshot(obj: object, state: Dict[str, Any], *, lineage_id: str
             pass
 
     try:
-        raw_statuses = state.get("last_known_statuses")
+        raw_statuses = state.get("statuses")
         if isinstance(raw_statuses, dict):
             setattr(obj, "statuses", dict(raw_statuses))
     except Exception:
         pass
     try:
-        raw_cooldowns = state.get("last_known_cooldowns")
+        raw_cooldowns = state.get("cooldowns")
         if isinstance(raw_cooldowns, dict):
             setattr(obj, "cooldowns", dict(raw_cooldowns))
     except Exception:

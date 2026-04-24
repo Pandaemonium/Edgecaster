@@ -26,7 +26,9 @@ from edgecaster.systems.spatial_index import SpatialIndex
 
 
 def _make_registry(zone_w: int = 60, zone_h: int = 40) -> POIRegistry:
-    return POIRegistry(zone_w=zone_w, zone_h=zone_h)
+    registry = POIRegistry(zone_w=zone_w, zone_h=zone_h)
+    registry.attach_spatial_index(SpatialIndex(bin_size=32))
+    return registry
 
 
 def _add_registry_poi(

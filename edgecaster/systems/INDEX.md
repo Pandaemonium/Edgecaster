@@ -61,11 +61,11 @@ Supersedes: none
 - `entity_body.py`
 - `body_view_queries.py` *(shared read-only body/entity view queries for Chakra Scene, Inventory Scene, and other UI callers that should not own schema/graph fallback ladders; schema fallbacks now annotate explicit `zoomable` metadata so scenes do not need to re-resolve authored schemas just to decide branch behavior, branch metadata helpers provide shared gating-chain / child-count reads for tooltips and similar UI affordances, and `visible_body_nodes_for_owner(...)` now centralizes unlocked-branch filtering for body-node list views)*
 - `entity_graph_ops.py`
-- `entity_snapshots.py`
+- `entity_snapshots.py` *(shared deterministic-entity snapshot bridge; snapshot persist/apply is now entity_id-authoritative and no longer threads legacy `lineage_id` parameters through the shared runtime bridge)*
 - `entity_lifecycle.py`
 - `entity_geometry.py`
-- `spatial_index.py` *(shared ABS rect / semantic / kind / realization-state index with filtered rect queries and tag queries; currently mirrors attention-staged, world-proxy, and POIRegistry entities while legacy stores are migrated; render, attention sync, inspection, distant look, spatial music, legendary-lair/rune-anchor lookup, and dialogue site lookup read it first)*
-- `attention.py` *(attention lifecycle and render candidate assembly; Track D readers now query `SpatialIndex` before legacy attention/world-index fallbacks)*
+- `spatial_index.py` *(shared ABS rect / semantic / kind / realization-state index with filtered rect queries and tag queries; currently mirrors attention-staged, world-proxy, and POIRegistry entities while legacy stores are migrated; render, attention sync, inspection, distant look, spatial music, legendary-lair/rune-anchor lookup, dialogue site lookup, and POIRegistry compatibility spatial reads now prefer it first)*
+- `attention.py` *(attention lifecycle and render candidate assembly; Track D readers now query `SpatialIndex` before legacy attention/world-index fallbacks, staged-entity reads now go through `AttentionCellStore` helper methods instead of open-coding direct `.entities` access, and aggregate/detail promotion now uses explicit stage/mirror/promote/drop helper steps instead of store-shaped local ad hoc logic)*
 - `aggregate_resolution.py`
 - `world_entity_index.py`
 - `zones.py`
@@ -77,7 +77,7 @@ Supersedes: none
 
 - `spawning.py`
 - `ambient_spawns.py`
-- `poi_registry.py` *(transitional POI spec/content-state registry; mirrors POI specs into `SpatialIndex` while content-state persistence remains here)*
+- `poi_registry.py` *(transitional POI spec/content-state registry; mirrors POI specs into `SpatialIndex`, and its remaining spatial query methods are now compatibility wrappers over that shared index when attached while content-state persistence remains here)*
 - `poi_worldgen.py` *(unified POI realization entrypoint; `poi_spawning.py` deleted 2026-04-13; tagged [LEGACY_DELETE] pending full resolver/entity-graph pipeline convergence)*
 - `site_placement.py`
 - `sites.py` *(legacy — no longer the main source of truth for prototype-driven site placement; prefer `site_placement.py` + `content/site_types.yaml`)*

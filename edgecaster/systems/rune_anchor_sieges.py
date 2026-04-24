@@ -94,6 +94,13 @@ class RuneAnchorSiegeState:
     granted_actions: List[str] = field(default_factory=lambda: ["anchor_channel", "anchor_stabilize", "anchor_purge"])
 
 
+def _get_siege(level: "LevelState") -> Optional[RuneAnchorSiegeState]:
+    for ent in entity_ops_system.iter_entities(level):
+        if getattr(ent, "kind", "") == "rune_anchor_siege":
+            return ent.tags.get("siege_state")
+    return None
+
+
 def _is_tile_open(
     game: "Game",
     level: "LevelState",
@@ -179,7 +186,7 @@ def _target_within_radius_sq(target: object, center: Tuple[int, int], radius_sq:
 
 def attach_siege_to_level(game: "Game", level: "LevelState", siege_id: str) -> None:
     """Attach a rune-anchor siege to a level."""
-    if getattr(level, "rune_anchor_siege", None) is not None:
+    if _get_siege(level) is not None:
         return
 
     siege_def = get_rune_anchor_siege(siege_id)
@@ -238,7 +245,20 @@ def attach_siege_to_level(game: "Game", level: "LevelState", siege_id: str) -> N
         reward_bismuth_max=siege_def.reward_bismuth_max,
         legacy_trial_id=siege_def.legacy_trial_id,
     )
-    level.rune_anchor_siege = siege
+
+    from edgecaster.state.entities import Entity
+    eid = f"siege_{siege.siege_id}_{game._new_id()}"
+    ent = Entity(
+        id=eid,
+        name=siege.name,
+        pos=anchor_pos,
+        abs_pos=game.abs_from_zone_local(level.coord, anchor_pos),
+        kind="rune_anchor_siege",
+        tags={"siege_state": siege},
+        render_layer=-1,
+    )
+    level.entities[eid] = ent
+
     _spawn_anchor_entity(game, level, anchor_pos, siege.siege_id)
     _seed_coherence_crystals(game, level, anchor_pos, count=max(2, len(fractures) - 1))
 
@@ -251,7 +271,7 @@ def attach_siege_to_level(game: "Game", level: "LevelState", siege_id: str) -> N
 
 def sync_zone_siege(game: "Game", level: "LevelState", coord: Tuple[int, int, int]) -> None:
     """Auto-start or pause sieges as the player changes zones."""
-    siege = getattr(level, "rune_anchor_siege", None)
+    siege = _get_siege(level)
 
     player = game._player() if hasattr(game, "_player") else None
     if player is None:
@@ -269,7 +289,7 @@ def sync_zone_siege(game: "Game", level: "LevelState", coord: Tuple[int, int, in
     if active_zone is not None and active_zone != tuple(coord):
         prev = getattr(game, "levels", {}).get(active_zone)
         if prev is not None:
-            prev_siege = getattr(prev, "rune_anchor_siege", None)
+            prev_siege = _get_siege(prev)
             if prev_siege is not None:
                 prev_siege.active = False
         revoke_siege_grants(game, player.id)
@@ -378,7 +398,7 @@ def revoke_siege_grants(game: "Game", actor_id: str) -> None:
 
     game.refresh_actor_actions(actor.id)
 
-    siege = getattr(level, "rune_anchor_siege", None)
+    siege = _get_siege(level)
     if siege is not None and str(siege.grants_owner_id or "") == str(actor_id):
         siege.grants_applied = False
         siege.grants_owner_id = None
@@ -387,7 +407,7 @@ def revoke_siege_grants(game: "Game", actor_id: str) -> None:
 def channel_fracture(game: "Game", actor_id: str) -> None:
     """Action: spend Coherence Crystal charge to stabilize a nearby fracture."""
     level = game._level()
-    siege = getattr(level, "rune_anchor_siege", None)
+    siege = _get_siege(level)
     actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
@@ -429,7 +449,7 @@ def channel_fracture(game: "Game", actor_id: str) -> None:
 def stabilize_anchor(game: "Game", actor_id: str) -> None:
     """Action: reinforce the anchor core during the stabilize phase."""
     level = game._level()
-    siege = getattr(level, "rune_anchor_siege", None)
+    siege = _get_siege(level)
     actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
@@ -468,7 +488,7 @@ def stabilize_anchor(game: "Game", actor_id: str) -> None:
 def purge_anchor(game: "Game", actor_id: str) -> None:
     """Action: spend coherence to blast hostiles and steady the anchor."""
     level = game._level()
-    siege = getattr(level, "rune_anchor_siege", None)
+    siege = _get_siege(level)
     actor = entity_ops_system.get_actor(level, actor_id)
     if actor is None:
         return
@@ -523,7 +543,7 @@ def purge_anchor(game: "Game", actor_id: str) -> None:
 
 def update_siege(game: "Game", level: "LevelState") -> None:
     """Tick hook: pressure, decay, backlash, and wave spawning."""
-    siege = getattr(level, "rune_anchor_siege", None)
+    siege = _get_siege(level)
     if siege is None or siege.phase == "stabilized" or not siege.active:
         return
 

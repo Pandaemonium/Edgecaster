@@ -36,6 +36,7 @@ def _make_comp(
             node_id=nid,
             kind=spec.get("kind", "core"),
             active=bool(spec.get("active", True)),
+            abs_pos=tuple(spec["abs_pos"]) if isinstance(spec.get("abs_pos"), (list, tuple)) and len(spec.get("abs_pos")) >= 2 else None,
             channels=dict(spec.get("channels", {})),
             tags={},
         )
@@ -47,6 +48,7 @@ def _make_comp(
             dst_node_id=str(espec["dst"]),
             kind=str(espec.get("kind", "contains")),
             propagation="automatic",
+            weight=float(espec.get("weight", 1.0)),
         )
     return chakra_component_state.ChakraComponent(
         root_node_id=root_id,
@@ -116,7 +118,9 @@ def test_loaded_rules_parse_edge_kinds() -> None:
 def test_isolated_node_returns_intrinsic_channels() -> None:
     comp = _make_comp("root", {"root": {"channels": {"mass": 2.0, "hp": 10.0}}})
     result = reduce_component(comp, _additive_rules())
-    assert result["root"] == {"mass": 2.0, "hp": 10.0}
+    assert result["root"]["mass"] == 2.0
+    assert result["root"]["hp"] == 10.0
+    assert result["root"]["res_mana_cost_mult"] == 1.0
 
 
 def test_empty_component_returns_empty_dict() -> None:
@@ -436,3 +440,40 @@ def test_dirty_node_ids_propagates_when_child_dirty() -> None:
     )
     result = reduce_component(comp, _additive_rules(), dirty_node_ids={"child"})
     assert result["child"]["mass"] == 4.0
+
+
+# ---------------------------------------------------------------------------
+# G2: Geometry-aware reducers (Edge weights & distance)
+# ---------------------------------------------------------------------------
+
+def test_edge_weight_multiplies_propagated_value() -> None:
+    comp = _make_comp(
+        "parent",
+        {
+            "parent": {"channels": {"mass": 4.0}},
+            "child": {"channels": {"mass": 1.0}},
+        },
+        {"e1": {"src": "parent", "dst": "child", "weight": 0.5}},
+    )
+    result = reduce_component(comp, _additive_rules())
+    assert result["child"]["mass"] == 3.0
+
+def test_distance_decay_reduces_propagated_value() -> None:
+    rules = ChakraRules(
+        channel_default=ChannelRule(combine="additive"),
+        per_channel={
+            "charge": ChannelRule(combine="additive", distance_decay=0.1)
+        },
+        edge_kinds={"contains": EdgeKindRule(propagation="automatic")},
+    )
+    comp = _make_comp(
+        "parent",
+        {
+            "parent": {"channels": {"charge": 10.0}, "abs_pos": (0.0, 0.0)},
+            "child": {"channels": {"charge": 0.0}, "abs_pos": (3.0, 4.0)},
+        },
+        {"e1": {"src": "parent", "dst": "child"}},
+    )
+    # dist = 5.0. Decay = 10.0 * (1.0 - 0.1 * 5.0) = 10.0 * 0.5 = 5.0
+    result = reduce_component(comp, rules)
+    assert result["child"]["charge"] == 5.0

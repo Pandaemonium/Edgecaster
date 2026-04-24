@@ -337,8 +337,9 @@ def coherence_tick(game: "Game", level: "LevelState", delta: int) -> None:
         level.fern_growth_tips = []
         level.fern_accum = 0.0
         # Clear vine simulation tied to the old rune geometry.
-        level.choking_vines_state = None
-        level.rune_choking_vines_state = None
+        for ent in list(entity_ops_system.iter_entities(level)):
+            if getattr(ent, "kind", "") in ("aggressive_vines", "rune_choking_vines"):
+                entity_ops_system.remove_entity(level, ent.id)
         game.log.add("Your pattern loses coherence and unravels.")
         stats.coherence = stats.max_coherence
 
@@ -606,50 +607,53 @@ def acidic_pattern_tick(game: "Game", level: "LevelState") -> None:
 def choking_vines_tick(game: "Game", level: "LevelState", delta: int) -> None:
     """Advance Choking Vines simulation for `delta` ticks.
 
-    The state is stored on `level.choking_vines_state` with ABS-space segment/tip
-    coordinates so it remains coherent across zone-view sync.
+    Aggressive vine runtime now lives entirely on transient
+    ``kind="aggressive_vines"`` entities in the loaded level cache.
     """
     if delta <= 0:
         return
-    state = getattr(level, "choking_vines_state", None)
-    if not state:
-        return
+    tips_to_show: list[dict[str, Any]] = []
+    for ent in list(entity_ops_system.iter_entities(level)):
+        if getattr(ent, "kind", "") != "aggressive_vines":
+            continue
+        state = getattr(ent, "tags", {})
+        try:
+            remaining = int(state.get("remaining", 0))
+        except Exception:
+            entity_ops_system.remove_entity(level, ent.id)
+            continue
 
-    try:
-        remaining = int(state.get("remaining", 0))
-    except Exception:
-        level.choking_vines_state = None
-        return
+        for _ in range(int(delta)):
+            if remaining <= 0:
+                break
+            _step_choking_vines(game, level, state)
+            remaining -= 1
+            state["remaining"] = remaining
 
-    for _ in range(int(delta)):
         if remaining <= 0:
-            break
-        _step_choking_vines(game, level, state)
-        remaining -= 1
-        state["remaining"] = remaining
+            entity_ops_system.remove_entity(level, ent.id)
+        else:
+            tips_to_show.extend(list(state.get("tips", []) or []))
 
     # Keep activation overlay loosely in sync with active vine tips.
     try:
-        zx, zy, _ = getattr(level, "coord", getattr(game, "zone_coord", (0, 0, 0)))
-        zw, zh = game._zone_dims()
-        ox = float(zx * zw)
-        oy = float(zy * zh)
-        tips = list(state.get("tips", []) or [])
-        level.activation_points = [
-            (float(t["x"]) - ox, float(t["y"]) - oy)
-            for t in tips
-            if "x" in t and "y" in t
-        ]
-        if level.activation_points:
-            level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 3)
+        if tips_to_show:
+            zx, zy, _ = getattr(level, "coord", getattr(game, "zone_coord", (0, 0, 0)))
+            zw, zh = game._zone_dims()
+            ox = float(zx * zw)
+            oy = float(zy * zh)
+            level.activation_points = [
+                (float(t["x"]) - ox, float(t["y"]) - oy)
+                for t in tips_to_show
+                if "x" in t and "y" in t
+            ]
+            if level.activation_points:
+                level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 3)
     except Exception:
         pass
 
-    if remaining <= 0:
-        level.choking_vines_state = None
-
     # Keep canonical per-depth pattern state synced with vine runtime state so
-    # crossing zones does not revert to stale tendril geometry.
+    # current activation overlays stay consistent across the active level view.
     try:
         game._commit_pattern_state_from_level(level)
     except Exception:

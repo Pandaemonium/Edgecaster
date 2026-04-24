@@ -63,19 +63,6 @@ def _ensure_tags(ent: Any) -> dict:
     return tags
 
 
-# [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-# This write-through helper exists only while graph operations still mirror
-# containment/ownership metadata into legacy entity_state fields. Once graph
-# queries become the single runtime authority, delete this helper and stop
-# backfilling owner/socket state outside the graph.
-def _patch_entity_state(game: Any, entity_or_id: Any, **fields: Any) -> None:
-    try:
-        patch = getattr(game, "patch_entity_state", None)
-        if callable(patch):
-            patch(entity_or_id, **fields)
-    except Exception:
-        pass
-
 
 def _entity_chakra_component(ent: Any) -> Any:
     try:
@@ -169,13 +156,11 @@ def attach_entity_to_parent(
 ) -> None:
     """Attach an entity to a parent node using runtime containment metadata.
 
-    Writes containment into game.entity_graph (Phase-2C authority) and also
-    patches legacy per-entity attributes and entity_state for compatibility.
+    Writes containment into game.entity_graph and patches per-entity attributes.
     """
     pid = str(parent_id)
     sid = str(socket_id or inventory_socket)
 
-    # --- Phase-2C: write authoritative containment edge first ---
     graph = _get_entity_graph(game)
     if graph is not None:
         eid = _graph_entity_id(ent)
@@ -191,9 +176,9 @@ def attach_entity_to_parent(
                 lod_state=_graph_lod_state(ent, default="expanded"),
                 layout_id=_graph_layout_id(ent),
                 rule_id=_graph_rule_id(ent),
+                obj=ent,
             )
 
-    # --- Legacy: patch per-entity attributes ---
     try:
         setattr(ent, "parent_entity_id", pid)
     except Exception:
@@ -215,15 +200,6 @@ def attach_entity_to_parent(
     except Exception:
         pass
 
-    _patch_entity_state(
-        game,
-        ent,
-        owner_id=pid,
-        parent_entity_id=pid,
-        socket_id=sid,
-        in_inventory=bool(sid == inventory_socket),
-        removed=False,
-    )
 
 
 def detach_entity_from_parent(
@@ -234,17 +210,14 @@ def detach_entity_from_parent(
 ) -> None:
     """Detach an entity from its current parent/socket metadata.
 
-    Clears the containment edge in game.entity_graph (Phase-2C authority) and
-    also clears legacy per-entity attributes and entity_state for compatibility.
+    Clears the containment edge in game.entity_graph and clears per-entity attributes.
     """
-    # --- Phase-2C: clear containment edge first ---
     graph = _get_entity_graph(game)
     if graph is not None:
         eid = _graph_entity_id(ent)
         if eid:
             graph.reparent(eid, None, None)
 
-    # --- Legacy: clear per-entity attributes ---
     try:
         setattr(ent, "parent_entity_id", None)
     except Exception:
@@ -262,14 +235,6 @@ def detach_entity_from_parent(
     except Exception:
         pass
 
-    _patch_entity_state(
-        game,
-        ent,
-        owner_id=None,
-        parent_entity_id=None,
-        socket_id=None,
-        in_inventory=False,
-    )
 
 
 def register_entity(
@@ -307,6 +272,7 @@ def register_entity(
         lod_state=str(lod_state or "").strip() or _graph_lod_state(ent, default="expanded"),
         layout_id=layout_id or _graph_layout_id(ent),
         rule_id=rule_id or _graph_rule_id(ent),
+        obj=ent,
     )
 
 
@@ -586,11 +552,6 @@ def transfer_inventory_entity(
         pass
     attach_entity_to_parent(game, ent, str(dst_owner_id), socket_id=socket_id)
     try:
-        from edgecaster.systems.entity_lifecycle import _track_runtime_entity
-        _track_runtime_entity(game, ent)
-    except Exception:
-        pass
-    try:
         from edgecaster.systems import inventory as inventory_system
 
         inventory_system.get_inventory(game, str(dst_owner_id))
@@ -633,11 +594,6 @@ def transfer_split_quantity(
         clear_equipped_tags=bool(clear_equipped_tags),
     )
     attach_entity_to_parent(game, child, str(dst_owner_id), socket_id=socket_id)
-    try:
-        from edgecaster.systems.entity_lifecycle import _track_runtime_entity
-        _track_runtime_entity(game, child)
-    except Exception:
-        pass
     try:
         from edgecaster.systems import inventory as inventory_system
 

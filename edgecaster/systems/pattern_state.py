@@ -32,8 +32,6 @@ def pattern_state(game: Any, depth: int | None = None) -> dict:
             "fern_active": False,
             "fern_growth_tips": [],
             "fern_accum": 0.0,
-            "choking_vines_state": None,
-            "rune_choking_vines_state": None,
         }
         game._pattern_state_by_depth[d] = state
 
@@ -87,8 +85,6 @@ def commit_pattern_state_from_level(game: Any, level: Any) -> None:
     st["fern_active"] = bool(getattr(level, "fern_active", False))
     st["fern_growth_tips"] = list(getattr(level, "fern_growth_tips", []) or [])
     st["fern_accum"] = float(getattr(level, "fern_accum", 0.0) or 0.0)
-    st["choking_vines_state"] = getattr(level, "choking_vines_state", None)
-    st["rune_choking_vines_state"] = getattr(level, "rune_choking_vines_state", None)
 
 
 def sync_level_pattern_view(game: Any, level: Any) -> None:
@@ -108,8 +104,6 @@ def sync_level_pattern_view(game: Any, level: Any) -> None:
     level.fern_active = bool(st.get("fern_active", False))
     level.fern_growth_tips = list(st.get("fern_growth_tips", []) or [])
     level.fern_accum = float(st.get("fern_accum", 0.0) or 0.0)
-    level.choking_vines_state = st.get("choking_vines_state")
-    level.rune_choking_vines_state = st.get("rune_choking_vines_state")
 
     level.activation_points = list(st.get("activation_points", []) or [])
     level.activation_ttl = int(st.get("activation_ttl", 0) or 0)

@@ -745,7 +745,11 @@ def _rune_sapper(game: Any, level: Any, actor: Any) -> Tuple[str, Dict]:
     if player_dist == 1 and "move" in available:
         return ("move", {"dx": player_dx, "dy": player_dy})
 
-    siege = getattr(level, "rune_anchor_siege", None)
+    try:
+        from edgecaster.systems import rune_anchor_sieges
+        siege = rune_anchor_sieges._get_siege(level)
+    except Exception:
+        siege = None
     if siege is None or getattr(siege, "phase", "") == "stabilized":
         return _generic_walk_toward(game, level, actor)
 

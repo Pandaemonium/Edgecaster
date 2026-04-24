@@ -58,6 +58,7 @@ channels:
     charge:
       combine: additive
       clamp: none
+      distance_decay: 0.05
 
 edges:
   contains:
@@ -68,3 +69,44 @@ edges:
     propagation: opt_in
   routes:
     propagation: opt_in
+
+resonances:
+  bilateral_arms:
+    requires_any_sets:
+      - ["arm", "arm_m"]
+      - ["shoulder", "shoulder_m"]
+    grants:
+      mana_cost_mult: 0.90
+      damage_mult: 1.05
+  grounded:
+    requires_any_sets:
+      - ["leg", "leg_m"]
+      - ["thigh", "thigh_m"]
+    grants:
+      radius_bonus: 0.5
+      mana_cost_mult: 0.95
+  centered:
+    requires_any_sets:
+      - ["body"]
+    grants:
+      damage_mult: 1.10
+      chakra_amp_mult: 1.10
+  full_hand:
+    requires_any_sets:
+      - ["thumb", "index", "middle", "ring", "pinky"]
+    grants:
+      charge_gain_mult: 1.25
+      charge_cap_bonus: 0.15
+      neighbor_depth_bonus: 1.0
+  triune_balance:
+    requires_any_sets: []
+    requires_shape: triangle
+    grants:
+      chakra_amp_mult: 1.15
+  full_hand_m:
+    requires_any_sets:
+      - ["thumb_m", "index_m", "middle_m", "ring_m", "pinky_m"]
+    grants:
+      charge_gain_mult: 1.25
+      charge_cap_bonus: 0.15
+      neighbor_depth_bonus: 1.0

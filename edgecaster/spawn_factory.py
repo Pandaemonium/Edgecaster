@@ -270,9 +270,10 @@ def build_entity_from_spec(
     chakra_component = chakra_component_state.coerce_chakra_component(
         raw_component,
         entity_id=str(s.get("entity_id") or eid),
-        max_hp=core_hp,
-        mass=1.0,
     )
+    if chakra_component.root_node_id in chakra_component.nodes:
+        chakra_component.nodes[chakra_component.root_node_id].channels.setdefault("hp", float(core_hp))
+        chakra_component.nodes[chakra_component.root_node_id].channels.setdefault("mass", 1.0)
     try:
         chakra_component.tags = dict(getattr(chakra_component, "tags", {}) or {})
         chakra_component.tags.setdefault("layout_id", layout_id)
@@ -400,9 +401,10 @@ def build_actor_from_spec(
     chakra_component = chakra_component_state.coerce_chakra_component(
         raw_component,
         entity_id=str(s.get("entity_id") or aid),
-        max_hp=float(base_hp),
-        mass=1.0,
     )
+    if chakra_component.root_node_id in chakra_component.nodes:
+        chakra_component.nodes[chakra_component.root_node_id].channels.setdefault("hp", float(base_hp))
+        chakra_component.nodes[chakra_component.root_node_id].channels.setdefault("mass", 1.0)
     try:
         chakra_component.tags = dict(getattr(chakra_component, "tags", {}) or {})
         chakra_component.tags.setdefault("layout_id", layout_id)

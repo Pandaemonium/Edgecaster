@@ -15,10 +15,17 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Sequence, Set
 
 from edgecaster.state import chakra_component as chakra_component_state
+from edgecaster.systems import chakra_reducer as chakra_reducer_system
 from edgecaster.systems import equipment as equipment_system
 
 # Debug throttle: actor_id -> last effective-state signature.
 _LAST_EFFECTIVE_SIG: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {}
+
+# Shared charge tunables remain module-level so scene/runtime callers can import
+# them without reaching back into legacy chakra helpers.
+CHARGE_GAIN_PER_TICK = 0.004
+CHARGE_DECAY_PER_TICK = 0.006
+CHARGE_MAX_BASE = 1.0
 
 
 @dataclass
@@ -396,8 +403,6 @@ def _coerce_actor_chakra_component(actor: Any) -> Any:
         comp = chakra_component_state.coerce_chakra_component(
             raw,
             entity_id=_actor_entity_id(actor),
-            max_hp=_actor_max_hp(actor),
-            mass=1.0,
         )
     except Exception:
         return None
@@ -746,20 +751,15 @@ def tick_actor_chakra_charge(
         return
 
     try:
-        from edgecaster.systems.chakras import (
-            check_resonance_bonuses_from_active_nodes,
-            get_resonance_modifiers,
-            CHARGE_GAIN_PER_TICK,
-            CHARGE_DECAY_PER_TICK,
-            CHARGE_MAX_BASE,
-        )
         from edgecaster.state import chakra_component as chakra_component_state
     except Exception:
         return
 
     active = effective_active_nodes(game, actor)
-    bonuses = check_resonance_bonuses_from_active_nodes(active)
-    mods = get_resonance_modifiers(bonuses)
+    mods = chakra_reducer_system.evaluate_resonance_modifiers(
+        set(active),
+        comp=comp,
+    )
 
     gain = CHARGE_GAIN_PER_TICK * mods.charge_gain_mult
     decay = CHARGE_DECAY_PER_TICK

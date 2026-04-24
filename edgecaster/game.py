@@ -74,7 +74,6 @@ from edgecaster.state.entities import Entity
 from edgecaster.state.entity_graph import EntityGraphStore
 from edgecaster.enemies import factory as enemy_factory
 from edgecaster.systems.spatial_index import SpatialIndex
-from edgecaster.systems.world_entity_index import WorldEntityIndex
 from edgecaster.systems import aggregate_resolution as aggregate_system
 
 from edgecaster import prototypes
@@ -215,18 +214,7 @@ class LevelState:
     fern_active: bool = False  # Is fern growth enabled?
     fern_growth_tips: List[int] = field(default_factory=list)  # Vertex indices that can spawn growth
     fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # Choking Vines runtime state (ABS-space tendril segments + tips).
-    # Transient effects should become first-class entities with TTL/state.
-    choking_vines_state: Optional[Dict[str, Any]] = None
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # Rune-mutating choking vines runtime state (branches that become real edges).
-    rune_choking_vines_state: Optional[Dict[str, Any]] = None
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # Visible thrown-knife projectiles (ABS-space center positions + rune-shape payload).
-    thrown_knives_state: List[Dict[str, Any]] = field(default_factory=list)
     seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
-    rune_anchor_siege: Optional["RuneAnchorSiegeState"] = None  # Rune anchor siege state (if any)
     # Zone difficulty metadata (computed on zone creation).
     danger_value: float = 0.0
     danger_tier: int = 1
@@ -423,14 +411,13 @@ class Game:
         self._attn_active_agg_children: Dict[str, Dict[int, str]] = {}
         # Track which staged structure tiles are active per POI/site (parent_id -> set[eid])
         self._attn_active_struct_children: Dict[str, set[str]] = {}
-        # Persistent per-entity runtime state (ownership, lifecycle, deltas).
-        # New writes should target stable entity_id keys. Legacy lineage-only
-        # records may still be read during migration as compatibility fallback.
+        # Persistent per-entity runtime state (lifecycle, snapshot deltas).
+        # Keyed by stable entity_id. Lineage fallback reads were removed (Track F.1).
         self.entity_state: Dict[str, Dict[str, Any]] = {}
         # Authoritative containment graph. Records parent/socket relationships
         # for all runtime entities. The remaining parallel stores
         # (LevelState.actors, LevelState.entities, attn_store,
-        # world_entity_index, poi_registry) are being narrowed into
+        # poi_registry) are being narrowed into
         # caches/indexes; containment writes go here first via
         # entity_graph_ops.attach_entity_to_parent / detach_entity_from_parent.
         # [ENTITY_CHAKRA][PHASE_2C]
@@ -461,18 +448,8 @@ class Game:
         from edgecaster.systems.site_placement import place_all_sites
         self.site_registry: SiteRegistry | None = place_all_sites(self)
 
-        # World-level entity index (macro-scale renderables).
-        # Populated from site_registry once placement completes.
         zone_w_init = int(getattr(getattr(self, "cfg", None), "world_width", 60) or 60)
         zone_h_init = int(getattr(getattr(self, "cfg", None), "world_height", 40) or 40)
-        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-        # Transitional macro index. End-state folds macro entities into unified graph.
-        self.world_entity_index: WorldEntityIndex = WorldEntityIndex(
-            zone_w=zone_w_init,
-            zone_h=zone_h_init,
-            spatial_index=self.spatial_index,
-        )
-        self._world_entity_index_wh = (zone_w_init, zone_h_init)  # Prevent recreation later
         self._world_entities_built: bool = False
         # Ensure fixed/world sites are available immediately (important for Starttsgard cutover).
         try:
@@ -824,17 +801,14 @@ class Game:
             for wid in (first, second):
                 try:
                     from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-                    from edgecaster.systems.entity_lifecycle import _track_runtime_entity
 
                     wand = self._spawn_entity_from_template(wid, player.pos)
-                    # Register via graph only — no legacy list append (B1 migration).
                     entity_graph_ops_system.attach_entity_to_parent(
                         self,
                         wand,
                         self.player_id,
                         socket_id="inventory",
                     )
-                    _track_runtime_entity(self, wand)
                 except Exception:
                     continue
         except Exception:
@@ -1428,7 +1402,7 @@ class Game:
                 pass
 
         try:
-            inv = list(self.get_inventory(actor_id))
+            inv = action_runner._actor_inventory(self, str(actor_id))
         except Exception:
             inv = []
         granted = item_grants.collect_active_granted_actions(inv)
@@ -2221,20 +2195,8 @@ class Game:
                 return lid
         return None
 
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # The dual entity_id + lineage fallback helpers below are migration-only.
-    # Once remaining lineage-keyed records are upgraded, collapse this block to
-    # entity_id-only reads/writes.
-    def _entity_state_write_key(self, entity_or_id: Any, *, lineage_id: Any = None) -> str:
-        """Return the single authoritative key to write for this patch.
-
-        Rules:
-        - Objects write to stable entity_id when available.
-        - Direct string patches write to the provided key verbatim. This keeps
-          explicit lineage-only compatibility writes possible while new code
-          moves toward entity_id-keyed writes.
-        - If no entity id is available, fall back to lineage as a last resort.
-        """
+    def _entity_state_write_key(self, entity_or_id: Any) -> str:
+        """Return the single authoritative key to write for this patch."""
         if isinstance(entity_or_id, str):
             return self._normalize_entity_id(entity_or_id) or ""
 
@@ -2242,70 +2204,21 @@ class Game:
         if eid:
             return eid
 
-        lid_kw = self._normalize_entity_id(lineage_id)
-        if lid_kw:
-            return lid_kw
+        return ""
 
-        return self.lineage_id_for_entity(entity_or_id) or ""
-
-    @staticmethod
-    def _merge_entity_state_records(primary: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge fallback lineage data under an authoritative primary entity record.
-
-        Once an entity-keyed record exists, lineage remains compatibility
-        backfill only. It may provide old detail fields, but it must not
-        override lifecycle/ownership truth for the entity.
-        """
-        if not primary:
-            return dict(fallback or {})
-
-        blocked_fallback_keys = {
-            "removed",
-            "dead",
-            "removed_reason",
-            "dead_reason",
-            "updated_tick",
-            "owner_id",
-            "parent_entity_id",
-            "socket_id",
-            "in_inventory",
-        }
-        out: Dict[str, Any] = {}
-        if isinstance(fallback, dict):
-            for k, v in fallback.items():
-                if str(k) not in blocked_fallback_keys:
-                    out[str(k)] = v
-        out.update(dict(primary))
-        return out
-
-    def get_effective_entity_state(self, entity_or_id: Any, *, lineage_id: Any = None) -> Dict[str, Any]:
-        """Return effective state with entity_id authority and lineage fallback."""
-        # Unification note: this helper exists so current runtime paths can read
-        # both key spaces. Keep new systems biased toward entity_id-only writes.
+    def get_effective_entity_state(self, entity_or_id: Any) -> Dict[str, Any]:
+        """Return effective state with entity_id authority."""
         store = getattr(self, "entity_state", None)
         if not isinstance(store, dict):
             return {}
 
-        primary_key = self._entity_state_write_key(entity_or_id, lineage_id=lineage_id)
-        primary: Dict[str, Any] = {}
+        primary_key = self._entity_state_write_key(entity_or_id)
         if primary_key:
             st = store.get(str(primary_key))
             if isinstance(st, dict):
-                primary = st
+                return dict(st)
 
-        fallback_key = ""
-        if isinstance(entity_or_id, str):
-            fallback_key = self._normalize_entity_id(lineage_id)
-        else:
-            fallback_key = self._normalize_entity_id(lineage_id) or (self.lineage_id_for_entity(entity_or_id) or "")
-
-        fallback: Dict[str, Any] = {}
-        if fallback_key and fallback_key != str(primary_key or ""):
-            st = store.get(str(fallback_key))
-            if isinstance(st, dict):
-                fallback = st
-
-        return self._merge_entity_state_records(primary, fallback)
+        return {}
 
     def get_entity_state(self, entity_or_id: Any) -> Dict[str, Any]:
         if isinstance(entity_or_id, str):
@@ -2324,11 +2237,9 @@ class Game:
         self,
         entity_or_id: Any,
         patch: Optional[Dict[str, Any]] = None,
-        *,
-        lineage_id: Any = None,
         **fields: Any,
     ) -> None:
-        key = self._entity_state_write_key(entity_or_id, lineage_id=lineage_id)
+        key = self._entity_state_write_key(entity_or_id)
         if not key:
             return
         try:
@@ -2343,12 +2254,6 @@ class Game:
             st.update(patch)
         if fields:
             st.update(fields)
-
-        lid = self._normalize_entity_id(lineage_id)
-        if not lid and not isinstance(entity_or_id, str):
-            lid = self.lineage_id_for_entity(entity_or_id)
-        if lid and str(key) != lid:
-            st["lineage_id"] = str(lid)
 
         if updated_tick:
             st["updated_tick"] = int(updated_tick)
@@ -2369,20 +2274,17 @@ class Game:
         reason: str = "removed",
     ) -> Optional[str]:
         eid = self.entity_id_for_entity(obj)
-        lid = self.lineage_id_for_entity(obj)
         if eid:
             self.patch_entity_state(
                 eid,
                 removed=True,
                 removed_reason=str(reason or "removed"),
-                lineage_id=lid,
             )
             return eid
         return None
 
     def mark_actor_dead(self, obj: object, *, reason: str = "killed") -> Optional[str]:
         eid = self.entity_id_for_entity(obj)
-        lid = self.lineage_id_for_entity(obj)
         hp = None
         try:
             hp = int(getattr(getattr(obj, "stats", None), "hp", 0))
@@ -2394,8 +2296,8 @@ class Game:
                 "dead_reason": str(reason or "dead"),
             }
             if hp is not None:
-                patch["last_known_hp"] = int(hp)
-            self.patch_entity_state(eid, patch, lineage_id=lid)
+                patch["hp"] = int(hp)
+            self.patch_entity_state(eid, patch)
             return eid
         return None
 

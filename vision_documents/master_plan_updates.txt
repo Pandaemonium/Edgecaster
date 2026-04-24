@@ -1,0 +1,65 @@
+Title: Entity + Chakra Plan Scratch Updates
+Purpose: scratch staging notes captured before merging useful items into the canonical master plan.
+Status: scratch
+Last reviewed: 2026-04-23
+Canonical doc: `vision_documents/entity_chakra_unification_master_plan.txt`
+Note: some items below are historical or already merged; use the canonical master plan for current priorities.
+
+Updates for entity_chakra_unification_master_plan.txt (applied 2026-04-22):
+
+1. In the "CRITICAL PATH SUMMARY" -> "Phase 8 Legacy Removal" section:
+   Add:
+   101. Phase 8 Legacy Removal Slice C.2 (2026-04-22):
+       - Refactored the equipment system to model equipped items as graph sockets (`socket_id=slot_id`).
+       - `equip_item_to_slot` reparents the item from `socket_id="inventory"` to the specific slot.
+       - `unequip_item` reparents the item back to `socket_id="inventory"`.
+       - `get_equipped_in_slot` and `equipped_items` now query the entity graph for non-inventory sockets.
+       - Upgraded `action_runner`, `game.py` stat calculation, and `remove_inventory_item` to be aware of items that have transitioned into equipment sockets.
+   102. Phase 8 Legacy Removal Slice C.3 & C.4 (2026-04-22):
+       - Purged all remaining write paths to the `game.inventories` dict.
+       - Demoted and deleted `game.inventories`. Inventory queries now rely strictly on `entity_graph` containment edges.
+       - `get_inventory` returns a freshly built list, fully completing the single-source-of-truth cutover for item containment.
+   103. Phase 8 Legacy Removal Slice D.1 (2026-04-22):
+       - Established `SpatialIndex` in `edgecaster/systems/spatial_index.py` as the unified hierarchical rect index.
+       - Designed to subsume `AttentionCellStore`, `WorldEntityIndex`, and `POIRegistry` by tracking absolute geometry, realization state, semantic ID, and kind.
+   104. Phase 8 Legacy Removal Slice D.15 (2026-04-23):
+       - Stripped dead `_by_zone` and `_ent_cells` bucket structures from `WorldEntityIndex`.
+       - Deleted unused `iter_zone`, `extend`, `_coverage_zones_for`, and `WorldEntRef` since SpatialIndex now handles spatial lookups.
+       - Stripped dead `bins`, `eid_to_bin`, `entity_rects`, and `entity_cells` from `AttentionCellStore`.
+       - Both legacy classes are now thin write-only wrappers that mirror entities directly into `SpatialIndex`.
+   105. Phase 8 Legacy Removal Track E Kickoff (2026-04-23):
+       - Upgraded `choking_vines_state` and `rune_choking_vines_state` from `LevelState` sidecars into first-class Entities (`kind="aggressive_vines"` and `kind="rune_choking_vines"`).
+       - Modified `act_aggressive_vines` and `act_choking_vines` to spawn these entities instead of storing state on the level.
+       - Updated `choking_vines_tick` and `rune_choking_vines_tick` to iterate over entities.
+       - Modified `draw_choking_vines_overlay` to render these entities.
+       - Updated pattern resetting code in `pattern_runtime.py` and `scheduling.py` to correctly remove these effect entities when a pattern unravels.
+   106. Phase 8 Legacy Removal Track E Completion (2026-04-23):
+       - Promoted `ignite_state`, `regrow_state`, `sparkle_state`, and `lightning_state` from `LevelState` dictionaries into proper `Entity` records (`kind="ignite_effect"`, `kind="regrow_effect"`, `kind="sparkle_effect"`, `kind="lightning_effect"`).
+   107. Phase 8 Legacy Removal Slice E.Final & F.1 (2026-04-23):
+       - Promoted `thrown_knives_state` from `LevelState` into proper `Entity` records (`kind="throwing_knife"`).
+       - Removed `thrown_knives_state` field from `LevelState`.
+       - `advance_thrown_knives` and `draw_throwing_knife_overlay` now iterate over the entity graph.
+       - Eradicated `lineage_id` persistence fallbacks from `game.py` (`_merge_entity_state_records`, `_entity_state_write_key`).
+       - `entity_id` is now the sole, strict authority for `game.entity_state`.
+   108. Phase 8 Legacy Removal Slice F.2 (2026-04-23):
+       - Cleaned up `edgecaster/systems/entity_snapshots.py` by aligning the persisted state keys with the actual entity fields (`hp`, `tags_patch`, `glyph`, `blocks_movement`, `statuses`, `cooldowns`) instead of the legacy `last_known_*` prefix.
+       - Deleted the `[LEGACY_DELETE]` tracker for the `last_known_*` format since it has been resolved.
+
+2. Future Architectural Backlog (Derived from architecture.txt & master plan review):
+   - Game.py Decomposition (Final Phases): Thin `Game.__init__` into dedicated bootstrap modules (`bootstrap_world.py`, `bootstrap_player.py`); move `_make_zone` to a dedicated worldgen orchestrator; relocate `LevelState` to `edgecaster/state/levels.py`.
+   - Transient Event Promotion: Upgrade `seal_trial`, `rune_anchor_siege`, and `lab_state` sidecars from `LevelState` into first-class event entities with standard lifecycle lifespans.
+   - POI Realization & Persistence: Implement multi-zone POI partial realization (chunked instantiation) and hook `POIContentState` into the save/load system for tracking `killed_npcs` and `removed_items` persistently.
+   - Gods and Factions as Entities: Turn Gods and Factions into macro-scale entities within the unified graph, replacing parallel `god_favor` and `reputation` dicts with typed relation edges.
+   - Observer-Driven Attention (Multi-Fovea): Fully decouple the attention/realization focal point from the "player entity" to support remote scrying, body-swapping, and split-screen without duplicating realization logic.
+   - Engine Cleanup: Remove remaining legacy `[LEGACY_DELETE]` tags tied to `body_schema` GUI traversal, untyped faction tags, and hardcoded blade calculations.
+
+3. Deep Codebase Audit Findings (2026-04-23):
+   - Store Collapse Finalization: Delete `AttentionCellStore` and `WorldEntityIndex` classes entirely. Reroute all their active writers (`stage`, `despawn`, `add`) directly to `SpatialIndex`.
+   - Runtime Registry Bridge: Remove the `_runtime_entity_registry` migration bridge in `entity_lifecycle.py` (`[LEGACY_DELETE][ENTITY_CHAKRA][RUNTIME_REGISTRY]`). Unified entity graph and spatial index should be the sole runtime authorities.
+   - LevelState Merging: Merge `LevelState.actors` and `LevelState.entities` into a single `LevelState.entities` collection to eliminate the actor/entity ontology split, then extract `LevelState` from `game.py`.
+   - POI Worldgen Demotion: Fold `poi_worldgen.py` completely into the standard entity-graph realization pipeline (`aggregate_resolution.py`), honoring its `[LEGACY_DELETE]` tag.
+
+   111. Phase 8 Legacy Removal Slice D.21 & E+ (2026-04-24):
+       - Cleaned up `POIRegistry` by deleting unused `_by_zone` and `_by_zone_2d` population logic and leftover debug logs.
+       - Promoted `rune_anchor_siege` from `LevelState` sidecar into a first-class `Entity` with `kind="rune_anchor_siege"`.
+       - Removed unused `lineage_id` parameter from `patch_entity_state` and `get_effective_entity_state` in `game.py`, fully concluding Track F.1.

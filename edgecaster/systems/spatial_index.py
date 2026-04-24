@@ -296,6 +296,20 @@ class SpatialIndex:
         return out
 
 
+    def iter_all(
+        self,
+        *,
+        source: object | None = None,
+        realization_state: object | None = None,
+        kind: object | None = None,
+    ) -> List[SpatialIndexEntry]:
+        """Return all entries matching the given filters without a spatial constraint."""
+        return [
+            entry for entry in self.entries.values()
+            if self._entry_matches(entry, source=source, realization_state=realization_state, kind=kind)
+        ]
+
+
 def get_game_spatial_index(game: Any) -> Optional[SpatialIndex]:
     """Return the shared game spatial index when this save/runtime has one."""
     return getattr(game, "spatial_index", None)
