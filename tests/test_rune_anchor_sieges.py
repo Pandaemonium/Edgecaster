@@ -54,6 +54,8 @@ def _make_game_and_level():
     game = SimpleNamespace()
     game.player_id = player.id
     game.levels = {level.coord: level}
+    game._new_id = lambda: "test_siege"
+    game.abs_from_zone_local = lambda coord, pos: (coord[0] * 40 + pos[0], coord[1] * 30 + pos[1])
     game.rng = SimpleNamespace(
         randint=lambda a, b: a,
         random=lambda: 0.0,
@@ -241,7 +243,7 @@ def test_sapper_reopens_repaired_fracture():
 def test_anchor_purge_consumes_crystals_and_hits_hostiles():
     game, level, player = _make_game_and_level()
     rune_anchor_sieges.attach_siege_to_level(game, level, "starter_anchor")
-    siege = level.rune_anchor_siege
+    siege = rune_anchor_sieges._get_siege(level)
     assert siege is not None
 
     player.pos = siege.anchor_pos

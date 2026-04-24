@@ -8,7 +8,7 @@ from edgecaster.systems.spatial_index import SpatialIndex
 
 def test_attention_store_uses_footprint_rect_for_queries() -> None:
     spatial_index = SpatialIndex(bin_size=4)
-    store = AttentionCellStore(bin_size=16, spatial_index=spatial_index)
+    store = AttentionCellStore(spatial_index=spatial_index)
     obj = SimpleNamespace(
         id="wide_entity",
         abs_pos=(40, 40),
@@ -23,7 +23,7 @@ def test_attention_store_uses_footprint_rect_for_queries() -> None:
 
 def test_attention_store_deduplicates_entities_spanning_multiple_cells() -> None:
     spatial_index = SpatialIndex(bin_size=4)
-    store = AttentionCellStore(bin_size=16, spatial_index=spatial_index)
+    store = AttentionCellStore(spatial_index=spatial_index)
     obj = SimpleNamespace(
         id="giant_entity",
         abs_pos=(32, 32),
@@ -38,7 +38,7 @@ def test_attention_store_deduplicates_entities_spanning_multiple_cells() -> None
 
 def test_attention_store_preserves_point_anchor_queries() -> None:
     spatial_index = SpatialIndex(bin_size=4)
-    store = AttentionCellStore(bin_size=16, spatial_index=spatial_index)
+    store = AttentionCellStore(spatial_index=spatial_index)
     obj = SimpleNamespace(
         id="point_entity",
         abs_pos=(9, 11),
@@ -52,7 +52,7 @@ def test_attention_store_preserves_point_anchor_queries() -> None:
 
 def test_attention_store_get_and_ids_can_read_back_spatial_entries() -> None:
     spatial_index = SpatialIndex(bin_size=4)
-    store = AttentionCellStore(bin_size=16, spatial_index=spatial_index)
+    store = AttentionCellStore(spatial_index=spatial_index)
     obj = SimpleNamespace(
         id="staged_entity",
         abs_pos=(5, 6),

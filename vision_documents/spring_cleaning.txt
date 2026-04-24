@@ -3176,3 +3176,107 @@ Owner: Claude audit (2026-02-18)
       - `WorldEntityIndex._by_zone` and `_ent_cells` are now write-only
         internal structures; deletion is safe once `WorldEntityIndex.add()` is
         replaced by direct SpatialIndex registration in the spawn paths.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.19: lineage_id param removal from attention helpers (2026-04-23)
+  - Removed unused `lineage_id` keyword params from 6 helpers in
+    `attention.py`: `_mark_entity_removed`, `_mark_removed`,
+    `_mark_entity_live`, `_is_suppressed`, `_apply_persisted_entity_state`,
+    `_persist_entity_snapshot`.
+  - Updated the one internal `_is_suppressed` call site to drop the param.
+  - Updated `test_attention_suppression.py` to drop `lineage_id` args from
+    `_apply_persisted_entity_state` test calls.
+  - 701 tests pass.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.20: AttentionCellStore.entities removal (2026-04-23)
+  - `AttentionCellStore.entities` dict deleted. `stage()`, `despawn()`, and
+    `get()` now read/write exclusively through `SpatialIndex`.
+  - Added `SpatialIndex.iter_all()` for non-spatial iteration with
+    source/realization_state filters; `AttentionCellStore.ids()` uses it.
+  - `_attn_store_get` and `_attn_store_ids` in `attention.py` and
+    `entity_lifecycle.py` simplified (`.entities` fallback removed).
+  - Test fixtures in `test_entity_lifecycle.py`, `test_entity_geometry.py`,
+    and `test_entity_body_expansion.py` updated to wire a `SpatialIndex`
+    into `AttentionCellStore`.
+  - `test_attention_store.py` `store.entities.clear()` call removed.
+  - 701 tests pass.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.21: POIRegistry legacy bucket deletion (2026-04-23)
+  - Deleted `_by_zone` and `_by_zone_2d` fallback dicts from `POIRegistry`.
+  - Deleted `get_at_zone_any_depth()` method — never called outside the class.
+  - Deleted debug log statement from `_index_poi` (hardcoded path write).
+  - Simplified `_query_spatial_index_rect()` to return `List` (never None).
+  - `get_at_zone()`, `get_in_abs_rect()`, `get_at_abs_point()` now read
+    exclusively through `SpatialIndex`; no fallback zone-bucket paths remain.
+  - `test_legendaries._make_registry()` updated to wire a `SpatialIndex`.
+  - `test_spatial_index` test removed stale `registry._by_zone.clear()` call.
+  - Fixed pre-existing regression: `rune_anchor_sieges.attach_siege_to_level`
+    now uses `game._new_id()` / `game.abs_from_zone_local()` (added to test
+    fixture), and `_spawn_anchor_entity` entity_at guard now skips the siege
+    metadata entity (kind="rune_anchor_siege", render_layer=-1).
+  - Fixed `test_anchor_purge_consumes_crystals_and_hits_hostiles` stale
+    `level.rune_anchor_siege` access → `_get_siege(level)`.
+  - 701 tests pass.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.22: game.lineage_id_for_entity removal (2026-04-23)
+  - Deleted `game.lineage_id_for_entity(...)` from `edgecaster/game.py`.
+    Zero external callers remained after the lineage_id persistence cutover
+    (D.19); the method was a dead lookup that walked tags["lineage_id"].
+  - 701 tests pass.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.23: stale lineage_id param + find_runtime_entity fallback removal (2026-04-23)
+  - Removed stale `lineage_id=None` keyword parameter from
+    `get_effective_entity_state` stub in three test fixtures:
+    `test_entity_lifecycle.py`, `test_entity_geometry.py`,
+    `test_entity_body_expansion.py`. The real game.py removed this param
+    in Track F.1; the stubs lagged.
+  - Deleted the redundant `attn_store` fallback block at the bottom of
+    `find_runtime_entity` in `entity_lifecycle.py`. Since D.20,
+    `attn_store.get()` delegates to SpatialIndex, which is already
+    checked earlier in the same function. The block was unreachable in
+    any wired runtime.
+  - 701 tests pass.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.24: shared POI-query helper cutover (2026-04-24)
+  - Added shared POI-query helpers in `spatial_index.py` for zone, rect, and
+    point reads (`query_game_poi_specs_at_zone`, `query_game_poi_specs_in_rect`,
+    `query_game_poi_specs_at_abs_point`) plus lower-level SpatialIndex-backed
+    POI-spec helpers.
+  - `POIRegistry` zone/rect/point query methods are now thin compatibility
+    wrappers over those shared helpers instead of owning bespoke SpatialIndex
+    query logic.
+  - `game._make_zone()`, `mapgen.apply_pois(...)`,
+    `difficulty.compute_zone_difficulty(...)`, and
+    `SpatialMusicDirector._player_in_colosseum(...)` now read POI geometry
+    through the shared POI-query surface rather than calling POIRegistry's
+    spatial methods directly.
+  - Added regressions for helper reads without a registry and for difficulty
+    POI bonuses sourced from SpatialIndex without registry spatial lookups.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.25: AttentionCellStore.bin_size removal (2026-04-24)
+  - Removed dead `bin_size` parameter and `self.bin_size` storage from
+    `AttentionCellStore.__init__`. The value was stored but never read after
+    D.20 delegated all spatial operations to `SpatialIndex` (which manages
+    its own binning internally). Updated game.py and 8 test construction
+    sites to drop the `bin_size=...` kwarg.
+  - 703 tests pass.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.26: POIRegistry fallback removal + mapgen.apply_pois simplification (2026-04-24)
+  - Removed `_scan_registry_poi_specs` fallback calls from
+    `POIRegistry.get_at_zone`, `get_in_abs_rect`, and `get_at_abs_point`.
+    These methods now return `_query_spatial_index_rect` / point-query
+    results directly; the `_scan_registry_poi_specs` safety net still
+    exists in `spatial_index.query_game_poi_specs_*` game-level helpers
+    for the no-SpatialIndex case.
+  - Simplified `mapgen.apply_pois` from a dual-query pattern (SpatialIndex
+    first, then registry fallback) to a single `poi_registry.get_at_zone`
+    call — the registry's method already handles the SpatialIndex-first
+    contract. Removed now-dead `spatial_index_system` and `ABSRect` imports
+    from `mapgen.py`.
+  - 703 tests pass.
+
+[DONE][ENTITY_CHAKRA][PHASE_8] Track D.27: entity_id_for_entity tags fallback removal (2026-04-24)
+  - Removed the dead `tags.get("entity_id")` third leg from
+    `game.entity_id_for_entity`. Every object produced by spawn_factory,
+    entity_lifecycle staged builders, or test fixtures has `entity_id`
+    and/or `id` as direct attributes; the tags fallback was never reached.
+  - 703 tests pass.

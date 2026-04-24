@@ -1337,7 +1337,9 @@ def _spawn_anchor_entity(game: "Game", level: "LevelState", pos: Tuple[int, int]
         if tags.get("rune_anchor_siege_id") == siege_id:
             return
 
-    if entity_ops_system.entity_at(level, pos):
+    # entity_at guard: skip the siege metadata container (render_layer=-1) at this pos.
+    blocker = entity_ops_system.entity_at(level, pos)
+    if blocker is not None and getattr(blocker, "kind", "") != "rune_anchor_siege":
         return
     try:
         ent = game._spawn_entity_from_template(

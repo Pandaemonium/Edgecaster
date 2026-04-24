@@ -276,9 +276,9 @@ Current concern map (authoritative):
   - Transitional semantic/content-state registry for POI specs.
   - Spatial lookup is moving to `SpatialIndex`: the registry mirrors POI specs
     into the shared index as collapsed `source="poi_registry"` entries, and
-    its remaining zone/rect/point query helpers now delegate to that shared
-    index when attached while the registry remains responsible for POI
-    content-state persistence.
+    its remaining zone/rect/point query helpers now delegate to shared
+    `spatial_index.py` POI-query helpers while the registry remains
+    responsible for POI content-state persistence.
 - `edgecaster/systems/ambient_spawns.py`
   - Active-window ambient hostile population maintenance (tier-aware top-up over time).
   - Called from `Game._advance_time` after per-level scheduling ticks.
@@ -367,8 +367,10 @@ Delegation note:
   `AttentionCellStore` fallbacks are compatibility paths to delete after
   writers directly target the shared realization index.
 - `POIRegistry` now mirrors POI specs into `SpatialIndex`; legendary-lair
-  lookup, rune-anchor id allocation, and colosseum spatial-music checks are
-  SpatialIndex-first with POIRegistry fallbacks where content-state still lives.
+  lookup, rune-anchor id allocation, colosseum spatial-music checks, zone POI
+  gathering for mapgen/zone creation, and difficulty POI-structure bonuses are
+  SpatialIndex-first through shared POI-query helpers, with POIRegistry left
+  primarily for semantic/content-state ownership.
 
 Key modules (non-exhaustive):
 - systems/actions.py: ActionDef registry (labels, cooldown, cost, etc.)

@@ -43,6 +43,7 @@ Supersedes: none
 
 ### Spawning, POIs, And World Structure
 
+- `test_difficulty.py`
 - `test_spawning.py`
 - `test_poi_spawning_cutover.py`
 - `test_starttsgard_runtime.py`

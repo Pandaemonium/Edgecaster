@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from edgecaster.state.pois import ABSRect, POISpec, POIContentState
+from edgecaster.systems import spatial_index as spatial_index_system
 
 if TYPE_CHECKING:
     from edgecaster.game import Game
@@ -119,44 +120,12 @@ class POIRegistry:
         depth: int,
     ) -> List[POISpec]:
         """Return POIs overlapping *rect* via the shared SpatialIndex."""
-        if self.spatial_index is None:
-            return []
-        try:
-            entries = self.spatial_index.query_rect(
-                (
-                    float(rect.x0),
-                    float(rect.y0),
-                    float(rect.x1),
-                    float(rect.y1),
-                ),
-                int(depth),
-                source="poi_registry",
-            )
-        except Exception:
-            return []
-
-        hit_ids: Set[str] = set()
-        for entry in entries:
-            poi = entry.obj if isinstance(entry.obj, POISpec) else None
-            if poi is None:
-                poi = self._pois.get(str(getattr(entry.obj, "id", "") or entry.entity_id))
-            if poi is None:
-                continue
-            try:
-                if int(getattr(poi, "depth", 0) or 0) != int(depth):
-                    continue
-            except Exception:
-                continue
-            try:
-                if not poi.footprint.overlaps(rect):
-                    continue
-            except Exception:
-                continue
-            hit_ids.add(str(poi.id))
-
-        if not hit_ids:
-            return []
-        return [poi for poi in self._pois.values() if poi.id in hit_ids]
+        return spatial_index_system.query_spatial_poi_specs_in_rect(
+            self.spatial_index,
+            rect,
+            depth=int(depth),
+            poi_getter=self.get,
+        )
 
     def get_at_zone(
         self, zx: int, zy: int, depth: int = 0
@@ -175,9 +144,13 @@ class POIRegistry:
         self, x: int, y: int, depth: int = 0
     ) -> List[POISpec]:
         """Get all POIs containing an absolute point."""
-        rect = ABSRect(x0=int(x), y0=int(y), x1=int(x) + 1, y1=int(y) + 1)
-        hits = self._query_spatial_index_rect(rect, depth=int(depth))
-        return [poi for poi in hits if poi.footprint.contains_point(int(x), int(y))]
+        return spatial_index_system.query_spatial_poi_specs_at_abs_point(
+            self.spatial_index,
+            int(x),
+            int(y),
+            depth=int(depth),
+            poi_getter=self.get,
+        )
 
     # =========================================================================
     # Hierarchy Queries

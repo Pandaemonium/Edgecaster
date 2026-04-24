@@ -24,7 +24,7 @@ class _DummyGame:
         self.entity_graph = EntityGraphStore()
         self.entity_state: dict[str, dict] = {}
         self.spatial_index = SpatialIndex(bin_size=16)
-        self.attn_store = attention.AttentionCellStore(bin_size=16, spatial_index=self.spatial_index)
+        self.attn_store = attention.AttentionCellStore(spatial_index=self.spatial_index)
         self.level = SimpleNamespace(
             entities={getattr(actor, "id"): actor},
             actors={getattr(actor, "id"): actor},
@@ -33,7 +33,7 @@ class _DummyGame:
         self.levels = {(0, 0, 0): self.level}
         self._expanded_entity_children: dict[str, set[str]] = {}
 
-    def patch_entity_state(self, entity_or_id, patch=None, *, lineage_id=None, **fields) -> None:
+    def patch_entity_state(self, entity_or_id, patch=None, **fields) -> None:
         key = str(entity_or_id)
         state = dict(self.entity_state.get(key, {}) or {})
         if isinstance(patch, dict):
@@ -42,7 +42,7 @@ class _DummyGame:
             state.update(dict(fields))
         self.entity_state[key] = state
 
-    def get_effective_entity_state(self, entity_or_id, *, lineage_id=None) -> dict:
+    def get_effective_entity_state(self, entity_or_id) -> dict:
         key = str(entity_or_id)
         return dict(self.entity_state.get(key, {}) or {})
 

@@ -1001,6 +1001,46 @@ with fewer moving parts still attached.
     - `SpatialMusicDirector._player_in_colosseum(...)` now checks POI specs mirrored into SpatialIndex before using POIRegistry point/rect queries.
     - Added regressions for POIRegistry mirroring, attaching an index to an existing registry, no-registry legendary-lair lookup, no-registry rune-anchor id allocation, and no-registry colosseum music detection.
 
+115. Phase 8 Legacy Removal Slice D.23 (2026-04-23):
+    - D.23: Removed stale `lineage_id=None` keyword parameter from `get_effective_entity_state` stubs in three test fixtures (`test_entity_lifecycle.py`, `test_entity_geometry.py`, `test_entity_body_expansion.py`). The real `game.py` removed this param in Track F.1; stubs lagged.
+    - D.23: Deleted redundant `attn_store` fallback block from the bottom of `find_runtime_entity` in `entity_lifecycle.py`. Since D.20, `attn_store.get()` delegates to `SpatialIndex`, which is already checked earlier in the same function; the block was unreachable in any wired runtime.
+    - 701 tests pass.
+
+116. Phase 8 Legacy Removal Slice D.24 (2026-04-24):
+    - Added shared POI-query helpers to `systems/spatial_index.py` for zone,
+      rect, and point reads so POI geometry has one named query surface instead
+      of a growing set of registry-specific wrappers.
+    - `systems/poi_registry.py` zone/rect/point helpers now thinly delegate to
+      those shared POI-query helpers rather than owning their own SpatialIndex
+      probing logic.
+    - Migrated `game._make_zone()`, `mapgen.apply_pois(...)`,
+      `systems/difficulty.compute_zone_difficulty(...)`, and
+      `scenes/spatial_music.py` colosseum detection to that shared POI-query
+      surface.
+    - Added regressions for helper reads without a registry and for difficulty
+      POI bonuses sourced from SpatialIndex without registry spatial lookups.
+
+119. Phase 8 Legacy Removal Slice D.27 (2026-04-24):
+    - D.27: Removed dead `tags.get("entity_id")` third leg from `game.entity_id_for_entity`. All objects in the codebase have `entity_id` or `id` as direct attributes; the tags lookup was never reached in practice.
+    - 703 tests pass.
+
+118. Phase 8 Legacy Removal Slice D.26 (2026-04-24):
+    - D.26: Removed `_scan_registry_poi_specs` fallback calls from `POIRegistry.get_at_zone`, `get_in_abs_rect`, and `get_at_abs_point`. Methods now return SpatialIndex results directly; the safety net still exists in `query_game_poi_specs_*` game-level helpers.
+    - D.26: Simplified `mapgen.apply_pois` from a dual-query pattern to a single `poi_registry.get_at_zone` call. Removed now-dead `spatial_index_system` and `ABSRect` imports from `mapgen.py`.
+    - 703 tests pass.
+
+117. Phase 8 Legacy Removal Slice D.25 (2026-04-24):
+    - D.25: Removed dead `bin_size` parameter and `self.bin_size` storage from `AttentionCellStore.__init__`. Since D.20, all spatial operations delegate to `SpatialIndex` which manages its own binning. Updated game.py and 8 test construction sites.
+    - 703 tests pass.
+
+114. Phase 8 Legacy Removal Slice D.22 (2026-04-23):
+    - D.22: Deleted `game.lineage_id_for_entity(...)` from `edgecaster/game.py`. Zero external callers remained after the lineage_id persistence cutover (D.19); the method was a dead tag-lookup walking `tags["lineage_id"]`.
+    - 701 tests pass.
+
+113. Phase 8 Legacy Removal Slice D.21 (2026-04-23):
+    - D.21: Deleted `POIRegistry._by_zone` and `_by_zone_2d` fallback dicts, `get_at_zone_any_depth()` (uncalled), and hardcoded debug log. Simplified `_query_spatial_index_rect()` to always return a list. Spatial query methods now read exclusively through `SpatialIndex`. Updated `test_legendaries._make_registry()` to wire a `SpatialIndex`. Fixed pre-existing rune_anchor_sieges regression: test fixture missing `_new_id`/`abs_from_zone_local`, `_spawn_anchor_entity` entity_at guard now skips siege metadata entity, stale `level.rune_anchor_siege` access fixed.
+    - 701 tests pass.
+
 112. Phase 8 Legacy Removal Slice D.19-D.20 (2026-04-23):
     - D.19: Removed unused `lineage_id` keyword params from 6 helpers in `attention.py`. Updated internal call site and test fixtures.
     - D.20: Deleted `AttentionCellStore.entities` dict. `stage()`, `despawn()`, `get()` now read/write exclusively through `SpatialIndex`. Added `SpatialIndex.iter_all()`. Simplified `_attn_store_get` and `_attn_store_ids`. Updated 3 test fixtures to wire a `SpatialIndex` into `AttentionCellStore`. Removed `store.entities.clear()` from `test_attention_store.py`.

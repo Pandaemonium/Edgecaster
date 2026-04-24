@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from edgecaster.systems.attention import AttentionCellStore
 from edgecaster.systems import attention as attention_system
+from edgecaster.systems import spatial_index as spatial_index_system
 from edgecaster.systems.spatial_index import SpatialIndex
 from edgecaster.systems.poi_registry import POIRegistry
 from edgecaster.systems.world_entity_index import register_proxy_entity
@@ -119,7 +120,7 @@ def test_spatial_index_source_guard_prevents_proxy_downgrade() -> None:
 
 def test_attention_store_mirrors_staged_entities_to_spatial_index() -> None:
     idx = SpatialIndex(bin_size=8)
-    store = AttentionCellStore(bin_size=8, spatial_index=idx)
+    store = AttentionCellStore(spatial_index=idx)
     obj = SimpleNamespace(id="berry_1", kind="item", semantic_id="berry_patch:1")
 
     store.stage(obj, abs_x=4, abs_y=5, zz=0)
@@ -222,13 +223,57 @@ def test_poi_registry_spatial_queries_use_shared_index_when_attached() -> None:
     )
     registry.add(poi)
 
-    # Simulate the post-migration end state where legacy bucket lookups can go
-    # away without breaking callers that still use the registry API.
-    registry._by_zone.clear()
-
     assert [spec.id for spec in registry.get_at_zone(2, 3, 0)] == ["poi_market"]
     assert [spec.id for spec in registry.get_in_abs_rect(footprint, 0)] == ["poi_market"]
     assert [spec.id for spec in registry.get_at_abs_point(footprint.center[0], footprint.center[1], 0)] == ["poi_market"]
+
+
+def test_query_game_poi_helpers_read_spatial_index_without_registry() -> None:
+    idx = SpatialIndex(bin_size=8)
+    footprint = ABSRect.from_zone_coord(2, 3, 10, 10)
+    poi = POISpec(
+        id="poi_archive",
+        kind="archive",
+        name="Archive",
+        footprint=footprint,
+        depth=0,
+        anchor_abs=footprint.center,
+        structure_specs=[StructureSpec(kind="archive")],
+    )
+    idx.add_or_update(
+        poi,
+        (float(footprint.x0), float(footprint.y0), float(footprint.x1), float(footprint.y1)),
+        0,
+        "collapsed",
+        source="poi_registry",
+        kind="archive",
+    )
+    game = SimpleNamespace(spatial_index=idx, poi_registry=None)
+
+    assert [
+        spec.id
+        for spec in spatial_index_system.query_game_poi_specs_at_zone(
+            game,
+            2,
+            3,
+            depth=0,
+            zone_w=10,
+            zone_h=10,
+        )
+    ] == ["poi_archive"]
+    assert [
+        spec.id
+        for spec in spatial_index_system.query_game_poi_specs_in_rect(game, footprint, depth=0)
+    ] == ["poi_archive"]
+    assert [
+        spec.id
+        for spec in spatial_index_system.query_game_poi_specs_at_abs_point(
+            game,
+            footprint.center[0],
+            footprint.center[1],
+            depth=0,
+        )
+    ] == ["poi_archive"]
 
 
 def test_renderables_read_world_proxies_from_spatial_index_first() -> None:

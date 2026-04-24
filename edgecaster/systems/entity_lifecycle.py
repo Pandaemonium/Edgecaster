@@ -637,16 +637,6 @@ def find_runtime_entity(game: object, entity_id: str) -> Optional[object]:
     except Exception:
         pass
 
-    # Final fallback for tests without SpatialIndex wired.
-    try:
-        attn_store = getattr(game, "attn_store", None)
-        if attn_store is not None:
-            obj = _attn_store_get(attn_store, eid)
-            if obj is not None:
-                return obj
-    except Exception:
-        pass
-
     return None
 
 

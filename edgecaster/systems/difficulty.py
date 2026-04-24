@@ -16,6 +16,7 @@ import math
 from edgecaster import corruption as corruption_system
 from edgecaster import prototypes
 from edgecaster.math_utils import clamp, smoothstep_range
+from edgecaster.systems import spatial_index as spatial_index_system
 import yaml
 
 # Type alias for readability.
@@ -194,14 +195,19 @@ def compute_zone_difficulty(
     # POI structure modifiers (labs, lairs, starting zone, etc.)
     poi_bonus = 0.0
     try:
-        poi_reg = getattr(game, "poi_registry", None)
-        if poi_reg is not None:
-            for poi_spec in poi_reg.get_at_zone(zx, zy, depth):
-                for struct_spec in (poi_spec.structure_specs or []):
-                    kind = str(getattr(struct_spec, "kind", "") or "")
-                    if not kind:
-                        continue
-                    poi_bonus += float(config.poi_structure_bonuses.get(kind, 0.0))
+        for poi_spec in spatial_index_system.query_game_poi_specs_at_zone(
+            game,
+            zx,
+            zy,
+            depth=depth,
+            zone_w=int(getattr(game.cfg, "world_width", 0) or 0),
+            zone_h=int(getattr(game.cfg, "world_height", 0) or 0),
+        ):
+            for struct_spec in (poi_spec.structure_specs or []):
+                kind = str(getattr(struct_spec, "kind", "") or "")
+                if not kind:
+                    continue
+                poi_bonus += float(config.poi_structure_bonuses.get(kind, 0.0))
     except Exception:
         pass
     if abs(poi_bonus) > 1e-9:

@@ -11,6 +11,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from edgecaster.state.pois import ABSRect, POISpec
+
 
 @dataclass
 class SpatialIndexEntry:
@@ -348,3 +350,204 @@ def entry_anchor(entry: SpatialIndexEntry) -> Tuple[float, float]:
             pass
     x0, y0, x1, y1 = entry.rect
     return ((float(x0) + float(x1)) * 0.5, (float(y0) + float(y1)) * 0.5)
+
+
+def _resolve_poi_spec(
+    entry: SpatialIndexEntry,
+    *,
+    poi_getter: Any = None,
+) -> Optional[POISpec]:
+    obj = entry.obj
+    if isinstance(obj, POISpec):
+        return obj
+    if callable(poi_getter):
+        try:
+            poi_id = str(getattr(obj, "id", "") or entry.entity_id or "").strip()
+        except Exception:
+            poi_id = str(getattr(entry, "entity_id", "") or "").strip()
+        if poi_id:
+            try:
+                spec = poi_getter(poi_id)
+                if isinstance(spec, POISpec):
+                    return spec
+            except Exception:
+                pass
+    return None
+
+
+def query_spatial_poi_specs_in_rect(
+    spatial_index: Optional[SpatialIndex],
+    rect: ABSRect,
+    *,
+    depth: int,
+    poi_getter: Any = None,
+) -> List[POISpec]:
+    """Return POI specs overlapping *rect* from a shared SpatialIndex."""
+    if spatial_index is None:
+        return []
+    try:
+        entries = spatial_index.query_rect(
+            (
+                float(rect.x0),
+                float(rect.y0),
+                float(rect.x1),
+                float(rect.y1),
+            ),
+            int(depth),
+            source="poi_registry",
+        )
+    except Exception:
+        return []
+
+    out: List[POISpec] = []
+    seen: Set[str] = set()
+    for entry in entries:
+        poi = _resolve_poi_spec(entry, poi_getter=poi_getter)
+        if poi is None:
+            continue
+        try:
+            if int(getattr(poi, "depth", 0) or 0) != int(depth):
+                continue
+        except Exception:
+            continue
+        try:
+            footprint = getattr(poi, "footprint", None)
+            if not isinstance(footprint, ABSRect) or not footprint.overlaps(rect):
+                continue
+        except Exception:
+            continue
+        poi_id = str(getattr(poi, "id", "") or getattr(entry, "entity_id", "") or "").strip()
+        if not poi_id or poi_id in seen:
+            continue
+        seen.add(poi_id)
+        out.append(poi)
+    return out
+
+
+def query_spatial_poi_specs_at_abs_point(
+    spatial_index: Optional[SpatialIndex],
+    x: int,
+    y: int,
+    *,
+    depth: int,
+    poi_getter: Any = None,
+) -> List[POISpec]:
+    """Return POI specs whose footprints contain an ABS point."""
+    rect = ABSRect(x0=int(x), y0=int(y), x1=int(x) + 1, y1=int(y) + 1)
+    hits = query_spatial_poi_specs_in_rect(
+        spatial_index,
+        rect,
+        depth=int(depth),
+        poi_getter=poi_getter,
+    )
+    out: List[POISpec] = []
+    seen: Set[str] = set()
+    for poi in hits:
+        try:
+            if not poi.footprint.contains_point(int(x), int(y)):
+                continue
+        except Exception:
+            continue
+        poi_id = str(getattr(poi, "id", "") or "").strip()
+        if not poi_id or poi_id in seen:
+            continue
+        seen.add(poi_id)
+        out.append(poi)
+    return out
+
+
+def _scan_registry_poi_specs(
+    poi_registry: Any,
+    *,
+    rect: Optional[ABSRect] = None,
+    point: Optional[Tuple[int, int]] = None,
+    depth: int,
+) -> List[POISpec]:
+    """Fallback POI scan when no shared SpatialIndex is available."""
+    if poi_registry is None:
+        return []
+    try:
+        pois = list(iter(poi_registry))
+    except Exception:
+        return []
+
+    out: List[POISpec] = []
+    seen: Set[str] = set()
+    for poi in pois:
+        if not isinstance(poi, POISpec):
+            continue
+        try:
+            if int(getattr(poi, "depth", 0) or 0) != int(depth):
+                continue
+        except Exception:
+            continue
+        try:
+            footprint = getattr(poi, "footprint", None)
+            if not isinstance(footprint, ABSRect):
+                continue
+            if rect is not None and not footprint.overlaps(rect):
+                continue
+            if point is not None and not footprint.contains_point(int(point[0]), int(point[1])):
+                continue
+        except Exception:
+            continue
+        poi_id = str(getattr(poi, "id", "") or "").strip()
+        if not poi_id or poi_id in seen:
+            continue
+        seen.add(poi_id)
+        out.append(poi)
+    return out
+
+
+def query_game_poi_specs_in_rect(
+    game: Any,
+    rect: ABSRect,
+    *,
+    depth: int,
+) -> List[POISpec]:
+    """Return POI specs overlapping an ABS rect from the shared spatial layer."""
+    poi_registry = getattr(game, "poi_registry", None)
+    hits = query_spatial_poi_specs_in_rect(
+        get_game_spatial_index(game),
+        rect,
+        depth=int(depth),
+        poi_getter=getattr(poi_registry, "get", None),
+    )
+    if hits:
+        return hits
+    return _scan_registry_poi_specs(poi_registry, rect=rect, depth=int(depth))
+
+
+def query_game_poi_specs_at_abs_point(
+    game: Any,
+    x: int,
+    y: int,
+    *,
+    depth: int,
+) -> List[POISpec]:
+    """Return POI specs whose footprints contain an ABS point."""
+    poi_registry = getattr(game, "poi_registry", None)
+    hits = query_spatial_poi_specs_at_abs_point(
+        get_game_spatial_index(game),
+        int(x),
+        int(y),
+        depth=int(depth),
+        poi_getter=getattr(poi_registry, "get", None),
+    )
+    if hits:
+        return hits
+    return _scan_registry_poi_specs(poi_registry, point=(int(x), int(y)), depth=int(depth))
+
+
+def query_game_poi_specs_at_zone(
+    game: Any,
+    zx: int,
+    zy: int,
+    *,
+    depth: int,
+    zone_w: int,
+    zone_h: int,
+) -> List[POISpec]:
+    """Return POI specs whose footprints overlap a zone coordinate."""
+    rect = ABSRect.from_zone_coord(int(zx), int(zy), int(zone_w), int(zone_h))
+    return query_game_poi_specs_in_rect(game, rect, depth=int(depth))

@@ -2,7 +2,6 @@ from typing import Tuple, Optional, Dict, List
 import math
 import random
 from edgecaster.corruption import CorruptionParams, julia_height_norm_corrupted
-
 # Import climate system for biome-aware generation
 from edgecaster.climate import (
     ClimateConfig,
@@ -101,12 +100,7 @@ def apply_pois(
     (supports multi-zone POIs). Legacy POIS dict is no longer used.
     """
     zx, zy, depth = coord
-    hits = []
-
-    # V2: Use registry spatial query (supports multi-zone POIs)
-    for poi_spec in poi_registry.get_at_zone(zx, zy, depth):
-        hits.append(poi_spec.id)
-
+    hits = [poi_spec.id for poi_spec in poi_registry.get_at_zone(zx, zy, depth)]
     world.poi_ids = hits  # type: ignore[attr-defined]
     return hits
 

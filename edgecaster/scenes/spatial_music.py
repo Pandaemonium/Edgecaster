@@ -300,57 +300,23 @@ class SpatialMusicDirector:
 
             return bool(kw) and any(k in hay for k in kw)
 
-        # Track D: POIRegistry mirrors POI specs into SpatialIndex. Prefer that
-        # shared geometry surface; the registry-specific path below is a
-        # compatibility fallback while POIRegistry still owns content state.
+        # Track D: POIRegistry mirrors POI specs into SpatialIndex. Prefer the
+        # shared POI query helpers so callsites stop re-implementing separate
+        # SpatialIndex-vs-registry ladders.
         for depth in (zz, 0):
-            try:
-                entries = spatial_index_system.query_game_spatial_rect(
+            hits = spatial_index_system.query_game_poi_specs_at_abs_point(
+                game,
+                int(px),
+                int(py),
+                depth=depth,
+            )
+            if not hits:
+                q = POIABSRect(x0=px - 1.0, y0=py - 1.0, x1=px + 1.0, y1=py + 1.0)
+                hits = spatial_index_system.query_game_poi_specs_in_rect(
                     game,
-                    (px, py, px + 1.0, py + 1.0),
-                    zz=depth,
-                    source="poi_registry",
+                    q,
+                    depth=depth,
                 )
-            except Exception:
-                entries = []
-            for entry in entries:
-                poi_spec = entry.obj
-                try:
-                    fp = _footprint_to_rect(getattr(poi_spec, "footprint", None))
-                    if fp is None:
-                        fp = entry.rect
-                    if _point_in_rect((px, py), _norm_rect(fp)) and _matches(poi_spec):
-                        return True
-                except Exception:
-                    continue
-
-        poi_reg = getattr(game, "poi_registry", None)
-        if poi_reg is None:
-            return False
-
-        # 1) Fast exact point query (preferred)
-        for depth in (zz, 0):
-            try:
-                hits = list(poi_reg.get_at_abs_point(int(px), int(py), depth=depth) or [])
-            except Exception:
-                hits = []
-            for poi_spec in hits:
-                try:
-                    fp = _footprint_to_rect(getattr(poi_spec, "footprint", None))
-                    if fp is None:
-                        continue
-                    if _point_in_rect((px, py), _norm_rect(fp)) and _matches(poi_spec):
-                        return True
-                except Exception:
-                    continue
-
-        # 2) Small rect query fallback (correct ABSRect type)
-        q = POIABSRect(x0=px - 1.0, y0=py - 1.0, x1=px + 1.0, y1=py + 1.0)
-        for depth in (zz, 0):
-            try:
-                hits = list(poi_reg.get_in_abs_rect(q, depth=depth) or [])
-            except Exception:
-                hits = []
             for poi_spec in hits:
                 try:
                     fp = _footprint_to_rect(getattr(poi_spec, "footprint", None))

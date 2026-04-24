@@ -107,6 +107,7 @@ from edgecaster.systems import entity_ops as entity_ops_system
 from edgecaster.systems import footprints as footprints_system
 from edgecaster.systems import render_query as render_query_system
 from edgecaster.systems import attention as attention_system
+from edgecaster.systems import spatial_index as spatial_index_system
 from edgecaster.systems import active_zones as active_zones_system
 from edgecaster.systems import pattern_state as pattern_state_system
 from edgecaster.systems import session as session_system
@@ -404,7 +405,6 @@ class Game:
         spatial_bin_size = int(getattr(cfg, 'attn_bin_size', 32) or 32)
         self.spatial_index: SpatialIndex = SpatialIndex(bin_size=spatial_bin_size)
         self.attn_store: attention_system.AttentionCellStore = attention_system.AttentionCellStore(
-            bin_size=spatial_bin_size,
             spatial_index=self.spatial_index,
         )
         # Track which child entities are active per aggregate (agg_id -> {slot:int -> eid:str})
@@ -1698,7 +1698,14 @@ class Game:
         poi_specs = []
         poi_hits: List[str] = []
         try:
-            poi_specs = self.poi_registry.get_at_zone(x, y, depth)
+            poi_specs = spatial_index_system.query_game_poi_specs_at_zone(
+                self,
+                x,
+                y,
+                depth=depth,
+                zone_w=int(self.cfg.world_width),
+                zone_h=int(self.cfg.world_height),
+            )
             poi_hits = [p.id for p in poi_specs]
         except Exception:
             poi_specs = []
@@ -2168,32 +2175,7 @@ class Game:
                     setattr(obj, "entity_id", eid)
                 except Exception:
                     pass
-        if eid:
-            return eid
-
-        try:
-            tags = getattr(obj, "tags", None) or {}
-        except Exception:
-            tags = {}
-        if isinstance(tags, dict):
-            eid = self._normalize_entity_id(tags.get("entity_id"))
-            if eid:
-                return eid
-        return None
-
-    def lineage_id_for_entity(self, obj: object) -> Optional[str]:
-        """Return deterministic lineage id for a runtime object, if present."""
-        if obj is None:
-            return None
-        try:
-            tags = getattr(obj, "tags", None) or {}
-        except Exception:
-            tags = {}
-        if isinstance(tags, dict):
-            lid = self._normalize_entity_id(tags.get("lineage_id"))
-            if lid:
-                return lid
-        return None
+        return eid or None
 
     def _entity_state_write_key(self, entity_or_id: Any) -> str:
         """Return the single authoritative key to write for this patch."""

@@ -417,8 +417,7 @@ class AttentionCellStore:
       - `has(eid)` / `ids()` — staged-entity membership queries
     """
 
-    def __init__(self, *, bin_size: int = 32, spatial_index: object | None = None) -> None:
-        self.bin_size = max(1, int(bin_size))
+    def __init__(self, *, spatial_index: object | None = None) -> None:
         self.spatial_index = spatial_index
 
     @staticmethod
