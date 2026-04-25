@@ -18,7 +18,7 @@ class _DummyGame:
         self.entity_graph = EntityGraphStore()
         self.entity_state: dict[str, dict] = {}
         self.spatial_index = SpatialIndex(bin_size=16)
-        self.attn_store = attention.AttentionCellStore(spatial_index=self.spatial_index)
+        self.attn_store = None
         self.levels: dict[tuple[int, int, int], object] = {}
         self._expanded_entity_children: dict[str, set[str]] = {}
 
@@ -60,7 +60,7 @@ def test_query_geometry_marks_collapsed_resolver_subtree_as_approximate() -> Non
         },
     )
     entity_graph_ops_system.register_entity(game, parent, lod_state="collapsed")
-    game.attn_store.stage(parent, abs_x=20, abs_y=20, zz=0)
+    attention._attn_store_stage(game, parent, abs_x=20, abs_y=20, zz=0)
 
     result_forbid = entity_geometry_system.query_geometry(game, parent.id, realize_policy="forbid")
     assert result_forbid["precision"] == "approximate"
@@ -97,7 +97,7 @@ def test_query_normalized_pattern_is_deterministic_and_seed_builder_uses_it() ->
         tags={},
     )
     entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
-    game.attn_store.stage(actor, abs_x=10, abs_y=10, zz=0)
+    attention._attn_store_stage(game, actor, abs_x=10, abs_y=10, zz=0)
 
     pattern_a = entity_geometry_system.query_normalized_pattern(game, actor.id)
     pattern_b = entity_geometry_system.query_normalized_pattern(game, actor.id)
@@ -170,7 +170,7 @@ def test_external_child_root_active_state_follows_structural_snapshot() -> None:
         tags={},
     )
     entity_graph_ops_system.register_entity(game, actor, lod_state="expanded")
-    game.attn_store.stage(actor, abs_x=10, abs_y=10, zz=0)
+    attention._attn_store_stage(game, actor, abs_x=10, abs_y=10, zz=0)
 
     result = entity_geometry_system.query_normalized_pattern(game, actor.id)
 

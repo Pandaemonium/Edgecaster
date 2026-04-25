@@ -551,3 +551,60 @@ def query_game_poi_specs_at_zone(
     """Return POI specs whose footprints overlap a zone coordinate."""
     rect = ABSRect.from_zone_coord(int(zx), int(zy), int(zone_w), int(zone_h))
     return query_game_poi_specs_in_rect(game, rect, depth=int(depth))
+
+def coerce_rect(raw: object) -> Optional[Tuple[float, float, float, float]]:
+    """Extract a normalized (x0, y0, x1, y1) float tuple from an object, dict, or list."""
+    if isinstance(raw, dict):
+        if all(k in raw for k in ("x0", "y0", "x1", "y1")):
+            try:
+                x0, y0, x1, y1 = float(raw["x0"]), float(raw["y0"]), float(raw["x1"]), float(raw["y1"])
+                if x1 < x0: x0, x1 = x1, x0
+                if y1 < y0: y0, y1 = y1, y0
+                return (x0, y0, x1, y1)
+            except Exception:
+                return None
+        return None
+    if isinstance(raw, (tuple, list)) and len(raw) >= 4:
+        try:
+            x0, y0, x1, y1 = float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3])
+            if x1 < x0: x0, x1 = x1, x0
+            if y1 < y0: y0, y1 = y1, y0
+            return (x0, y0, x1, y1)
+        except Exception:
+            return None
+    return None
+
+def rect_for_obj(
+    obj: Any,
+    *,
+    abs_x: float,
+    abs_y: float,
+) -> Tuple[float, float, float, float]:
+    """Derive a normalized ABS bounding box for an entity based on its properties."""
+    rect = coerce_rect(getattr(obj, "footprint_abs", None))
+    if rect is None:
+        tags = getattr(obj, "tags", None)
+        if isinstance(tags, dict):
+            rect = coerce_rect(tags.get("footprint_abs"))
+
+    if rect is None:
+        size_val = None
+        for raw in (
+            getattr(obj, "abs_size", None),
+            getattr(obj, "base_size", None),
+        ):
+            if isinstance(raw, (int, float)) and float(raw) > 1.0:
+                size_val = float(raw)
+                break
+        if size_val is None:
+            tags = getattr(obj, "tags", None)
+            if isinstance(tags, dict):
+                raw = tags.get("abs_size")
+                if isinstance(raw, (int, float)) and float(raw) > 1.0:
+                    size_val = float(raw)
+        if size_val is not None:
+            half = 0.5 * float(size_val)
+            rect = (float(abs_x) - half, float(abs_y) - half, float(abs_x) + half, float(abs_y) + half)
+        else:
+            rect = (float(abs_x), float(abs_y), float(abs_x) + 1.0, float(abs_y) + 1.0)
+    return rect

@@ -24,7 +24,6 @@ class _DummyGame:
         self.entity_graph = EntityGraphStore()
         self.entity_state: dict[str, dict] = {}
         self.spatial_index = SpatialIndex(bin_size=16)
-        self.attn_store = attention.AttentionCellStore(spatial_index=self.spatial_index)
         self.level = SimpleNamespace(
             entities={getattr(actor, "id"): actor},
             actors={getattr(actor, "id"): actor},

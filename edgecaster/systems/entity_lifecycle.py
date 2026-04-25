@@ -299,27 +299,11 @@ def _zone_local_for_entity(game: object, ent: object) -> Tuple[Tuple[int, int, i
 
 
 def _stage_object(game: object, obj: object, *, abs_x: int, abs_y: int, zz: int) -> None:
-    attn_store = getattr(game, "attn_store", None)
     try:
-        if attn_store is not None:
-            attn_store.stage(obj, abs_x=int(abs_x), abs_y=int(abs_y), zz=int(zz))
+        from edgecaster.systems import attention as attention_system
+        attention_system._attn_store_stage(game, obj, abs_x=abs_x, abs_y=abs_y, zz=zz)
     except Exception:
         pass
-
-
-def _attn_store_get(attn_store: object, eid: str) -> object | None:
-    if attn_store is None:
-        return None
-    entity_id = str(eid or "").strip()
-    if not entity_id:
-        return None
-    try:
-        getter = getattr(attn_store, "get", None)
-        if callable(getter):
-            return getter(entity_id)
-    except Exception:
-        pass
-    return None
 
 
 def _mirror_entity_into_loaded_zone(game: object, obj: object, *, abs_x: int, abs_y: int, zz: int) -> None:
@@ -362,9 +346,9 @@ def _register_actor_in_loaded_zone(game: object, actor: object, *, abs_x: int, a
             except Exception:
                 pass
         try:
-            attn_store = getattr(game, "attn_store", None)
-            if attn_store is not None:
-                attn_store.despawn(eid)
+            idx = spatial_index_system.get_game_spatial_index(game)
+            if idx is not None:
+                idx.remove(eid, source="attention")
         except Exception:
             pass
     except Exception:
@@ -377,13 +361,15 @@ def _remove_runtime_entity(game: object, entity_id: str) -> Optional[object]:
         return None
 
     found = None
-    attn_store = getattr(game, "attn_store", None)
     try:
-        if attn_store is not None:
-            found = _attn_store_get(attn_store, eid)
-            attn_store.despawn(eid)
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            entry = idx.get(eid)
+            if entry is not None and str(getattr(entry, "source", "")) == "attention" and str(getattr(entry, "realization_state", "")) == "staged":
+                found = entry.obj
+            idx.remove(eid, source="attention")
     except Exception:
-        found = found
+        pass
 
     try:
         levels = getattr(game, "levels", None)

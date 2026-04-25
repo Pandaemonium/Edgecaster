@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from edgecaster.systems.attention import AttentionCellStore
 from edgecaster.systems import attention as attention_system
 from edgecaster.systems import spatial_index as spatial_index_system
 from edgecaster.systems.spatial_index import SpatialIndex
@@ -118,12 +117,12 @@ def test_spatial_index_source_guard_prevents_proxy_downgrade() -> None:
     assert idx.get("e1") is entry
 
 
-def test_attention_store_mirrors_staged_entities_to_spatial_index() -> None:
+def test_attention_stage_mirrors_staged_entities_to_spatial_index() -> None:
     idx = SpatialIndex(bin_size=8)
-    store = AttentionCellStore(spatial_index=idx)
+    game = SimpleNamespace(spatial_index=idx)
     obj = SimpleNamespace(id="berry_1", kind="item", semantic_id="berry_patch:1")
 
-    store.stage(obj, abs_x=4, abs_y=5, zz=0)
+    attention_system._attn_store_stage(game, obj, abs_x=4, abs_y=5, zz=0)
 
     entry = idx.get("berry_1")
     assert entry is not None
@@ -132,7 +131,7 @@ def test_attention_store_mirrors_staged_entities_to_spatial_index() -> None:
     assert entry.semantic_id == "berry_patch:1"
     assert idx.query_rect((4.0, 5.0, 5.0, 6.0), 0)[0].entity_id == "berry_1"
 
-    store.despawn("berry_1")
+    attention_system._attn_store_despawn(game, "berry_1")
     assert idx.get("berry_1") is None
 
 

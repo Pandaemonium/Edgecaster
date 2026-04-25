@@ -126,17 +126,14 @@ from edgecaster.systems import gods as gods_system
 from edgecaster.systems import god_abilities as god_abilities_system
 from edgecaster.systems import perf_profiler
 from edgecaster.systems import telemetry as telemetry_system
+from edgecaster.state.levels import LevelState
+
 from . import lorenz
 import math
 import random
 
 
 Move = Tuple[int, int]
-
-@dataclass
-class LabState:
-    chaos: float = 0.0
-    chaos_threshold: float = 1.0
 
 def _line_points(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
     points = []
@@ -185,46 +182,6 @@ class MessageLog:
         items = list(islice(reversed(self.messages), 0, n))
         items.reverse()
         return items
-
-
-@dataclass
-class LevelState:
-    world: World
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    # Parallel actor/entity stores will be replaced by unified entity graph storage.
-    actors: Dict[str, Actor]
-    # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-    entities: Dict[str, Entity]
-    events: List[Tuple[int, int, Callable[[], None]]]
-    order: int
-    current_tick: int
-    pattern: builder.Pattern
-    pattern_anchor: Optional[Tuple[int, int]]
-    activation_points: List[Tuple[float, float]]
-    activation_ttl: int
-    awaiting_terminus: bool
-    need_fov: bool
-    up_stairs: Optional[Tuple[int, int]] = None
-    down_stairs: Optional[Tuple[int, int]] = None
-    hover_vertex: Optional[int] = None  # for renderer hinting
-    spotted: set[str] = field(default_factory=set)  # seen actors
-    coord: Tuple[int, int, int] = (0, 0, 0)  # (x, y, depth)
-    lab_state: Optional["LabState"] = None  # lab-specific state if this is a lab zone
-    acidic_pattern: bool = False  # True when Corrosive Melt is active
-    # Fern growth state (Barnsley fern auto-growth system)
-    fern_active: bool = False  # Is fern growth enabled?
-    fern_growth_tips: List[int] = field(default_factory=list)  # Vertex indices that can spawn growth
-    fern_accum: float = 0.0  # Fractional tick accumulator for growth timing
-    seal_trial: Optional["SealTrialState"] = None  # Sealing rune trial state (if any)
-    # Zone difficulty metadata (computed on zone creation).
-    danger_value: float = 0.0
-    danger_tier: int = 1
-    danger_sources: Dict[str, float] = field(default_factory=dict)
-    # Active deferred (telegraphed) actions pending resolution.
-    deferred_actions: List[Any] = field(default_factory=list)
-    # Accumulator for ambient hostile top-up timing (Option 2 roaming spawns).
-    ambient_spawn_accum: float = 0.0
-
 
 
 class Game:
@@ -399,14 +356,8 @@ class Game:
 
         # zones keyed by (x, y, depth)
         self.levels: Dict[Tuple[int, int, int], LevelState] = {}
-        # [LEGACY_DELETE][ENTITY_CHAKRA][PHASE_8]
-        # Transitional attention cache. End-state uses unified graph + quadtree index.
-        # Attention-staged entities (Route 2: no rectangular zones as ontology)
         spatial_bin_size = int(getattr(cfg, 'attn_bin_size', 32) or 32)
         self.spatial_index: SpatialIndex = SpatialIndex(bin_size=spatial_bin_size)
-        self.attn_store: attention_system.AttentionCellStore = attention_system.AttentionCellStore(
-            spatial_index=self.spatial_index,
-        )
         # Track which child entities are active per aggregate (agg_id -> {slot:int -> eid:str})
         self._attn_active_agg_children: Dict[str, Dict[int, str]] = {}
         # Track which staged structure tiles are active per POI/site (parent_id -> set[eid])
@@ -416,8 +367,7 @@ class Game:
         self.entity_state: Dict[str, Dict[str, Any]] = {}
         # Authoritative containment graph. Records parent/socket relationships
         # for all runtime entities. The remaining parallel stores
-        # (LevelState.actors, LevelState.entities, attn_store,
-        # poi_registry) are being narrowed into
+        # (LevelState.actors, LevelState.entities, poi_registry) are being narrowed into
         # caches/indexes; containment writes go here first via
         # entity_graph_ops.attach_entity_to_parent / detach_entity_from_parent.
         # [ENTITY_CHAKRA][PHASE_2C]
@@ -546,273 +496,8 @@ class Game:
         self._lorenz_prev_zone: Tuple[int, int, int] = self.zone_coord
 
 
-        # spawn player
-        px, py = self._level().world.entry
-        player_name = self.character.name or "Edgecaster"
-        player_stats = self._build_player_stats()
-
-        # Choose a template id for the player base body.
-        # Later you can put this on Character (race/species field).
-        player_tmpl_id = getattr(self.character, "template_id", None) or "human_base"
-
-        # Build a base Actor from the data-driven factory
-        player = enemy_factory.spawn_enemy(player_tmpl_id, (px, py), game=self)
-
-        # Override template defaults with run-specific data
-        player.id = self._new_id()
-        player.name = player_name
-        player.pos = (px, py)
-        player.faction = "player"      # make sure this is canonical
-        player.stats = player_stats    # use character-derived stats
-        player.description = "You attempt to perceive yourself, but can do so only incompletely."
-        player.tags["icon_path"] = "assets/icons/bismuth_wizard.png"
-
-        # --- Class kit / action set -----------------------------------
-        # Everyone gets the boring core verbs (never shown on the bar):
-        actions = ["move", "wait"]
-
-        # Determine the class as chosen in character creation.
-        player_class = (
-            getattr(self.character, "player_class", None)
-            or getattr(self.character, "char_class", None)
-        )
-
-        # Fractal config from character creation
-        generator_choice = getattr(self.character, "generator", "koch")
-        illuminator_choice = getattr(self.character, "illuminator", "radius")
-
-        if player_class == "Kochbender":
-            # Kochbender standard 7-slot kit (old behaviour):
-            #
-            # 1. Place
-            # 2. Subdivide
-            # 3. Extend
-            # 4. Generator (Koch / Branch / Zigzag / Custom)
-            # 5. Activate (R or N depending on illuminator)
-            # 6. Reset
-            # 7. Meditate
-            #
-            # The bar will render these in order using the ActionDef labels.
-
-            # Core rune operators
-            actions += [
-                "place",
-                "polygon",
-                "star",
-                "subdivide",
-                "extend",
-                generator_choice,   # e.g. "koch", "branch", "zigzag", "custom"
-            ]
-
-            # Illuminator: choose *one* activator based on char creation
-            if illuminator_choice == "radius":
-                actions.append("activate_all")     # "Activate R"
-            elif illuminator_choice == "neighbors":
-                actions.append("activate_seed")    # "Activate N"
-            else:
-                # Fallback: default to radius-style activator
-                actions.append("activate_all")
-
-            # Meta slots
-            actions.append("reset")
-            actions.append("meditate")
-            actions.append("rainbow_edges")
-            actions.append("verdant_edges")
-            actions.append("corrosive_melt")
-            actions.append("start_fern")
-            actions.append("winter_hue")
-            actions.append("freeze")
-            actions.append("ignite")
-            actions.append("regrow")
-            actions.append("aggressive_vines")
-            actions.append("choking_vines")
-            actions.append("push_pattern")
-            actions.append("corruption_cone")
-            actions.append("place_rune_anchor")
-            actions.append("lightning")
-
-        elif player_class == "Monk":
-            # Monk kit: core rune tools + chakra generator.
-            actions += [
-                "place",
-                "subdivide",
-                "extend",
-                "activate_seed",   # Activate N
-                "reset",
-                "meditate",
-                "push_pattern",
-                "chakra",
-                "wind_rush",
-                "energy_kick",
-                "palm_burst",
-                "mirror_strike",
-                "aggressive_vines",
-                "choking_vines",
-            ]
-        elif player_class == "Gardener":
-            # Gardener kit: branch-heavy rune shaping + vine toolkit.
-            actions += [
-                "place",
-                "branch",
-                "cultivate",         # Custom branch editor
-                "activate_all",      # Activate R
-                "activate_seed",     # Activate N
-                "verdant_edges",     # Verdant
-                "start_fern",        # Fern Growth
-                "regrow",
-                "choking_vines",
-                "aggressive_vines",
-            ]
-        elif player_class == "Blade":
-            # Blade kit: melee verbs + core rune manipulation.
-            # Starts with an intrinsic *empty* blade; slots scale with INT.
-            actions += [
-                "slash",
-                "thrust",
-                "cleave",
-                "throwing_knife",
-                "mirror_blade",
-                "place",
-                "subdivide",
-                "extend",
-                "activate_seed",
-                "reset",
-                "meditate",
-                "push_pattern",
-            ]
-
-        # For now, all other classes keep only move/wait (empty ability bar).
-        # God abilities are added automatically by sync_all_god_abilities().
-        player.actions = tuple(actions)
-
-        # Tag as 'the player'
-        player.tags.setdefault("is_player", True)
-        if player_class:
-            player.tags.setdefault("class", player_class)
-
-        # Apply any character-defined chakra initialization (e.g., Monk setup).
-        chakra_init = getattr(self.character, "chakra_init", None)
-        if chakra_init:
-            try:
-                chakra_items_system.apply_chakra_state_snapshot(player, chakra_init, game=self)
-            except Exception:
-                pass
-
-
-        self.player_id = player.id
-        lvl = self._level()
-        lvl.actors[player.id] = player
-        lvl.entities[player.id] = player
-        # Blade class starts with an intrinsic empty blade profile.
-        if player_class == "Blade":
-            try:
-                blade_runtime_system.ensure_actor_blade_state(self, player.id)
-            except Exception:
-                pass
-
-        # Canonical absolute position (Phase 1.5 yoga)
-        # This makes abs-space the source of truth for player movement/render queries later.
-        player.abs_pos = self.abs_from_zone_local(self.zone_coord, player.pos)
-
-        # Body realization contract (Option A): fully expand the player's body-node
-        # entity tree now so ChakraSelectionScene can read it with realize_policy="forbid"
-        # without triggering expansion itself.  See spring_cleaning.txt for rationale.
-        try:
-            from edgecaster.systems import entity_lifecycle as _elic
-            from edgecaster.systems import entity_body as _ebod
-            _expand_queue = [player.id]
-            _expand_seen: set = set()
-            while _expand_queue:
-                _eid = _expand_queue.pop(0)
-                if _eid in _expand_seen:
-                    continue
-                _expand_seen.add(_eid)
-                _ent = _elic.find_runtime_entity(self, _eid) or (player if _eid == player.id else None)
-                if _ent is not None and _ebod.can_expand_entity(_ent):
-                    for _cid in _elic.expand_entity(self, _eid, reason="body_init"):
-                        _expand_queue.append(str(_cid))
-        except Exception:
-            pass
-
-        # B2: Register the player in the entity graph. The player bypasses
-        # register_actor (which does this for NPCs), so this explicit graph node
-        # keeps player inventory/equipment containment graph-authoritative.
-        try:
-            from edgecaster.systems import entity_graph_ops as _egops
-            _egops.register_entity(self, player, lod_state="expanded")
-        except Exception:
-            pass
-
-        # --- Give the player a recursive inventory test item -----------------
-        #
-        # This uses the normal debug_inventory template (a container item),
-        # but we:
-        #   1) Put it directly into the player's inventory
-        #   2) Make *its own* inventory list contain itself.
-        #
-        # So when you open it, you'll see an item that is the same bag,
-        # and opening that again just keeps nesting visually.
-        try:
-            recursive_item = self._spawn_entity_from_template(
-                "debug_inventory",
-                player.pos,
-                overrides={
-                    "name": "recursive Inventory",
-                    "tags": {"recursive_inventory": True},
-                },
-            )
-        except Exception:
-            recursive_item = None
-
-        if recursive_item is not None:
-            from edgecaster.systems import inventory as inventory_system
-
-            # Put the bag into the player's starting inventory through the
-            # shared graph-backed helper so caches stay aligned.
-            inventory_system.add_inventory_item(self, self.player_id, recursive_item)
-
-            # Now give *that bag* its own inventory, containing itself.
-            inventory_system.add_inventory_item(self, recursive_item.id, recursive_item)
-
-            recursive_item.description = (
-                "A Platonic bag that appears to contain, among other things, itself."
-            )
-
-        # --- Starting wands -------------------------------------------------
-        # Wands grant actions only while equipped, and have per-item charges.
-        # Start the player with two different random wands so the system is easy to test.
-        try:
-            wand_defs = [
-                ("wand_koch", "koch"),
-                ("wand_branch", "branch"),
-                ("wand_zigzag", "zigzag"),
-                ("wand_activate_n", "activate_seed"),
-                ("wand_sparkle", "sparkle"),
-            ]
-            intrinsic_set = {str(x) for x in (getattr(player, "actions", ()) or []) if x}
-
-            # Prefer wands that grant something the player doesn't already have intrinsically.
-            candidates = [wid for wid, act in wand_defs if act not in intrinsic_set]
-            pool = candidates if len(candidates) >= 2 else [wid for wid, _ in wand_defs]
-
-            first = self.rng.choice(pool)
-            pool2 = [x for x in pool if x != first]
-            second = self.rng.choice(pool2) if pool2 else first
-            for wid in (first, second):
-                try:
-                    from edgecaster.systems import entity_graph_ops as entity_graph_ops_system
-
-                    wand = self._spawn_entity_from_template(wid, player.pos)
-                    entity_graph_ops_system.attach_entity_to_parent(
-                        self,
-                        wand,
-                        self.player_id,
-                        socket_id="inventory",
-                    )
-                except Exception:
-                    continue
-        except Exception:
-            pass
+        from edgecaster.systems import bootstrap_player
+        bootstrap_player.bootstrap_player(self)
 
 
 
@@ -826,6 +511,7 @@ class Game:
         year = datetime.date.today().year
         leap = (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0))
         leap_msg = "It's a leap year. Be careful!" if leap else "It's not a leap year."
+        player_name = getattr(self.character, "name", None) or "Edgecaster"
         self.log.add(f"Welcome, {player_name}. {leap_msg}")
         self.log.add("Imps lurk nearby. Press ? for help.")
 
@@ -1691,151 +1377,8 @@ class Game:
     # =========================================================================
 
     def _make_zone(self, coord: Tuple[int, int, int], up_pos: Optional[Tuple[int, int]]) -> LevelState:
-        x, y, depth = coord
-        world = World(width=self.cfg.world_width, height=self.cfg.world_height)
-
-        # Determine POIs that overlap this zone for terrain/layout decisions.
-        poi_specs = []
-        poi_hits: List[str] = []
-        try:
-            poi_specs = spatial_index_system.query_game_poi_specs_at_zone(
-                self,
-                x,
-                y,
-                depth=depth,
-                zone_w=int(self.cfg.world_width),
-                zone_h=int(self.cfg.world_height),
-            )
-            poi_hits = [p.id for p in poi_specs]
-        except Exception:
-            poi_specs = []
-            poi_hits = []
-
-        lab_state = None
-        is_lab_zone = False
-        is_lair_zone = False
-        lair_layout = "multi_room"
-        lair_seed: int | None = None
-
-        for poi_spec in poi_specs:
-            for struct_spec in poi_spec.structure_specs:
-                if struct_spec.kind == "lab":
-                    is_lab_zone = True
-                    break
-                if struct_spec.kind == "legendary_lair":
-                    is_lair_zone = True
-                    lair_layout = str(struct_spec.tags.get("layout") or lair_layout)
-                    try:
-                        lair_seed = int(struct_spec.tags.get("lair_seed", poi_spec.seed))
-                    except Exception:
-                        pass
-            if is_lab_zone or is_lair_zone:
-                break
-
-        if depth == 0 and is_lab_zone:
-            mapgen.generate_lab(world, self.rng)
-            lab_state = LabState()
-        elif depth == 0 and is_lair_zone:
-            lair_rng = self.rng
-            if lair_seed is not None:
-                try:
-                    lair_rng = random.Random(int(lair_seed) & 0xFFFFFFFF)
-                except Exception:
-                    lair_rng = self.rng
-            mapgen_sites.generate_legendary_lair(world, lair_rng, layout=lair_layout)
-        elif depth == 0:
-            # Overworld terrain (pure terrain cache; macro entities resolve via WIE/attention).
-            self._ensure_overmap_ready()
-
-            jx_slice = jy_slice = None
-            if getattr(self, "tile_julia_grid", None):
-                gx0 = x * world.width
-                gx1 = gx0 + world.width
-                gy0 = y * world.height
-                gy1 = gy0 + world.height
-                xgrid = self.tile_julia_grid.get("x", [])
-                ygrid = self.tile_julia_grid.get("y", [])
-                if gx0 < 0 or gy0 < 0 or gx1 > len(xgrid) or gy1 > len(ygrid):
-                    jx_slice = jy_slice = None
-                else:
-                    jx_slice = xgrid[gx0:gx1]
-                    jy_slice = ygrid[gy0:gy1]
-
-            mapgen.generate_fractal_overworld(
-                world,
-                self.fractal_field,
-                coord,
-                self.rng,
-                up_pos=up_pos,
-                overmap_params=self.overmap_params,
-                jx_slice=jx_slice,
-                jy_slice=jy_slice,
-            )
-
-            # Default entry point when arriving via fast travel (up_pos is None).
-            # Starting zone should spawn near center; other zones near bottom edge.
-            if up_pos is None:
-                if "starting_zone" in poi_hits:
-                    ex = world.width // 2
-                    ey = world.height // 2
-                else:
-                    ex = world.width // 2
-                    ey = max(0, world.height - 2)
-
-                if world.in_bounds(ex, ey) and world.is_walkable(ex, ey):
-                    world.entry = (ex, ey)
-        else:
-            mapgen.generate_basic(world, self.rng, up_pos=up_pos, coord=coord)
-
-        # Stamp POI membership onto this world for discovery/runtime realization.
-        try:
-            poi_hits = mapgen.apply_pois(world, coord, poi_registry=self.poi_registry)
-        except Exception:
-            poi_hits = []
-            world.poi_ids = []  # type: ignore[attr-defined]
-        if bool(getattr(self, "starttsgard_cutover_enabled", False)) and poi_hits:
-            filtered_hits = [pid for pid in poi_hits if pid != "starting_zone"]
-            if len(filtered_hits) != len(poi_hits):
-                poi_hits = filtered_hits
-                world.poi_ids = filtered_hits  # type: ignore[attr-defined]
-
-        # Build starting structures (e.g., item depot) before runtime POI spawns.
-        if "starting_zone" in poi_hits and not bool(getattr(self, "starttsgard_cutover_enabled", False)):
-            try:
-                depot_info = mapgen.build_item_depot(world, self.rng, world.entry)
-                world.depot_info = depot_info  # type: ignore[attr-defined]
-            except Exception:
-                world.depot_info = None  # type: ignore[attr-defined]
-
-        lvl = LevelState(
-            world=world,
-            actors={},
-            entities={},
-            events=[],
-            order=0,
-            current_tick=0,
-            pattern=builder.Pattern(),
-            pattern_anchor=None,
-            activation_points=[],
-            activation_ttl=0,
-            awaiting_terminus=False,
-            need_fov=True,
-            up_stairs=world.up_stairs,
-            down_stairs=world.down_stairs,
-            spotted=set(),
-            coord=coord,
-            lab_state=lab_state,
-        )
-
-        # Difficulty metadata (safe; should not fabricate ontology)
-        difficulty_system.apply_zone_difficulty(self, lvl, coord)
-
-        # Spawn runtime POI entities/NPCs for this loaded zone.
-        self._spawn_poi_contents(lvl, coord)
-
-        # Ensure this zone views the canonical pattern state
-        self._sync_level_pattern_view(lvl)
-        return lvl
+        from edgecaster.systems import worldgen_orchestrator
+        return worldgen_orchestrator.make_zone(self, coord, up_pos)
 
 
 
@@ -2087,69 +1630,6 @@ class Game:
             zone_span_cap=zone_span_cap,
             ccx=ccx, ccy=ccy,
             zone_w=zone_w, zone_h=zone_h,
-        )
-
-    def sync_attention_instantiation(self, abs_rect: tuple[float, float, float, float], *, cam_lod: float) -> None:
-        """Delegate attention lifecycle staging to systems.attention."""
-        
-        attention_system.sync_attention_instantiation(self, abs_rect, cam_lod=cam_lod)
-
-        
-
-
-
-    def renderables_in_abs_rect(
-        self,
-        abs_rect: Tuple[float, float, float, float],
-        *,
-        include_actors: bool = True,
-        include_entities: bool = True,
-        cam_lod: float,
-        dmin: float = -5.0,
-        dmax: float = 0.75,
-        fade_w: float = 0.6,
-        max_count: int = 2000,
-    ) -> List[RenderProxy]:
-        """Delegate attention-driven render candidate assembly to systems.attention."""
-        return attention_system.renderables_in_abs_rect(
-            self,
-            abs_rect,
-            include_actors=include_actors,
-            include_entities=include_entities,
-            cam_lod=cam_lod,
-            dmin=dmin,
-            dmax=dmax,
-            fade_w=fade_w,
-            max_count=max_count,
-            proxy_cls=RenderProxy,
-        )
-
-
-
-    
-    def _ensure_world_aggregate_entities(
-        self,
-        *,
-        zone_w: int,
-        zone_h: int,
-        zx0: int,
-        zx1: int,
-        zy0: int,
-        zy1: int,
-        zz: int,
-        kinds=None,
-    ) -> None:
-        """Delegate world aggregate proxy staging to systems.attention."""
-        attention_system._ensure_world_aggregate_entities(
-            self,
-            zone_w=zone_w,
-            zone_h=zone_h,
-            zx0=zx0,
-            zx1=zx1,
-            zy0=zy0,
-            zy1=zy1,
-            zz=zz,
-            kinds=kinds,
         )
 
 

@@ -1020,6 +1020,18 @@ with fewer moving parts still attached.
     - Added regressions for helper reads without a registry and for difficulty
       POI bonuses sourced from SpatialIndex without registry spatial lookups.
 
+120. Phase 8 Legacy Removal Slice D.28 (2026-04-25):
+    - D.28: Deleted `game.attn_store` DummyAttnStore facade from `Game.__init__`.
+    - Removed all production callers from `entity_lifecycle`, `combat`, and `inventory`.
+    - Deleted local `_attn_store_get` helper from `entity_lifecycle.py`.
+    - Fixed double-call NameError bug in `sync_attention_instantiation` and
+      `_attn_store_ids(attn_store)` → `_attn_store_ids(game)` bug in `renderables_in_abs_rect`.
+    - Bundled pre-D.28 fixes: double BOM in `attention.py`, `test_entity_geometry.py`
+      IndentationError, dead `LabState` import, `player_name` NameError from bootstrap_player
+      extraction, Track E `choking_vines_tick` entity-backed path, `ActorView.keys` set bug,
+      `test_starttsgard_runtime.py` delegate removal.
+    - 703 tests pass.
+
 119. Phase 8 Legacy Removal Slice D.27 (2026-04-24):
     - D.27: Removed dead `tags.get("entity_id")` third leg from `game.entity_id_for_entity`. All objects in the codebase have `entity_id` or `id` as direct attributes; the tags lookup was never reached in practice.
     - 703 tests pass.

@@ -18,7 +18,7 @@ class _DummyGame:
         self.entity_graph = EntityGraphStore()
         self.entity_state: dict[str, dict] = {}
         self.spatial_index = SpatialIndex(bin_size=16)
-        self.attn_store = attention.AttentionCellStore(spatial_index=self.spatial_index)
+        self.attn_store = None
         self.levels: dict[tuple[int, int, int], object] = {}
         self._expanded_entity_children: dict[str, set[str]] = {}
 
@@ -92,7 +92,7 @@ def test_expand_and_collapse_are_idempotent_and_persist_snapshots() -> None:
     game = _DummyGame()
     parent = _resolver_parent()
     entity_graph_ops_system.register_entity(game, parent, lod_state="collapsed")
-    game.attn_store.stage(parent, abs_x=12, abs_y=12, zz=0)
+    attention._attn_store_stage(game, parent, abs_x=12, abs_y=12, zz=0)
 
     child_ids_a = entity_lifecycle_system.expand_entity(game, parent.id)
     child_ids_b = entity_lifecycle_system.expand_entity(game, parent.id)
@@ -114,7 +114,7 @@ def test_expand_and_collapse_are_idempotent_and_persist_snapshots() -> None:
 
     assert game.entity_graph.get_node(parent.id).lod_state == "collapsed"
     assert game.entity_graph.get_node(child_id) is None
-    assert game.attn_store.get(child_id) is None
+    assert attention._attn_store_get(game, child_id) is None
     state = game.entity_state[child_id]
     assert state["tags_patch"]["door_state"] == "open"
     assert state["glyph"] == "/"
@@ -128,7 +128,7 @@ def test_collapse_persists_resolved_child_state_only_by_entity_id() -> None:
     game = _DummyGame()
     parent = _resolver_parent()
     entity_graph_ops_system.register_entity(game, parent, lod_state="collapsed")
-    game.attn_store.stage(parent, abs_x=12, abs_y=12, zz=0)
+    attention._attn_store_stage(game, parent, abs_x=12, abs_y=12, zz=0)
 
     intent = aggregate_system.SpawnIntent(
         eid="resolved:test_child",

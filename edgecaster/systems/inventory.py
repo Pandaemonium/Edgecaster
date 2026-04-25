@@ -277,11 +277,10 @@ def _mark_entity_removed(game: "Game", ent: Any, *, reason: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _remove_ent_from_level(level: "LevelState", ent: Any, game: Any = None) -> None:
-    """Remove *ent* from the level entity dict and from attn_store.
+    """Remove *ent* from the level entity dict and from SpatialIndex.
 
-    Passing *game* ensures the entity is also despawned from attn_store so the
-    attention system does not re-mirror it back into level.entities on the next
-    tick (which would make a picked-up item's glyph reappear on the ground).
+    Passing *game* ensures the entity is also removed from the spatial index so
+    the attention system does not re-mirror it on the next tick.
     """
     ent_id = getattr(ent, "id", None)
     if ent_id is not None and ent_id in level.entities:
@@ -294,12 +293,12 @@ def _remove_ent_from_level(level: "LevelState", ent: Any, game: Any = None) -> N
                 del level.entities[eid]
                 break
 
-    # Also remove from attn_store so the attention system doesn't re-add it.
+    # Remove from SpatialIndex so the attention system doesn't re-add it.
     if game is not None and ent_id is not None:
         try:
-            attn_store = getattr(game, "attn_store", None)
-            if attn_store is not None:
-                attn_store.despawn(str(ent_id))
+            idx = getattr(game, "spatial_index", None)
+            if idx is not None:
+                idx.remove(str(ent_id), source="attention")
         except Exception:
             pass
 

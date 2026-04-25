@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from edgecaster.game import Game
+from edgecaster.systems import attention as attention_system
 
 
 def test_starttsgard_attention_sync_realizes_walls_and_npcs() -> None:
@@ -12,7 +13,7 @@ def test_starttsgard_attention_sync_realizes_walls_and_npcs() -> None:
     zx, zy, _zz = game.zone_coord
     abs_rect = (zx * zone_w, zy * zone_h, (zx + 1) * zone_w, (zy + 1) * zone_h)
 
-    game.sync_attention_instantiation(abs_rect, cam_lod=0.0)
+    attention_system.sync_attention_instantiation(game, abs_rect, cam_lod=0.0)
 
     wall_count = sum(
         1

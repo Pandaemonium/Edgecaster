@@ -1,4 +1,4 @@
-﻿"""Attention-driven render candidate assembly and world proxy staging.
+"""Attention-driven render candidate assembly and world proxy staging.
 
 This module is the bridge between the ABS-space world ontology and the
 per-frame render candidate list.  Its central job is to decide *which* world
@@ -406,215 +406,87 @@ class _SpatialQueryRef:
     zone_coord: Tuple[int, int, int]
     local_pos: Tuple[int, int]
 
-
-class AttentionCellStore:
-    """Staging adapter that writes attention-staged entities into SpatialIndex.
-
-    Public methods:
-      - `stage(obj, abs_x, abs_y, zz)` — register a staged entity
-      - `despawn(eid)` — remove a staged entity
-      - `get(eid)` — look up a staged entity by id
-      - `has(eid)` / `ids()` — staged-entity membership queries
-    """
-
-    def __init__(self, *, spatial_index: object | None = None) -> None:
-        self.spatial_index = spatial_index
-
-    @staticmethod
-    def _normalize_rect(rect: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
-        x0, y0, x1, y1 = rect
-        if x1 < x0:
-            x0, x1 = x1, x0
-        if y1 < y0:
-            y0, y1 = y1, y0
-        return (float(x0), float(y0), float(x1), float(y1))
-
-    @staticmethod
-    def _coerce_rect(raw: object) -> Tuple[float, float, float, float] | None:
-        if isinstance(raw, dict):
-            if all(k in raw for k in ("x0", "y0", "x1", "y1")):
-                try:
-                    return AttentionCellStore._normalize_rect(
-                        (
-                            float(raw["x0"]),
-                            float(raw["y0"]),
-                            float(raw["x1"]),
-                            float(raw["y1"]),
-                        )
-                    )
-                except Exception:
-                    return None
-            return None
-        if isinstance(raw, (tuple, list)) and len(raw) >= 4:
-            try:
-                return AttentionCellStore._normalize_rect(
-                    (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
-                )
-            except Exception:
-                return None
-        return None
-
-    def _rect_for_obj(
-        self,
-        obj: object,
-        *,
-        abs_x: float,
-        abs_y: float,
-    ) -> Tuple[float, float, float, float]:
-        rect = self._coerce_rect(getattr(obj, "footprint_abs", None))
-        if rect is None:
-            tags = getattr(obj, "tags", None)
-            if isinstance(tags, dict):
-                rect = self._coerce_rect(tags.get("footprint_abs"))
-
-        if rect is None:
-            size_val = None
-            for raw in (
-                getattr(obj, "abs_size", None),
-                getattr(obj, "base_size", None),
-            ):
-                if isinstance(raw, (int, float)) and float(raw) > 1.0:
-                    size_val = float(raw)
-                    break
-            if size_val is None:
-                tags = getattr(obj, "tags", None)
-                if isinstance(tags, dict):
-                    raw = tags.get("abs_size")
-                    if isinstance(raw, (int, float)) and float(raw) > 1.0:
-                        size_val = float(raw)
-            if size_val is not None:
-                half = 0.5 * float(size_val)
-                rect = (float(abs_x) - half, float(abs_y) - half, float(abs_x) + half, float(abs_y) + half)
-            else:
-                rect = (float(abs_x), float(abs_y), float(abs_x) + 1.0, float(abs_y) + 1.0)
-        return self._normalize_rect(rect)
-
-    def get(self, eid: str) -> object | None:
-        entity_id = str(eid or "").strip()
-        if not entity_id or self.spatial_index is None:
-            return None
-        try:
-            entry = self.spatial_index.get(entity_id)
-            if (
-                entry is not None
-                and str(getattr(entry, "source", "") or "") == "attention"
-                and str(getattr(entry, "realization_state", "") or "") == "staged"
-            ):
-                return entry.obj
-        except Exception:
-            pass
-        return None
-
-    def has(self, eid: str) -> bool:
-        return self.get(str(eid or "")) is not None
-
-    def ids(self) -> set[str]:
-        if self.spatial_index is None:
-            return set()
-        try:
-            return {
-                str(entry.entity_id)
-                for entry in self.spatial_index.iter_all(source="attention", realization_state="staged")
-                if str(getattr(entry, "entity_id", "") or "").strip()
-            }
-        except Exception:
-            return set()
-
-    def stage(self, obj: object, *, abs_x: float, abs_y: float, zz: int) -> str:
-        eid = str(getattr(obj, "id", "") or "")
-        if not eid:
-            raise ValueError("staged object missing id")
-        try:
-            if getattr(obj, "abs_pos", None) is None:
-                obj.abs_pos = (int(abs_x), int(abs_y))
-        except Exception:
-            pass
-
-        rect = self._rect_for_obj(obj, abs_x=abs_x, abs_y=abs_y)
-
-        if self.spatial_index is not None:
-            try:
-                self.spatial_index.add_or_update(
-                    obj,
-                    rect,
-                    int(zz),
-                    "staged",
-                    source="attention",
-                )
-            except Exception:
-                pass
-        return eid
-
-    def despawn(self, eid: str) -> None:
-        eid = str(eid)
-        if self.spatial_index is not None:
-            try:
-                self.spatial_index.remove(eid, source="attention")
-            except Exception:
-                pass
-
-
-def _attn_store_get(attn_store: object, eid: str) -> object | None:
-    if attn_store is None:
+def _attn_store_get(game: object, eid: str) -> object | None:
+    if game is None:
         return None
     entity_id = str(eid or "").strip()
     if not entity_id:
         return None
     try:
-        getter = getattr(attn_store, "get", None)
-        if callable(getter):
-            return getter(entity_id)
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            entry = idx.get(entity_id)
+            if entry is not None and str(getattr(entry, "source", "")) == "attention" and str(getattr(entry, "realization_state", "")) == "staged":
+                return entry.obj
     except Exception:
         pass
     return None
 
 
-def _attn_store_has(attn_store: object, eid: str) -> bool:
-    return _attn_store_get(attn_store, eid) is not None
+def _attn_store_has(game: object, eid: str) -> bool:
+    return _attn_store_get(game, eid) is not None
 
 
-def _attn_store_ids(attn_store: object) -> set[str]:
-    if attn_store is None:
+def _attn_store_ids(game: object) -> set[str]:
+    if game is None:
         return set()
     try:
-        getter = getattr(attn_store, "ids", None)
-        if callable(getter):
-            values = getter()
-            return {str(eid) for eid in (values or set()) if str(eid or "").strip()}
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            return {
+                str(entry.entity_id)
+                for entry in idx.iter_all(source="attention", realization_state="staged")
+                if str(getattr(entry, "entity_id", "") or "").strip()
+            }
     except Exception:
         pass
     return set()
 
 
 def _attn_store_stage(
-    attn_store: object,
+    game: object,
     obj: object,
     *,
     abs_x: float,
     abs_y: float,
     zz: int,
 ) -> str | None:
-    if attn_store is None:
+    if game is None:
         return None
-    try:
-        stage = getattr(attn_store, "stage", None)
-        if callable(stage):
-            return str(stage(obj, abs_x=abs_x, abs_y=abs_y, zz=zz) or "") or None
-    except Exception:
-        pass
-    return None
+    eid = str(getattr(obj, "id", "") or "")
+    if not eid:
+        return None
+    idx = spatial_index_system.get_game_spatial_index(game)
+    if idx is not None:
+        try:
+            if getattr(obj, "abs_pos", None) is None:
+                obj.abs_pos = (int(abs_x), int(abs_y))
+        except Exception:
+            pass
+        rect = spatial_index_system.rect_for_obj(obj, abs_x=abs_x, abs_y=abs_y)
+        try:
+            idx.add_or_update(
+                obj,
+                rect,
+                int(zz),
+                "staged",
+                source="attention",
+            )
+        except Exception:
+            pass
+    return eid
 
 
-def _attn_store_despawn(attn_store: object, eid: str) -> None:
-    if attn_store is None:
+def _attn_store_despawn(game: object, eid: str) -> None:
+    if game is None:
         return
     entity_id = str(eid or "").strip()
     if not entity_id:
         return
     try:
-        despawn = getattr(attn_store, "despawn", None)
-        if callable(despawn):
-            despawn(entity_id)
+        idx = spatial_index_system.get_game_spatial_index(game)
+        if idx is not None:
+            idx.remove(entity_id, source="attention")
     except Exception:
         pass
 
@@ -662,7 +534,6 @@ def _mirror_attention_entity_into_level(
 def _promote_attention_actor_into_level(
     game: object,
     level: object,
-    attn_store: object,
     *,
     eid: str,
     actor_obj: object,
@@ -681,18 +552,18 @@ def _promote_attention_actor_into_level(
                 _mark_level_spatial_dirty(level)
     except Exception:
         pass
-    _attn_store_despawn(attn_store, entity_id)
+    _attn_store_despawn(game, entity_id)
 
 
 def _drop_attention_child_from_runtime(
     level: object | None,
-    attn_store: object,
+    game: object,
     eid: str,
 ) -> None:
     entity_id = str(eid or "").strip()
     if not entity_id:
         return
-    _attn_store_despawn(attn_store, entity_id)
+    _attn_store_despawn(game, entity_id)
     if level is None:
         return
     removed_here = False
@@ -721,7 +592,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
     - May instantiate/de-instantiate entities as camera pans/zooms (even while paused).
     - Must NOT advance time or apply simulation deltas.
     - Deterministic layout for berry_patch -> berries (cluster mode).
-    - Derived children are staged into game.attn_store (ABS-binned), not into zones.
+    - Derived children are staged into SpatialIndex (ABS-binned), not into zones.
     - Basic persistence (Phase 1): if a spawned berry disappears from the *loaded* zone (picked up),
       we record its slot as harvested on the aggregate so it won't respawn.
     """
@@ -848,7 +719,8 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
     # Ensure aggregate proxies exist at least for the clamped camera window.
     # (This avoids "only a few patches near player" when panning far away.)
     try:
-        game._ensure_world_aggregate_entities(
+        _ensure_world_aggregate_entities(
+            game,
             zone_w=zone_w,
             zone_h=zone_h,
             zx0=zx0c,
@@ -894,10 +766,6 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
         return
 
     partial_knowledge = bool(was_clamped)
-
-    attn_store: AttentionCellStore = getattr(game, "attn_store", None)
-    if attn_store is None:
-        return
 
     if not hasattr(game, "_expanded_entity_children"):
         game._expanded_entity_children = {}  # parent_eid -> set[child_eid]
@@ -1055,10 +923,10 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                     setattr(level, "_attn_mirrored_ids", mirrored)
 
                 for s, eid in list(slot_to_eid.items()):
-                    if (eid in mirrored) and (eid not in level.entities) and _attn_store_has(attn_store, eid):
+                    if (eid in mirrored) and (eid not in level.entities) and _attn_store_has(game, eid):
                         harvested.add(int(s))
                         _mark_removed(game, entity_id=str(eid), reason="pickup")
-                        _attn_store_despawn(attn_store, eid)
+                        _attn_store_despawn(game, eid)
                         del slot_to_eid[s]
             except Exception:
                 pass
@@ -1094,7 +962,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 harvested.add(int(slot))
                 existing_eid = slot_to_eid.get(int(slot))
                 if existing_eid:
-                    _drop_attention_child_from_runtime(level, attn_store, existing_eid)
+                    _drop_attention_child_from_runtime(level, game, existing_eid)
                     try:
                         del slot_to_eid[int(slot)]
                     except Exception:
@@ -1115,14 +983,14 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
             if child_type == "actor" and level is not None:
                 try:
                     if eid in level.actors:
-                        if _attn_store_has(attn_store, eid):
-                            _attn_store_despawn(attn_store, eid)
+                        if _attn_store_has(game, eid):
+                            _attn_store_despawn(game, eid)
                         slot_to_eid[slot] = eid
                         continue
                 except Exception:
                     pass
 
-            staged_obj = _attn_store_get(attn_store, eid)
+            staged_obj = _attn_store_get(game, eid)
             if staged_obj is not None:
                 slot_to_eid[slot] = eid
 
@@ -1133,7 +1001,6 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                         _promote_attention_actor_into_level(
                             game,
                             level,
-                            attn_store,
                             eid=eid,
                             actor_obj=staged_obj,
                         )
@@ -1164,7 +1031,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 # CRITICAL: actor id must be the deterministic slot eid, otherwise we spawn forever.
 
                 # If already staged, we're done.
-                staged_obj = _attn_store_get(attn_store, eid)
+                staged_obj = _attn_store_get(game, eid)
                 if staged_obj is not None:
                     slot_to_eid[slot] = eid
                     # If this zone is loaded, ensure it is registered once for simulation,
@@ -1174,7 +1041,6 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             _promote_attention_actor_into_level(
                                 game,
                                 level,
-                                attn_store,
                                 eid=eid,
                                 actor_obj=staged_obj,
                             )
@@ -1211,7 +1077,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                 # Stage into attention store (primary truth)
                 try:
                     _attn_store_stage(
-                        attn_store,
+                        game,
                         actor_obj,
                         abs_x=ax,
                         abs_y=ay,
@@ -1230,7 +1096,6 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                             _promote_attention_actor_into_level(
                                 game,
                                 level,
-                                attn_store,
                                 eid=eid,
                                 actor_obj=actor_obj,
                             )
@@ -1263,7 +1128,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
 
                 # Stage into attention store (primary)
                 try:
-                    _attn_store_stage(attn_store, bent, abs_x=ax, abs_y=ay, zz=zz)
+                    _attn_store_stage(game, bent, abs_x=ax, abs_y=ay, zz=zz)
                     _mark_entity_live(game, str(eid))
                 except Exception:
                     continue
@@ -1293,7 +1158,7 @@ def sync_attention_instantiation(game, abs_rect: tuple[float, float, float, floa
                     continue
                 if isinstance(slot_map, dict):
                     for _slot, eid in list(slot_map.items()):
-                        _attn_store_despawn(attn_store, eid)
+                        _attn_store_despawn(game, eid)
                 del game._attn_active_agg_children[agg_id]
         except Exception:
             pass
@@ -1609,9 +1474,7 @@ def renderables_in_abs_rect(
     out: List[object] = []
     candidates: List[Tuple[object, float, float, Tuple[int, int, int], Tuple[int, int], float]] = []
 
-    # Reuse a single handle to attention store throughout this function.
-    attn_store = getattr(game, "attn_store", None)
-    attn_ids = _attn_store_ids(attn_store)
+    attn_ids = _attn_store_ids(game)
 
     # Camera center for scoring (raw camera center, not warm center)
     ccx = 0.5 * (ax0 + ax1)

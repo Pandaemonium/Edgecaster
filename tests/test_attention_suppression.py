@@ -160,7 +160,8 @@ def test_sync_attention_instantiation_rechecks_when_loaded_level_is_dirty() -> N
         cfg=SimpleNamespace(world_width=10, world_height=10, entity_render_pad_tiles=0.0, render_max_zone_span=1),
         spatial_index=spatial_index,
         world_entity_index=None,
-        attn_store=object(),
+        _attn_active_agg_children={},
+        _attn_active_struct_children={},
         _attn_last_sync_abs_rect=(0.0, 0.0, 10.0, 10.0),
         _attn_last_sync_cam_lod=0.0,
         _ensure_world_aggregate_entities=lambda **_kwargs: None,
@@ -204,7 +205,6 @@ def test_sync_attention_instantiation_reads_proxy_refs_from_spatial_index_first(
         zone_coord=(0, 0, 0),
         spatial_index=spatial_index,
         world_entity_index=_LegacyWorldIndex(),
-        attn_store=object(),
         levels={(0, 0, 0): level},
         _clamp_zone_window=lambda zx0, zx1, zy0, zy1, **_kwargs: (zx0, zx1, zy0, zy1, False),
         _ensure_world_aggregate_entities=lambda **_kwargs: None,
@@ -241,7 +241,6 @@ def test_sync_attention_instantiation_reads_spatial_proxy_without_world_index() 
         zone_coord=(0, 0, 0),
         spatial_index=spatial_index,
         world_entity_index=None,
-        attn_store=object(),
         levels={(0, 0, 0): level},
         _clamp_zone_window=lambda zx0, zx1, zy0, zy1, **_kwargs: (zx0, zx1, zy0, zy1, False),
         _ensure_world_aggregate_entities=lambda **_kwargs: None,
@@ -334,9 +333,9 @@ def test_sync_attention_instantiation_aggregate_detail_works_without_entities_di
         zone_coord=(0, 0, 0),
         spatial_index=spatial_index,
         world_entity_index=None,
-        attn_store=store,
         levels={(0, 0, 0): level},
         _attn_active_agg_children={},
+        _attn_active_struct_children={},
         _clamp_zone_window=lambda zx0, zx1, zy0, zy1, **_kwargs: (zx0, zx1, zy0, zy1, False),
         _ensure_world_aggregate_entities=lambda **_kwargs: None,
         _get_player_abs=lambda: (5.0, 5.0),
@@ -354,8 +353,9 @@ def test_sync_attention_instantiation_aggregate_detail_works_without_entities_di
         attention.aggregate_system.aggregate_slot_lineage_id("agg:berries:test", "blueberry", 0)
     )
     assert expected_eid in level.entities
-    assert expected_eid in store.ids()
-    assert store.get(expected_eid) is level.entities[expected_eid]
+    entry = spatial_index.get(expected_eid)
+    assert entry is not None and str(getattr(entry, "source", "")) == "attention"
+    assert entry.obj is level.entities[expected_eid]
 
 
 def test_resolve_depth_respects_parent_cap_and_bias() -> None:

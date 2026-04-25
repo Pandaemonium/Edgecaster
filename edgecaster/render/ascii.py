@@ -4857,16 +4857,22 @@ class AsciiRenderer:
             fade_w = float(getattr(self, "entity_lod_fade_width", 0.6))
             max_count = int(getattr(self, "entity_render_max_count", 2000))
 
-            if hasattr(game, "renderables_in_abs_rect"):
-                renderables = game.renderables_in_abs_rect(
+            try:
+                from edgecaster.systems import attention as attention_system
+                from edgecaster.game import RenderProxy
+                renderables = attention_system.renderables_in_abs_rect(
+                    game,
                     abs_rect,
+                    include_actors=True,
+                    include_entities=True,
                     cam_lod=cam_lod,
                     dmin=dmin,
                     dmax=dmax,
                     fade_w=fade_w,
                     max_count=max_count,
+                    proxy_cls=RenderProxy,
                 )
-            else:
+            except Exception:
                 renderables = game.renderables_current()
         except Exception:
             renderables = game.renderables_current()

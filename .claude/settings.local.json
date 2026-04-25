@@ -45,7 +45,8 @@
       "Bash(bash /tmp/check_imports.sh)",
       "Bash(chmod +x /tmp/find_delegates.sh)",
       "Bash(bash /tmp/find_delegates.sh)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(awk 'NR>=140 && NR<=160')"
     ]
   }
 }

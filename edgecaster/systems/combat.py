@@ -480,11 +480,11 @@ def kill_actor(
         pass
 
 
-    # Ensure attention-staged entities vanish immediately on death (otherwise they'd still render from attn_store).
+    # Ensure attention-staged entities vanish immediately on death.
     try:
-        attn_store = getattr(game, "attn_store", None)
-        if attn_store is not None:
-            attn_store.despawn(actor.id)
+        idx = getattr(game, "spatial_index", None)
+        if idx is not None:
+            idx.remove(actor.id, source="attention")
     except Exception:
         pass
 

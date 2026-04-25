@@ -63,3 +63,15 @@ Updates for entity_chakra_unification_master_plan.txt (applied 2026-04-22):
        - Cleaned up `POIRegistry` by deleting unused `_by_zone` and `_by_zone_2d` population logic and leftover debug logs.
        - Promoted `rune_anchor_siege` from `LevelState` sidecar into a first-class `Entity` with `kind="rune_anchor_siege"`.
        - Removed unused `lineage_id` parameter from `patch_entity_state` and `get_effective_entity_state` in `game.py`, fully concluding Track F.1.
+   113. Phase 8 Legacy Removal Slice D.31 & H (2026-04-24):
+       - Extracted `LevelState` and `LabState` from `game.py` into `edgecaster/state/levels.py` to thin out the orchestrator.
+       - Finalized Store Collapse by deleting `AttentionCellStore` completely. Rerouted `_attn_store_stage` and `_attn_store_despawn` to write directly to `SpatialIndex`.
+
+   114. Phase 8 Legacy Removal Slice I & E (2026-04-24):
+       - Extracted `_make_zone` from `game.py` into `edgecaster/systems/worldgen_orchestrator.py`.
+       - Extracted player bootstrap logic from `Game.__init__` into `edgecaster/systems/bootstrap_player.py`.
+       - Promoted `LabState` from a `LevelState` sidecar into a first-class `Entity` with `kind="lab_state"`, removing `LabState` entirely from `levels.py`.
+   112. Phase 8 Legacy Removal Slice D.28-D.30 (2026-04-24):
+       - Consolidated `_normalize_rect`, `_coerce_rect`, and `_rect_for_obj` logic from `AttentionCellStore` and `WorldEntityIndex` into `spatial_index.py`.
+       - Deleted dead delegate wrappers from `game.py`: `_ensure_world_aggregate_entities`, `sync_attention_instantiation`, and `renderables_in_abs_rect`.
+       - Callers in `scheduling.py` and `ascii.py` now invoke `attention_system` directly, further thinning `game.py`.

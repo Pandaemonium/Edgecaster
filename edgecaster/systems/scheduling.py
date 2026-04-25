@@ -63,7 +63,8 @@ def advance_time(
             abs_rect = getattr(game, "_last_view_abs_rect", None)
             cam_lod = getattr(game, "_last_view_cam_lod", None)
             if abs_rect is not None and cam_lod is not None:
-                game.sync_attention_instantiation(abs_rect, cam_lod=float(cam_lod))
+                from edgecaster.systems import attention as attention_system
+                attention_system.sync_attention_instantiation(game, abs_rect, cam_lod=float(cam_lod))
         except Exception:
             pass
 
@@ -605,22 +606,25 @@ def acidic_pattern_tick(game: "Game", level: "LevelState") -> None:
 
 
 def choking_vines_tick(game: "Game", level: "LevelState", delta: int) -> None:
-    """Advance Choking Vines simulation for `delta` ticks.
-
-    Aggressive vine runtime now lives entirely on transient
-    ``kind="aggressive_vines"`` entities in the loaded level cache.
-    """
+    """Advance Choking Vines simulation for `delta` ticks."""
     if delta <= 0:
         return
-    tips_to_show: list[dict[str, Any]] = []
-    for ent in list(entity_ops_system.iter_entities(level)):
-        if getattr(ent, "kind", "") != "aggressive_vines":
+
+    # Entity-backed path (Track E): vines are first-class entities with kind="aggressive_vines".
+    vine_entities = {
+        eid: ent
+        for eid, ent in (getattr(level, "entities", None) or {}).items()
+        if str(getattr(ent, "kind", "")) == "aggressive_vines"
+    }
+
+    for eid, ent in list(vine_entities.items()):
+        state = getattr(ent, "tags", None)
+        if not state:
             continue
-        state = getattr(ent, "tags", {})
         try:
             remaining = int(state.get("remaining", 0))
         except Exception:
-            entity_ops_system.remove_entity(level, ent.id)
+            level.entities.pop(eid, None)
             continue
 
         for _ in range(int(delta)):
@@ -630,30 +634,28 @@ def choking_vines_tick(game: "Game", level: "LevelState", delta: int) -> None:
             remaining -= 1
             state["remaining"] = remaining
 
-        if remaining <= 0:
-            entity_ops_system.remove_entity(level, ent.id)
-        else:
-            tips_to_show.extend(list(state.get("tips", []) or []))
-
-    # Keep activation overlay loosely in sync with active vine tips.
-    try:
-        if tips_to_show:
+        # Keep activation overlay loosely in sync with active vine tips.
+        try:
             zx, zy, _ = getattr(level, "coord", getattr(game, "zone_coord", (0, 0, 0)))
             zw, zh = game._zone_dims()
             ox = float(zx * zw)
             oy = float(zy * zh)
+            tips = list(state.get("tips", []) or [])
             level.activation_points = [
                 (float(t["x"]) - ox, float(t["y"]) - oy)
-                for t in tips_to_show
+                for t in tips
                 if "x" in t and "y" in t
             ]
             if level.activation_points:
                 level.activation_ttl = max(int(getattr(level, "activation_ttl", 0) or 0), 3)
-    except Exception:
-        pass
+        except Exception:
+            pass
+
+        if remaining <= 0:
+            level.entities.pop(eid, None)
 
     # Keep canonical per-depth pattern state synced with vine runtime state so
-    # current activation overlays stay consistent across the active level view.
+    # crossing zones does not revert to stale tendril geometry.
     try:
         game._commit_pattern_state_from_level(level)
     except Exception:
