@@ -477,6 +477,27 @@
   description: Seems to get sharper the closer you look. Ouch, not that close!
   tags:
     item_type: koch_knife
+- id: vorpal_blade
+  name: Vorpal Blade
+  glyph: '/'
+  color:
+  - 220
+  - 240
+  - 255
+  kind: item
+  render_layer: 1
+  blocks_movement: false
+  parent: physical_object
+  description: The blade shimmers with an unnatural keenness. It knows where joints are.
+  tags:
+    item_type: vorpal_blade
+    value_bismuth: 80
+    base_attack: 8
+    allowed_slot_kinds:
+    - hand
+    - forearm
+    dismember_chance: 0.90
+
 - id: whip
   name: Whip
   glyph: '~'
@@ -1403,6 +1424,7 @@
       - wand_zigzag
       - wand_activate_n
       - wand_sparkle
+      - vorpal_blade
       count: fill_interior
       placement:
         pattern: scatter_interior

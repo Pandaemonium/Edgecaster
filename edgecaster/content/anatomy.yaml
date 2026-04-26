@@ -84,6 +84,7 @@
   name: Head
   parent: entity
   description: A head, home to senses and teeth-to-be.
+  dismemberable: true
   body:
     root: neck
     nodes:
@@ -253,6 +254,7 @@
           y: 0.45
         props:
           size: 0.3
+        dismemberable: true
 - id: leg
   name: Leg
   parent: limb
@@ -295,10 +297,12 @@
           y: 0.4
         props:
           size: 0.15
+        dismemberable: true
 - id: hand
   name: Hand
   parent: limb
   description: A grasping extremity with a palm and digits.
+  dismemberable: true
   body:
     root: wrist
     nodes:
@@ -368,6 +372,7 @@
   name: Foot
   parent: limb
   description: A support extremity with an ankle, sole, heel, and toes.
+  dismemberable: true
   body:
     root: ankle
     nodes:

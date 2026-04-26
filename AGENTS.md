@@ -83,6 +83,36 @@ Outdated planning material belongs under `vision_documents/archived/`.
 - Primary test command: `python -m pytest`
 - Be careful around large runtime artifacts such as `telemetry.ndjson`; do not treat them as source documentation.
 
+## Debug Logging
+
+Runtime debug output goes to `C:\Games\Edgecaster\debug.log` (created/cleared at game start).
+
+**Writing to the debug log from a system:**
+
+```python
+def _dbg(game: Any, msg: str) -> None:
+    try:
+        dbg = getattr(game, "_debug", None)
+        if callable(dbg):
+            dbg(msg)
+    except Exception:
+        pass
+```
+
+Call `_dbg(game, "[my_system] some message")` wherever you need trace output.
+The `game._debug(msg)` method appends to the log file; it is always safe to call and
+silently does nothing if unavailable (e.g. in tests without a real Game instance).
+
+**Do not write debug output to `game.log`** — that is the player-visible message log
+displayed in the dungeon UI. Use `game._debug()` for anything intended for developer
+eyes only.
+
+**Prefix convention:** prefix messages with `[system_name]` so they are easy to grep,
+e.g. `[dismember]`, `[attention]`, `[combat]`.
+
+**Cleanup:** remove debug calls once the feature is stable. They are cheap but add
+noise to the log file during normal play.
+
 ## Claude Compatibility
 
 - Keep `CLAUDE.md` files aligned with `AGENTS.md` files by using `@AGENTS.md` imports.

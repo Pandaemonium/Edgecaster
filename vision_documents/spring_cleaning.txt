@@ -228,6 +228,54 @@ ONGOING ENGINE CLEANUPS
 [CLEANUP] NPCs defined in 3 places
   - pois.yaml, npcs.py, and entities.yaml all define NPC data independently.
 
+[CLEANUP] bootstrap_player.py reassigns player.id after spawn without syncing entity_id
+  - File: edgecaster/systems/bootstrap_player.py line 21
+  - spawn_enemy() sets player.id = player.entity_id = aid. Then player.id is
+    immediately overwritten with a new _new_id(), but entity_id is NOT updated.
+  - This split caused inventory/graph lookups to use the wrong key (game.player_id
+    vs entity_id disagreeing). Fixed with player.entity_id = player.id, but the
+    real fix is to not reassign the id post-spawn at all — spawn with the
+    intended id in the first place.
+
+[CLEANUP] equip_slots and allowed_slots (exact-match) removed from equip_rules.py
+  - Was confusing because the inventory scene builds slot_ids as zoom-path strings
+    like "arm/hand" rather than bare "hand", making exact matches silently fail.
+  - Use allowed_slot_kinds instead (checks each path segment, works at any zoom depth).
+  - Deleted from equip_rules.py. If anything still uses equip_slots in content
+    YAML, it will be silently ignored — audit content files if equip issues arise.
+
+[CLEANUP] register_actor body expansion silently swallows all exceptions and stops at one level
+  - File: edgecaster/systems/spawning.py lines 503-519
+  - The entire body-expansion block is inside a broad try/except: pass.
+  - In practice the BFS only materializes the top-level root body node, not the
+    full tree (arm, head, leg etc.); the intermediate levels are not found or
+    not queued. Root cause unknown — the outer try/except swallows the failure.
+  - Consequence: entity graph body trees for most actors are only one level deep
+    at spawn time. dismemberment.py works around this by expanding on demand,
+    but the correct fix is to diagnose and repair the BFS so the full tree
+    is materialized at spawn (which is what Look/chakra-scene reads from YAML
+    anyway — two systems reading different sources is the root confusion).
+
+[CLEANUP] Enemies that bypass the humanoid prototype hierarchy have no body schema
+  - Enemies with parent: actor or parent: demon (rather than parent: humanoid)
+    have empty body schemas and cannot be body-expanded at spawn.
+  - Fixed for demon→imp lineage by changing demon's parent to humanoid.
+  - Audit remaining non-humanoid enemy prototypes to confirm they should NOT
+    have bodies (e.g. golems, undead), or change their parents accordingly.
+  - Discovery path: dismemberment found body children (0) for all spawned enemies
+    until this was fixed.
+
+[CLEANUP] equip_item_to_slot called with zoom-path slot IDs but get_equipped_in_slot
+  uses exact socket match
+  - File: edgecaster/systems/inventory.py, equip_rules.py
+  - The inventory scene builds slot_ids like "arm/hand" from the body zoom stack.
+  - equip_item_to_slot stores this as the socket_id in the entity graph.
+  - get_equipped_in_slot("hand") will NOT find an item stored under "arm/hand".
+  - Any code that looks up equipped items by guessing short slot names (e.g.
+    dismemberment._dismember_chance originally) will silently find nothing.
+  - Correct approach: scan graph children and filter by socket kind segment,
+    not by exact slot name. dismemberment.py was fixed to do this.
+
 ===============================================================================
 TEST GAPS
 

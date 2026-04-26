@@ -3,14 +3,19 @@
 This module centralizes slot compatibility policy so inventory/equipment UIs
 do not each invent their own ad-hoc checks.
 
-Current policy is tag-driven and intentionally simple:
-- ``equip_slots`` / ``allowed_slots``: exact slot ids allowed.
+Current policy is tag-driven:
 - ``blocked_slots``: exact slot ids denied.
 - ``equip_slot_prefixes`` / ``allowed_slot_prefixes``: slot path prefixes
-  allowed (``arm`` allows ``arm:hand``, ``arm:hand:thumb``, etc.).
+  allowed (``arm`` allows ``arm/hand``, ``arm/hand/thumb``, etc.).
 - ``blocked_slot_prefixes``: slot path prefixes denied.
-- ``allowed_slot_kinds``: required slot segments (``hand``, ``foot`` ...).
-- ``blocked_slot_kinds``: denied slot segments.
+- ``allowed_slot_kinds``: required slot path segments (``hand``, ``foot`` ...).
+  Use this for items that should equip to any slot whose path contains that
+  segment, e.g. allowed_slot_kinds: [hand] matches "arm/hand", "arm_m/hand".
+- ``blocked_slot_kinds``: denied slot path segments.
+
+Note: ``equip_slots`` and ``allowed_slots`` (exact-match tags) have been
+removed. They required knowing the full slot path string (e.g. "arm/hand")
+which varies by body zoom context. Use ``allowed_slot_kinds`` instead.
 """
 
 from __future__ import annotations
@@ -77,9 +82,6 @@ def can_equip_item_in_slot(item: Any, slot_id: str) -> Tuple[bool, str]:
 
     tags = getattr(item, "tags", None) or {}
 
-    allowed_exact = set(
-        _to_lower_list(tags.get("equip_slots")) + _to_lower_list(tags.get("allowed_slots"))
-    )
     blocked_exact = set(_to_lower_list(tags.get("blocked_slots")))
 
     allowed_prefix = set(
@@ -98,9 +100,7 @@ def can_equip_item_in_slot(item: Any, slot_id: str) -> Tuple[bool, str]:
         if _slot_prefix_match(sid, pfx):
             return False, "That item cannot be equipped in this slot."
 
-    # Explicit allow lists.
-    if allowed_exact and sid not in allowed_exact:
-        return False, "That item does not fit this slot."
+    # Prefix allow list.
     if allowed_prefix:
         ok = False
         for pfx in allowed_prefix:

@@ -311,6 +311,11 @@ def attack(game: "Game", level: "LevelState", attacker: "Actor", defender: "Acto
     )
     apply_damage(game, attacker, defender, dmg)
 
+    # Dismemberment: attacker may sever a body part if they carry dismember_chance.
+    if getattr(defender, "alive", True) and int(getattr(getattr(defender, "stats", None), "hp", 1)) > 0:
+        from edgecaster.systems import dismemberment as _dismemberment
+        _dismemberment.attempt_dismember(game, level, attacker, defender)
+
     # God ability: grant favor when player takes damage.
     try:
         from edgecaster.systems import gods as _gods_sys

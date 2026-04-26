@@ -19,6 +19,7 @@ def bootstrap_player(game: "Game") -> None:
     player = enemy_factory.spawn_enemy(player_tmpl_id, (px, py), game=game)
 
     player.id = game._new_id()
+    player.entity_id = player.id  # keep entity_id in sync — spawn_enemy sets its own id first
     player.name = player_name
     player.pos = (px, py)
     player.faction = "player"

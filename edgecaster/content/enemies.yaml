@@ -22,7 +22,7 @@
   base_attack: 1
   base_defense: 0
   speed: 1.0
-  parent: actor
+  parent: humanoid
   description: These guys REALLY hate fractals.
   tags:
     template: true
