@@ -20,12 +20,106 @@ def owner_entity_id(owner: object) -> str:
         return ""
 
 
+def _severed_body_full_ids(game: Any, owner_id: str) -> set[str]:
+    """Return the set of body_full_ids that have been severed from this owner.
+
+    Checks entity_state (persistent across zones) first, then live entity tags
+    (covers the current session before a save/load). Used to filter YAML-fallback
+    body node lists so severed nodes do not re-appear after dismemberment.
+    """
+    result: set[str] = set()
+    if game is None or not owner_id:
+        return result
+
+    prefix = f"{owner_id}:body:"
+
+    # entity_state is keyed by entity_id; body node ids are "{owner}:body:{full_id}".
+    entity_state = getattr(game, "entity_state", None)
+    if isinstance(entity_state, dict):
+        for eid, state in entity_state.items():
+            if not isinstance(eid, str) or not eid.startswith(prefix):
+                continue
+            if isinstance(state, dict) and state.get("severed"):
+                full_id = eid[len(prefix):]
+                if full_id:
+                    result.add(full_id)
+
+    # Also check live entity objects (covers the current session before save).
+    try:
+        from edgecaster.systems import entity_lifecycle as _elc
+        graph = getattr(game, "entity_graph", None)
+        if graph is not None:
+            for node_eid in list(graph.nodes.keys()):
+                if not isinstance(node_eid, str) or not node_eid.startswith(prefix):
+                    continue
+                node = graph.get_node(node_eid)
+                if node is not None and node.obj is not None:
+                    tags = getattr(node.obj, "tags", {}) or {}
+                    if tags.get("severed") or tags.get("body_node") is False:
+                        full_id = node_eid[len(prefix):]
+                        if full_id:
+                            result.add(full_id)
+    except Exception:
+        pass
+
+    return result
+
+
 def _schema_node_count(schema: Any) -> int:
     """Return the number of nodes in a schema-shaped mapping."""
     if not isinstance(schema, dict):
         return 0
     nodes = schema.get("nodes", {})
     return len(nodes) if isinstance(nodes, dict) else 0
+
+
+def _apply_severed_filter_to_schema(
+    schema: Any,
+    game: Any,
+    owner: Any,
+    zoom_stack: list | tuple,
+) -> dict:  # noqa: C901
+    """Remove severed body nodes from a YAML-derived schema dict.
+
+    Body spec full_ids use the schema branch prefix: all nodes in the "leg"
+    sub-schema get full_ids like "leg.foot", "leg.calf", etc. (not the full
+    hierarchical chain). The prefix is simply zoom_stack joined with ".".
+
+    At top level (zoom_stack=[]): prefix="", local_id == full_id.
+    At zoom ["leg"]: prefix="leg.", foot's full_id = "leg.foot".
+    At zoom ["arm"]: prefix="arm.", hand's full_id = "arm.hand".
+    """
+    if game is None or owner is None or not isinstance(schema, dict):
+        _dbg(game, f"[body_view] _apply_severed_filter: early exit game={game is None} owner={owner is None} schema_type={type(schema)}")
+        return schema
+
+    owner_id = owner_entity_id(owner)
+    severed = _severed_body_full_ids(game, owner_id)
+    prefix = ".".join(zoom_stack) + "." if zoom_stack else ""
+    node_keys = list((schema.get("nodes", {}) or {}).keys())
+    _dbg(game, f"[body_view] _apply_severed_filter: owner={owner_id!r} zoom={list(zoom_stack)} prefix={prefix!r} severed={severed} nodes={node_keys}")
+
+    if not severed:
+        return schema
+
+    nodes = dict(schema.get("nodes", {}) or {})
+    for local_id in list(nodes.keys()):
+        full_id = f"{prefix}{local_id}"
+        if full_id in severed:
+            _dbg(game, f"[body_view]   removing severed node {local_id!r} (full_id={full_id!r})")
+            del nodes[local_id]
+    result = dict(schema)
+    result["nodes"] = nodes
+    return result
+
+
+def _dbg(game: Any, msg: str) -> None:
+    try:
+        dbg = getattr(game, "_debug", None)
+        if callable(dbg):
+            dbg(msg)
+    except Exception:
+        pass
 
 
 def _entity_zoom_view_is_usable(
@@ -268,7 +362,11 @@ def build_entity_schema_at_zoom_depth(
         if not child_specs:
             return None
 
+        severed_ids = _severed_body_full_ids(game, owner_id)
+
         for spec in child_specs:
+            if getattr(spec, "full_id", None) in severed_ids:
+                continue
             try:
                 local_x = float(spec.abs_pos[0]) - float(parent_anchor[0])
                 local_y = float(spec.abs_pos[1]) - float(parent_anchor[1])
@@ -444,6 +542,7 @@ def resolve_body_schema_for_zoom_path(
         schema = {"root": None, "nodes": {}}
     if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+    schema = _apply_severed_filter_to_schema(schema, game, owner, zoom_ids)
     return _clone_schema_with_zoomable_metadata(schema)
 
 
@@ -506,6 +605,7 @@ def resolve_body_view_for_zoom_path(
         schema = {"root": None, "nodes": {}}
     if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+    schema = _apply_severed_filter_to_schema(schema, game, owner, zoom_ids)
     schema = _clone_schema_with_zoomable_metadata(schema)
 
     return schema, (float(offset_x), float(offset_y)), float(scale)
@@ -537,6 +637,7 @@ def resolve_body_view_chain_for_zoom_path(
         schema = {"root": None, "nodes": {}}
     if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
         schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+    schema = _apply_severed_filter_to_schema(schema, game, owner, [])
     schema = _clone_schema_with_zoomable_metadata(schema)
 
     offset_x = 0.0
@@ -545,7 +646,7 @@ def resolve_body_view_chain_for_zoom_path(
     chain: list[tuple[dict, tuple[float, float], float]] = [(schema, (offset_x, offset_y), scale)]
 
     zoom_ids = list(zoom_stack) if zoom_stack else []
-    for node_id in zoom_ids:
+    for step, node_id in enumerate(zoom_ids):
         nodes = schema.get("nodes", {}) or {}
         node = nodes.get(str(node_id))
         if not isinstance(node, dict):
@@ -583,6 +684,7 @@ def resolve_body_view_chain_for_zoom_path(
             schema = {"root": None, "nodes": {}}
         if "nodes" not in schema or not isinstance(schema.get("nodes"), dict):
             schema = {"root": schema.get("root") if isinstance(schema.get("root"), str) else None, "nodes": {}}
+        schema = _apply_severed_filter_to_schema(schema, game, owner, zoom_ids[:step + 1])
         schema = _clone_schema_with_zoomable_metadata(schema)
 
         chain.append((schema, (float(offset_x), float(offset_y)), float(scale)))
@@ -658,9 +760,13 @@ def body_nodes_for_owner(game: Any, owner: Any) -> list[dict[str, Any]]:
     except Exception:
         specs = {}
 
+    severed_ids = _severed_body_full_ids(game, owner_id)
+
     for full_id in sorted(specs.keys()):
         spec = specs.get(full_id)
         if spec is None:
+            continue
+        if full_id in severed_ids:
             continue
         try:
             rel_x = float(spec.abs_pos[0]) - float(owner_abs[0])

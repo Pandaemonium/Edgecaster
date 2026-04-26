@@ -244,17 +244,81 @@ ONGOING ENGINE CLEANUPS
   - Deleted from equip_rules.py. If anything still uses equip_slots in content
     YAML, it will be silently ignored — audit content files if equip issues arise.
 
-[CLEANUP] register_actor body expansion silently swallows all exceptions and stops at one level
+===============================================================================
+BODY TREE UNIFICATION PLAN (active — blocks on B1)
+
+Goal: entity graph is the single source of truth for body structure at runtime.
+No YAML fallback. No parallel state. No lazy re-expansion. Severing = detach
+from the graph, full stop.
+
+Current problems (2026-04-25):
+  a. register_actor BFS only materializes ONE level of body nodes at spawn
+     (root "body" node only). Root cause unknown — swallowed by outer try/except.
+  b. Because the graph tree is shallow, Look/chakra/inventory scene falls back to
+     reading the anatomy YAML for any zoom level below the root. YAML has no
+     awareness of severing, so severed nodes reappear.
+  c. dismemberment.py works around (a) by lazily expanding the tree on demand,
+     but that re-expansion also re-creates severed nodes (the parent of a severed
+     node has empty children → lazy expand triggers → fresh node entity created).
+     Patched short-term: skip re-expansion if _expanded_children_map shows the
+     node was already expanded.
+  d. _severed_body_full_ids + entity_state writes for "severed" are patches on top
+     of (b). They can be deleted once (b) is fixed.
+
+Ordered execution:
+
+  B1 [BLOCKER] Fix register_actor BFS to fully expand the body tree at spawn.
   - File: edgecaster/systems/spawning.py lines 503-519
-  - The entire body-expansion block is inside a broad try/except: pass.
-  - In practice the BFS only materializes the top-level root body node, not the
-    full tree (arm, head, leg etc.); the intermediate levels are not found or
-    not queued. Root cause unknown — the outer try/except swallows the failure.
-  - Consequence: entity graph body trees for most actors are only one level deep
-    at spawn time. dismemberment.py works around this by expanding on demand,
-    but the correct fix is to diagnose and repair the BFS so the full tree
-    is materialized at spawn (which is what Look/chakra-scene reads from YAML
-    anyway — two systems reading different sources is the root confusion).
+  - Remove the outer try/except: pass and add targeted debug logging so the
+    failure is visible. Most likely cause: find_runtime_entity returns None for
+    the first-level body node children immediately after expand_entity creates
+    them, so they are never queued for recursive expansion.
+  - Once the BFS produces a full 70-node tree at spawn, steps B2-B5 become safe.
+  - Test: after register_actor, assert graph.get_children(actor_eid, socket_id="body")
+    has the full tree (not just the root node).
+
+  B2 Remove YAML fallbacks from body_view_queries.py.
+  - Files: edgecaster/systems/body_view_queries.py
+  - build_entity_schema_at_zoom_depth: delete the entire "if not child_rows" YAML
+    fallback block (lines 204-338). Return None when the graph has no children.
+  - body_nodes_for_owner: delete the "if result:" early-return guarding and the
+    YAML fallback. Return only what the graph BFS finds.
+  - After this, the body diagram and node list show exactly what is in the entity
+    graph — no YAML re-derivation, no severed nodes reappearing.
+
+  B3 Remove lazy expansion from dismemberment.
+  - File: edgecaster/systems/dismemberment.py
+  - _dismemberable_body_node_entities: delete the "if not children: expand_entity"
+    block. With B1 done, the full tree is already in the graph at spawn. Just
+    walk the graph as-is.
+  - The _expanded_children_map guard added as a short-term patch can be removed too.
+
+  B4 Remove _severed_body_full_ids and entity_state writes for severing.
+  - File: edgecaster/systems/body_view_queries.py, dismemberment.py
+  - Delete _severed_body_full_ids() — it was only needed for the YAML fallback.
+  - Delete the patch_entity_state(eid, {"severed": True}) call from _sever —
+    the graph detachment is the sole source of severing truth.
+  - "Is node severed?" = "entity_id is not reachable via body-socket BFS from
+    owner." No separate flag needed.
+
+  B5 Confirm Look/inventory/chakra all work without fallbacks.
+  - Verify that after B1-B4, the body diagram in the inventory and chakra scenes
+    never shows nodes that are not in the entity graph.
+  - Add a focused test: expand actor body, sever a node, verify
+    build_entity_schema_at_zoom_depth and body_nodes_for_owner exclude it.
+
+Side effects to clean up after B1-B5:
+  - build_body_node_specs / child_specs_for_entity in entity_body.py become
+    purely pre-spawn / authoring helpers, not runtime query surfaces. Add a comment.
+  - The YAML fallback code paths in body_view_queries.py exist today as safety nets;
+    deleting them hardens the graph as the single authority.
+
+[CLEANUP] Enemies that bypass the humanoid prototype hierarchy have no body schema
+  - Enemies with parent: actor or parent: demon (rather than parent: humanoid)
+    have empty body schemas and cannot be body-expanded at spawn.
+  - Fixed for demon→imp lineage by changing demon's parent to humanoid.
+  - Audit remaining non-humanoid enemy prototypes to confirm they should NOT
+    have bodies (e.g. golems, undead), or change their parents accordingly.
 
 [CLEANUP] Enemies that bypass the humanoid prototype hierarchy have no body schema
   - Enemies with parent: actor or parent: demon (rather than parent: humanoid)

@@ -164,10 +164,15 @@ def _dismemberable_body_node_entities(game: "Game", defender: Any) -> List[Any]:
 
         children = graph.get_children(parent_eid, socket_id="body")
         if not children:
-            # Expand this node and retry.
+            # Only expand if this node has NEVER been expanded before.
+            # If it was expanded and now has no children, those children were severed
+            # — do not re-create them.
             try:
-                _elc.expand_entity(game, parent_eid, reason="dismember")
-                children = graph.get_children(parent_eid, socket_id="body")
+                from edgecaster.systems.entity_lifecycle import _expanded_children_map
+                expanded = _expanded_children_map(game)
+                if parent_eid not in expanded:
+                    _elc.expand_entity(game, parent_eid, reason="dismember")
+                    children = graph.get_children(parent_eid, socket_id="body")
             except Exception:
                 pass
 
@@ -255,7 +260,17 @@ def _sever(
     except Exception:
         pass
 
-    # 4. Promote the entity to a world item.
+    # 4. Persist the severed flag in entity_state so body-view queries can
+    #    filter this node out even when reading from the YAML fallback path.
+    body_node_eid = _entity_id(body_node_ent)
+    try:
+        patch = getattr(game, "patch_entity_state", None)
+        if callable(patch) and body_node_eid:
+            patch(body_node_eid, {"severed": True})
+    except Exception:
+        pass
+
+    # 5. Promote the entity to a world item.
     try:
         tags["severed"] = True
         tags["severed_from"] = _entity_id(defender)
